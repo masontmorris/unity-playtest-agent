@@ -20,13 +20,14 @@ from typing import Any
 from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNS = ROOT / "runs" / "probes"
+# A worktree can point this at the main checkout's runs/probes so raw calls outlive the worktree.
+RUNS = Path(os.environ.get("UPA_PROBE_RUNS") or ROOT / "runs" / "probes")
 ASSETS = RUNS / "assets"
 
 
 def env(name: str) -> str | None:
-    """Process environment first, then the repo's .env. Never printed."""
-    value = os.environ.get(name) or dotenv_values(ROOT / ".env").get(name)
+    """Process environment first, then the repo's .env (or UPA_DOTENV, e.g. from a worktree). Never printed."""
+    value = os.environ.get(name) or dotenv_values(os.environ.get("UPA_DOTENV") or ROOT / ".env").get(name)
     return value.strip().strip("'\"") if value else None
 
 
