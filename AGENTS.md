@@ -70,3 +70,7 @@ Use `isolation:"worktree"` when a worker edits files while you or another worker
 - Only one Unity Editor per game project. Never run two trials or Editor-driven validations on the same game at once; serialize them.
 - Full run traces, frames and clips stay local under `runs/`. Commit only compact records.
 - **Budget before spend.** Any paid model sweep states its call count and estimated cost and gets the user's OK before it starts.
+
+## Project skills
+
+Five conditional skills live under `.agents/skills/`. They are not an always-load mandate: when a task matches a skill's trigger, read that `SKILL.md`; otherwise leave the directory alone. If a provider cannot discover project skills, cite the path and quote the trigger and law in the brief. The index, invocation notes and current limitations are in `.agents/skills/README.md`.
