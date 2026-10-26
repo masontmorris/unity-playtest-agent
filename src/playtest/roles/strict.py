@@ -17,7 +17,7 @@ Measured on 26 Oct 2026 (`scripts/probes/probe_schemas.py --phase features`, #73
   enum bills the same prompt tokens as repeating it inline (about 3 tokens per enum value per use).
 - Objects are emitted in sorted key order, not schema order. In an `anyOf` of objects the first
   sorted key picks the branch: asked for a box (keys h, kind, w), the model wrote `kind` first and
-  so could only finish the circle branch (kind, radius), 5 of 5 times. `check` rejects unions of
+  so could only finish the circle branch (kind, radius), 4 of 4 times. `check` rejects unions of
   objects; use one flat object or nullable parts.
 - Every constraint keyword tried was enforced while decoding, by coercion rather than rejection:
   `minLength` padded "hi" with dots, `maximum` turned 500 into 10, `minItems` invented items. A
