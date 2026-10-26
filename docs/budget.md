@@ -27,7 +27,7 @@ Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input 
 | Standard, `minimal`, no cache | $0.119 | Projected from measured tokens; the planning figure |
 | Standard, `minimal`, every call repeated | $0.029 | Projected; not reachable by the staged chain (#70) |
 
-The provider caches a repeated request body (26,353 of 26,401 tokens) but not a shared prefix, and an entry lapses in about three minutes, so the staged chain cannot use it (#70). Preflight runs once per project; the manifest cache (#28) is meant to make later runs free, and does not exist yet.
+The provider caches a repeated request body (26,353 of 26,401 tokens) but not a shared prefix, and an entry lapses between two and three minutes, so the staged chain cannot use it (#70). Preflight runs once per project; the manifest cache (#28) is meant to make later runs free, and does not exist yet.
 
 ## A 10-minute real-time run
 
