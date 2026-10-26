@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Fast, Unity-free test harness for the transport core. Unity ignores folders ending in `~`,
+    so this project is invisible to the package importer. The EditMode suite remains the
+    acceptance check; this exists so the pure C# layers can be tested in seconds.
+
+    Unity-only tests are excluded by the `Unity*.cs` naming rule.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>Playtest.Bridge.DotNetTests</AssemblyName>
+    <RootNamespace>Playtest.Bridge.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="NUnit" Version="3.14.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Runtime/Protocol/**/*.cs" Link="Runtime/Protocol/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../../Runtime/Lock/**/*.cs" Link="Runtime/Lock/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../../Runtime/Transport/**/*.cs" Link="Runtime/Transport/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../EditMode/*.cs" Exclude="../EditMode/Unity*.cs" Link="Tests/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

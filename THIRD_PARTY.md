@@ -7,6 +7,7 @@ This repository contains no third-party code or assets. Dependencies are referen
 | Package | Use | Licence |
 |---|---|---|
 | [pydantic](https://github.com/pydantic/pydantic) | Contracts and validation | MIT |
+| [Newtonsoft.Json](https://www.newtonsoft.com/json) via `com.unity.nuget.newtonsoft-json` | Unity bridge wire serialization | MIT |
 | [httpx](https://github.com/encode/httpx) | Model provider HTTP (optional `probe` extra) | BSD-3-Clause |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | Local `.env` loading (optional `probe` extra) | BSD-3-Clause |
 | [hatchling](https://github.com/pypa/hatch) | Build backend | MIT |
