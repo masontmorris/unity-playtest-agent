@@ -13,7 +13,7 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007) | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
 | Frontier call | Muse Spark 1.3, `low` or default effort | $0.018–0.029 (median about $0.024) | Same |
 | Clip in a frontier call | Muse Spark 1.3 | about $0.0013 per 4 s at 640×360, 10 fps | 1,056 extra input tokens |
-| Preflight | Muse Spark 1.3 | Not yet measured | Day 3–4 (#21–#28) |
+| Preflight stage 4–6 choice | Muse Spark 1.3 | $0.021 (`minimal`) to $0.025 (`low`) for about 13k tokens of code | One call per stage; cached per project |
 
 ## A 10-minute real-time run
 
@@ -32,7 +32,7 @@ The frontier count is set by latency, not policy. With one pending request at a 
 | Meta Model API | $150 | Received |
 | Baseten | $100 | Requested, no response |
 | Modal | $100 | Requested, no response |
-| Spent so far | $0.175 | Day 1 probes: Meta $0.174, Liquid $0.0011 |
+| Spent so far | $0.221 | Day 1 probes: Meta $0.220, Liquid $0.0011 |
 
 ## Rules
 
