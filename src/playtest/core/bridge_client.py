@@ -16,6 +16,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -33,6 +34,8 @@ from playtest.contracts.bridge import (
     StopResult,
 )
 from playtest.contracts.common import PROTOCOL
+
+from .bridge_lock import BridgeEndpoint, read_bridge_lock, read_project_lock
 
 MAX_LINE_SIZE = 8 * 1024 * 1024
 
@@ -85,6 +88,8 @@ class BridgeClient:
         self._subscribed = False
         self._latest: Observation | None = None
         self._stop_result: StopResult | None = None
+        self._status: Status | None = None
+        self._endpoint: BridgeEndpoint | None = None
 
     @property
     def session(self) -> str:
@@ -97,6 +102,15 @@ class BridgeClient:
     @property
     def latest(self) -> Observation | None:
         return self._latest
+
+    @property
+    def status(self) -> Status | None:
+        return self._status
+
+    @property
+    def endpoint(self) -> BridgeEndpoint | None:
+        """The lock-file endpoint when connected through one; otherwise None."""
+        return self._endpoint
 
     def _next_seq(self) -> int:
         seq = self._seq
@@ -119,7 +133,67 @@ class BridgeClient:
             token=self._token,
             core_version=self._core_version,
         )
-        return await self._request_status(hello)
+        status = await self._request_status(hello)
+        self._status = status
+        return status
+
+    @classmethod
+    async def connect_from_project(
+        cls,
+        project: str | Path,
+        *,
+        host: str = "127.0.0.1",
+        timeout_s: float = 10.0,
+        core_version: str = "0.0.1",
+    ) -> "BridgeClient":
+        """Connect to the bridge advertised by `<project>/Temp/playtest-bridge.lock`."""
+        return await cls._connect_from_endpoint(
+            read_project_lock(project),
+            host=host,
+            timeout_s=timeout_s,
+            core_version=core_version,
+        )
+
+    @classmethod
+    async def connect_from_lock(
+        cls,
+        lock_path: str | Path,
+        *,
+        host: str = "127.0.0.1",
+        timeout_s: float = 10.0,
+        core_version: str = "0.0.1",
+    ) -> "BridgeClient":
+        """Connect to the bridge advertised by an explicit lock file."""
+        return await cls._connect_from_endpoint(
+            read_bridge_lock(lock_path),
+            host=host,
+            timeout_s=timeout_s,
+            core_version=core_version,
+        )
+
+    @classmethod
+    async def _connect_from_endpoint(
+        cls,
+        endpoint: BridgeEndpoint,
+        *,
+        host: str,
+        timeout_s: float,
+        core_version: str,
+    ) -> "BridgeClient":
+        client = cls(
+            host,
+            endpoint.port,
+            endpoint.token,
+            timeout_s=timeout_s,
+            core_version=core_version,
+        )
+        client._endpoint = endpoint
+        try:
+            await client.connect()
+        except BaseException:
+            await client.aclose()
+            raise
+        return client
 
     async def __aenter__(self) -> "BridgeClient":
         await self.connect()
