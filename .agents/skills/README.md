@@ -26,9 +26,9 @@ Read the file explicitly:
 
 Any provider with file access can follow that path, whether or not it has a native skill loader. Providers that support `$skill-name` or project-scope auto-discovery may load it automatically; do not assume that for every provider. A brief should name the path and quote the trigger and operative law, because a fresh worktree does not have the gitignored `docs/build-bible.md`.
 
-Keep the repo files canonical. Local directory links may expose them to provider skill loaders; avoid copied bodies that drift. No sync script is needed.
+Keep the repo files canonical. Local directory links may expose them to provider skill loaders; avoid copied bodies that drift. `scripts/install-skills.ps1` reads a committed tree, so it cannot ship a drifted copy.
 
-Local installation uses per-skill directory links from both `~/.codex/skills/<name>` and `~/.claude/skills/<name>` to a versioned export of the committed collection under `~/.local/share/unity-playtest-agent/skills/<full-commit>/<name>`. This single installed snapshot serves agents in other checkouts and survives removal of the authoring worktree. Start a fresh session if its catalog is stale. An explicit path to an installed skill also works when a target checkout lacks it.
+Local installation uses `scripts/install-skills.ps1`. It exports one commit's `.agents/skills` tree to `~/.local/share/unity-playtest-agent/skills/<full-commit>/` and points a junction per skill, from both `~/.codex/skills/<name>` and `~/.claude/skills/<name>`, at that snapshot. It verifies every file by Git blob hash, stages each link before swapping it, restores the previous junctions if any step fails, and refuses a link it did not create. This single installed snapshot serves agents in other checkouts and survives removal of the authoring worktree. Start a fresh session if its catalog is stale. An explicit path to an installed skill also works when a target checkout lacks it.
 
 Discovery checked on 26 October 2026:
 
@@ -56,7 +56,7 @@ Prototype provenance is `s1-loop` at `fe3f0a44`. Source docs, relative to that r
 - Git carries these skills into worktrees based on a commit containing them. The installed user links also serve older checkouts on this machine; other machines need the committed collection or an accessible explicit path.
 - The skills describe the code at the snapshot. If commands, flags, contract names or status change, update the skill and re-run the validator; stale instructions are worse than no skill.
 - The production preflight, manifest cache, context builder, bridge, turn loop and report CLI do not exist. Checks that depend on them are design review or `not applicable`, not passed.
-- The installed snapshot is pinned to a commit and does not follow uncommitted edits. To update it, export the new committed skill tree to a new version directory, verify its files against Git, repoint only these five links in each user skill root, and recheck discovery. Preserve unrelated skills and the previous version until the new links verify. Links do not travel with Git; Claude on another machine needs its own personal/project link or explicit-path invocation.
+- The installed snapshot is pinned to a commit and does not follow uncommitted edits. To update it, commit the skill change, run `scripts/install-skills.ps1 -Repo <repo> -Commit <full-commit> -WhatIf` to preview, then drop `-WhatIf`. The script verifies the new snapshot against Git and repoints only these five links, leaving unrelated skills and the previous version in place. Links do not travel with Git; Claude on another machine needs its own personal/project link or explicit-path invocation.
 - These skills do not replace `AGENTS.md`, the roadmap, paid-run approval or the one-Editor-per-project rule.
 - Scale the artifact to the change. A trivial edit needs the relevant check, not a full matrix or a new record.
 
