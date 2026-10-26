@@ -55,6 +55,7 @@ Use `isolation:"worktree"` when a worker edits files while you or another worker
 ## GitHub workflow
 
 - Work is tracked as issues under the day milestones (`Day 1 – Foundations` … `Day 10 – Submit`) and on the project roadmap. Each day has one `gate` issue holding that day's acceptance check.
+- The roadmap updates itself (`.github/workflows/roadmap.yml`). Every issue is added to the project, and its Day and dates follow its milestone. It moves to In Progress when an open PR says `Closes #N`, and to Done when it closes. To move an issue between days, change its milestone, not the project fields.
 - One branch per issue or tight group of issues, named `<type>/<short-slug>` (`feat/`, `fix/`, `docs/`, `chore/`, `eval/`), cut from an up-to-date `main`. Never commit directly to `main`.
 - Changes land through a pull request whose description says `Closes #N` and what was verified. CI must be green before merge. Squash-merge, then delete the branch.
 

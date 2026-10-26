@@ -1,0 +1,39 @@
+name: roadmap
+
+# Keeps the roadmap project in step with issues and PRs. See .github/scripts/roadmap_sync.py.
+on:
+  issues:
+    types: [opened, reopened, closed, milestoned, demilestoned, transferred]
+  pull_request:
+    types: [opened, reopened, edited, closed, ready_for_review]
+  schedule:
+    - cron: "17 * * * *"  # hourly backstop for missed events
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roadmap-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main  # always run the reviewed script, never a PR's copy of it
+      - name: Sync
+        env:
+          GH_TOKEN: ${{ secrets.ROADMAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::ROADMAP_TOKEN is not set; skipping roadmap sync"
+            exit 0
+          fi
+          if [ ! -f .github/scripts/roadmap_sync.py ]; then
+            echo "::notice::sync script not on main yet; skipping"
+            exit 0
+          fi
+          python3 .github/scripts/roadmap_sync.py
