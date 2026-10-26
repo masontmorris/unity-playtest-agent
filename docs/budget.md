@@ -13,7 +13,7 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007) | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
 | Frontier call | Muse Spark 1.3, `low` or default effort | $0.018–0.029 (median about $0.024) | Same |
 | Clip in a frontier call | Muse Spark 1.3 | about $0.0013 per 4 s at 640×360, 10 fps | 1,056 extra input tokens |
-| Preflight call, full project | Muse Spark 1.3 (Standard) | $0.037–0.043 for 26k input tokens | Measured tokens × list price, no cache |
+| Preflight call, full project | Muse Spark 1.3 (Standard) | $0.037–0.043 for 26k input tokens | Measured tokens × list price; no stage repeats a body (#70) |
 | Preflight call, full project | `muse-spark-1.3-contributor` | $0.0028–0.0032 for the same tokens | Fixtures only: Meta may train on the prompts |
 
 ## Preflight per project
@@ -24,10 +24,10 @@ Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input 
 |---|---|---|
 | Contributor, `minimal` | $0.0090, 33.5 s | Measured |
 | Contributor, `low` | $0.0093, 50.3 s | Measured |
-| Standard, `minimal`, no cache | $0.119 | Projected from measured tokens |
-| Standard, `minimal`, full prefix cache | $0.029 | Projected; not observed at this size |
+| Standard, `minimal`, no cache | $0.119 | Projected from measured tokens; the planning figure |
+| Standard, `minimal`, every call repeated | $0.029 | Projected; not reachable by the staged chain (#70) |
 
-No call in the probe hit the prefix cache, so the no-cache case is the planning figure. Preflight runs once per project; the manifest cache (#28) is meant to make later runs free, and does not exist yet.
+The provider caches a repeated request body (26,353 of 26,401 tokens) but not a shared prefix, and an entry lapses in about three minutes, so the staged chain cannot use it (#70). Preflight runs once per project; the manifest cache (#28) is meant to make later runs free, and does not exist yet.
 
 ## A 10-minute real-time run
 
@@ -48,7 +48,7 @@ The frontier count is set by latency, not policy. With one pending request at a 
 | Meta Model API | $150 | Received |
 | Baseten | $100 | Requested, no response |
 | Modal | $100 | Requested, no response |
-| Spent so far | $0.276 | Day 1 probes: Meta $0.275, including $0.055 for the full-load preflight; Liquid $0.0011 |
+| Spent so far | $0.293 | Day 1 probes: Meta $0.292, including $0.055 for the full-load preflight and $0.017 for the cache test (#70); Liquid $0.0011 |
 
 ## Rules
 

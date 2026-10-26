@@ -10,8 +10,9 @@ Model stages, chained as the real preflight will be:
   6 progress/invariants/gaps, given the stage 4 and 5 answers
 
 Every stage sends the same system prompt and the same code block first, with the stage's
-instructions last, so stages 5 and 6 can reuse the prompt cache. The chain runs at
-reasoning_effort minimal and low; stage 4 also runs once on Standard mode for comparison.
+instructions last. That does not buy a cache hit: Muse reuses only an identical request body,
+so stages 5 and 6 each pay for the whole project (#70). The chain runs at reasoning_effort
+minimal and low; stage 4 also runs once on Standard mode for comparison.
 
     uv run --extra probe python scripts/probes/probe_preflight_full.py <exported-project-dir> [--model M]
 """
@@ -124,7 +125,7 @@ def price(model: str, u: dict) -> float | None:
 
 
 async def call(client, key, model, effort, shared, stage, extra, schema, rec, label):
-    body = {"model": model, "max_tokens": 32000, "reasoning_effort": effort, "prompt_cache_key": "upa-preflight",
+    body = {"model": model, "max_tokens": 32000, "reasoning_effort": effort,
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": shared + extra + "\n\n=== INSTRUCTIONS ===\n" + STAGES[stage]}],
             "response_format": {"type": "json_schema", "json_schema": {"name": f"stage_{stage}", "strict": True, "schema": schema}}}
