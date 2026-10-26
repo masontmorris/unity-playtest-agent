@@ -9,7 +9,10 @@ Six Chat Completions calls with JSON-schema structured output:
 Estimated cost before running: about 30k input tokens plus video and up to about 15k output
 tokens at $1.25 / $4.25 per million, so under $0.15.
 
-    uv run --extra probe python scripts/probes/probe_meta.py
+`--plan minimal` runs three calls at reasoning_effort=minimal instead (small, large, small + clip),
+under $0.05.
+
+    uv run --extra probe python scripts/probes/probe_meta.py [--plan minimal]
 """
 
 from __future__ import annotations
@@ -59,12 +62,17 @@ async def main() -> int:
     if not key:
         print("META_API_KEY is not set")
         return 1
-    out = run_dir("meta")
+    minimal = sys.argv[1:] == ["--plan", "minimal"]
+    out = run_dir("meta-minimal" if minimal else "meta")
     rec = Recorder(out)
     video = data_url(clip_mp4(), "video/mp4")
-    plan = [("small", 8, None, None), ("small-repeat", 8, None, None),
-            ("large-low", 110, "low", None), ("large-default", 110, None, None),
-            ("video", 8, None, video), ("video-repeat", 8, None, video)]
+    if minimal:
+        plan = [("small-minimal", 8, "minimal", None), ("large-minimal", 110, "minimal", None),
+                ("video-minimal", 8, "minimal", video)]
+    else:
+        plan = [("small", 8, None, None), ("small-repeat", 8, None, None),
+                ("large-low", 110, "low", None), ("large-default", 110, None, None),
+                ("video", 8, None, video), ("video-repeat", 8, None, video)]
     total = 0.0
     async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
         for kind, history, effort, vid in plan:
