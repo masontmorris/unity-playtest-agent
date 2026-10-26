@@ -1,0 +1,25 @@
+{
+  "name": "Playtest.Bridge.Tests.EditMode",
+  "rootNamespace": "Playtest.Bridge.Tests",
+  "references": [
+    "Playtest.Bridge",
+    "Playtest.Bridge.Editor",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
