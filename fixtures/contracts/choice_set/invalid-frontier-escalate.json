@@ -1,0 +1,13 @@
+{
+  "set_version": 1,
+  "built_from_seq": 1,
+  "choices": [
+    {
+      "id": "c1",
+      "kind": "escalate",
+      "label": "Ask again",
+      "role": "frontier",
+      "source": "frontier"
+    }
+  ]
+}

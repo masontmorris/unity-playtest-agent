@@ -1,0 +1,22 @@
+{
+  "directive_id": "d12",
+  "parent": "d11",
+  "model": "muse-spark-1.3",
+  "based_on_seq": 1840,
+  "text": "Pick up the item, reload the checkpoint, check the item is still held.",
+  "target": {
+    "kind": "field",
+    "ref": "public.r_item_held"
+  },
+  "expected": {
+    "field": "public.r_item_held",
+    "op": "==",
+    "value": true
+  },
+  "deadline_game_s": 30,
+  "outcome": "not_met",
+  "evidence_seq": [
+    1901
+  ],
+  "error_class": "precondition_false"
+}

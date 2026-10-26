@@ -1,0 +1,27 @@
+{
+  "finding_id": "f3",
+  "state": "reproduced",
+  "title": "Held item lost after checkpoint reload",
+  "expected": "Item stays held after reload",
+  "expected_source": "invariant",
+  "actual": "Item flag false after reload",
+  "steps": [
+    "Reset scene",
+    "Pick up item",
+    "Reload checkpoint"
+  ],
+  "evidence_seq": [
+    1901,
+    1904
+  ],
+  "clips": [
+    "clips/f3-a.mp4"
+  ],
+  "repro": {
+    "attempts": 5,
+    "reproduced": 4,
+    "clock_mode": "realtime",
+    "reset": "scene_reload"
+  },
+  "uncertainty": "Timing-sensitive: 1 of 5 attempts did not reproduce."
+}

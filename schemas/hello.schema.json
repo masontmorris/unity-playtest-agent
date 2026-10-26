@@ -1,0 +1,66 @@
+{
+  "$id": "upa/hello.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "core_version": {
+      "title": "Core Version",
+      "type": "string"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "token": {
+      "minLength": 1,
+      "title": "Token",
+      "type": "string"
+    },
+    "type": {
+      "const": "hello",
+      "default": "hello",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "token",
+    "core_version"
+  ],
+  "title": "Hello",
+  "type": "object"
+}

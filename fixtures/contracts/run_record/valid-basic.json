@@ -1,0 +1,19 @@
+{
+  "type": "run",
+  "run_id": "r-2026-10-26-001",
+  "game_project": "Example",
+  "clock_mode": "realtime",
+  "models": [
+    {
+      "role": "s1",
+      "provider": "baseten",
+      "model": "mammoth-1"
+    }
+  ],
+  "objective": "Explore the save system",
+  "budget": {
+    "max_wall_s": 600,
+    "max_usd": 3.0
+  },
+  "core_version": "0.0.1"
+}

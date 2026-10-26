@@ -1,0 +1,10 @@
+{
+  "directive_id": "d15",
+  "model": "muse-spark-1.3",
+  "based_on_seq": 1950,
+  "text": "Raise it.",
+  "expected": {
+    "field": "public.r_counter",
+    "op": ">"
+  }
+}

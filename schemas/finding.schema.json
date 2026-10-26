@@ -1,0 +1,173 @@
+{
+  "$defs": {
+    "ClockMode": {
+      "enum": [
+        "realtime",
+        "stepped"
+      ],
+      "title": "ClockMode",
+      "type": "string"
+    },
+    "ExpectedSource": {
+      "enum": [
+        "invariant",
+        "objective",
+        "developer_assertion",
+        "interpretation"
+      ],
+      "title": "ExpectedSource",
+      "type": "string"
+    },
+    "FindingState": {
+      "enum": [
+        "suspicion",
+        "candidate",
+        "repro_attempted",
+        "reproduced",
+        "unconfirmed",
+        "fix_proposed",
+        "fix_verified"
+      ],
+      "title": "FindingState",
+      "type": "string"
+    },
+    "Repro": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "minimum": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "clock_mode": {
+          "$ref": "#/$defs/ClockMode"
+        },
+        "reproduced": {
+          "minimum": 0,
+          "title": "Reproduced",
+          "type": "integer"
+        },
+        "reset": {
+          "minLength": 1,
+          "title": "Reset",
+          "type": "string"
+        },
+        "tolerance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tolerance"
+        }
+      },
+      "required": [
+        "attempts",
+        "reproduced",
+        "clock_mode",
+        "reset"
+      ],
+      "title": "Repro",
+      "type": "object"
+    }
+  },
+  "$id": "upa/finding.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actual": {
+      "title": "Actual",
+      "type": "string"
+    },
+    "clips": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Clips",
+      "type": "array"
+    },
+    "conditions": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Conditions"
+    },
+    "evidence_seq": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Evidence Seq",
+      "type": "array"
+    },
+    "expected": {
+      "title": "Expected",
+      "type": "string"
+    },
+    "expected_source": {
+      "$ref": "#/$defs/ExpectedSource"
+    },
+    "finding_id": {
+      "minLength": 1,
+      "title": "Finding Id",
+      "type": "string"
+    },
+    "repro": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Repro"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "state": {
+      "$ref": "#/$defs/FindingState"
+    },
+    "steps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "uncertainty": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Uncertainty"
+    }
+  },
+  "required": [
+    "finding_id",
+    "state",
+    "title",
+    "expected",
+    "expected_source",
+    "actual"
+  ],
+  "title": "Finding",
+  "type": "object"
+}

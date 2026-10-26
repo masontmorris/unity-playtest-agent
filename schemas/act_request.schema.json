@@ -1,0 +1,115 @@
+{
+  "$id": "upa/act_request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Start one bounded action. The bridge rejects it atomically if it is stale.",
+  "properties": {
+    "action": {
+      "description": "Manifest action name",
+      "minLength": 1,
+      "title": "Action",
+      "type": "string"
+    },
+    "action_id": {
+      "description": "Unique per request; the execution record echoes it",
+      "minLength": 1,
+      "title": "Action Id",
+      "type": "string"
+    },
+    "based_on_seq": {
+      "description": "Observation the choice was built from",
+      "minimum": 0,
+      "title": "Based On Seq",
+      "type": "integer"
+    },
+    "choice_id": {
+      "title": "Choice Id",
+      "type": "string"
+    },
+    "depends_on": {
+      "description": "Public fields that must be unchanged since based_on_seq; from preflight's measured freshness classes",
+      "items": {
+        "type": "string"
+      },
+      "title": "Depends On",
+      "type": "array"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "lease_s": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Held input runs until superseded, expired or stopped",
+      "title": "Lease S"
+    },
+    "max_age_s": {
+      "exclusiveMinimum": 0,
+      "title": "Max Age S",
+      "type": "number"
+    },
+    "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "type": {
+      "const": "act",
+      "default": "act",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "action_id",
+    "choice_id",
+    "action",
+    "based_on_seq",
+    "max_age_s"
+  ],
+  "title": "ActRequest",
+  "type": "object"
+}

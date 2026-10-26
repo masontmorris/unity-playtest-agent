@@ -1,0 +1,92 @@
+{
+  "$id": "upa/clock_request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "op": {
+      "enum": [
+        "pause",
+        "resume",
+        "step",
+        "set_scale"
+      ],
+      "title": "Op",
+      "type": "string"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "step_game_s": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Step Game S"
+    },
+    "time_scale": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Time Scale"
+    },
+    "type": {
+      "const": "clock",
+      "default": "clock",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "op"
+  ],
+  "title": "ClockRequest",
+  "type": "object"
+}

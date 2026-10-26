@@ -1,0 +1,17 @@
+{
+  "finding_id": "f6",
+  "state": "repro_attempted",
+  "title": "x",
+  "expected": "a",
+  "expected_source": "objective",
+  "actual": "b",
+  "evidence_seq": [
+    1
+  ],
+  "repro": {
+    "attempts": 2,
+    "reproduced": 3,
+    "clock_mode": "realtime",
+    "reset": "scene_reload"
+  }
+}

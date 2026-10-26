@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "WhilePending": {
+      "additionalProperties": false,
+      "properties": {
+        "choice_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Choice Id"
+        },
+        "mode": {
+          "enum": [
+            "wait",
+            "continue"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "WhilePending",
+      "type": "object"
+    }
+  },
+  "$id": "upa/decision.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "S1's answer. `distribution` is recorded for analysis and never used to select.",
+  "properties": {
+    "choice_id": {
+      "minLength": 1,
+      "title": "Choice Id",
+      "type": "string"
+    },
+    "distribution": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Distribution"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "set_version": {
+      "minimum": 0,
+      "title": "Set Version",
+      "type": "integer"
+    },
+    "while_pending": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhilePending"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "choice_id",
+    "set_version"
+  ],
+  "title": "Decision",
+  "type": "object"
+}

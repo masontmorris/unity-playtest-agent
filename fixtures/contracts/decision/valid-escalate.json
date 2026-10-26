@@ -1,0 +1,8 @@
+{
+  "choice_id": "c9",
+  "set_version": 57,
+  "reason": "counter did not change",
+  "while_pending": {
+    "mode": "wait"
+  }
+}

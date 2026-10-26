@@ -1,0 +1,214 @@
+{
+  "$defs": {
+    "Comparator": {
+      "enum": [
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "changed",
+        "unchanged"
+      ],
+      "title": "Comparator",
+      "type": "string"
+    },
+    "DirectiveErrorClass": {
+      "enum": [
+        "wrong_target",
+        "unreachable",
+        "precondition_false",
+        "action_rejected",
+        "no_attempt",
+        "ambiguous"
+      ],
+      "title": "DirectiveErrorClass",
+      "type": "string"
+    },
+    "DirectiveOutcome": {
+      "enum": [
+        "open",
+        "met",
+        "not_met",
+        "expired",
+        "invalidated",
+        "unknown"
+      ],
+      "title": "DirectiveOutcome",
+      "type": "string"
+    },
+    "Expected": {
+      "additionalProperties": false,
+      "description": "A checkable postcondition over a public observation field.",
+      "properties": {
+        "field": {
+          "description": "Dotted path into the observation, e.g. public.<reader>",
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Comparator"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "field",
+        "op"
+      ],
+      "title": "Expected",
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "field",
+            "entity",
+            "ui_element",
+            "location"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ref": {
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "title": "Target",
+      "type": "object"
+    }
+  },
+  "$id": "upa/directive.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "based_on_seq": {
+      "minimum": 0,
+      "title": "Based On Seq",
+      "type": "integer"
+    },
+    "deadline_game_s": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Deadline Game S"
+    },
+    "directive_id": {
+      "minLength": 1,
+      "title": "Directive Id",
+      "type": "string"
+    },
+    "error_class": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DirectiveErrorClass"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evidence_seq": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Evidence Seq",
+      "type": "array"
+    },
+    "expected": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Expected"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Null when no checkable postcondition; outcome is then 'unknown'"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/$defs/DirectiveOutcome",
+      "default": "open"
+    },
+    "parent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent"
+    },
+    "source": {
+      "const": "frontier",
+      "default": "frontier",
+      "title": "Source",
+      "type": "string"
+    },
+    "target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Target"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    },
+    "tolerance": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tolerance"
+    }
+  },
+  "required": [
+    "directive_id",
+    "model",
+    "based_on_seq",
+    "text"
+  ],
+  "title": "Directive",
+  "type": "object"
+}

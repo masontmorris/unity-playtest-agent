@@ -1,0 +1,42 @@
+{
+  "set_version": 57,
+  "built_from_seq": 1842,
+  "choices": [
+    {
+      "id": "c1",
+      "kind": "action",
+      "label": "Move forward 1.0 s",
+      "action": "move_forward",
+      "params": {
+        "duration_game_s": 1.0
+      },
+      "preconditions": [
+        "playing"
+      ],
+      "source": "manifest"
+    },
+    {
+      "id": "c7",
+      "kind": "skill",
+      "label": "Reload checkpoint",
+      "skill": "reload_checkpoint",
+      "source": "manifest"
+    },
+    {
+      "id": "c9",
+      "kind": "escalate",
+      "label": "Ask the frontier",
+      "role": "frontier",
+      "source": "core"
+    },
+    {
+      "id": "c10",
+      "kind": "wait",
+      "label": "Wait 0.5 s",
+      "params": {
+        "duration_game_s": 0.5
+      },
+      "source": "core"
+    }
+  ]
+}

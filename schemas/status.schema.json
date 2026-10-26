@@ -1,0 +1,150 @@
+{
+  "$defs": {
+    "InputBackend": {
+      "enum": [
+        "input_system",
+        "legacy"
+      ],
+      "title": "InputBackend",
+      "type": "string"
+    },
+    "LockState": {
+      "additionalProperties": false,
+      "properties": {
+        "held": {
+          "title": "Held",
+          "type": "boolean"
+        },
+        "owner_pid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Pid"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        }
+      },
+      "required": [
+        "held"
+      ],
+      "title": "LockState",
+      "type": "object"
+    }
+  },
+  "$id": "upa/status.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bridge_version": {
+      "title": "Bridge Version",
+      "type": "string"
+    },
+    "capture": {
+      "title": "Capture",
+      "type": "boolean"
+    },
+    "capture_self_test": {
+      "enum": [
+        "passed",
+        "failed",
+        "unknown"
+      ],
+      "title": "Capture Self Test",
+      "type": "string"
+    },
+    "clock_control": {
+      "title": "Clock Control",
+      "type": "boolean"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "input_backends": {
+      "items": {
+        "$ref": "#/$defs/InputBackend"
+      },
+      "title": "Input Backends",
+      "type": "array"
+    },
+    "lock": {
+      "$ref": "#/$defs/LockState"
+    },
+    "project": {
+      "title": "Project",
+      "type": "string"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "type": {
+      "const": "status",
+      "default": "status",
+      "title": "Type",
+      "type": "string"
+    },
+    "unity_version": {
+      "title": "Unity Version",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "bridge_version",
+    "unity_version",
+    "project",
+    "input_backends",
+    "clock_control",
+    "capture",
+    "capture_self_test",
+    "lock"
+  ],
+  "title": "Status",
+  "type": "object"
+}

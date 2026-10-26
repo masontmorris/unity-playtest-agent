@@ -1,0 +1,10 @@
+{
+  "protocol": "upa/0",
+  "session": "s-1",
+  "seq": 1842,
+  "game_s": 61.25,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "execution",
+  "action_id": "a-78",
+  "status": "rejected"
+}

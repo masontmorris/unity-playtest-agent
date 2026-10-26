@@ -1,0 +1,10 @@
+{
+  "choice_id": "c1",
+  "set_version": 57,
+  "distribution": {
+    "c1": 0.6,
+    "c7": 0.1,
+    "c9": 0.2,
+    "c10": 0.1
+  }
+}
