@@ -34,12 +34,15 @@ namespace Playtest.Bridge.Transport
 
     public sealed class BridgeServerOptions
     {
+        /// <summary>Stream rate used when an observe subscribe request omits <c>rate_hz</c>.</summary>
+        public const double DefaultObservationRateHz = 20;
+
         public System.Net.IPAddress BindAddress { get; set; } = System.Net.IPAddress.Loopback;
 
         /// <summary>0 asks the OS for an ephemeral loopback port.</summary>
         public int Port { get; set; }
 
-        public int MaxLineBytes { get; set; } = 4 * 1024 * 1024;
+        public int MaxLineBytes { get; set; } = 8 * 1024 * 1024;
 
         public int HandshakeTimeoutMs { get; set; } = 5000;
 

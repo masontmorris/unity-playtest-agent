@@ -13,12 +13,13 @@ namespace Playtest.Bridge.Transport
     /// <summary>
     /// Loopback TCP JSONL server. One authenticated session at a time: a second caller that
     /// passes auth gets a <c>busy</c> error immediately instead of waiting for the first to
-    /// finish. Transport only; game verbs arrive in later issues.
+    /// finish. Transport and observation only; game verbs arrive in later issues.
     /// </summary>
     public sealed class BridgeServer : IDisposable
     {
         private readonly BridgeServerOptions _options;
         private readonly IBridgeStatusSource _status;
+        private readonly IBridgeObservationSource _observations;
         private readonly string _token;
         private readonly object _gate = new object();
         private readonly HashSet<TcpClient> _clients = new HashSet<TcpClient>();
@@ -29,9 +30,23 @@ namespace Playtest.Bridge.Transport
         private int _port;
 
         public BridgeServer(BridgeServerOptions options, IBridgeStatusSource status, string token)
+            : this(options, status, null, token)
+        {
+        }
+
+        /// <summary>
+        /// <paramref name="observations"/> is optional for status-only tests; an observe request
+        /// without a source is answered with an <c>internal</c> error rather than invented data.
+        /// </summary>
+        public BridgeServer(
+            BridgeServerOptions options,
+            IBridgeStatusSource status,
+            IBridgeObservationSource observations,
+            string token)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _status = status ?? throw new ArgumentNullException(nameof(status));
+            _observations = observations;
             if (string.IsNullOrEmpty(token))
             {
                 throw new ArgumentException("token must not be empty", nameof(token));
@@ -94,6 +109,12 @@ namespace Playtest.Bridge.Transport
 
             lock (_gate)
             {
+                if (_active != null)
+                {
+                    _active.Close();
+                    _active = null;
+                }
+
                 foreach (TcpClient client in _clients)
                 {
                     try
@@ -106,7 +127,6 @@ namespace Playtest.Bridge.Transport
                 }
 
                 _clients.Clear();
-                _active = null;
             }
 
             Thread accept = _acceptThread;
@@ -225,7 +245,7 @@ namespace Playtest.Bridge.Transport
                 WriteStatus(session);
                 client.ReceiveTimeout = _options.ReadTimeoutMs;
 
-                while (_running)
+                while (_running && !session.IsClosed)
                 {
                     string line = connection.ReadLine(_options.ReadTimeoutMs);
                     if (line == null)
@@ -251,6 +271,11 @@ namespace Playtest.Bridge.Transport
             }
             finally
             {
+                if (session != null)
+                {
+                    session.Close();
+                }
+
                 lock (_gate)
                 {
                     if (ReferenceEquals(_active, session))
@@ -282,45 +307,43 @@ namespace Playtest.Bridge.Transport
         private void WriteStatus(ClientSession session)
         {
             BridgeStatusSnapshot snapshot = _status.GetStatus() ?? new BridgeStatusSnapshot();
-            var status = new StatusMessage
-            {
-                Session = session.Session,
-                Seq = 0,
-                GameS = null,
-                WallUtc = DateTime.UtcNow,
-                BridgeVersion = snapshot.BridgeVersion,
-                UnityVersion = snapshot.UnityVersion,
-                Project = snapshot.Project,
-                InputBackends = new List<string>(snapshot.InputBackends ?? Array.Empty<string>()),
-                ClockControl = snapshot.ClockControl,
-                Capture = snapshot.Capture,
-                CaptureSelfTest = snapshot.CaptureSelfTest,
-                Lock = new LockState
+            bool written = TryWrite(
+                session,
+                seq => new StatusMessage
                 {
-                    Held = true,
-                    OwnerPid = snapshot.OwnerPid,
-                    Port = _port,
-                },
-            };
+                    Session = session.Session,
+                    Seq = seq,
+                    GameS = null,
+                    WallUtc = DateTime.UtcNow,
+                    BridgeVersion = snapshot.BridgeVersion,
+                    UnityVersion = snapshot.UnityVersion,
+                    Project = snapshot.Project,
+                    InputBackends = new List<string>(snapshot.InputBackends ?? Array.Empty<string>()),
+                    ClockControl = snapshot.ClockControl,
+                    Capture = snapshot.Capture,
+                    CaptureSelfTest = snapshot.CaptureSelfTest,
+                    Lock = new LockState
+                    {
+                        Held = true,
+                        OwnerPid = snapshot.OwnerPid,
+                        Port = _port,
+                    },
+                });
 
-            Write(session, status);
+            if (!written)
+            {
+                session.Close();
+            }
         }
 
         private void HandleLine(ClientSession session, string line)
         {
             string type = null;
-            string requestSession = session.Session;
-            long requestSeq = 0;
+            long? requestSeq = null;
             try
             {
                 JObject obj = JObject.Parse(line);
                 type = (string)obj["type"];
-                string parsedSession = (string)obj["session"];
-                if (!string.IsNullOrEmpty(parsedSession))
-                {
-                    requestSession = parsedSession;
-                }
-
                 JToken seq = obj["seq"];
                 if (seq != null && seq.Type == JTokenType.Integer)
                 {
@@ -329,18 +352,254 @@ namespace Playtest.Bridge.Transport
             }
             catch (JsonException)
             {
-                WriteError(session.Connection, session.Session, 0, BridgeErrorCode.Invalid, "malformed JSON", null);
+                WriteSessionError(session, null, BridgeErrorCode.Invalid, "malformed JSON");
                 return;
             }
 
             if (string.Equals(type, "hello", StringComparison.Ordinal))
             {
-                WriteError(session.Connection, requestSession, 0, BridgeErrorCode.Invalid, "hello is only valid as the first message", requestSeq);
+                WriteSessionError(
+                    session,
+                    requestSeq,
+                    BridgeErrorCode.Invalid,
+                    "hello is only valid as the first message");
+                return;
+            }
+
+            // The contract defaults `type` to "observe", so a missing type is an observe request.
+            if (type == null || string.Equals(type, "observe", StringComparison.Ordinal))
+            {
+                HandleObserve(session, line, requestSeq);
                 return;
             }
 
             string label = string.IsNullOrEmpty(type) ? "(missing)" : type;
-            WriteError(session.Connection, requestSession, 0, BridgeErrorCode.Invalid, $"unsupported message type '{label}'", requestSeq);
+            WriteSessionError(
+                session,
+                requestSeq,
+                BridgeErrorCode.Invalid,
+                $"unsupported message type '{label}'");
+        }
+
+        private void HandleObserve(ClientSession session, string line, long? requestSeq)
+        {
+            if (!BridgeProtocol.TryReadObserveRequest(line, out ObserveRequestMessage request, out ProtocolError error))
+            {
+                WriteSessionError(session, requestSeq, error.Code, error.Message);
+                return;
+            }
+
+            if (request.WithFrame)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Invalid,
+                    "with_frame is not supported yet: frames arrive with capture, so resend without with_frame");
+                return;
+            }
+
+            if (_observations == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "no observation source is attached to this bridge");
+                return;
+            }
+
+            switch (request.Mode)
+            {
+                case "once":
+                    SendObservation(session);
+                    return;
+
+                case "subscribe":
+                    Subscribe(
+                        session,
+                        request.Seq,
+                        request.RateHz ?? BridgeServerOptions.DefaultObservationRateHz);
+                    return;
+
+                case "unsubscribe":
+                    session.StopStream();
+                    return;
+
+                default:
+                    WriteSessionError(
+                        session,
+                        request.Seq,
+                        BridgeErrorCode.Invalid,
+                        "mode must be subscribe, once or unsubscribe");
+                    return;
+            }
+        }
+
+        private void Subscribe(ClientSession session, long requestSeq, double rateHz)
+        {
+            if (double.IsNaN(rateHz) || double.IsInfinity(rateHz) || rateHz <= 0 || rateHz > 60)
+            {
+                WriteSessionError(
+                    session,
+                    requestSeq,
+                    BridgeErrorCode.Invalid,
+                    "rate_hz must be greater than 0 and at most 60");
+                return;
+            }
+
+            // The first observation acknowledges the subscription before the timer starts, so a
+            // tick can never be sequenced ahead of its acknowledgement.
+            if (!SendObservation(session))
+            {
+                return;
+            }
+
+            int periodMs = (int)Math.Round(1000.0 / rateHz, MidpointRounding.AwayFromZero);
+            if (periodMs < 1)
+            {
+                periodMs = 1;
+            }
+
+            session.StartStream(OnObservationTick, session, periodMs);
+        }
+
+        private void OnObservationTick(object state)
+        {
+            var session = (ClientSession)state;
+            if (session.IsClosed)
+            {
+                session.StopStream();
+                return;
+            }
+
+            try
+            {
+                if (!SendObservation(session))
+                {
+                    session.StopStream();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke("observation stream stopped after " + ex.GetType().Name);
+                session.StopStream();
+            }
+        }
+
+        private bool SendObservation(ClientSession session)
+        {
+            if (_observations == null)
+            {
+                WriteSessionError(
+                    session,
+                    null,
+                    BridgeErrorCode.Internal,
+                    "no observation source is attached to this bridge");
+                return false;
+            }
+
+            BridgeObservationSnapshot snapshot;
+            try
+            {
+                snapshot = _observations.GetObservation();
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke("observation source failed: " + ex.GetType().Name);
+                WriteSessionError(
+                    session,
+                    null,
+                    BridgeErrorCode.Internal,
+                    "the observation source failed");
+                return false;
+            }
+
+            if (snapshot == null)
+            {
+                WriteSessionError(
+                    session,
+                    null,
+                    BridgeErrorCode.Internal,
+                    "the observation source returned no snapshot");
+                return false;
+            }
+
+            if (!TryWrite(session, seq => BuildObservation(session, snapshot, seq)))
+            {
+                session.Close();
+                return false;
+            }
+
+            return true;
+        }
+
+        private static ObservationMessage BuildObservation(
+            ClientSession session,
+            BridgeObservationSnapshot snapshot,
+            long seq)
+        {
+            return new ObservationMessage
+            {
+                Session = session.Session,
+                Seq = seq,
+                GameS = snapshot.GameS,
+                WallUtc = snapshot.CapturedWallUtc,
+                ClockMode = snapshot.ClockMode,
+                Scene = snapshot.Scene,
+                Playing = snapshot.Playing,
+                Paused = snapshot.Paused,
+                TimeScale = snapshot.TimeScale,
+                Frame = snapshot.Frame,
+                Public = snapshot.Public,
+                Ui = snapshot.Ui,
+                FrameRef = null,
+                ReaderErrors = snapshot.ReaderErrors,
+            };
+        }
+
+        /// <summary>
+        /// Assigns the session's next sequence number and writes the message under the per-session
+        /// write lock, so wire order and seq order agree even with a stream timer running.
+        /// </summary>
+        private bool TryWrite(ClientSession session, Func<long, Envelope> build)
+        {
+            try
+            {
+                lock (session.WriteGate)
+                {
+                    Envelope message = build(session.NextSeq());
+                    session.Connection.WriteLine(BridgeProtocol.Serialize(message));
+                }
+
+                return true;
+            }
+            catch (Exception ex) when (IsWriteFailure(ex))
+            {
+                Log?.Invoke("bridge write failed: " + ex.GetType().Name);
+                return false;
+            }
+        }
+
+        private void WriteSessionError(ClientSession session, long? inReplyTo, string code, string message)
+        {
+            bool written = TryWrite(
+                session,
+                seq => BridgeProtocol.Error(session.Session, seq, code, message, inReplyTo));
+
+            if (!written)
+            {
+                session.Close();
+            }
+        }
+
+        private static bool IsWriteFailure(Exception ex)
+        {
+            return ex is IOException
+                || ex is SocketException
+                || ex is ObjectDisposedException
+                || ex is InvalidOperationException
+                || ex is JsonException;
         }
 
         private static void WriteError(
@@ -355,16 +614,13 @@ namespace Playtest.Bridge.Transport
             connection.WriteLine(BridgeProtocol.Serialize(error));
         }
 
-        private static void Write(ClientSession session, Envelope message)
-        {
-            lock (session.WriteGate)
-            {
-                session.Connection.WriteLine(BridgeProtocol.Serialize(message));
-            }
-        }
-
         private sealed class ClientSession
         {
+            private long _nextSeq = -1;
+            private int _closed;
+            private Timer _timer;
+            private readonly object _streamGate = new object();
+
             public TcpClient Client;
 
             public JsonLineConnection Connection;
@@ -372,6 +628,65 @@ namespace Playtest.Bridge.Transport
             public string Session;
 
             public readonly object WriteGate = new object();
+
+            public bool IsClosed
+            {
+                get { return Volatile.Read(ref _closed) != 0; }
+            }
+
+            public long NextSeq()
+            {
+                return Interlocked.Increment(ref _nextSeq);
+            }
+
+            public void StartStream(TimerCallback callback, object state, int periodMs)
+            {
+                lock (_streamGate)
+                {
+                    StopStreamLocked();
+                    if (IsClosed)
+                    {
+                        return;
+                    }
+
+                    _timer = new Timer(callback, state, periodMs, periodMs);
+                }
+            }
+
+            public void StopStream()
+            {
+                lock (_streamGate)
+                {
+                    StopStreamLocked();
+                }
+            }
+
+            public void Close()
+            {
+                if (Interlocked.Exchange(ref _closed, 1) != 0)
+                {
+                    return;
+                }
+
+                StopStream();
+                try
+                {
+                    Client.Close();
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            private void StopStreamLocked()
+            {
+                Timer timer = _timer;
+                _timer = null;
+                if (timer != null)
+                {
+                    timer.Dispose();
+                }
+            }
         }
     }
 }

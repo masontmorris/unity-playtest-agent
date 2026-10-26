@@ -1,11 +1,14 @@
 <#
 .SYNOPSIS
-Runs the bridge EditMode tests in a Unity project, in batch mode.
+Runs the bridge tests in a Unity project, in batch mode.
 
 .DESCRIPTION
 Validates the project and the selected editor, points UPA_REPO_ROOT at this
 repository, takes the machine-wide bridge test mutex, runs Unity with
--runTests -testPlatform EditMode, then reads the NUnit XML result.
+-runTests -testPlatform <EditMode|PlayMode>, then reads the NUnit XML result.
+
+EditMode is the default. PlayMode enters Play mode in batch mode, which lets a
+test load a scene and measure the running player loop.
 
 The mutex serializes bridge test runs across processes. It is waited for up
 to -MutexTimeoutMinutes (default 15), and a mutex abandoned by a killed run is
@@ -24,18 +27,26 @@ ProjectSettings/ProjectVersion.txt.
 Unity.exe to run. Defaults to $env:UNITY_EDITOR, then
 C:\Program Files\Unity\Hub\Editor\6000.5.4f1\Editor\Unity.exe.
 
+.PARAMETER TestPlatform
+EditMode (the default) or PlayMode. Passed through as Unity's -testPlatform.
+PlayMode starts the player loop, so the PlayMode measurement test can load a
+scene and observe it while it runs. Both platforms use the same result layout,
+mutex and project checks.
+
 .PARAMETER TestFilter
 Passed through as Unity's -testFilter when supplied.
 
 .PARAMETER ResultsPath
 NUnit XML target. Defaults to
-<repo>/runs/bridge-tests/<project>/editmode-results.xml. A relative path is
-resolved against the project. Keep it outside <project>/Temp: Unity clears
-that directory on exit and the result file disappears.
+<repo>/runs/bridge-tests/<project>/<platform>-results.xml, where <platform> is
+editmode or playmode. A relative path is resolved against the project. Keep it
+outside <project>/Temp: Unity clears that directory on exit and the result file
+disappears.
 
 .PARAMETER LogPath
-Unity log target. Defaults to <repo>/runs/bridge-tests/<project>/editmode.log.
-A relative path is resolved against the project.
+Unity log target. Defaults to
+<repo>/runs/bridge-tests/<project>/<platform>.log. A relative path is resolved
+against the project.
 
 .PARAMETER MutexTimeoutMinutes
 How long to wait for another bridge test run. Default 15.
@@ -45,6 +56,9 @@ powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\p
 
 .EXAMPLE
 powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project" -TestFilter "Playtest.Bridge.Tests"
+
+.EXAMPLE
+powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project" -TestPlatform PlayMode
 
 .NOTES
 One Editor per project: close any interactive Editor before running. This
@@ -56,6 +70,9 @@ param(
     [string]$ProjectPath,
 
     [string]$UnityPath,
+
+    [ValidateSet('EditMode', 'PlayMode')]
+    [string]$TestPlatform = 'EditMode',
 
     [string]$TestFilter,
 
@@ -70,11 +87,16 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $DefaultUnityPath = 'C:\Program Files\Unity\Hub\Editor\6000.5.4f1\Editor\Unity.exe'
+# One mutex for every bridge test run, EditMode or PlayMode, because only one Editor may own
+# a project. The name keeps its original spelling so an older run still excludes a newer one.
 $MutexNames = @(
     'Global\unity-playtest-agent-editmode-tests',
     'Local\unity-playtest-agent-editmode-tests'
 )
 $VersionPattern = '^\d+\.\d+\.\d+[abfp]\d+$'
+# ValidateSet matching is case-insensitive; Unity documents the mixed-case spelling.
+if ($TestPlatform -eq 'PlayMode') { $TestPlatform = 'PlayMode' } else { $TestPlatform = 'EditMode' }
+$PlatformSlug = $TestPlatform.ToLowerInvariant()
 $SetupFailure = $false
 
 function Stop-Setup {
@@ -301,7 +323,7 @@ try {
         $testableNames = @($testablesProperty.Value | ForEach-Object { [string]$_ })
     }
     if (-not ($testableNames -contains 'com.playtest.bridge')) {
-        Write-Warning 'Packages/manifest.json does not list com.playtest.bridge in testables; its EditMode tests are not compiled. Run scripts/unity/wire-fpskit.ps1 first.'
+        Write-Warning 'Packages/manifest.json does not list com.playtest.bridge in testables; its test assemblies are not compiled. Run scripts/unity/wire-fpskit.ps1 first.'
     }
 
     if ($MutexTimeoutMinutes -lt 0) {
@@ -310,11 +332,11 @@ try {
 
     if ([string]::IsNullOrWhiteSpace($ResultsPath)) {
         $runDirectory = Join-Path (Join-Path $repoRoot 'runs\bridge-tests') (Split-Path $projectFull -Leaf)
-        $ResultsPath = Join-Path $runDirectory 'editmode-results.xml'
+        $ResultsPath = Join-Path $runDirectory ($PlatformSlug + '-results.xml')
     }
     if ([string]::IsNullOrWhiteSpace($LogPath)) {
         $runDirectory = Join-Path (Join-Path $repoRoot 'runs\bridge-tests') (Split-Path $projectFull -Leaf)
-        $LogPath = Join-Path $runDirectory 'editmode.log'
+        $LogPath = Join-Path $runDirectory ($PlatformSlug + '.log')
     }
     if (-not [IO.Path]::IsPathRooted($ResultsPath)) { $ResultsPath = Join-Path $projectFull $ResultsPath }
     if (-not [IO.Path]::IsPathRooted($LogPath)) { $LogPath = Join-Path $projectFull $LogPath }
@@ -333,6 +355,7 @@ try {
 
     Write-Host "Project:     $projectFull"
     Write-Host "Unity:       $unityFull ($editorFolderVersion)"
+    Write-Host "Platform:    $TestPlatform"
     Write-Host "Repo root:   $repoRoot  (UPA_REPO_ROOT)"
     Write-Host "Results:     $ResultsPath"
     Write-Host "Log:         $LogPath"
@@ -367,7 +390,7 @@ try {
         '-nographics',
         '-projectPath', $projectFull,
         '-runTests',
-        '-testPlatform', 'EditMode',
+        '-testPlatform', $TestPlatform,
         '-testResults', $ResultsPath,
         '-logFile', $LogPath
     )
@@ -407,8 +430,8 @@ try {
         $skippedCount = ConvertTo-Count $results.Skipped
         $resultName = $results.Result
         if ([string]::IsNullOrWhiteSpace($resultName)) { $resultName = 'unknown' }
-        Write-Host ("EditMode tests: {0}  total={1}  passed={2}  failed={3}  skipped={4}" -f `
-                $resultName, (Format-Count $totalCount), (Format-Count $passedCount), (Format-Count $failedCount), (Format-Count $skippedCount))
+        Write-Host ("{0} tests: {1}  total={2}  passed={3}  failed={4}  skipped={5}" -f `
+                $TestPlatform, $resultName, (Format-Count $totalCount), (Format-Count $passedCount), (Format-Count $failedCount), (Format-Count $skippedCount))
 
         if (($null -ne $failedCount) -and $results.Result -eq 'Passed' -and $failedCount -eq 0) {
             if ($null -eq $totalCount) {
@@ -416,11 +439,11 @@ try {
                 $exitCode = 1
             }
             elseif ($totalCount -eq 0) {
-                Write-Host 'FAIL: the run reported zero tests. That is not evidence; check the manifest dependency and testables entry.' -ForegroundColor Red
+                Write-Host ("FAIL: the run reported zero {0} tests. That is not evidence; check the manifest dependency, the testables entry and that the {0} test assembly compiled." -f $TestPlatform) -ForegroundColor Red
                 $exitCode = 1
             }
             else {
-                Write-Host 'PASS: EditMode tests passed.' -ForegroundColor Green
+                Write-Host ("PASS: {0} tests passed." -f $TestPlatform) -ForegroundColor Green
                 $exitCode = 0
             }
         }

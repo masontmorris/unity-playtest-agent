@@ -50,6 +50,16 @@ namespace Playtest.Bridge.Protocol
             "passed", "failed", "unknown",
         };
 
+        public static readonly IReadOnlyList<string> ObserveModes = new[]
+        {
+            "subscribe", "once", "unsubscribe",
+        };
+
+        public static readonly IReadOnlyList<string> ClockModes = new[]
+        {
+            "realtime", "stepped",
+        };
+
         public static string Serialize(Envelope message)
         {
             if (message == null)
@@ -73,6 +83,16 @@ namespace Playtest.Bridge.Protocol
         public static bool TryReadBridgeError(string json, out BridgeErrorMessage message, out ProtocolError error)
         {
             return TryRead(json, "error", out message, out error);
+        }
+
+        public static bool TryReadObserveRequest(string json, out ObserveRequestMessage request, out ProtocolError error)
+        {
+            return TryRead(json, "observe", out request, out error);
+        }
+
+        public static bool TryReadObservation(string json, out ObservationMessage observation, out ProtocolError error)
+        {
+            return TryRead(json, "observation", out observation, out error);
         }
 
         public static bool TryRead<T>(string json, string expectedType, out T message, out ProtocolError error)
@@ -297,6 +317,118 @@ namespace Playtest.Bridge.Protocol
                 {
                     error = Invalid("message is required and must be a string");
                     return false;
+                }
+            }
+            else if (message is ObserveRequestMessage observe)
+            {
+                if (!HasString(obj, "mode") || !Contains(ObserveModes, observe.Mode))
+                {
+                    error = Invalid("mode must be subscribe, once or unsubscribe");
+                    return false;
+                }
+
+                JToken withFrame = obj["with_frame"];
+                if (withFrame != null && withFrame.Type != JTokenType.Boolean)
+                {
+                    error = Invalid("with_frame must be a boolean");
+                    return false;
+                }
+
+                JToken rate = obj["rate_hz"];
+                if (rate != null && rate.Type != JTokenType.Null)
+                {
+                    if (rate.Type != JTokenType.Float && rate.Type != JTokenType.Integer)
+                    {
+                        error = Invalid("rate_hz must be a number or null");
+                        return false;
+                    }
+
+                    double rateHz = (double)rate;
+                    if (rateHz <= 0 || rateHz > 60)
+                    {
+                        error = Invalid("rate_hz must be greater than 0 and at most 60");
+                        return false;
+                    }
+                }
+            }
+            else if (message is ObservationMessage observation)
+            {
+                if (!HasString(obj, "clock_mode") || !Contains(ClockModes, observation.ClockMode))
+                {
+                    error = Invalid("clock_mode must be realtime or stepped");
+                    return false;
+                }
+
+                if (!HasString(obj, "scene") || observation.Scene == null)
+                {
+                    error = Invalid("scene is required and must be a string");
+                    return false;
+                }
+
+                if (obj["playing"]?.Type != JTokenType.Boolean)
+                {
+                    error = Invalid("playing is required and must be a boolean");
+                    return false;
+                }
+
+                if (obj["paused"]?.Type != JTokenType.Boolean)
+                {
+                    error = Invalid("paused is required and must be a boolean");
+                    return false;
+                }
+
+                JToken timeScale = obj["time_scale"];
+                if (timeScale == null || (timeScale.Type != JTokenType.Float && timeScale.Type != JTokenType.Integer) || (double)timeScale < 0)
+                {
+                    error = Invalid("time_scale is required and must be a non-negative number");
+                    return false;
+                }
+
+                JToken frame = obj["frame"];
+                if (frame == null || frame.Type != JTokenType.Integer || (long)frame < 0)
+                {
+                    error = Invalid("frame is required and must be a non-negative integer");
+                    return false;
+                }
+
+                JToken publicToken = obj["public"];
+                if (publicToken != null && publicToken.Type != JTokenType.Null && publicToken.Type != JTokenType.Object)
+                {
+                    error = Invalid("public must be an object or null");
+                    return false;
+                }
+
+                JToken ui = obj["ui"];
+                if (ui != null && ui.Type != JTokenType.Null && ui.Type != JTokenType.Object)
+                {
+                    error = Invalid("ui must be an object or null");
+                    return false;
+                }
+
+                JToken frameRef = obj["frame_ref"];
+                if (frameRef != null && frameRef.Type != JTokenType.Null && frameRef.Type != JTokenType.String)
+                {
+                    error = Invalid("frame_ref must be a string or null");
+                    return false;
+                }
+
+                JToken readerErrors = obj["reader_errors"];
+                if (readerErrors != null && readerErrors.Type != JTokenType.Null)
+                {
+                    if (readerErrors.Type != JTokenType.Array)
+                    {
+                        error = Invalid("reader_errors must be an array");
+                        return false;
+                    }
+
+                    foreach (JToken item in readerErrors.Children())
+                    {
+                        if (item.Type != JTokenType.Object || item["reader"]?.Type != JTokenType.String || item["error"]?.Type != JTokenType.String)
+                        {
+                            error = Invalid("each reader error needs a reader and error string");
+                            return false;
+                        }
+                    }
                 }
             }
 

@@ -12,12 +12,12 @@ Issues #14–#19 build it in layers:
 
 | Layer | Verb | Status |
 |---|---|---|
-| Transport, hello/status, project lock | `hello` | This issue (#14) |
-| Continuous observation stream | `observe` | #15 |
+| Transport, hello/status, project lock | `hello` | Landed (#14) |
+| Continuous observation stream | `observe` | This issue (#15) |
 | Bounded actions, freshness, input leases | `act` | #16 |
-| Capture to an offscreen render target | `capture` (part of `observe`) | #17 |
-| Stop and release verification | `stop` | #18 |
-| Pause, step and time scale | `clock` | #19 |
+| Stop, release verification and clock | `stop`, `clock` | #17 |
+| Capture to an offscreen render target | `frame_ref` (part of `observe`) | #18 |
+| Core skeleton, bridge client, fake game | — | #19 |
 
 ## Layout
 
@@ -68,11 +68,42 @@ pid and port instead of throwing; the message is available as `BridgeEditorHost.
 
 ## Tests
 
+Three layers:
+
+| Layer | What it covers | Command |
+|---|---|---|
+| EditMode | protocol, transport, observations, lock and status | `./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"` |
+| PlayMode | the continuous stream, measured against a running scene | the same command with `-TestPlatform PlayMode` |
+| Unity-free | pure C# transport, seconds, no Editor | `dotnet test bridge/Tests/DotNet~` |
+
 Acceptance (EditMode, run from the test game project):
 
 ```powershell
-./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\FPSKit-bridge-v0"
+./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"
 ```
+
+PlayMode measurement, against the same project and the same `testables` entry:
+
+```powershell
+./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project" -TestPlatform PlayMode
+```
+
+`-TestPlatform` defaults to `EditMode`. `PlayMode` enters Play mode in batch mode and runs one
+test that loads the first enabled scene from the project's Build Settings additively, makes it
+active, starts the loopback server with the Unity sources, then subscribes at 20 Hz and measures
+the stream: 45-75 observations in a 3 s window, a 40-67 ms median interval (Windows timer
+resolution rounds a 50 ms wait to ~62.5 ms in batch mode), no gap over 250 ms,
+observations at most 150 ms old on arrival, strictly increasing `seq`, an advancing `frame`, the
+running scene, `playing`, `time_scale`, a non-null `ui` object and `reader_errors` as an array.
+It then unsubscribes and requires silence apart from at most one in-flight observation. The test
+sends no `stop`; that verb is a later issue. Additive loading keeps the test runner's own scene
+alive, and the scene is unloaded during cleanup. A PlayMode run needs at least one enabled scene
+in Build Settings, and the same one-Editor-at-a-time rule as any other run.
+
+Both suites need `com.playtest.bridge` in the project's `Packages/manifest.json` under
+`testables`; without that entry neither test assembly is compiled or discovered. The PlayMode
+assembly lives in `Tests/PlayMode/` and references only `Playtest.Bridge` plus the test framework,
+so it compiles in the Editor without Editor-only APIs.
 
 Fast transport tests (no Unity, seconds):
 
