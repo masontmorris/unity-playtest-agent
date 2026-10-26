@@ -43,6 +43,8 @@ and no Standard repeat.
     uv run --extra probe python scripts/probes/probe_cache.py --turns --dry-run --yes
     uv run --extra probe python scripts/probes/probe_cache.py --chain --dry-run
     uv run --extra probe python scripts/probes/probe_cache.py --chain --yes
+    uv run --extra probe python scripts/probes/probe_cache.py --schema --dry-run
+    uv run --extra probe python scripts/probes/probe_cache.py --schema --yes
 """
 
 from __future__ import annotations
@@ -87,7 +89,7 @@ TURNS_CALL_BOUND_USD = (TURNS_EST_IN * PRICES[MODEL][0] + TURNS_EST_OUT * PRICES
 # repeat of stage 6. Four calls, $0.02 cap. The per-call bound uses 32k input and 2k output
 # (about $0.0036), so four cold calls plan to $0.0144, inside the cap.
 CHAIN_BUDGET_USD = 0.02
-CHAIN_MAX_ATTEMPTS = 4
+CHAIN_MAX_ATTEMPTS = 5
 CHAIN_EST_IN = 32_000
 CHAIN_EST_OUT = 2_000
 CHAIN_CALL_BOUND_USD = (CHAIN_EST_IN * PRICES[MODEL][0] + CHAIN_EST_OUT * PRICES[MODEL][2]) / 1e6
@@ -97,8 +99,28 @@ CHAIN_HYPOTHESIS = (
     "stage 6 then hits at least 20,000 tokens, showing the miss is shape/schema-specific rather "
     "than global coldness. A stage-5 hit refutes the schema-break explanation."
 )
+CHAIN_CONTROL_HYPOTHESIS = (
+    "With --control, the stage-4 exact repeat should hit at least 20,000 tokens if the session has "
+    "a usable cache. A zero on that control stops the chain: shape or size cannot be interpreted "
+    "without a positive control in the same session."
+)
 CHAIN_REUSE_FLOOR = 20_000
 CHAIN_BREAK_CEILING = 5_000
+
+SCHEMA_BUDGET_USD = 0.015
+SCHEMA_MAX_ATTEMPTS = 3
+SCHEMA_CALL_BOUND_USD = CHAIN_CALL_BOUND_USD
+SCHEMA_HYPOTHESIS = (
+    "If response_format name is part of cache identity, A with only json_schema.name changed to "
+    "stage_readers_alt misses its first send while the next byte-identical send hits. If the "
+    "renamed body hits first, schema name alone does not break reuse."
+)
+SCHEMA_CONTENT_HYPOTHESIS = (
+    "If response_format content is rendered before the messages, adding one optional trailing "
+    "property to the readers schema lowers a first send's cached tokens below 20,000 while its "
+    "exact repeat hits at least 20,000. If the first send still reuses 26,353, this schema-content "
+    "change does not affect the cached prefix."
+)
 
 
 def digest(obj: object) -> str:
@@ -408,12 +430,20 @@ async def turns(api_key: str, shared: str, sch: dict) -> int:
     return 0
 
 
-def chain_finding(rows: dict[str, dict], skipped: list[dict]) -> str:
-    a, t1, t3, t3r = (rows.get(k) for k in ("A", "T1", "T3", "T3r"))
+def chain_finding(rows: dict[str, dict], skipped: list[dict], with_control: bool = False) -> str:
+    a, ar, t1, t3, t3r = (rows.get(k) for k in ("A", "Ar", "T1", "T3", "T3r"))
     if not row_ok(a):
         return "Incomplete: A did not return a usable readers answer."
     if not cache_known(a):
         return "Incomplete for caching: A returned no cached_tokens field; stopped before T1."
+    if with_control:
+        if ar is None or not row_ok(ar):
+            return f"Incomplete: the stage-4 control was not usable ({skip_reason(skipped, 'Ar')})."
+        if not cache_known(ar):
+            return "Control outcome unknown: the stage-4 repeat returned no cached_tokens field."
+        if cache_miss(ar):
+            return ("Control failed: the stage-4 exact repeat cached 0, so this session did not show a usable "
+                    "cache. The chain was stopped; shape or size cannot be interpreted from this run.")
     if t1 is None or not row_ok(t1):
         return f"Incomplete: stage 5 was not usable ({skip_reason(skipped, 'T1')})."
     if not cache_known(t1):
@@ -429,6 +459,10 @@ def chain_finding(rows: dict[str, dict], skipped: list[dict]) -> str:
 
     t1_cached, t3_cached, repeat_cached = (t1["cached_tokens"], t3["cached_tokens"],
                                            t3r["cached_tokens"])
+    control = ""
+    if with_control:
+        control = (f"The stage-4 exact repeat cached {ar['cached_tokens']:,}, so the session cache was "
+                   "available. ")
     if t1_cached <= CHAIN_BREAK_CEILING:
         first = f"Stage-5 append cached {t1_cached:,}; consistent with the schema-break hypothesis."
     elif t1_cached >= CHAIN_REUSE_FLOOR:
@@ -440,13 +474,18 @@ def chain_finding(rows: dict[str, dict], skipped: list[dict]) -> str:
     else:
         second = (f"The stage-6 exact repeat cached {repeat_cached:,}, below the {CHAIN_REUSE_FLOOR:,} floor; "
                   "cache availability is not shown.")
-    return (f"{first} {second} Stage 6 itself cached {t3_cached:,}. This is one chain, one session, one packet, "
-            "contributor/minimal, with the real stage-5/6 schemas; it is not a Standard or production result.")
+    return (f"{control}{first} {second} Stage 6 itself cached {t3_cached:,}. This is one chain, one session, one "
+            "packet, contributor/minimal, with the real stage-5/6 schemas; it is not a Standard or production "
+            "result.")
 
 
 async def run_chain(client: httpx.AsyncClient, api_key: str, shared: str, sch: dict,
-                    controls: list[dict], rec: Recorder) -> dict:
-    """Stage 4 -> 5 -> 6 as append-only turns with the real per-stage schemas, then repeat stage 6."""
+                    controls: list[dict], rec: Recorder, with_control: bool = False) -> dict:
+    """Stage 4 -> 5 -> 6 as append-only turns with the real per-stage schemas, then repeat stage 6.
+
+    With `with_control`, stage 4 is sent twice first. A zero on that repeat stops the chain, because
+    no shape or size inference is valid without a positive cache control in the same session.
+    """
     plain = big_body(shared, sch["readers"])
     ids = readers_field_ids(sch["readers"])
     cids = {c["id"] for c in controls}
@@ -483,9 +522,29 @@ async def run_chain(client: httpx.AsyncClient, api_key: str, shared: str, sch: d
         return row
 
     a = await attempt("A", "A/stage4 readers (cold)", plain, sch["readers"], field_ids=ids)
+    proceed = False
     if not row_ok(a) or not cache_known(a):
         note_skip("T1", "A was not usable with known cache evidence")
+        note_skip("T3", "requires a usable stage 5")
+        note_skip("T3r", "requires a usable stage 6")
+        if with_control:
+            note_skip("Ar", "A was not usable with known cache evidence")
+    elif with_control:
+        ar = await attempt("Ar", "Ar/stage4 exact repeat (control)", plain, sch["readers"], field_ids=ids)
+        if not row_ok(ar) or not cache_known(ar):
+            note_skip("T1", "stage-4 control was not usable with known cache evidence")
+            note_skip("T3", "requires a usable stage 5")
+            note_skip("T3r", "requires a usable stage 6")
+        elif cache_miss(ar):
+            note_skip("T1", "stage-4 control cached 0; session cache unavailable")
+            note_skip("T3", "requires a usable stage 5")
+            note_skip("T3r", "requires a usable stage 6")
+        else:
+            proceed = True
     else:
+        proceed = True
+
+    if proceed:
         t1_body = next_stage(plain, a["assistant_content"], STAGES["actions"], "actions", sch["actions"])
         t1 = await attempt("T1", "T1/stage5 actions (append)", t1_body, sch["actions"], control_id_set=cids)
         if not row_ok(t1) or not cache_known(t1):
@@ -504,16 +563,18 @@ async def run_chain(client: httpx.AsyncClient, api_key: str, shared: str, sch: d
 
     known = [r["est_cost_usd"] for r in rows if isinstance(r.get("est_cost_usd"), (int, float))]
     complete = all(isinstance(r.get("est_cost_usd"), (int, float)) for r in rows)
+    max_attempts = CHAIN_MAX_ATTEMPTS if with_control else CHAIN_MAX_ATTEMPTS - 1
     return {
-        "hypothesis": CHAIN_HYPOTHESIS,
+        "hypothesis": CHAIN_HYPOTHESIS + (" " + CHAIN_CONTROL_HYPOTHESIS if with_control else ""),
+        "with_control": with_control,
         "calls": [{k: v for k, v in r.items() if k != "request"} for r in rows],
-        "finding": chain_finding(by, skipped),
+        "finding": chain_finding(by, skipped, with_control),
         "skipped": skipped,
         "attempts": len(rows),
-        "max_attempts": CHAIN_MAX_ATTEMPTS,
+        "max_attempts": max_attempts,
         "budget_usd": CHAIN_BUDGET_USD,
         "cost_bound_per_call_usd": round(CHAIN_CALL_BOUND_USD, 6),
-        "max_planned_cost_usd": round(CHAIN_MAX_ATTEMPTS * CHAIN_CALL_BOUND_USD, 6),
+        "max_planned_cost_usd": round(max_attempts * CHAIN_CALL_BOUND_USD, 6),
         "total_cost_usd": round(sum(known), 6) if complete else None,
         "known_subtotal_usd": round(sum(known), 6),
         "cost_complete": complete,
@@ -522,11 +583,11 @@ async def run_chain(client: httpx.AsyncClient, api_key: str, shared: str, sch: d
     }
 
 
-async def chain(api_key: str, shared: str, sch: dict, controls: list[dict]) -> int:
+async def chain(api_key: str, shared: str, sch: dict, controls: list[dict], with_control: bool = False) -> int:
     out = run_dir("cache-chain")
     rec = Recorder(out)
     async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-        result = await run_chain(client, api_key, shared, sch, controls, rec)
+        result = await run_chain(client, api_key, shared, sch, controls, rec, with_control)
     (rec.path.parent / "summary.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
     print(f"\nhypothesis: {result['hypothesis']}")
     print(f"\ntotal {fmt_usd(result['total_cost_usd'])} "
@@ -534,6 +595,66 @@ async def chain(api_key: str, shared: str, sch: dict, controls: list[dict]) -> i
           f"{result['max_attempts']} attempts)\n{result['table_markdown']}\n\nfinding: {result['finding']}")
     for item in result["skipped"]:
         print(f"skipped {item['label']}: {item['reason']}")
+    print(f"summary: {rec.path.parent / 'summary.json'}")
+    return 0
+
+
+async def run_schema(api_key: str, shared: str, sch: dict, content: bool = False) -> int:
+    """A, a schema-delta body, then that body repeated. Rename or content-only variant."""
+    plain = big_body(shared, sch["readers"])
+    alt = json.loads(json.dumps(plain))
+    if content:
+        alt["response_format"]["json_schema"]["schema"]["properties"]["note"] = {"type": "string"}
+        alt["response_format"]["json_schema"]["schema"]["required"].append("note")
+    else:
+        alt["response_format"]["json_schema"]["name"] = "stage_readers_alt"
+    ids = readers_field_ids(sch["readers"])
+    variant_schema = alt["response_format"]["json_schema"]["schema"] if content else sch["readers"]
+    out = run_dir("cache-schema-content" if content else "cache-schema")
+    rec = Recorder(out)
+    rows: list[dict] = []
+    spent = 0.0
+    variant = "content-only schema change" if content else "renamed schema"
+    print(f"schema plan: A -> A with {variant} -> exact repeat; "
+          f"3 calls, worst case ${SCHEMA_MAX_ATTEMPTS * SCHEMA_CALL_BOUND_USD:.4f}\n")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        for label, body in (("A/plain", plain), ("S1/variant", alt), ("S2/variant exact repeat", alt)):
+            if len(rows) >= SCHEMA_MAX_ATTEMPTS or spent + SCHEMA_CALL_BOUND_USD > SCHEMA_BUDGET_USD:
+                break
+            row, cost, _ = await call(client, api_key, body, sch["readers"] if label == "A/plain" else variant_schema,
+                                      rec, label, field_ids=ids, attempt=len(rows) + 1)
+            rows.append(row)
+            spent += cost or 0
+            if row.get("problem") is not None:
+                break
+    by = {r["label"].split("/")[0]: r for r in rows}
+    if not row_ok(by.get("A")) or not cache_known(by.get("A")):
+        finding = "Incomplete: the plain A control did not return usable cache evidence."
+    elif cache_miss(by["A"]):
+        finding = "Inconclusive: plain A itself missed, so the session cache was not available."
+    elif by.get("S1") is None or not row_ok(by["S1"]) or not cache_known(by["S1"]):
+        finding = "Incomplete: the schema-variant first send is missing or unusable."
+    elif cache_miss(by["S1"]) or (content and by["S1"]["cached_tokens"] < CHAIN_REUSE_FLOOR):
+        if by.get("S2") is not None and cache_known(by["S2"]) and cache_hit(by["S2"]):
+            finding = (f"The {variant} lowered reuse on first send to {by['S1']['cached_tokens']:,} cached "
+                       f"tokens, and its exact repeat hit {by['S2']['cached_tokens']:,}. response_format "
+                       "content is part of the cache condition.")
+        else:
+            finding = (f"The {variant} preceded reduced reuse, but the exact repeat did not hit; "
+                       "cache availability is not shown.")
+    elif content:
+        finding = (f"An optional trailing schema property still reused {by['S1']['cached_tokens']:,} tokens; "
+                   "this content change does not break the cached prefix.")
+    else:
+        finding = (f"A renamed json_schema still reused {by['S1']['cached_tokens']:,} tokens, so schema name "
+                   "alone does not break reuse.")
+    result = {"hypothesis": SCHEMA_CONTENT_HYPOTHESIS if content else SCHEMA_HYPOTHESIS,
+              "calls": [{k: v for k, v in r.items() if k != "request"} for r in rows],
+              "finding": finding, "attempts": len(rows), "total_cost_usd": round(spent, 6),
+              "raw": str(rec.path), "table_markdown": turns_table(rows)}
+    (rec.path.parent / "summary.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
+    print(f"hypothesis: {result['hypothesis']}\n")
+    print(f"total {fmt_usd(result['total_cost_usd'])}\n{result['table_markdown']}\n\nfinding: {finding}")
     print(f"summary: {rec.path.parent / 'summary.json'}")
     return 0
 
@@ -818,6 +939,9 @@ async def main() -> int:
     ap.add_argument("--phase3", action="store_true", help="never-sent body with a warm prefix, then repeated")
     ap.add_argument("--turns", action="store_true", help="append a turn to the previous request, as a harness does")
     ap.add_argument("--chain", action="store_true", help="stage 4-5-6 append chain with real schemas, then repeat stage 6")
+    ap.add_argument("--control", action="store_true", help="with --chain, send stage 4 twice first and stop if its repeat misses")
+    ap.add_argument("--schema", action="store_true", help="isolate json_schema name: plain, renamed, renamed repeat")
+    ap.add_argument("--schema-content", action="store_true", help="isolate json_schema content with same name")
     ap.add_argument("--yes", action="store_true", help="confirm the estimated cost and make the calls")
     args = ap.parse_args()
     if not PROJECT.is_dir():
@@ -842,14 +966,44 @@ async def main() -> int:
             print("META_API_KEY is not set")
             return 1
         return await phase3(api_key, shared, sch)
+    if args.schema or args.schema_content:
+        plain = big_body(shared, sch["readers"])
+        alt = json.loads(json.dumps(plain))
+        if args.schema_content:
+            alt["response_format"]["json_schema"]["schema"]["properties"]["note"] = {"type": "string"}
+            alt["response_format"]["json_schema"]["schema"]["required"].append("note")
+            variant = "content-only schema change"
+            hypothesis = SCHEMA_CONTENT_HYPOTHESIS
+        else:
+            alt["response_format"]["json_schema"]["name"] = "stage_readers_alt"
+            variant = "renamed schema"
+            hypothesis = SCHEMA_HYPOTHESIS
+        print(f"schema plan: plain A -> A with {variant} -> exact variant repeat.")
+        print(f"  envelope: at most {SCHEMA_MAX_ATTEMPTS} calls, ${SCHEMA_CALL_BOUND_USD:.4f}/call bound, "
+              f"cap ${SCHEMA_BUDGET_USD:.2f}")
+        print(f"  hypothesis: {hypothesis}")
+        print(f"  plain messages {digest(plain['messages'])[:12]} format {digest(plain['response_format'])[:12]}")
+        print(f"  variant messages {digest(alt['messages'])[:12]} format {digest(alt['response_format'])[:12]}")
+        if args.dry_run or not args.yes:
+            print("\ndry run: no call, no key read" if args.dry_run else "\npass --yes to spend")
+            return 0
+        api_key = env("META_API_KEY")
+        if not api_key:
+            print("META_API_KEY is not set")
+            return 1
+        return await run_schema(api_key, shared, sch, args.schema_content)
     if args.chain:
         plain = big_body(shared, sch["readers"])
-        print("chain plan: A stage-4 readers -> T1 stage-5 actions (append A's actual answer) -> "
+        control = "A stage-4 readers twice (positive control) -> " if args.control else "A stage-4 readers -> "
+        print(f"chain plan: {control}T1 stage-5 actions (append A's actual answer) -> "
               "T3 stage-6 progress (append T1's actual answer) -> T3r exact repeat of T3.")
-        print(f"  envelope: at most {CHAIN_MAX_ATTEMPTS} calls, ${CHAIN_CALL_BOUND_USD:.4f}/call planning bound "
+        max_calls = CHAIN_MAX_ATTEMPTS if args.control else CHAIN_MAX_ATTEMPTS - 1
+        print(f"  envelope: at most {max_calls} calls, ${CHAIN_CALL_BOUND_USD:.4f}/call planning bound "
               f"({CHAIN_EST_IN:,} input + {CHAIN_EST_OUT:,} output tokens), max "
-              f"${CHAIN_MAX_ATTEMPTS * CHAIN_CALL_BOUND_USD:.4f} against the ${CHAIN_BUDGET_USD:.2f} budget")
+              f"${max_calls * CHAIN_CALL_BOUND_USD:.4f} against the ${CHAIN_BUDGET_USD:.2f} budget")
         print(f"  hypothesis: {CHAIN_HYPOTHESIS}")
+        if args.control:
+            print(f"  control: {CHAIN_CONTROL_HYPOTHESIS}")
         print(f"  A messages {digest(plain['messages'])[:12]}  format {digest(plain['response_format'])[:12]}")
         if args.dry_run or not args.yes:
             print("\ndry run: no call, no key read" if args.dry_run else "\npass --yes to spend")
@@ -858,7 +1012,7 @@ async def main() -> int:
         if not api_key:
             print("META_API_KEY is not set")
             return 1
-        return await chain(api_key, shared, sch, controls)
+        return await chain(api_key, shared, sch, controls, args.control)
     if args.turns:
         plain = big_body(shared, sch["readers"])
         print("turns plan: A (26.4k plain), then T1 = A's actual assistant content + one user turn, "
