@@ -10,9 +10,10 @@ Model stages, chained as the real preflight will be:
   6 progress/invariants/gaps, given the stage 4 and 5 answers
 
 Every stage sends the same system prompt and the same code block first, with the stage's
-instructions last. That does not buy a cache hit: Muse reuses only an identical request body,
-so stages 5 and 6 each pay for the whole project (#70). The chain runs at reasoning_effort
-minimal and low; stage 4 also runs once on Standard mode for comparison.
+instructions last. The tested staged bodies got no cache reuse, so this chain budgets each stage
+at full input cost. A separate append-only probe reused a large prefix once and missed on a
+second append; whether an append-only chain is reliably cheaper is unmeasured (#70). The chain
+runs at reasoning_effort minimal and low; stage 4 also runs once on Standard mode for comparison.
 
     uv run --extra probe python scripts/probes/probe_preflight_full.py <exported-project-dir> [--model M]
 """
