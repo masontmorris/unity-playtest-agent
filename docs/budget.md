@@ -13,7 +13,21 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007) | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
 | Frontier call | Muse Spark 1.3, `low` or default effort | $0.018–0.029 (median about $0.024) | Same |
 | Clip in a frontier call | Muse Spark 1.3 | about $0.0013 per 4 s at 640×360, 10 fps | 1,056 extra input tokens |
-| Preflight stage 4–6 choice | Muse Spark 1.3 | $0.021 (`minimal`) to $0.025 (`low`) for about 13k tokens of code | One call per stage; cached per project |
+| Preflight call, full project | Muse Spark 1.3 (Standard) | $0.037–0.043 for 26k input tokens | Measured tokens × list price, no cache |
+| Preflight call, full project | `muse-spark-1.3-contributor` | $0.0028–0.0032 for the same tokens | Fixtures only: Meta may train on the prompts |
+
+## Preflight per project
+
+Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input tokens for 26 scripts and 224 fields.
+
+| Case | Three stages | Basis |
+|---|---|---|
+| Contributor, `minimal` | $0.0090, 33.5 s | Measured |
+| Contributor, `low` | $0.0093, 50.3 s | Measured |
+| Standard, `minimal`, no cache | $0.119 | Projected from measured tokens |
+| Standard, `minimal`, full prefix cache | $0.029 | Projected; not observed at this size |
+
+No call in the probe hit the prefix cache, so the no-cache case is the planning figure. Preflight runs once per project; the manifest cache (#28) is meant to make later runs free, and does not exist yet.
 
 ## A 10-minute real-time run
 
@@ -22,6 +36,8 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | S1 turns (0.7–1.6 decisions/s) | 400–1,000 | $0.02–0.06 on d1.1 with frames; $0 on Baseten during the trial |
 | Frontier calls at `minimal` | ≤ 30 | ≤ $0.30 (at most $0.48 if every call carries a large packet) |
 | **Total** | | **about $0.15–0.35** |
+
+The first run on a new project also pays the one-off preflight above.
 
 The frontier count is set by latency, not policy. With one pending request at a time and about 6 s per `minimal` call, a 10-minute run could make up to about 100 calls back to back. 30 is a planning figure, because S1 decides when to escalate. Escalation frequency stays S1's choice (law 2). Spend is watched, never capped by suppressing escalation.
 
@@ -32,7 +48,7 @@ The frontier count is set by latency, not policy. With one pending request at a 
 | Meta Model API | $150 | Received |
 | Baseten | $100 | Requested, no response |
 | Modal | $100 | Requested, no response |
-| Spent so far | $0.221 | Day 1 probes: Meta $0.220, Liquid $0.0011 |
+| Spent so far | $0.276 | Day 1 probes: Meta $0.275, including $0.055 for the full-load preflight; Liquid $0.0011 |
 
 ## Rules
 
