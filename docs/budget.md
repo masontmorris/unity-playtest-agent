@@ -27,7 +27,7 @@ Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input 
 | Standard, `minimal`, no cache | $0.119 | Projected from measured tokens; the planning figure |
 | Standard, `minimal`, all stage input cached | $0.029 | Projected; not measured for the current chain or an append-only chain (#70) |
 
-Exact 26.4k repeats and one append-only request reported large cached prefixes; a second append missed. No complete staged or append-only chain has demonstrated cache savings, and no Standard cache run was made, so the $0.119 no-cache figure remains the planning basis. The manifest cache (#28) is a design proposal for avoiding a repeat preflight, not implemented or measured.
+Exact 26.4k repeats and one append-only request reported large cached prefixes; a second append missed. A later real-schema chain got 0 cached on all four calls, including an exact repeat at 29,218 tokens. No complete staged or append-only chain has demonstrated cache savings, and no Standard cache run was made, so the $0.119 no-cache figure remains the planning basis. The manifest cache (#28) is a design proposal for avoiding a repeat preflight, not implemented or measured.
 
 ## A 10-minute real-time run
 
@@ -48,7 +48,7 @@ The frontier count is set by latency, not policy. With one pending request at a 
 | Meta Model API | $150 | Received |
 | Baseten | $100 | Requested, no response |
 | Modal | $100 | Requested, no response |
-| Spent so far | $0.299 | Day 1 probes: Meta $0.298, including $0.055 for the full-load preflight and $0.024 for #70 (21 calls); Liquid $0.0011 |
+| Spent so far | $0.311 | Day 1 probes: Meta $0.310, including $0.055 for the full-load preflight and $0.036 for #70 (25 calls); Liquid $0.0011 |
 
 ## Rules
 

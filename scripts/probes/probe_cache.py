@@ -31,12 +31,18 @@ per-call planning bound (29k input + 2k output), so four cold calls fit at about
 repair; a transport, HTTP, JSON, schema, reference, model or usage failure stops dependent
 spend and is still recorded.
 
+`--chain` runs stage 4, stage 5 and stage 6 as append-only turns with their real per-stage schemas
+(readers, actions, progress), then repeats stage 6 exactly. It is a four-call, $0.02-capped test
+of a pre-registered hypothesis, not a production chain: contributor/`minimal` only, one packet,
+and no Standard repeat.
+
     uv run --extra probe python scripts/probes/probe_cache.py --dry-run
     uv run --extra probe python scripts/probes/probe_cache.py --yes
     uv run --extra probe python scripts/probes/probe_cache.py --phase2 --yes
     uv run --extra probe python scripts/probes/probe_cache.py --phase3 --yes
     uv run --extra probe python scripts/probes/probe_cache.py --turns --dry-run --yes
-    uv run --extra probe python scripts/probes/probe_cache.py --turns --yes
+    uv run --extra probe python scripts/probes/probe_cache.py --chain --dry-run
+    uv run --extra probe python scripts/probes/probe_cache.py --chain --yes
 """
 
 from __future__ import annotations
@@ -76,6 +82,23 @@ TURNS_MAX_ATTEMPTS = 4
 TURNS_EST_IN = 29_000
 TURNS_EST_OUT = 2_000
 TURNS_CALL_BOUND_USD = (TURNS_EST_IN * PRICES[MODEL][0] + TURNS_EST_OUT * PRICES[MODEL][2]) / 1e6
+
+# --chain pre-registered test: stage 4 -> 5 -> 6 with their real per-stage schemas, then an exact
+# repeat of stage 6. Four calls, $0.02 cap. The per-call bound uses 32k input and 2k output
+# (about $0.0036), so four cold calls plan to $0.0144, inside the cap.
+CHAIN_BUDGET_USD = 0.02
+CHAIN_MAX_ATTEMPTS = 4
+CHAIN_EST_IN = 32_000
+CHAIN_EST_OUT = 2_000
+CHAIN_CALL_BOUND_USD = (CHAIN_EST_IN * PRICES[MODEL][0] + CHAIN_EST_OUT * PRICES[MODEL][2]) / 1e6
+CHAIN_HYPOTHESIS = (
+    "Changing response_format from stage_readers to stage_actions breaks reuse even with clean "
+    "message appends, so stage 5 caches under 5,000 tokens and stage 6 misses. An exact repeat of "
+    "stage 6 then hits at least 20,000 tokens, showing the miss is shape/schema-specific rather "
+    "than global coldness. A stage-5 hit refutes the schema-break explanation."
+)
+CHAIN_REUSE_FLOOR = 20_000
+CHAIN_BREAK_CEILING = 5_000
 
 
 def digest(obj: object) -> str:
@@ -136,6 +159,23 @@ def appended(body: dict, *turns: dict) -> dict:
 def assistant_turn(content: str) -> dict:
     """A turn carrying the exact assistant content string, not a re-serialized answer."""
     return {"role": "assistant", "content": content}
+
+
+def next_stage(previous: dict, assistant_content: str, user: str, stage: str, schema: dict) -> dict:
+    """Append one assistant answer and one user turn, and switch to that stage's real schema."""
+    body = json.loads(json.dumps(previous))
+    body["messages"] = [*body["messages"], assistant_turn(assistant_content),
+                        {"role": "user", "content": user}]
+    body["response_format"] = {"type": "json_schema",
+                               "json_schema": {"name": f"stage_{stage}", "strict": True, "schema": schema}}
+    return body
+
+
+def control_ids(schema: dict) -> set[str]:
+    try:
+        return set(schema["properties"]["actions"]["items"]["properties"]["control_id"]["enum"])
+    except (KeyError, TypeError):
+        return set()
 
 
 def readers_field_ids(schema: dict) -> set[str]:
@@ -368,8 +408,139 @@ async def turns(api_key: str, shared: str, sch: dict) -> int:
     return 0
 
 
+def chain_finding(rows: dict[str, dict], skipped: list[dict]) -> str:
+    a, t1, t3, t3r = (rows.get(k) for k in ("A", "T1", "T3", "T3r"))
+    if not row_ok(a):
+        return "Incomplete: A did not return a usable readers answer."
+    if not cache_known(a):
+        return "Incomplete for caching: A returned no cached_tokens field; stopped before T1."
+    if t1 is None or not row_ok(t1):
+        return f"Incomplete: stage 5 was not usable ({skip_reason(skipped, 'T1')})."
+    if not cache_known(t1):
+        return "Append outcome unknown: stage 5 returned no cached_tokens field."
+    if t3 is None or not row_ok(t3):
+        return f"Incomplete: stage 6 was not usable ({skip_reason(skipped, 'T3')})."
+    if not cache_known(t3):
+        return "Stage-6 cache outcome unknown: no cached_tokens field."
+    if t3r is None:
+        return f"Incomplete: the stage-6 repeat was not attempted ({skip_reason(skipped, 'T3r')})."
+    if not cache_known(t3r):
+        return "Stage-6 repeat returned no cached_tokens field; cache availability unknown."
+
+    t1_cached, t3_cached, repeat_cached = (t1["cached_tokens"], t3["cached_tokens"],
+                                           t3r["cached_tokens"])
+    if t1_cached <= CHAIN_BREAK_CEILING:
+        first = f"Stage-5 append cached {t1_cached:,}; consistent with the schema-break hypothesis."
+    elif t1_cached >= CHAIN_REUSE_FLOOR:
+        first = f"Stage-5 append cached {t1_cached:,}; refutes the schema-break hypothesis."
+    else:
+        first = f"Stage-5 append cached {t1_cached:,}; between the stated bounds, inconclusive."
+    if repeat_cached >= CHAIN_REUSE_FLOOR:
+        second = f"The stage-6 exact repeat cached {repeat_cached:,}, so the cache was available at that point."
+    else:
+        second = (f"The stage-6 exact repeat cached {repeat_cached:,}, below the {CHAIN_REUSE_FLOOR:,} floor; "
+                  "cache availability is not shown.")
+    return (f"{first} {second} Stage 6 itself cached {t3_cached:,}. This is one chain, one session, one packet, "
+            "contributor/minimal, with the real stage-5/6 schemas; it is not a Standard or production result.")
+
+
+async def run_chain(client: httpx.AsyncClient, api_key: str, shared: str, sch: dict,
+                    controls: list[dict], rec: Recorder) -> dict:
+    """Stage 4 -> 5 -> 6 as append-only turns with the real per-stage schemas, then repeat stage 6."""
+    plain = big_body(shared, sch["readers"])
+    ids = readers_field_ids(sch["readers"])
+    cids = {c["id"] for c in controls}
+    progress_user = STAGES["progress"].replace("below", "above")
+    rows: list[dict] = []
+    by: dict[str, dict] = {}
+    skipped: list[dict] = []
+    spent: float | None = 0.0
+
+    def note_skip(label: str, reason: str) -> None:
+        if not any(item["label"].startswith(label) for item in skipped):
+            skipped.append({"label": label, "reason": reason})
+
+    async def attempt(key: str, label: str, body: dict, schema: dict, *,
+                      field_ids: set[str] | None = None,
+                      control_id_set: set[str] | None = None) -> dict | None:
+        nonlocal spent
+        if len(rows) >= CHAIN_MAX_ATTEMPTS:
+            note_skip(key, f"attempt cap {CHAIN_MAX_ATTEMPTS} reached")
+            return None
+        if spent is None:
+            note_skip(key, "a prior call has unknown cost; cannot bound spend")
+            return None
+        if spent + CHAIN_CALL_BOUND_USD > CHAIN_BUDGET_USD:
+            note_skip(key, f"planning bound ${spent + CHAIN_CALL_BOUND_USD:.4f} would exceed "
+                           f"${CHAIN_BUDGET_USD:.2f}")
+            return None
+        row, cost, _ = await call(client, api_key, body, schema, rec, label,
+                                  field_ids=field_ids, control_id_set=control_id_set,
+                                  attempt=len(rows) + 1)
+        rows.append(row)
+        by[key] = row
+        spent = add_cost(spent, cost)
+        return row
+
+    a = await attempt("A", "A/stage4 readers (cold)", plain, sch["readers"], field_ids=ids)
+    if not row_ok(a) or not cache_known(a):
+        note_skip("T1", "A was not usable with known cache evidence")
+    else:
+        t1_body = next_stage(plain, a["assistant_content"], STAGES["actions"], "actions", sch["actions"])
+        t1 = await attempt("T1", "T1/stage5 actions (append)", t1_body, sch["actions"], control_id_set=cids)
+        if not row_ok(t1) or not cache_known(t1):
+            note_skip("T3", "stage 5 was not usable with known cache evidence")
+            note_skip("T3r", "requires a usable stage 6")
+        else:
+            t3_body = next_stage(t1["request"], t1["assistant_content"], progress_user,
+                                 "progress", sch["progress"])
+            t3 = await attempt("T3", "T3/stage6 progress (second append)", t3_body, sch["progress"],
+                               field_ids=ids)
+            if not row_ok(t3) or not cache_known(t3):
+                note_skip("T3r", "stage 6 was not usable with known cache evidence")
+            else:
+                t3r_body = json.loads(json.dumps(t3["request"]))
+                await attempt("T3r", "T3r/stage6 exact repeat", t3r_body, sch["progress"], field_ids=ids)
+
+    known = [r["est_cost_usd"] for r in rows if isinstance(r.get("est_cost_usd"), (int, float))]
+    complete = all(isinstance(r.get("est_cost_usd"), (int, float)) for r in rows)
+    return {
+        "hypothesis": CHAIN_HYPOTHESIS,
+        "calls": [{k: v for k, v in r.items() if k != "request"} for r in rows],
+        "finding": chain_finding(by, skipped),
+        "skipped": skipped,
+        "attempts": len(rows),
+        "max_attempts": CHAIN_MAX_ATTEMPTS,
+        "budget_usd": CHAIN_BUDGET_USD,
+        "cost_bound_per_call_usd": round(CHAIN_CALL_BOUND_USD, 6),
+        "max_planned_cost_usd": round(CHAIN_MAX_ATTEMPTS * CHAIN_CALL_BOUND_USD, 6),
+        "total_cost_usd": round(sum(known), 6) if complete else None,
+        "known_subtotal_usd": round(sum(known), 6),
+        "cost_complete": complete,
+        "raw": str(rec.path),
+        "table_markdown": turns_table(rows),
+    }
+
+
+async def chain(api_key: str, shared: str, sch: dict, controls: list[dict]) -> int:
+    out = run_dir("cache-chain")
+    rec = Recorder(out)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        result = await run_chain(client, api_key, shared, sch, controls, rec)
+    (rec.path.parent / "summary.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
+    print(f"\nhypothesis: {result['hypothesis']}")
+    print(f"\ntotal {fmt_usd(result['total_cost_usd'])} "
+          f"(known subtotal {fmt_usd(result['known_subtotal_usd'])}, {result['attempts']}/"
+          f"{result['max_attempts']} attempts)\n{result['table_markdown']}\n\nfinding: {result['finding']}")
+    for item in result["skipped"]:
+        print(f"skipped {item['label']}: {item['reason']}")
+    print(f"summary: {rec.path.parent / 'summary.json'}")
+    return 0
+
+
 async def call(client: httpx.AsyncClient, api_key: str, body: dict, schema: dict, rec: Recorder,
                label: str, *, field_ids: set[str] | None = None,
+               control_id_set: set[str] | None = None,
                attempt: int | None = None) -> tuple[dict, float | None, int | None]:
     """One POST, one recorded row. No retry, repair or model switch.
 
@@ -432,12 +603,24 @@ async def call(client: httpx.AsyncClient, api_key: str, body: dict, schema: dict
                     jsonschema.validate(parsed, schema)
                 except (ValueError, jsonschema.ValidationError) as exc:
                     problem = f"invalid structured output: {str(exc)[:200]}"
-            if problem is None and field_ids is not None:
-                chosen = ([x.get("field_id") for x in parsed.get("readers", []) if isinstance(x, dict)]
-                          if isinstance(parsed, dict) else [])
-                unknown = sorted({str(i) for i in chosen if i not in field_ids})
-                if unknown:
-                    problem = f"unknown field id(s): {', '.join(unknown)[:120]}"
+            if problem is None and isinstance(parsed, dict):
+                if field_ids is not None:
+                    chosen = [x.get("field_id") for x in parsed.get("readers", []) if isinstance(x, dict)]
+                    chosen += [x for x in parsed.get("progress_fields", []) if isinstance(x, str)]
+                    for inv in parsed.get("invariants", []):
+                        if isinstance(inv, dict):
+                            chosen += [x for x in inv.get("field_ids", []) if isinstance(x, str)]
+                    unknown = sorted({str(i) for i in chosen if i not in field_ids})
+                    if unknown:
+                        problem = f"unknown field id(s): {', '.join(unknown)[:120]}"
+                if problem is None and control_id_set is not None:
+                    chosen = [x.get("control_id") for x in parsed.get("actions", []) if isinstance(x, dict)]
+                    for skill in parsed.get("skills", []):
+                        if isinstance(skill, dict):
+                            chosen += [x.get("control_id") for x in skill.get("steps", []) if isinstance(x, dict)]
+                    unknown = sorted({str(i) for i in chosen if i not in control_id_set})
+                    if unknown:
+                        problem = f"unknown control id(s): {', '.join(unknown)[:120]}"
             usage = data.get("usage")
             if not isinstance(usage, dict):
                 problem = problem or "response omitted usage"
@@ -634,6 +817,7 @@ async def main() -> int:
     ap.add_argument("--phase2", action="store_true", help="re-check the misses and the 1.7k tail question")
     ap.add_argument("--phase3", action="store_true", help="never-sent body with a warm prefix, then repeated")
     ap.add_argument("--turns", action="store_true", help="append a turn to the previous request, as a harness does")
+    ap.add_argument("--chain", action="store_true", help="stage 4-5-6 append chain with real schemas, then repeat stage 6")
     ap.add_argument("--yes", action="store_true", help="confirm the estimated cost and make the calls")
     args = ap.parse_args()
     if not PROJECT.is_dir():
@@ -658,6 +842,23 @@ async def main() -> int:
             print("META_API_KEY is not set")
             return 1
         return await phase3(api_key, shared, sch)
+    if args.chain:
+        plain = big_body(shared, sch["readers"])
+        print("chain plan: A stage-4 readers -> T1 stage-5 actions (append A's actual answer) -> "
+              "T3 stage-6 progress (append T1's actual answer) -> T3r exact repeat of T3.")
+        print(f"  envelope: at most {CHAIN_MAX_ATTEMPTS} calls, ${CHAIN_CALL_BOUND_USD:.4f}/call planning bound "
+              f"({CHAIN_EST_IN:,} input + {CHAIN_EST_OUT:,} output tokens), max "
+              f"${CHAIN_MAX_ATTEMPTS * CHAIN_CALL_BOUND_USD:.4f} against the ${CHAIN_BUDGET_USD:.2f} budget")
+        print(f"  hypothesis: {CHAIN_HYPOTHESIS}")
+        print(f"  A messages {digest(plain['messages'])[:12]}  format {digest(plain['response_format'])[:12]}")
+        if args.dry_run or not args.yes:
+            print("\ndry run: no call, no key read" if args.dry_run else "\npass --yes to spend")
+            return 0
+        api_key = env("META_API_KEY")
+        if not api_key:
+            print("META_API_KEY is not set")
+            return 1
+        return await chain(api_key, shared, sch, controls)
     if args.turns:
         plain = big_body(shared, sch["readers"])
         print("turns plan: A (26.4k plain), then T1 = A's actual assistant content + one user turn, "
