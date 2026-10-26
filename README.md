@@ -26,4 +26,4 @@ The agent is tested on third-party open-source Unity games. Their code is not pa
 
 ## License
 
-Not chosen yet.
+[GNU Affero General Public License v3.0](LICENSE).
