@@ -14,6 +14,7 @@ This repository contains no third-party code or assets. Dependencies are referen
 | [jsonschema](https://github.com/python-jsonschema/jsonschema) | Exported-schema tests (dev) | MIT |
 | [gitleaks](https://github.com/gitleaks/gitleaks) | Secret scan in CI and pre-commit (dev tool) | MIT |
 | [pre-commit](https://github.com/pre-commit/pre-commit) | Local hooks (dev tool) | MIT |
+| [FFmpeg](https://ffmpeg.org/) | Generates synthetic test-pattern frames and clips for the model probes (external dev tool, not distributed) | LGPL-2.1+ / GPL-2.0+ depending on build |
 
 ## Test games
 
