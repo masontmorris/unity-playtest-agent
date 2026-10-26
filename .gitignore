@@ -26,3 +26,6 @@ runs/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local planning docs (not part of the Submission)
+docs/build-bible.md
