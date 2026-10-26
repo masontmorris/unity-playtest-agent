@@ -1,0 +1,8 @@
+{
+  "finding_id": "f5",
+  "state": "candidate",
+  "title": "x",
+  "expected": "a",
+  "expected_source": "interpretation",
+  "actual": "b"
+}

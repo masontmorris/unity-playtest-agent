@@ -1,0 +1,84 @@
+{
+  "$id": "upa/bridge_error.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "enum": [
+        "auth",
+        "busy",
+        "protocol",
+        "invalid",
+        "internal"
+      ],
+      "title": "Code",
+      "type": "string"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "in_reply_to": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "In Reply To"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "type": {
+      "const": "error",
+      "default": "error",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "code",
+    "message"
+  ],
+  "title": "BridgeError",
+  "type": "object"
+}

@@ -1,0 +1,20 @@
+{
+  "protocol": "upa/0",
+  "session": "s-1",
+  "seq": 1842,
+  "game_s": 61.25,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "status",
+  "bridge_version": "0.0.1",
+  "unity_version": "6000.5.4f1",
+  "project": "Example",
+  "input_backends": [
+    "gamepad_magic"
+  ],
+  "clock_control": true,
+  "capture": true,
+  "capture_self_test": "passed",
+  "lock": {
+    "held": true
+  }
+}

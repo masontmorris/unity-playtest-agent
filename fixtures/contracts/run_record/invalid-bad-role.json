@@ -1,0 +1,16 @@
+{
+  "type": "run",
+  "run_id": "r-1",
+  "game_project": "Example",
+  "clock_mode": "realtime",
+  "models": [
+    {
+      "role": "boss",
+      "provider": "x",
+      "model": "y"
+    }
+  ],
+  "objective": "x",
+  "budget": {},
+  "core_version": "0.0.1"
+}

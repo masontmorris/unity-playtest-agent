@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "Budget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_frontier_calls": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Frontier Calls"
+        },
+        "max_usd": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Usd"
+        },
+        "max_wall_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Wall S"
+        }
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "ClockMode": {
+      "enum": [
+        "realtime",
+        "stepped"
+      ],
+      "title": "ClockMode",
+      "type": "string"
+    },
+    "ModelRef": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "prompt_hash": {
+          "default": "unknown",
+          "title": "Prompt Hash",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "resolved_model": {
+          "default": "unknown",
+          "title": "Resolved Model",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "s1",
+            "frontier",
+            "preflight",
+            "video_judge",
+            "auditor"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "provider",
+        "model"
+      ],
+      "title": "ModelRef",
+      "type": "object"
+    }
+  },
+  "$id": "upa/run_record.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Written first by every run. Values nobody measured are the string 'unknown', never guessed.",
+  "properties": {
+    "bridge_version": {
+      "default": "unknown",
+      "title": "Bridge Version",
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "clock_mode": {
+      "$ref": "#/$defs/ClockMode"
+    },
+    "core_version": {
+      "title": "Core Version",
+      "type": "string"
+    },
+    "game_commit": {
+      "default": "unknown",
+      "title": "Game Commit",
+      "type": "string"
+    },
+    "game_project": {
+      "title": "Game Project",
+      "type": "string"
+    },
+    "input_mode": {
+      "default": "unknown",
+      "title": "Input Mode",
+      "type": "string"
+    },
+    "manifest_fingerprint": {
+      "default": "unknown",
+      "title": "Manifest Fingerprint",
+      "type": "string"
+    },
+    "models": {
+      "items": {
+        "$ref": "#/$defs/ModelRef"
+      },
+      "title": "Models",
+      "type": "array"
+    },
+    "objective": {
+      "minLength": 1,
+      "title": "Objective",
+      "type": "string"
+    },
+    "reset_method": {
+      "default": "unknown",
+      "title": "Reset Method",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "scene": {
+      "default": "unknown",
+      "title": "Scene",
+      "type": "string"
+    },
+    "type": {
+      "const": "run",
+      "default": "run",
+      "title": "Type",
+      "type": "string"
+    },
+    "unity_version": {
+      "default": "unknown",
+      "title": "Unity Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "game_project",
+    "clock_mode",
+    "models",
+    "objective",
+    "budget",
+    "core_version"
+  ],
+  "title": "RunRecord",
+  "type": "object"
+}

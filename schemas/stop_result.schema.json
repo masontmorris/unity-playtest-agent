@@ -1,0 +1,69 @@
+{
+  "$id": "upa/stop_result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "release_verified": {
+      "title": "Release Verified",
+      "type": "boolean"
+    },
+    "released": {
+      "description": "Inputs released",
+      "items": {
+        "type": "string"
+      },
+      "title": "Released",
+      "type": "array"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "type": {
+      "const": "stopped",
+      "default": "stopped",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "released",
+    "release_verified"
+  ],
+  "title": "StopResult",
+  "type": "object"
+}

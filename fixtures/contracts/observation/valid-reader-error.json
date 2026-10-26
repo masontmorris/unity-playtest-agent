@@ -1,0 +1,23 @@
+{
+  "protocol": "upa/0",
+  "session": "s-1",
+  "seq": 1842,
+  "game_s": 61.25,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "observation",
+  "clock_mode": "realtime",
+  "scene": "Level1",
+  "playing": true,
+  "paused": false,
+  "time_scale": 1.0,
+  "frame": 3675,
+  "public": {
+    "r_counter": null
+  },
+  "reader_errors": [
+    {
+      "reader": "r_counter",
+      "error": "target destroyed"
+    }
+  ]
+}

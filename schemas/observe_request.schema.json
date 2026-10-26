@@ -1,0 +1,84 @@
+{
+  "$id": "upa/observe_request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "mode": {
+      "enum": [
+        "subscribe",
+        "once",
+        "unsubscribe"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "rate_hz": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rate Hz"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "type": {
+      "const": "observe",
+      "default": "observe",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    },
+    "with_frame": {
+      "default": false,
+      "title": "With Frame",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "mode"
+  ],
+  "title": "ObserveRequest",
+  "type": "object"
+}

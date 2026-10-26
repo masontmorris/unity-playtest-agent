@@ -1,0 +1,149 @@
+{
+  "$defs": {
+    "Choice": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ChoiceKind"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "preconditions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preconditions",
+          "type": "array"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "enum": [
+                "frontier",
+                "helper"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "skill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skill"
+        },
+        "source": {
+          "$ref": "#/$defs/ChoiceSource"
+        },
+        "ttl_game_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ttl Game S"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "source"
+      ],
+      "title": "Choice",
+      "type": "object"
+    },
+    "ChoiceKind": {
+      "enum": [
+        "action",
+        "skill",
+        "delegate",
+        "escalate",
+        "wait",
+        "finish"
+      ],
+      "title": "ChoiceKind",
+      "type": "string"
+    },
+    "ChoiceSource": {
+      "enum": [
+        "manifest",
+        "frontier",
+        "core"
+      ],
+      "title": "ChoiceSource",
+      "type": "string"
+    }
+  },
+  "$id": "upa/choice_set.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "built_from_seq": {
+      "minimum": 0,
+      "title": "Built From Seq",
+      "type": "integer"
+    },
+    "choices": {
+      "items": {
+        "$ref": "#/$defs/Choice"
+      },
+      "minItems": 1,
+      "title": "Choices",
+      "type": "array"
+    },
+    "set_version": {
+      "minimum": 0,
+      "title": "Set Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "set_version",
+    "built_from_seq",
+    "choices"
+  ],
+  "title": "ChoiceSet",
+  "type": "object"
+}

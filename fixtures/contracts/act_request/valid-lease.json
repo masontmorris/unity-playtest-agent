@@ -1,0 +1,20 @@
+{
+  "protocol": "upa/0",
+  "session": "s-1",
+  "seq": 1842,
+  "game_s": 61.25,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "act",
+  "action_id": "a-77",
+  "choice_id": "c1",
+  "action": "move_forward",
+  "params": {
+    "duration_game_s": 1.0
+  },
+  "based_on_seq": 1842,
+  "max_age_s": 0.5,
+  "depends_on": [
+    "public.r_entity"
+  ],
+  "lease_s": 1.0
+}

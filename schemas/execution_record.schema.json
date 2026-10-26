@@ -1,0 +1,256 @@
+{
+  "$defs": {
+    "Effect": {
+      "additionalProperties": false,
+      "description": "A measured or calibrated effect on one field. Unknown values stay null.",
+      "properties": {
+        "delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "spread": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Calibrated +/- around delta",
+          "title": "Spread"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "field"
+      ],
+      "title": "Effect",
+      "type": "object"
+    },
+    "ExecStatus": {
+      "enum": [
+        "requested",
+        "validated",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "rejected"
+      ],
+      "title": "ExecStatus",
+      "type": "string"
+    },
+    "RejectReason": {
+      "enum": [
+        "stale_age",
+        "stale_fields",
+        "unknown_action",
+        "invalid_params",
+        "not_playing",
+        "busy"
+      ],
+      "title": "RejectReason",
+      "type": "string"
+    }
+  },
+  "$id": "upa/execution_record.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_id": {
+      "title": "Action Id",
+      "type": "string"
+    },
+    "applied_duration_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Measured, never taken from configuration",
+      "title": "Applied Duration S"
+    },
+    "expected_effect": {
+      "items": {
+        "$ref": "#/$defs/Effect"
+      },
+      "title": "Expected Effect",
+      "type": "array"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "input_end_game_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input End Game S"
+    },
+    "input_end_wall_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input End Wall S"
+    },
+    "input_start_game_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Start Game S"
+    },
+    "input_start_wall_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Start Wall S"
+    },
+    "observed_effect": {
+      "items": {
+        "$ref": "#/$defs/Effect"
+      },
+      "title": "Observed Effect",
+      "type": "array"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "reject_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RejectReason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "release_verified": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Release Verified"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ExecStatus"
+    },
+    "type": {
+      "const": "execution",
+      "default": "execution",
+      "title": "Type",
+      "type": "string"
+    },
+    "validated_against_seq": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validated Against Seq"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "action_id",
+    "status"
+  ],
+  "title": "ExecutionRecord",
+  "type": "object"
+}

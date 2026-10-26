@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "TurnOutcome": {
+      "enum": [
+        "executed",
+        "rejected_invalid",
+        "rejected_stale",
+        "escalated",
+        "delegated",
+        "finished"
+      ],
+      "title": "TurnOutcome",
+      "type": "string"
+    },
+    "WhilePending": {
+      "additionalProperties": false,
+      "properties": {
+        "choice_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Choice Id"
+        },
+        "mode": {
+          "enum": [
+            "wait",
+            "continue"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "WhilePending",
+      "type": "object"
+    }
+  },
+  "$id": "upa/turn_record.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One turn in the trace. raw_choice, effective_choice and executed_action must agree (law 1).",
+  "properties": {
+    "based_on_seq": {
+      "minimum": 0,
+      "title": "Based On Seq",
+      "type": "integer"
+    },
+    "effective_choice": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Choice id the loop acted on",
+      "title": "Effective Choice"
+    },
+    "executed_action": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Choice id whose input reached the bridge; null if none was sent",
+      "title": "Executed Action"
+    },
+    "latency_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Latency Ms"
+    },
+    "outcome": {
+      "$ref": "#/$defs/TurnOutcome"
+    },
+    "policy_default": {
+      "default": false,
+      "description": "while_pending was missing or invalid and defaulted to wait",
+      "title": "Policy Default",
+      "type": "boolean"
+    },
+    "raw_choice": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Choice id exactly as S1 returned it; null if unparseable",
+      "title": "Raw Choice"
+    },
+    "set_version": {
+      "minimum": 0,
+      "title": "Set Version",
+      "type": "integer"
+    },
+    "turn": {
+      "minimum": 0,
+      "title": "Turn",
+      "type": "integer"
+    },
+    "type": {
+      "const": "turn",
+      "default": "turn",
+      "title": "Type",
+      "type": "string"
+    },
+    "while_pending": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhilePending"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "turn",
+    "set_version",
+    "based_on_seq",
+    "raw_choice",
+    "effective_choice",
+    "executed_action",
+    "outcome"
+  ],
+  "title": "TurnRecord",
+  "type": "object"
+}

@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "ClockMode": {
+      "enum": [
+        "realtime",
+        "stepped"
+      ],
+      "title": "ClockMode",
+      "type": "string"
+    },
+    "ReaderError": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "title": "Error",
+          "type": "string"
+        },
+        "reader": {
+          "title": "Reader",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reader",
+        "error"
+      ],
+      "title": "ReaderError",
+      "type": "object"
+    }
+  },
+  "$id": "upa/observation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One sample of the game. Missing readers are null plus a reader_errors entry.",
+  "properties": {
+    "clock_mode": {
+      "$ref": "#/$defs/ClockMode"
+    },
+    "frame": {
+      "minimum": 0,
+      "title": "Frame",
+      "type": "integer"
+    },
+    "frame_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Frame Ref"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "paused": {
+      "title": "Paused",
+      "type": "boolean"
+    },
+    "playing": {
+      "title": "Playing",
+      "type": "boolean"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "public": {
+      "additionalProperties": true,
+      "title": "Public",
+      "type": "object"
+    },
+    "reader_errors": {
+      "items": {
+        "$ref": "#/$defs/ReaderError"
+      },
+      "title": "Reader Errors",
+      "type": "array"
+    },
+    "scene": {
+      "title": "Scene",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "time_scale": {
+      "minimum": 0,
+      "title": "Time Scale",
+      "type": "number"
+    },
+    "type": {
+      "const": "observation",
+      "default": "observation",
+      "title": "Type",
+      "type": "string"
+    },
+    "ui": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ui"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "clock_mode",
+    "scene",
+    "playing",
+    "paused",
+    "time_scale",
+    "frame"
+  ],
+  "title": "Observation",
+  "type": "object"
+}

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "unity-playtest-agent"
+version = "0.0.1"
+description = "An autonomous AI playtester for Unity games"
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.9,<3",
+]
+
+[project.optional-dependencies]
+probe = [
+    "httpx>=0.28,<1",
+    "python-dotenv>=1,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "jsonschema>=4.23,<5",
+]
+
+[project.scripts]
+playtest-export-schemas = "playtest.contracts.export:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/playtest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,8 @@
+{
+  "finding_id": "f4",
+  "state": "suspicion",
+  "title": "Counter went down",
+  "expected": "Counter never decreases",
+  "expected_source": "invariant",
+  "actual": "3 -> 2"
+}

@@ -1,0 +1,30 @@
+{
+  "protocol": "upa/0",
+  "session": "s-1",
+  "seq": 1842,
+  "game_s": 61.25,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "execution",
+  "action_id": "a-77",
+  "status": "completed",
+  "validated_against_seq": 1842,
+  "input_start_game_s": 61.3,
+  "input_end_game_s": 62.3,
+  "applied_duration_s": 1.0,
+  "release_verified": true,
+  "expected_effect": [
+    {
+      "field": "public.r_entity.pos",
+      "delta": 3.2,
+      "spread": 0.4,
+      "unit": "m"
+    }
+  ],
+  "observed_effect": [
+    {
+      "field": "public.r_entity.pos",
+      "delta": 0.0,
+      "unit": "m"
+    }
+  ]
+}
