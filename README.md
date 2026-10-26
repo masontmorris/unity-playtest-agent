@@ -8,7 +8,24 @@ Built for the [Meta Global AI Developer Hackathon](https://cerebralvalley.ai/e/m
 
 ## Status
 
-Day 1. Nothing is built yet, so there is nothing to install or run. This section will say what works, and what doesn't, as it changes.
+Day 1. Nothing plays a game yet. This section will say what works, and what doesn't, as it changes.
+
+What exists so far:
+- **Contracts** (`src/playtest/contracts/`): typed models for the bridge protocol, choices, decisions, turn records, directives, findings and run records. JSON Schema is exported to `schemas/`, with shared fixtures in `fixtures/contracts/`.
+- **S1 decision parsing**: rejects an invalid answer and never repairs it.
+- **Adherence checker**: fails a run if anything other than S1's choice reached the game.
+- **CI**: tests, a name-blind lint over the core, and a gitleaks secret scan.
+
+The roadmap is tracked in [issues](https://github.com/masontmorris/unity-playtest-agent/issues), with one milestone per hackathon day.
+
+### Development
+
+```sh
+uv sync                      # Python 3.11+
+uv run pytest
+uv run playtest-export-schemas   # after changing a contract
+uvx pre-commit install       # local secret scan on commit
+```
 
 ## How it works
 
