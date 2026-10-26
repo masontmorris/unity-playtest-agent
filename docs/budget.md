@@ -10,10 +10,10 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 |---|---|---|---|
 | S1 turn | Liquid d1.1 | $0.00003 small, $0.00006 with a frame, $0.00026 at 13k tokens | `usage.cost` returned by the API |
 | S1 turn | mammoth-1 / elephant-1 | $0 during the Baseten free week (until about 28 Oct); unknown after | No published post-trial price; Baseten credits requested (#8) |
-| Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007) | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
+| Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007); $0.0066 and $0.0087 with the #73 candidate schema | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
 | Frontier call | Muse Spark 1.3, `low` or default effort | $0.018–0.029 (median about $0.024) | Same |
 | Clip in a frontier call | Muse Spark 1.3 | about $0.0013 per 4 s at 640×360, 10 fps | 1,056 extra input tokens |
-| Preflight call, full project | Muse Spark 1.3 (Standard) | $0.037–0.043 for 26k input tokens | Measured tokens × list price; current stages have distinct bodies (#70) |
+| Preflight call, full project | Muse Spark 1.3 (Standard) | $0.037–0.043 for 26k input tokens; $0.011–0.013 for a later stage that reuses the cached prefix | Measured tokens × list price (#70); one schema per chain (#73) |
 | Preflight call, full project | `muse-spark-1.3-contributor` | $0.0028–0.0032 for the same tokens | Fixtures only: Meta may train on the prompts |
 
 ## Preflight per project
@@ -25,9 +25,11 @@ Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input 
 | Contributor, `minimal` | $0.0090, 33.5 s | Measured |
 | Contributor, `low` | $0.0093, 50.3 s | Measured |
 | Standard, `minimal`, no cache | $0.119 | Projected from measured tokens; the planning figure |
-| Standard, `minimal`, all stage input cached | $0.029 | Projected; not measured for the current chain or an append-only chain (#70) |
+| Standard, `minimal`, one schema for the chain (#73) | **$0.063**, 29.4 s | Measured once: stages 5 and 6 reused the 28k prefix. $0.124 if neither transition hits |
+| Standard, `minimal`, all stages in one call (#73) | $0.047 | Projected from two contributor calls; needs no cache |
+| Standard, `minimal`, all stage input cached | $0.029 | Projected; not measured |
 
-Exact repeats and same-schema append chains reused 26.4k–29.2k prefixes consistently in the final window (41 of 42 post-first repeats; 29k exact repeats hit), but both real stage transitions missed when `response_format` changed. No complete staged chain with one shared schema has demonstrated savings, and no Standard cache run was made, so the $0.119 no-cache figure remains the planning basis. The manifest cache (#28) is a design proposal for avoiding a repeat preflight, not implemented or measured.
+With one byte-identical schema for every stage (`roles.preflight.StageAnswer`), every stage transition and retry reused the prefix: 8 of 8 calls across two contributor chains and the first Standard chain (#73). Per-stage schemas lost it again in the same session. Misses still happen, though: the Standard stage-4 exact repeat reported 0. So the planning figure stays at **$0.12** as the bound, and **about $0.06** is the expected cost with the unified schema. The manifest cache (#28) is a design proposal for avoiding a repeat preflight, not implemented or measured.
 
 ## A 10-minute real-time run
 
@@ -48,7 +50,7 @@ The frontier count is set by latency, not policy. With one pending request at a 
 | Meta Model API | $150 | Received |
 | Baseten | $100 | Requested, no response |
 | Modal | $100 | Requested, no response |
-| Spent so far | $0.354 | Day 1 probes: Meta $0.353, including $0.055 for the full-load preflight and $0.078 for #70 (99 calls); Liquid $0.0011 |
+| Spent so far | $0.508 | Day 1 probes: Meta $0.507, including $0.055 for the full-load preflight, $0.078 for #70 (99 calls) and $0.154 for #73 (98 calls); Liquid $0.0011 |
 
 ## Rules
 
