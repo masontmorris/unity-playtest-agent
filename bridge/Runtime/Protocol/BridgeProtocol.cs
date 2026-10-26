@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -93,7 +92,7 @@ namespace Playtest.Bridge.Protocol
             }
 
             JToken typeToken = obj["type"];
-            if (typeToken != null && typeToken.Type != JTokenType.Null)
+            if (typeToken != null)
             {
                 if (typeToken.Type != JTokenType.String || !string.Equals((string)typeToken, expectedType, StringComparison.Ordinal))
                 {
@@ -185,6 +184,13 @@ namespace Playtest.Bridge.Protocol
 
             if (message.GameS.HasValue)
             {
+                JToken gameToken = obj["game_s"];
+                if (gameToken == null || (gameToken.Type != JTokenType.Float && gameToken.Type != JTokenType.Integer))
+                {
+                    error = Invalid("game_s must be a number or null");
+                    return false;
+                }
+
                 double gameS = message.GameS.Value;
                 if (double.IsNaN(gameS) || double.IsInfinity(gameS) || gameS < 0)
                 {

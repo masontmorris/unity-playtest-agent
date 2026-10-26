@@ -10,9 +10,14 @@ namespace Playtest.Bridge.Tests
     internal sealed class TestClient : IDisposable
     {
         public TestClient(BridgeServer server, int timeoutMs = 3000)
+            : this(server.Port, timeoutMs)
+        {
+        }
+
+        public TestClient(int port, int timeoutMs = 3000)
         {
             Tcp = new TcpClient();
-            Tcp.Connect("127.0.0.1", server.Port);
+            Tcp.Connect("127.0.0.1", port);
             Tcp.ReceiveTimeout = timeoutMs;
             Connection = new JsonLineConnection(Tcp.GetStream(), 4 * 1024 * 1024);
             Connection.Stream.ReadTimeout = timeoutMs;

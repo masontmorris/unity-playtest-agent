@@ -8,13 +8,14 @@ Built for the [Meta Global AI Developer Hackathon](https://cerebralvalley.ai/e/m
 
 ## Status
 
-Day 1. Nothing plays a game yet. This section will say what works, and what doesn't, as it changes.
+Day 2. The bridge transport exists; nothing plays a game yet. This section will say what works, and what doesn't, as it changes.
 
 What exists so far:
 - **Contracts** (`src/playtest/contracts/`): typed models for the bridge protocol, choices, decisions, turn records, directives, findings and run records. JSON Schema is exported to `schemas/`, with shared fixtures in `fixtures/contracts/`.
+- **Bridge v0** (`bridge/`, Unity package): a generic loopback JSONL transport with `upa/0` protocol checks, token auth, a one-Editor project lock, and the `hello`/`status` handshake. It loads by reference in the clean FPSKit fork. `observe`, `act`, `stop` and `clock` land in #15–#19.
 - **S1 decision parsing**: rejects an invalid answer and never repairs it.
 - **Adherence checker**: fails a run if anything other than S1's choice reached the game.
-- **CI**: tests, a name-blind lint over the core, and a gitleaks secret scan.
+- **CI**: tests, a name-blind lint over the core, a generic-bridge lint, and a gitleaks secret scan.
 
 The roadmap is tracked in [issues](https://github.com/masontmorris/unity-playtest-agent/issues), with one milestone per hackathon day.
 
