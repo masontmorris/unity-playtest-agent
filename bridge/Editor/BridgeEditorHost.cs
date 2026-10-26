@@ -21,6 +21,7 @@ namespace Playtest.Bridge.Editor
         private const string LockFileName = "playtest-bridge.lock";
 
         private static BridgeServer _server;
+        private static UnityObservationSource _observations;
         private static BridgeLockFile _lock;
         private static string _lastError;
         private static int _lockOwnerPid;
@@ -104,6 +105,7 @@ namespace Playtest.Bridge.Editor
 
             string token = null;
             BridgeServer server = null;
+            UnityObservationSource observations = null;
             BridgeLockFile acquired = null;
             int ownerPid = 0;
             try
@@ -111,6 +113,8 @@ namespace Playtest.Bridge.Editor
                 token = BridgeToken.Create();
                 ownerPid = CurrentProcessId();
                 var status = new UnityStatusSource(ownerPid);
+                observations = new UnityObservationSource();
+                observations.Start();
                 server = new BridgeServer(
                     new BridgeServerOptions
                     {
@@ -119,6 +123,7 @@ namespace Playtest.Bridge.Editor
                         ReadTimeoutMs = 0,
                     },
                     status,
+                    observations,
                     token);
                 server.Log = message => Debug.Log(LogPrefix + " " + Redact(message, token));
 
@@ -138,6 +143,7 @@ namespace Playtest.Bridge.Editor
                 string owner;
                 int busyOwnerPid = DescribeBusyOwner(busy, out owner);
                 StopServer(server);
+                StopObservations(observations);
                 _lockOwnerPid = busyOwnerPid;
                 SetError("the project lock is already held by " + owner, token);
                 return;
@@ -145,11 +151,13 @@ namespace Playtest.Bridge.Editor
             catch (Exception ex)
             {
                 StopServer(server);
+                StopObservations(observations);
                 SetError("could not start: " + ex.GetType().Name + ": " + ex.Message, token);
                 return;
             }
 
             _server = server;
+            _observations = observations;
             _lock = acquired;
             _lockOwnerPid = ownerPid;
             _lastError = null;
@@ -160,15 +168,18 @@ namespace Playtest.Bridge.Editor
         public static void Stop()
         {
             BridgeServer server = _server;
+            UnityObservationSource observations = _observations;
             BridgeLockFile held = _lock;
             bool wasActive = server != null || held != null;
 
             _server = null;
+            _observations = null;
             _lock = null;
             _lockOwnerPid = 0;
             _lastError = null;
 
             StopServer(server);
+            StopObservations(observations);
 
             if (held != null)
             {
@@ -215,6 +226,24 @@ namespace Playtest.Bridge.Editor
             {
                 _lastError = "stopping the server failed: " + ex.GetType().Name;
                 Debug.LogWarning(LogPrefix + " " + _lastError);
+            }
+        }
+
+        private static void StopObservations(UnityObservationSource observations)
+        {
+            if (observations == null)
+            {
+                return;
+            }
+
+            try
+            {
+                observations.Stop();
+                observations.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(LogPrefix + " stopping observation sampling failed: " + ex.GetType().Name);
             }
         }
 

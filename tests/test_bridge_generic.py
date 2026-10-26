@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 BRIDGE = Path(__file__).resolve().parents[1] / "bridge"
-ROOTS = (BRIDGE / "Runtime", BRIDGE / "Editor", BRIDGE / "Tests" / "EditMode")
+ROOTS = (BRIDGE / "Runtime", BRIDGE / "Editor", BRIDGE / "Tests" / "EditMode", BRIDGE / "Tests" / "PlayMode")
 
 BANNED = frozenset(
     """

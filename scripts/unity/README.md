@@ -35,8 +35,9 @@ What it does:
   "com.playtest.bridge": "file:C:/path/to/checkout/bridge"
   ```
 
-- Adds `com.playtest.bridge` to `testables`. A package's EditMode tests are only
-  compiled and discovered when the package is listed there.
+- Adds `com.playtest.bridge` to `testables`. A package's test assemblies are only
+  compiled and discovered when the package is listed there; that covers both the
+  EditMode and PlayMode suites.
 - Prints the before and after value, the manifest path, and re-reads the file to
   confirm the value it wrote.
 - Leaves existing entries and their order alone; only the two additions differ.
@@ -51,10 +52,18 @@ That removes the dependency and the `testables` entry (and the now-empty
 `testables` array), returning the manifest to its original content. Run this
 before handing the fork back or diffing it against upstream.
 
-## Run the EditMode tests
+## Run the bridge tests
+
+EditMode is the default:
 
 ```powershell
 powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\FPSKit-bridge-v0"
+```
+
+PlayMode, which runs the measurement test against the project's scene:
+
+```powershell
+powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\FPSKit-bridge-v0" -TestPlatform PlayMode
 ```
 
 Optional parameters:
@@ -62,12 +71,15 @@ Optional parameters:
 | Parameter | Default |
 |---|---|
 | `-UnityPath` | `$env:UNITY_EDITOR`, then `C:\Program Files\Unity\Hub\Editor\6000.5.4f1\Editor\Unity.exe` |
+| `-TestPlatform` | `EditMode`; `PlayMode` enters Play mode in batch mode |
 | `-TestFilter` | none; passed through as Unity's `-testFilter` |
-| `-ResultsPath` | `<repo>/runs/bridge-tests/<project>/editmode-results.xml` |
-| `-LogPath` | `<repo>/runs/bridge-tests/<project>/editmode.log` |
+| `-ResultsPath` | `<repo>/runs/bridge-tests/<project>/<platform>-results.xml` |
+| `-LogPath` | `<repo>/runs/bridge-tests/<project>/<platform>.log` |
 | `-MutexTimeoutMinutes` | `15` |
 
-Relative result and log paths are resolved against the project.
+`<platform>` is `editmode` or `playmode`, so the two suites keep separate
+result and log files. Relative result and log paths are resolved against the
+project.
 
 What it does, in order:
 
@@ -79,16 +91,17 @@ What it does, in order:
    A mismatch is a setup error; pass `-UnityPath` for a different editor.
 3. Refuses to run when `<ProjectPath>/Temp/UnityLockfile` exists, which means an
    Editor has the project open.
-4. Sets `UPA_REPO_ROOT` to this repository's root so the EditMode tests find
-   `fixtures/contracts`.
+4. Sets `UPA_REPO_ROOT` to this repository's root so the EditMode fixture tests
+   find `fixtures/contracts`.
 5. Takes the named mutex `unity-playtest-agent-editmode-tests` (global, falling
-   back to local), waiting up to `-MutexTimeoutMinutes`. A run that was killed
-   leaves the mutex abandoned; the next run takes it over.
+   back to local), waiting up to `-MutexTimeoutMinutes`. The name is unchanged
+   from the EditMode-only version so one run still excludes the other. A run
+   that was killed leaves the mutex abandoned; the next run takes it over.
 6. Deletes stale result and log files, then runs:
 
    ```
    Unity.exe -batchmode -nographics -projectPath <project> -runTests
-             -testPlatform EditMode -testResults <results> -logFile <log>
+             -testPlatform <EditMode|PlayMode> -testResults <results> -logFile <log>
              [-testFilter <filter>]
    ```
 
@@ -98,6 +111,35 @@ What it does, in order:
    A missing `failed` attribute is reported as unknown and is not treated as
    zero. A missing total or a zero-test "Passed" run is a failure: zero tests is
    not evidence.
+
+### What the PlayMode run measures
+
+`-TestPlatform PlayMode` passes `-testPlatform PlayMode`, so Unity enters Play
+mode in batch mode. The PlayMode suite loads the first enabled scene from the
+project's Build Settings additively (the FPSKit test scene in that fork), makes
+it the active scene, starts the loopback server with the Unity status and
+observation sources, then subscribes with `observe` at 20 Hz. Additive loading
+keeps the test runner's own scene and controller alive; the loaded scene is
+unloaded again during cleanup.
+
+It measures, rather than assumes:
+
+- 45-75 observations in a 3 s window and a 40-67 ms median interval (20 Hz
+  +/- 25%; Windows timer resolution rounds a 50 ms wait to ~62.5 ms in batch
+  mode), with no gap over 250 ms.
+- The wall-clock age of each observation, which must stay at or under 150 ms.
+- Strictly increasing `seq`, an advancing `frame`, the loaded scene name,
+  `playing`, `time_scale`, a non-null `ui` object and `reader_errors` as an
+  array.
+- At most one in-flight observation after `observe unsubscribe`, then silence.
+
+The test sends no `stop`; that verb belongs to a later issue. A project needs
+at least one enabled scene in Build Settings, or the test fails with that
+message instead of skipping. Loading the scene affects only the test run; it
+does not save anything into the project. The one-Editor rule below still
+applies, so nothing else may drive the project while the run is in flight.
+Expect a PlayMode run to take longer than EditMode: Unity has to enter Play
+mode and load the scene before the 3 s measurement window begins.
 
 The default result and log paths live under the repository's gitignored
 `runs/bridge-tests/`, not under `<ProjectPath>/Temp`. Unity clears its project
