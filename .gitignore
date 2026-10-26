@@ -1,0 +1,28 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Local run evidence (traces, frames, clips) stays local
+runs/
+
+# Unity (if a test project is ever opened from here)
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+[Uu]serSettings/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
