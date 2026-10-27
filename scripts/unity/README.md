@@ -115,14 +115,27 @@ What it does, in order:
 ### What the PlayMode run measures
 
 `-TestPlatform PlayMode` passes `-testPlatform PlayMode`, so Unity enters Play
-mode in batch mode. The PlayMode suite loads the first enabled scene from the
-project's Build Settings additively (the FPSKit test scene in that fork), makes
-it the active scene, starts the loopback server with the Unity status and
-observation sources, then subscribes with `observe` at 20 Hz. Additive loading
-keeps the test runner's own scene and controller alive; the loaded scene is
-unloaded again during cleanup.
+mode in batch mode. Five tests run against the project:
 
-It measures, rather than assumes:
+- **Stream** loads the first enabled scene from the project's Build Settings
+  additively (the FPSKit test scene in that fork), makes it the active scene,
+  starts the loopback server with the Unity status and observation sources,
+  then subscribes with `observe` at 20 Hz. Additive loading keeps the test
+  runner's own scene and controller alive; the loaded scene is unloaded again
+  during cleanup.
+- **Act** sends one bounded action through the same transport, measures that
+  the controlled body moved, then sends a superseding action and repeats it
+  from a stale observation to confirm code does not substitute a choice.
+- **Clock** pauses, resumes, changes the time scale and steps the live game
+  clock, reading each effect from the next observation rather than the
+  acknowledgement.
+- **Stop** holds a key through the transport, stops from the main thread as a
+  scene change does, and checks the released state on the live device before
+  the bridge closes.
+- **Input release** applies a key through the Input System backend and checks
+  that the release is queued, reported and verified as no longer pressed.
+
+The stream test measures, rather than assumes:
 
 - 45-75 observations in a 3 s window and a 40-67 ms median interval (20 Hz
   +/- 25%; Windows timer resolution rounds a 50 ms wait to ~62.5 ms in batch
@@ -133,13 +146,13 @@ It measures, rather than assumes:
   array.
 - At most one in-flight observation after `observe unsubscribe`, then silence.
 
-The test sends no `stop`; that verb belongs to a later issue. A project needs
-at least one enabled scene in Build Settings, or the test fails with that
-message instead of skipping. Loading the scene affects only the test run; it
-does not save anything into the project. The one-Editor rule below still
-applies, so nothing else may drive the project while the run is in flight.
-Expect a PlayMode run to take longer than EditMode: Unity has to enter Play
-mode and load the scene before the 3 s measurement window begins.
+A project needs at least one enabled scene in Build Settings for the stream
+test, or it fails with that message instead of skipping. Loading the scene
+affects only the test run; it does not save anything into the project. The
+one-Editor rule below still applies, so nothing else may drive the project
+while the run is in flight. Expect a PlayMode run to take longer than EditMode:
+Unity has to enter Play mode and load the scene before the 3 s measurement
+window begins.
 
 The default result and log paths live under the repository's gitignored
 `runs/bridge-tests/`, not under `<ProjectPath>/Temp`. Unity clears its project

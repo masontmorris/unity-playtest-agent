@@ -14,8 +14,8 @@ Issues #14–#19 build it in layers:
 |---|---|---|
 | Transport, hello/status, project lock | `hello` | Landed (#14) |
 | Continuous observation stream | `observe` | Landed (#15) |
-| Bounded actions, freshness, input leases | `act` | This issue (#16) |
-| Stop, release verification and clock | `stop`, `clock` | #17 |
+| Bounded actions, freshness, input leases | `act` | Landed (#16) |
+| Stop, release verification and clock | `stop`, `clock` | This issue (#17) |
 | Capture to an offscreen render target | `frame_ref` (part of `observe`) | #18 |
 | Core skeleton, bridge client, fake game | — | Landed (#19) |
 
@@ -25,9 +25,10 @@ Issues #14–#19 build it in layers:
 bridge/
   package.json                  UPM package manifest
   Runtime/Protocol/             wire DTOs and strict JSON reading (no Unity dependency)
+  Runtime/Actions/              action catalog, input lease, clock interface (no Unity dependency)
   Runtime/Lock/                 project lock file (PID, port, token)
   Runtime/Transport/            TCP listener, JSONL framing, token, single session
-  Runtime/Unity/                Unity snapshot for the status reply
+  Runtime/Unity/                Unity status, observation, input and clock sources
   Editor/                       Editor lifecycle and Tools/Playtest Bridge menu
   Tests/EditMode/               EditMode tests (the acceptance check)
   Tests/DotNet~/                Unity-free fast tests; ignored by Unity
@@ -96,6 +97,20 @@ request's `lease_s` sets the hold. `frame_ref` is unavailable until capture (#18
 every game-specific binding out of the package. In batch mode it scopes the Input System focus
 settings so injected keys reach the game loop, and restores the previous values on stop; an
 interactive Editor is left alone.
+
+## Stop and clock
+
+`stop` cancels the active lease, releases every held input, verifies the release against the
+device state, sends one `stopped` result with the released inputs, and closes the session. Every
+stop reason is accepted. A dropped connection releases and verifies too, with no result because
+the channel is gone. Scene changes stop the active session; the bridge stays listening for the
+next one. A stop raised on the main thread flushes the queued release before verifying, so the
+scene-change and host-shutdown paths report the device state rather than a guess.
+
+`clock` acknowledges with `status`; the next observation reports the effect. `pause` stops the
+game clock, `resume` returns to realtime, `set_scale` changes the scale, and `step` advances game
+time by the requested interval and returns to paused. The observation's `clock_mode` is
+`stepped` while paused/stepping and `realtime` otherwise. `status.clock_control` is true.
 
 ## Tests
 

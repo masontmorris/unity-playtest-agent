@@ -33,7 +33,7 @@ namespace Playtest.Bridge.Tests
             }
 
             Assert.That(snapshot.OwnerPid, Is.EqualTo(CurrentProcessId()));
-            Assert.That(snapshot.ClockControl, Is.False);
+            Assert.That(snapshot.ClockControl, Is.True);
             Assert.That(snapshot.Capture, Is.False);
             Assert.That(snapshot.CaptureSelfTest, Is.EqualTo(UnityStatusSource.Unknown));
             Assert.That(source.Port, Is.EqualTo(43210));

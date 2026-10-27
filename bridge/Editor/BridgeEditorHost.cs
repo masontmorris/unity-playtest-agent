@@ -1,11 +1,13 @@
 using System;
 using System.IO;
 using Playtest.Bridge.Actions;
+using Playtest.Bridge.Clock;
 using Playtest.Bridge.Lock;
 using Playtest.Bridge.Transport;
 using Playtest.Bridge.Unity;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Playtest.Bridge.Editor
 {
@@ -24,6 +26,7 @@ namespace Playtest.Bridge.Editor
         private static BridgeServer _server;
         private static UnityObservationSource _observations;
         private static InputSystemInputBackend _input;
+        private static UnityClockController _clock;
         private static BridgeLockFile _lock;
         private static string _lastError;
         private static int _lockOwnerPid;
@@ -32,10 +35,20 @@ namespace Playtest.Bridge.Editor
         {
             AssemblyReloadEvents.beforeAssemblyReload += Stop;
             EditorApplication.quitting += Stop;
+            SceneManager.activeSceneChanged += OnActiveSceneChanged;
 
             if (!Application.isBatchMode)
             {
                 EditorApplication.delayCall += AutoStart;
+            }
+        }
+
+        private static void OnActiveSceneChanged(Scene previous, Scene next)
+        {
+            BridgeServer server = _server;
+            if (server != null)
+            {
+                server.StopActiveSession("scene_change");
             }
         }
 
@@ -109,6 +122,7 @@ namespace Playtest.Bridge.Editor
             BridgeServer server = null;
             UnityObservationSource observations = null;
             InputSystemInputBackend input = null;
+            UnityClockController clock = null;
             BridgeLockFile acquired = null;
             int ownerPid = 0;
             try
@@ -116,7 +130,9 @@ namespace Playtest.Bridge.Editor
                 token = BridgeToken.Create();
                 ownerPid = CurrentProcessId();
                 var status = new UnityStatusSource(ownerPid);
-                observations = new UnityObservationSource();
+                clock = new UnityClockController();
+                clock.Start();
+                observations = new UnityObservationSource(clock);
                 observations.Start();
 
                 string projectRoot = Path.GetDirectoryName(Application.dataPath);
@@ -150,6 +166,7 @@ namespace Playtest.Bridge.Editor
                     observations,
                     actions,
                     input,
+                    clock,
                     token);
                 server.Log = message => Debug.Log(LogPrefix + " " + Redact(message, token));
 
@@ -171,6 +188,7 @@ namespace Playtest.Bridge.Editor
                 StopServer(server);
                 StopObservations(observations);
                 StopInput(input);
+                StopClock(clock);
                 _lockOwnerPid = busyOwnerPid;
                 SetError("the project lock is already held by " + owner, token);
                 return;
@@ -180,6 +198,7 @@ namespace Playtest.Bridge.Editor
                 StopServer(server);
                 StopObservations(observations);
                 StopInput(input);
+                StopClock(clock);
                 SetError("could not start: " + ex.GetType().Name + ": " + ex.Message, token);
                 return;
             }
@@ -187,6 +206,7 @@ namespace Playtest.Bridge.Editor
             _server = server;
             _observations = observations;
             _input = input;
+            _clock = clock;
             _lock = acquired;
             _lockOwnerPid = ownerPid;
             _lastError = null;
@@ -199,12 +219,14 @@ namespace Playtest.Bridge.Editor
             BridgeServer server = _server;
             UnityObservationSource observations = _observations;
             InputSystemInputBackend input = _input;
+            UnityClockController clock = _clock;
             BridgeLockFile held = _lock;
             bool wasActive = server != null || held != null;
 
             _server = null;
             _observations = null;
             _input = null;
+            _clock = null;
             _lock = null;
             _lockOwnerPid = 0;
             _lastError = null;
@@ -212,6 +234,7 @@ namespace Playtest.Bridge.Editor
             StopServer(server);
             StopObservations(observations);
             StopInput(input);
+            StopClock(clock);
 
             if (held != null)
             {
@@ -293,6 +316,23 @@ namespace Playtest.Bridge.Editor
             catch (Exception ex)
             {
                 Debug.LogWarning(LogPrefix + " stopping the input backend failed: " + ex.GetType().Name);
+            }
+        }
+
+        private static void StopClock(UnityClockController clock)
+        {
+            if (clock == null)
+            {
+                return;
+            }
+
+            try
+            {
+                clock.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(LogPrefix + " stopping clock control failed: " + ex.GetType().Name);
             }
         }
 

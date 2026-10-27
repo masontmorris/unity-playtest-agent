@@ -48,5 +48,8 @@ namespace Playtest.Bridge.Transport
 
         /// <summary>0 blocks until the peer sends data or disconnects.</summary>
         public int ReadTimeoutMs { get; set; }
+
+        /// <summary>How long to wait for the input backend to confirm a release.</summary>
+        public int ReleaseVerifyTimeoutMs { get; set; } = 250;
     }
 }
