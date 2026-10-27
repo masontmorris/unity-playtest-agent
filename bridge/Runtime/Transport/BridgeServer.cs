@@ -56,6 +56,8 @@ namespace Playtest.Bridge.Transport
         /// <summary>
         /// Full constructor. <paramref name="actions"/> and <paramref name="input"/> are the
         /// manifest bindings and the input backend; without them, act requests are rejected.
+        /// The caller owns <paramref name="input"/> and disposes it after the server stops; the
+        /// server stops the lease and releases held input but does not dispose the backend.
         /// </summary>
         public BridgeServer(
             BridgeServerOptions options,
