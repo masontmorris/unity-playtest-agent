@@ -95,6 +95,16 @@ namespace Playtest.Bridge.Protocol
             return TryRead(json, "observation", out observation, out error);
         }
 
+        public static bool TryReadActRequest(string json, out ActRequestMessage request, out ProtocolError error)
+        {
+            return TryRead(json, "act", out request, out error);
+        }
+
+        public static bool TryReadExecutionRecord(string json, out ExecutionRecordMessage record, out ProtocolError error)
+        {
+            return TryRead(json, "execution", out record, out error);
+        }
+
         public static bool TryRead<T>(string json, string expectedType, out T message, out ProtocolError error)
             where T : Envelope
         {
@@ -358,7 +368,6 @@ namespace Playtest.Bridge.Protocol
                     error = Invalid("clock_mode must be realtime or stepped");
                     return false;
                 }
-
                 if (!HasString(obj, "scene") || observation.Scene == null)
                 {
                     error = Invalid("scene is required and must be a string");
@@ -431,9 +440,208 @@ namespace Playtest.Bridge.Protocol
                     }
                 }
             }
+            else if (message is ActRequestMessage act)
+            {
+                if (!HasString(obj, "action_id") || string.IsNullOrEmpty(act.ActionId))
+                {
+                    error = Invalid("action_id is required and must be a non-empty string");
+                    return false;
+                }
+
+                if (!HasString(obj, "choice_id") || act.ChoiceId == null)
+                {
+                    error = Invalid("choice_id is required and must be a string");
+                    return false;
+                }
+
+                if (!HasString(obj, "action") || string.IsNullOrEmpty(act.Action))
+                {
+                    error = Invalid("action is required and must be a non-empty string");
+                    return false;
+                }
+
+                JToken parameters = obj["params"];
+                if (parameters != null && parameters.Type != JTokenType.Null && parameters.Type != JTokenType.Object)
+                {
+                    error = Invalid("params must be an object");
+                    return false;
+                }
+
+                if (!HasInteger(obj, "based_on_seq") || act.BasedOnSeq < 0)
+                {
+                    error = Invalid("based_on_seq is required and must be a non-negative integer");
+                    return false;
+                }
+
+                if (!HasNumber(obj, "max_age_s") || !IsPositiveFinite(act.MaxAgeS))
+                {
+                    error = Invalid("max_age_s is required and must be a positive number");
+                    return false;
+                }
+
+                JToken dependsOn = obj["depends_on"];
+                if (dependsOn != null && dependsOn.Type != JTokenType.Null)
+                {
+                    if (dependsOn.Type != JTokenType.Array)
+                    {
+                        error = Invalid("depends_on must be an array of strings");
+                        return false;
+                    }
+
+                    foreach (JToken item in dependsOn.Children())
+                    {
+                        if (item.Type != JTokenType.String)
+                        {
+                            error = Invalid("depends_on must contain only strings");
+                            return false;
+                        }
+                    }
+                }
+
+                JToken lease = obj["lease_s"];
+                if (lease != null && lease.Type != JTokenType.Null)
+                {
+                    if ((lease.Type != JTokenType.Float && lease.Type != JTokenType.Integer) || !IsPositiveFinite((double)lease))
+                    {
+                        error = Invalid("lease_s must be null or a positive number");
+                        return false;
+                    }
+                }
+            }
+            else if (message is ExecutionRecordMessage execution)
+            {
+                if (!HasString(obj, "action_id") || string.IsNullOrEmpty(execution.ActionId))
+                {
+                    error = Invalid("action_id is required and must be a non-empty string");
+                    return false;
+                }
+
+                if (!HasString(obj, "status") || !Contains(BridgeExecStatus.All, execution.Status))
+                {
+                    error = Invalid("status must be a valid execution status");
+                    return false;
+                }
+
+                JToken validated = obj["validated_against_seq"];
+                if (validated != null && validated.Type != JTokenType.Null && (validated.Type != JTokenType.Integer || (long)validated < 0))
+                {
+                    error = Invalid("validated_against_seq must be null or a non-negative integer");
+                    return false;
+                }
+
+                JToken reject = obj["reject_reason"];
+                if (reject != null && reject.Type != JTokenType.Null && (reject.Type != JTokenType.String || !Contains(BridgeRejectReason.All, (string)reject)))
+                {
+                    error = Invalid("reject_reason must be null or a valid reject reason");
+                    return false;
+                }
+
+                string rejectReason = reject == null || reject.Type == JTokenType.Null ? null : (string)reject;
+                bool rejected = string.Equals(execution.Status, BridgeExecStatus.Rejected, StringComparison.Ordinal);
+                if (rejected != (rejectReason != null))
+                {
+                    error = Invalid("reject_reason is required exactly when status is 'rejected'");
+                    return false;
+                }
+
+                if (!IsOptionalNumber(obj, "input_start_game_s")
+                    || !IsOptionalNumber(obj, "input_end_game_s")
+                    || !IsOptionalNumber(obj, "input_start_wall_s")
+                    || !IsOptionalNumber(obj, "input_end_wall_s"))
+                {
+                    error = Invalid("execution times must be null or numbers");
+                    return false;
+                }
+
+                JToken duration = obj["applied_duration_s"];
+                if (duration != null && duration.Type != JTokenType.Null && (duration.Type != JTokenType.Float && duration.Type != JTokenType.Integer || (double)duration < 0))
+                {
+                    error = Invalid("applied_duration_s must be null or a non-negative number");
+                    return false;
+                }
+
+                JToken releaseVerified = obj["release_verified"];
+                if (releaseVerified != null && releaseVerified.Type != JTokenType.Null && releaseVerified.Type != JTokenType.Boolean)
+                {
+                    error = Invalid("release_verified must be null or a boolean");
+                    return false;
+                }
+
+                if (!ValidateEffects(obj, "expected_effect", out error) || !ValidateEffects(obj, "observed_effect", out error))
+                {
+                    return false;
+                }
+            }
 
             error = null;
             return true;
+        }
+
+        private static bool ValidateEffects(JObject obj, string name, out ProtocolError error)
+        {
+            JToken effects = obj[name];
+            if (effects == null || effects.Type == JTokenType.Null)
+            {
+                error = null;
+                return true;
+            }
+
+            if (effects.Type != JTokenType.Array)
+            {
+                error = Invalid(name + " must be an array");
+                return false;
+            }
+
+            foreach (JToken item in effects.Children())
+            {
+                if (item.Type != JTokenType.Object || item["field"]?.Type != JTokenType.String)
+                {
+                    error = Invalid(name + " entries need a field string");
+                    return false;
+                }
+
+                JToken delta = item["delta"];
+                if (delta != null && delta.Type != JTokenType.Null && delta.Type != JTokenType.Float && delta.Type != JTokenType.Integer)
+                {
+                    error = Invalid(name + " delta must be null or a number");
+                    return false;
+                }
+
+                JToken spread = item["spread"];
+                if (spread != null && spread.Type != JTokenType.Null
+                    && ((spread.Type != JTokenType.Float && spread.Type != JTokenType.Integer) || (double)spread < 0))
+                {
+                    error = Invalid(name + " spread must be null or a non-negative number");
+                    return false;
+                }
+
+                JToken unit = item["unit"];
+                if (unit != null && unit.Type != JTokenType.Null && unit.Type != JTokenType.String)
+                {
+                    error = Invalid(name + " unit must be null or a string");
+                    return false;
+                }
+            }
+
+            error = null;
+            return true;
+        }
+
+        private static bool HasNumber(JObject obj, string name)
+        {
+            JToken token = obj[name];
+            return token != null && (token.Type == JTokenType.Float || token.Type == JTokenType.Integer);
+        }
+
+        private static bool IsOptionalNumber(JObject obj, string name)
+        {
+            JToken token = obj[name];
+            return token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Float || token.Type == JTokenType.Integer;
+        }
+
+        private static bool IsPositiveFinite(double value)
+        {
+            return value > 0 && !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         private static JObject ParseObject(string json)

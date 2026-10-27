@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Playtest.Bridge.Actions;
 using Playtest.Bridge.Lock;
 using Playtest.Bridge.Transport;
 using Playtest.Bridge.Unity;
@@ -22,6 +23,7 @@ namespace Playtest.Bridge.Editor
 
         private static BridgeServer _server;
         private static UnityObservationSource _observations;
+        private static InputSystemInputBackend _input;
         private static BridgeLockFile _lock;
         private static string _lastError;
         private static int _lockOwnerPid;
@@ -106,6 +108,7 @@ namespace Playtest.Bridge.Editor
             string token = null;
             BridgeServer server = null;
             UnityObservationSource observations = null;
+            InputSystemInputBackend input = null;
             BridgeLockFile acquired = null;
             int ownerPid = 0;
             try
@@ -115,6 +118,27 @@ namespace Playtest.Bridge.Editor
                 var status = new UnityStatusSource(ownerPid);
                 observations = new UnityObservationSource();
                 observations.Start();
+
+                string projectRoot = Path.GetDirectoryName(Application.dataPath);
+                string actionsPath = Path.Combine(projectRoot, "Temp", "playtest-bridge-actions.json");
+                BridgeActionCatalog actions;
+                try
+                {
+                    actions = BridgeActionCatalog.Load(actionsPath);
+                }
+                catch (Exception ex)
+                {
+                    actions = BridgeActionCatalog.Empty;
+                    Debug.LogWarning(LogPrefix + " action catalog could not be loaded: " + ex.GetType().Name + ": " + ex.Message);
+                }
+
+                input = new InputSystemInputBackend();
+                if (!input.IsAvailable)
+                {
+                    input.Dispose();
+                    input = null;
+                }
+
                 server = new BridgeServer(
                     new BridgeServerOptions
                     {
@@ -124,6 +148,8 @@ namespace Playtest.Bridge.Editor
                     },
                     status,
                     observations,
+                    actions,
+                    input,
                     token);
                 server.Log = message => Debug.Log(LogPrefix + " " + Redact(message, token));
 
@@ -144,6 +170,7 @@ namespace Playtest.Bridge.Editor
                 int busyOwnerPid = DescribeBusyOwner(busy, out owner);
                 StopServer(server);
                 StopObservations(observations);
+                StopInput(input);
                 _lockOwnerPid = busyOwnerPid;
                 SetError("the project lock is already held by " + owner, token);
                 return;
@@ -152,12 +179,14 @@ namespace Playtest.Bridge.Editor
             {
                 StopServer(server);
                 StopObservations(observations);
+                StopInput(input);
                 SetError("could not start: " + ex.GetType().Name + ": " + ex.Message, token);
                 return;
             }
 
             _server = server;
             _observations = observations;
+            _input = input;
             _lock = acquired;
             _lockOwnerPid = ownerPid;
             _lastError = null;
@@ -169,17 +198,20 @@ namespace Playtest.Bridge.Editor
         {
             BridgeServer server = _server;
             UnityObservationSource observations = _observations;
+            InputSystemInputBackend input = _input;
             BridgeLockFile held = _lock;
             bool wasActive = server != null || held != null;
 
             _server = null;
             _observations = null;
+            _input = null;
             _lock = null;
             _lockOwnerPid = 0;
             _lastError = null;
 
             StopServer(server);
             StopObservations(observations);
+            StopInput(input);
 
             if (held != null)
             {
@@ -244,6 +276,23 @@ namespace Playtest.Bridge.Editor
             catch (Exception ex)
             {
                 Debug.LogWarning(LogPrefix + " stopping observation sampling failed: " + ex.GetType().Name);
+            }
+        }
+
+        private static void StopInput(InputSystemInputBackend input)
+        {
+            if (input == null)
+            {
+                return;
+            }
+
+            try
+            {
+                input.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(LogPrefix + " stopping the input backend failed: " + ex.GetType().Name);
             }
         }
 

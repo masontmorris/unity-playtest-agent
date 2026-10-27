@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Playtest.Bridge.Actions;
 using Playtest.Bridge.Protocol;
 
 namespace Playtest.Bridge.Transport
@@ -20,17 +21,22 @@ namespace Playtest.Bridge.Transport
         private readonly BridgeServerOptions _options;
         private readonly IBridgeStatusSource _status;
         private readonly IBridgeObservationSource _observations;
+        private readonly BridgeActionCatalog _actions;
+        private readonly IBridgeInputBackend _input;
+        private readonly BridgeObservationHistory _history = new BridgeObservationHistory();
+        private readonly BridgeActionLease _lease;
         private readonly string _token;
         private readonly object _gate = new object();
+        private readonly object _freshnessGate = new object();
         private readonly HashSet<TcpClient> _clients = new HashSet<TcpClient>();
         private TcpListener _listener;
         private Thread _acceptThread;
-        private ClientSession _active;
+        private volatile ClientSession _active;
         private volatile bool _running;
         private int _port;
 
         public BridgeServer(BridgeServerOptions options, IBridgeStatusSource status, string token)
-            : this(options, status, null, token)
+            : this(options, status, null, null, null, token)
         {
         }
 
@@ -43,16 +49,42 @@ namespace Playtest.Bridge.Transport
             IBridgeStatusSource status,
             IBridgeObservationSource observations,
             string token)
+            : this(options, status, observations, null, null, token)
+        {
+        }
+
+        /// <summary>
+        /// Full constructor. <paramref name="actions"/> and <paramref name="input"/> are the
+        /// manifest bindings and the input backend; without them, act requests are rejected.
+        /// The caller owns <paramref name="input"/> and disposes it after the server stops; the
+        /// server stops the lease and releases held input but does not dispose the backend.
+        /// </summary>
+        public BridgeServer(
+            BridgeServerOptions options,
+            IBridgeStatusSource status,
+            IBridgeObservationSource observations,
+            BridgeActionCatalog actions,
+            IBridgeInputBackend input,
+            string token)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _status = status ?? throw new ArgumentNullException(nameof(status));
             _observations = observations;
+            _actions = actions ?? BridgeActionCatalog.Empty;
+            _input = input;
             if (string.IsNullOrEmpty(token))
             {
                 throw new ArgumentException("token must not be empty", nameof(token));
             }
 
             _token = token;
+            if (_input != null)
+            {
+                _lease = new BridgeActionLease(
+                    _input,
+                    EmitLeaseRecord,
+                    message => Log?.Invoke(message));
+            }
         }
 
         public int Port
@@ -96,6 +128,11 @@ namespace Playtest.Bridge.Transport
             }
 
             _running = false;
+            lock (_freshnessGate)
+            {
+                _lease?.Stop("server stop", emitCancelled: true);
+            }
+
             try
             {
                 _listener?.Stop();
@@ -242,6 +279,11 @@ namespace Playtest.Bridge.Transport
                     _active = session;
                 }
 
+                lock (_freshnessGate)
+                {
+                    _history.Clear();
+                }
+
                 WriteStatus(session);
                 client.ReceiveTimeout = _options.ReadTimeoutMs;
 
@@ -271,6 +313,17 @@ namespace Playtest.Bridge.Transport
             }
             finally
             {
+                bool wasActive;
+                lock (_gate)
+                {
+                    wasActive = ReferenceEquals(_active, session);
+                }
+
+                if (wasActive)
+                {
+                    _lease?.Stop("disconnect", emitCancelled: false);
+                }
+
                 if (session != null)
                 {
                     session.Close();
@@ -373,6 +426,12 @@ namespace Playtest.Bridge.Transport
                 return;
             }
 
+            if (string.Equals(type, "act", StringComparison.Ordinal))
+            {
+                HandleAct(session, line, requestSeq);
+                return;
+            }
+
             string label = string.IsNullOrEmpty(type) ? "(missing)" : type;
             WriteSessionError(
                 session,
@@ -433,6 +492,176 @@ namespace Playtest.Bridge.Transport
                         BridgeErrorCode.Invalid,
                         "mode must be subscribe, once or unsubscribe");
                     return;
+            }
+        }
+
+        private void HandleAct(ClientSession session, string line, long? requestSeq)
+        {
+            if (!_running)
+            {
+                return;
+            }
+
+            if (!BridgeProtocol.TryReadActRequest(line, out ActRequestMessage request, out ProtocolError error))
+            {
+                WriteSessionError(session, requestSeq, error.Code, error.Message);
+                return;
+            }
+
+            if (_lease == null || _input == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "no input backend is attached to this bridge");
+                return;
+            }
+
+            if (!_actions.TryGet(request.Action, out BridgeActionDefinition action))
+            {
+                RejectAct(session, request, BridgeRejectReason.UnknownAction, "unknown action '" + request.Action + "'", null);
+                return;
+            }
+
+            lock (_freshnessGate)
+            {
+                if (!_running)
+                {
+                    return;
+                }
+
+                if (!_history.TryGet(request.BasedOnSeq, out BridgeObservationSnapshot basedOn))
+                {
+                    RejectAct(session, request, BridgeRejectReason.StaleAge, "no observation with seq " + request.BasedOnSeq, null);
+                    return;
+                }
+
+                double ageS = (DateTime.UtcNow - basedOn.CapturedWallUtc).TotalSeconds;
+                if (ageS > request.MaxAgeS)
+                {
+                    RejectAct(
+                        session,
+                        request,
+                        BridgeRejectReason.StaleAge,
+                        "observation is " + ageS.ToString("0.###") + " s old; max_age_s is " + request.MaxAgeS.ToString("0.###"),
+                        request.BasedOnSeq);
+                    return;
+                }
+
+                if (!basedOn.Playing)
+                {
+                    RejectAct(session, request, BridgeRejectReason.NotPlaying, "the project is not playing", request.BasedOnSeq);
+                    return;
+                }
+
+                if (!_history.TryGetLatest(out BridgeObservationSnapshot latest))
+                {
+                    latest = basedOn;
+                }
+
+                if (!latest.Playing)
+                {
+                    RejectAct(session, request, BridgeRejectReason.NotPlaying, "the project is not playing", request.BasedOnSeq);
+                    return;
+                }
+
+                if (!DependsOnUnchanged(basedOn, latest, request.DependsOn))
+                {
+                    RejectAct(session, request, BridgeRejectReason.StaleFields, "a declared field changed since seq " + request.BasedOnSeq, request.BasedOnSeq);
+                    return;
+                }
+
+                if (!_lease.TryStart(request, action, request.BasedOnSeq, out string startError))
+                {
+                    RejectAct(session, request, BridgeRejectReason.InvalidParams, startError, request.BasedOnSeq);
+                }
+            }
+        }
+
+        private static bool DependsOnUnchanged(
+            BridgeObservationSnapshot basedOn,
+            BridgeObservationSnapshot latest,
+            List<string> dependsOn)
+        {
+            if (dependsOn == null || dependsOn.Count == 0)
+            {
+                return true;
+            }
+
+            for (int i = 0; i < dependsOn.Count; i++)
+            {
+                string path = dependsOn[i];
+                if (!BridgeFieldPath.TryResolve(basedOn, path, out object before)
+                    || !BridgeFieldPath.TryResolve(latest, path, out object after))
+                {
+                    return false;
+                }
+
+                if (!SameValue(before, after))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool SameValue(object before, object after)
+        {
+            if (before == null || after == null)
+            {
+                return before == null && after == null;
+            }
+
+            return JToken.DeepEquals(JToken.FromObject(before), JToken.FromObject(after));
+        }
+
+        private void RejectAct(
+            ClientSession session,
+            ActRequestMessage request,
+            string reason,
+            string message,
+            long? validatedAgainstSeq)
+        {
+            Log?.Invoke("act rejected: " + reason);
+            EmitExecution(session, new ExecutionRecordMessage
+            {
+                ActionId = request.ActionId,
+                Status = BridgeExecStatus.Rejected,
+                RejectReason = reason,
+                ValidatedAgainstSeq = validatedAgainstSeq,
+                WallUtc = DateTime.UtcNow,
+            });
+        }
+
+        private void EmitLeaseRecord(ExecutionRecordMessage record)
+        {
+            ClientSession session = _active;
+            if (session != null)
+            {
+                EmitExecution(session, record);
+            }
+        }
+
+        private void EmitExecution(ClientSession session, ExecutionRecordMessage record)
+        {
+            if (session == null || session.IsClosed)
+            {
+                return;
+            }
+
+            bool written = TryWrite(session, seq =>
+            {
+                record.Session = session.Session;
+                record.Seq = seq;
+                record.WallUtc = DateTime.UtcNow;
+                return record;
+            });
+
+            if (!written)
+            {
+                session.Close();
             }
         }
 
@@ -525,10 +754,25 @@ namespace Playtest.Bridge.Transport
                 return false;
             }
 
-            if (!TryWrite(session, seq => BuildObservation(session, snapshot, seq)))
+            long sentSeq = -1;
+            lock (_freshnessGate)
             {
-                session.Close();
-                return false;
+                if (!ReferenceEquals(_active, session))
+                {
+                    return false;
+                }
+
+                if (!TryWrite(session, seq =>
+                {
+                    sentSeq = seq;
+                    return BuildObservation(session, snapshot, seq);
+                }))
+                {
+                    session.Close();
+                    return false;
+                }
+
+                _history.Add(sentSeq, snapshot);
             }
 
             return true;
