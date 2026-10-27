@@ -406,6 +406,18 @@
       "title": "Input Field Segments",
       "type": "array"
     },
+    "later_idle_windows": {
+      "description": "Idle field windows sampled after the key trials; each is its own window",
+      "items": {
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "title": "Later Idle Windows",
+      "type": "array"
+    },
     "physical_unit": {
       "anyOf": [
         {

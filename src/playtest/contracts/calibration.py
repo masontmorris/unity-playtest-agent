@@ -64,6 +64,8 @@ class CalibrationRecord(Strict):
     unsupported_bindings: list[dict[str, Any]]
     discovery_coverage: dict[str, InspectionCap]
     idle_fields: list[dict[str, Any]]
+    later_idle_windows: list[list[dict[str, Any]]] = Field(
+        default_factory=list, description="Idle field windows sampled after the key trials; each is its own window")
     input_field_segments: list[dict[str, Any]]
     trials: list[dict[str, Any]]
     action_summaries: list[ActionCalibration]

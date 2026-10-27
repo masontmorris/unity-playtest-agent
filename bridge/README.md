@@ -90,6 +90,14 @@ with their two caps and errors, plus the sampling `frame`, `real_time_s`, `game_
 tick, does not write to the project and does not generate input. Request it repeatedly in Play mode
 to measure how a field changes between samples; unknown coverage stays null.
 
+Field values come back as `number`, `integer`, `boolean`, `enum`, `string`, `null`, object
+references and input actions. `Vector2`, `Vector3`, `Vector4` and `Quaternion` are exact component
+arrays (`vector2`, `vector3`, `vector4`, `quaternion`), and `Vector2Int` and `Vector3Int` are integer
+arrays (`vector2_int`, `vector3_int`). A vector with a non-finite component is reported as
+`special_vector`, with the finite parts as numbers and the others named, because JSON has no `NaN`
+or `Infinity`. Any other type is `unsupported` and carries its type name; it is never reported as
+zero or unchanged.
+
 The source excerpts are unranked authored scripts, including scripts in local or embedded
 packages. The IL scan reports direct field stores and unresolved cases; it does not prove that a
 field is configuration or that a method ran. Review its scope, caps and errors before using an

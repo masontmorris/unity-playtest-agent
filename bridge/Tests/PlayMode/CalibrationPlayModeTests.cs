@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using NUnit.Framework;
 using Playtest.Bridge.Actions;
 using Playtest.Bridge.Editor;
@@ -115,7 +116,7 @@ namespace Playtest.Bridge.Tests
                 };
                 process = System.Diagnostics.Process.Start(start);
                 Assert.That(process, Is.Not.Null);
-                DateTime deadline = DateTime.UtcNow.AddSeconds(360);
+                DateTime deadline = DateTime.UtcNow.AddSeconds(420);
                 while (!process.HasExited && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(process.HasExited, Is.True, "the calibration client timed out");
                 Assert.That(process.ExitCode, Is.EqualTo(0), "calibration failed; inspect its local output");
@@ -237,17 +238,41 @@ namespace Playtest.Bridge.Tests
                 string kind = row["value_kind"] as string;
                 bool comparable = state == "null" && Equals(row["is_null"], true);
                 object value = row["value"];
-                if (state == "present" && (kind == "number" || kind == "integer" || kind == "boolean" || kind == "enum" || kind == "string") &&
-                    value != null && !Equals(row["value_truncated"], true) && row["read_error"] == null)
+                bool readable = state == "present" && value != null && !Equals(row["value_truncated"], true) &&
+                                row["read_error"] == null;
+                if (readable && (kind == "number" || kind == "integer" || kind == "boolean" || kind == "enum" || kind == "string"))
                     comparable = true;
-                if (value is float f && (float.IsNaN(f) || float.IsInfinity(f))) comparable = false;
-                if (value is double d && (double.IsNaN(d) || double.IsInfinity(d))) comparable = false;
                 string text = null;
-                if (comparable && value != null)
-                    text = value is IFormattable formatted ? formatted.ToString(null, CultureInfo.InvariantCulture) : value.ToString();
+                if (readable && kind != null && VectorKinds.Contains(kind))
+                {
+                    text = ComponentsText(value);
+                    comparable = text != null;
+                }
+                else
+                {
+                    if (value is float f && (float.IsNaN(f) || float.IsInfinity(f))) comparable = false;
+                    if (value is double d && (double.IsNaN(d) || double.IsInfinity(d))) comparable = false;
+                    if (comparable && value != null)
+                        text = value is IFormattable formatted ? formatted.ToString(null, CultureInfo.InvariantCulture) : value.ToString();
+                }
                 result.Add(new FieldSample { id = (string)row["id"], state = state, kind = kind, value = text, comparable = comparable });
             }
             return result.ToArray();
+        }
+
+        private static readonly HashSet<string> VectorKinds = new HashSet<string>(StringComparer.Ordinal)
+            { "vector2", "vector3", "vector4", "quaternion", "vector2_int", "vector3_int" };
+
+        // Round-trip text for a component array, or null when it is not an array of finite numbers.
+        private static string ComponentsText(object value)
+        {
+            int[] whole = value as int[];
+            if (whole != null) return string.Join(",", whole.Select(item => item.ToString(CultureInfo.InvariantCulture)));
+            float[] parts = value as float[];
+            if (parts == null) return null;
+            foreach (float item in parts)
+                if (float.IsNaN(item) || float.IsInfinity(item)) return null;
+            return string.Join(",", parts.Select(item => item.ToString("R", CultureInfo.InvariantCulture)));
         }
     }
 }
