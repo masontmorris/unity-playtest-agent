@@ -16,6 +16,7 @@ namespace Playtest.Bridge.Editor.Preflight
         private const int ComponentLimit = 4096;
         private const int FieldLimit = 30000;
         private const int BindingLimit = 10000;
+        private const int TransformLimit = SceneTransformCollector.ObjectLimit;
         private const int MaximumSnapshotBytes = 6 * 1024 * 1024;
         private readonly ConcurrentQueue<Pending> _pending = new ConcurrentQueue<Pending>();
         private readonly object _gate = new object();
@@ -97,6 +98,12 @@ namespace Playtest.Bridge.Editor.Preflight
                 Merge(snapshot, InputAssetCollector.Collect());
                 Merge(snapshot, SourceCollector.Collect());
                 Merge(snapshot, IlDiscoveryCollector.Collect());
+            }
+            else if (stage == "transforms")
+            {
+                if (!EditorApplication.isPlaying)
+                    throw new BridgeInspectionUnavailableException("the requested stage requires Play mode");
+                Merge(snapshot, SceneTransformCollector.Collect(TransformLimit));
             }
             else throw new BridgeInspectionUnavailableException("unknown inspection stage");
 

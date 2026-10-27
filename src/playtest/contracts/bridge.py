@@ -188,7 +188,7 @@ class ClockRequest(Envelope):
 
 class InspectRequest(Envelope):
     type: Literal["inspect"] = "inspect"
-    stage: Literal["inventory", "discovery"]
+    stage: Literal["inventory", "discovery", "transforms"]
 
 
 class InspectionCap(Strict):
@@ -226,7 +226,7 @@ class InspectResult(Envelope):
     """
 
     type: Literal["inspection"] = "inspection"
-    stage: Literal["inventory", "discovery"]
+    stage: Literal["inventory", "discovery", "transforms"]
     in_reply_to: int = Field(ge=0)
     data: dict[str, Any]
     caps: dict[str, InspectionCap]

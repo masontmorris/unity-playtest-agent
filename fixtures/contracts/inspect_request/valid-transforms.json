@@ -1,0 +1,9 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 4,
+  "game_s": 14.25,
+  "wall_utc": "2026-10-26T18:00:04Z",
+  "type": "inspect",
+  "stage": "transforms"
+}

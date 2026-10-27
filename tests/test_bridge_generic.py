@@ -47,7 +47,7 @@ def violations(root: Path) -> list[str]:
             # protocol tests that use that literal; a gameplay field or an arbitrary string
             # with the same name remains subject to the lint.
             stripped = line.strip()
-            if path.name == "BridgeProtocol.cs" and stripped == '"inventory", "discovery",':
+            if path.name == "BridgeProtocol.cs" and stripped == '"inventory", "discovery", "transforms",':
                 line = line.replace('"inventory"', '""', 1)
             elif path.name == "EditorInspectionSource.cs" and stripped == 'if (stage == "inventory")':
                 line = line.replace('"inventory"', '""', 1)
@@ -89,7 +89,7 @@ def test_protocol_stage_literals_do_not_hide_identifiers(tmp_path):
     pkg = tmp_path / "Runtime"
     pkg.mkdir()
     (pkg / "BridgeProtocol.cs").write_text(
-        '"inventory", "discovery",\nvar inventory = 1;\nvar description = "inventory";\n',
+        '"inventory", "discovery", "transforms",\nvar inventory = 1;\nvar description = "inventory";\n',
         encoding="utf-8",
     )
     found = violations(pkg)

@@ -66,6 +66,7 @@ def test_inspection_caps_fail_for_their_intended_rule():
         "invalid-observed-below-returned": "observed must be at least returned",
         "invalid-truncated-false-below-observed": "truncated is false",
         "invalid-truncated-true-complete": "truncated is true",
+        "invalid-transform-observed-below-returned": "observed must be at least returned",
     }
     for stem, reason in reasons.items():
         path = FIXTURES / "inspection_result" / f"{stem}.json"

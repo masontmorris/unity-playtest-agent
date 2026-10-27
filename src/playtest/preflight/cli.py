@@ -24,7 +24,7 @@ async def _inspect(project: Path, stage: str, timeout_s: float) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True, help="Unity project with a running bridge")
-    parser.add_argument("--stage", choices=("inventory", "discovery"), required=True)
+    parser.add_argument("--stage", choices=("inventory", "discovery", "transforms"), required=True)
     parser.add_argument("--output", type=Path, required=True, help="new JSON file outside the Unity project")
     parser.add_argument("--timeout", type=float, default=120.0, help="maximum seconds to wait for the bridge")
     args = parser.parse_args(argv)
