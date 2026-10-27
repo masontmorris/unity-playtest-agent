@@ -1,0 +1,62 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 5,
+  "game_s": 14.3,
+  "wall_utc": "2026-10-26T18:00:05Z",
+  "type": "inspection",
+  "stage": "transforms",
+  "in_reply_to": 4,
+  "data": {
+    "selection": "all_loaded_scenes_depth_first",
+    "id_policy": "scene_path_loaded_scene_index_and_ordered_sibling_indices",
+    "position_space": "world",
+    "position_unit": "unity_world_unit",
+    "position_order": [
+      "x",
+      "y",
+      "z"
+    ],
+    "time_unit": "seconds",
+    "frame": 1234,
+    "real_time_s": 42.5,
+    "game_time_s": 12.25,
+    "game_objects": [
+      {
+        "id": "scene:Assets/Scenes/Main.unity@0::0",
+        "scene_id": "scene:Assets/Scenes/Main.unity@0",
+        "scene_path": "Assets/Scenes/Main.unity",
+        "parent_id": null,
+        "active_self": true,
+        "active_in_hierarchy": true,
+        "position_state": "present",
+        "position": [
+          1.5,
+          0.25,
+          -3.0
+        ]
+      },
+      {
+        "id": "scene:Assets/Scenes/Main.unity@0::0.0",
+        "scene_id": "scene:Assets/Scenes/Main.unity@0",
+        "scene_path": "Assets/Scenes/Main.unity",
+        "parent_id": "scene:Assets/Scenes/Main.unity@0::0",
+        "active_self": true,
+        "active_in_hierarchy": false,
+        "position_state": "unavailable",
+        "position": null
+      }
+    ]
+  },
+  "caps": {
+    "game_objects": {
+      "limit": 2,
+      "observed": 3,
+      "returned": 2,
+      "truncated": true
+    }
+  },
+  "errors": [
+    "object scene:Assets/Scenes/Main.unity@0::0.0: position: MissingReferenceException: object was destroyed"
+  ]
+}

@@ -63,6 +63,38 @@ namespace Playtest.Bridge.Editor.Preflight
             return result;
         }
 
+        /// <summary>
+        /// Stable scene id from the path and the loaded-scene index. Shared with every stage that
+        /// must join a discovery row, so the derivation exists once.
+        /// </summary>
+        internal static string SceneId(Scene scene, int index)
+        {
+            string path = scene.path;
+            string suffix = "@" + index.ToString(CultureInfo.InvariantCulture);
+            if (!string.IsNullOrEmpty(path)) return "scene:" + path + suffix;
+            string name = scene.name;
+            return "scene:untitled:" + (name ?? string.Empty) + suffix;
+        }
+
+        /// <summary>Hierarchy coordinates joined root-first, for example <c>0.2.1</c>.</summary>
+        internal static string JoinIndices(int[] indices)
+        {
+            if (indices == null || indices.Length == 0) return string.Empty;
+            var parts = new string[indices.Length];
+            for (int i = 0; i < indices.Length; i++)
+            {
+                parts[i] = indices[i].ToString(CultureInfo.InvariantCulture);
+            }
+
+            return string.Join(".", parts);
+        }
+
+        /// <summary>Object id shared by discovery and the transforms stage.</summary>
+        internal static string ObjectId(string sceneId, int[] indices)
+        {
+            return sceneId + "::" + JoinIndices(indices);
+        }
+
         private sealed class Collector
         {
             private readonly SceneDiscoveryResult _result;
@@ -195,7 +227,9 @@ namespace Playtest.Bridge.Editor.Preflight
                         loaded = scene.isLoaded;
                         scenePath = scene.path ?? string.Empty;
                         sceneName = scene.name ?? string.Empty;
-                        sceneId = valid ? SceneId(scene, i) : "scene:invalid:" + i.ToString(CultureInfo.InvariantCulture);
+                        sceneId = valid
+                            ? SceneDiscoveryCollector.SceneId(scene, i)
+                            : "scene:invalid:" + i.ToString(CultureInfo.InvariantCulture);
                     }
                     catch (Exception ex)
                     {
@@ -259,7 +293,7 @@ namespace Playtest.Bridge.Editor.Preflight
                 if (gameObject == null)
                 {
                     _objectFailure = true;
-                    _result.Errors.Add("object: missing GameObject at " + JoinIndices(indices));
+                    _result.Errors.Add("object: missing GameObject at " + SceneDiscoveryCollector.JoinIndices(indices));
                     return null;
                 }
 
@@ -271,7 +305,7 @@ namespace Playtest.Bridge.Editor.Preflight
                     return null;
                 }
 
-                string objectId = sceneId + "::" + JoinIndices(indices);
+                string objectId = SceneDiscoveryCollector.ObjectId(sceneId, indices);
                 _objectIds[gameObject] = objectId;
                 _objectSceneIds[gameObject] = sceneId;
 
@@ -1475,27 +1509,6 @@ namespace Playtest.Bridge.Editor.Preflight
                     Returned = returned,
                     Truncated = failure ? (bool?)null : truncated,
                 };
-            }
-
-            private static string SceneId(Scene scene, int index)
-            {
-                string path = scene.path;
-                string suffix = "@" + index.ToString(CultureInfo.InvariantCulture);
-                if (!string.IsNullOrEmpty(path)) return "scene:" + path + suffix;
-                string name = scene.name;
-                return "scene:untitled:" + (name ?? string.Empty) + suffix;
-            }
-
-            private static string JoinIndices(int[] indices)
-            {
-                if (indices == null || indices.Length == 0) return string.Empty;
-                var parts = new string[indices.Length];
-                for (int i = 0; i < indices.Length; i++)
-                {
-                    parts[i] = indices[i].ToString(CultureInfo.InvariantCulture);
-                }
-
-                return string.Join(".", parts);
             }
 
             private static string FieldId(string componentId, FieldInfo field)

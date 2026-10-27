@@ -1,0 +1,24 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 6,
+  "game_s": 14.4,
+  "wall_utc": "2026-10-26T18:00:06Z",
+  "type": "inspection",
+  "stage": "transforms",
+  "in_reply_to": 5,
+  "data": {
+    "position_unit": "unity_world_unit",
+    "frame": 1235,
+    "game_objects": []
+  },
+  "caps": {
+    "game_objects": {
+      "limit": 10,
+      "observed": 1,
+      "returned": 2,
+      "truncated": true
+    }
+  },
+  "errors": []
+}

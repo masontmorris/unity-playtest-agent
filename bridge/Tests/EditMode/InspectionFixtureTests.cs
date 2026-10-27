@@ -67,6 +67,7 @@ namespace Playtest.Bridge.Tests
         [TestCase("invalid-observed-below-returned.json", "observed must be at least returned")]
         [TestCase("invalid-truncated-false-below-observed.json", "truncated is false")]
         [TestCase("invalid-truncated-true-complete.json", "truncated is true")]
+        [TestCase("invalid-transform-observed-below-returned.json", "observed must be at least returned")]
         public void CapFixture_FailsForItsIntendedRule(string file, string reason)
         {
             string path = Path.Combine(TestPaths.Contracts, ResultContract, file);

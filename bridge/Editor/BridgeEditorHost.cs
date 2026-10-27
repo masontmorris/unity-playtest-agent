@@ -114,6 +114,22 @@ namespace Playtest.Bridge.Editor
         /// <summary>Idempotent. Never throws: a failure is reported through <see cref="LastError"/>.</summary>
         public static void Start()
         {
+            StartCore(null);
+        }
+
+        /// <summary>
+        /// Start a new preflight session with an explicit, temporary action catalog. A running
+        /// server is never silently reused with a different catalog.
+        /// </summary>
+        public static void StartForPreflight(BridgeActionCatalog actions)
+        {
+            if (actions == null) throw new ArgumentNullException(nameof(actions));
+            if (IsRunning) throw new InvalidOperationException("the bridge is already running");
+            StartCore(actions);
+        }
+
+        private static void StartCore(BridgeActionCatalog preflightActions)
+        {
             if (IsRunning)
             {
                 return;
@@ -147,10 +163,10 @@ namespace Playtest.Bridge.Editor
                 inspection = new EditorInspectionSource();
 
                 string actionsPath = Path.Combine(projectRoot, "Temp", "playtest-bridge-actions.json");
-                BridgeActionCatalog actions;
+                BridgeActionCatalog actions = preflightActions;
                 try
                 {
-                    actions = BridgeActionCatalog.Load(actionsPath);
+                    if (actions == null) actions = BridgeActionCatalog.Load(actionsPath);
                 }
                 catch (Exception ex)
                 {

@@ -1,6 +1,6 @@
 # Unity bridge scripts
 
-Two PowerShell scripts connect this repository's generic bridge package
+PowerShell scripts connect this repository's generic bridge package
 (`bridge/`, package id `com.playtest.bridge`) to a Unity test project. The
 bridge has no game-specific knowledge; the only project-specific values in
 these scripts are the default paths for this worktree and the external test
@@ -226,3 +226,29 @@ scene, using the same version checks, project-lock check and mutex as the test r
 contain game source; keep them local. Discovery includes every loaded scene, including Unity's
 test-runner scene. Review `caps`, `errors` and IL issues before treating a sample as complete.
 This captures code and live state only; it does not perform control calibration or call a model.
+
+## Measure the controlled entity
+
+With this checkout's bridge wired into the project, and no other Editor using it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/measure-controlled-entity.ps1 `
+  -ProjectPath "C:\path\to\game" -OutputPath "C:\path\outside\game\entity.json"
+```
+
+This active probe loads the first enabled scene in Play mode. It discovers keyboard bindings on
+vector-valued actions, takes a sampled idle baseline, and sends each supported key through the
+bridge twice. It records execution and release, positions, limits, thresholds, and unsupported
+vector bindings. Objects that move during the baseline are excluded, and responding descendants
+are grouped under responding ancestors. Multiple independent responding objects remain ambiguous.
+An independent Unity camera is recorded as a viewpoint when it has no discovered input or
+physical body and its displacement matches a directly input-bound responder in two non-parallel
+directions. The original responsive roots and the comparisons remain in the evidence; matching
+motion does not prove a parent-child relationship.
+The result uses Unity world coordinates and world units; their relationship to physical units is
+unknown unless separately measured. The probe is not calibration, and it does not cover devices
+the current keyboard backend cannot drive. Evidence and logs stay under `runs/` or another local
+path outside the game; the output file is never overwritten. The script uses the same Editor lock,
+version checks and mutex as the bridge tests. Unity may still update its own cache or package lock.
+Without an explicitly requested measurement, the normal PlayMode suite checks that the preflight
+host rejects a missing catalog; that check does not measure a controlled entity.

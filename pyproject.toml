@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 playtest-export-schemas = "playtest.contracts.export:main"
 playtest-inspect = "playtest.preflight.cli:main"
+playtest-measure-entity = "playtest.preflight.entity:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/playtest"]

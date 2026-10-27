@@ -112,7 +112,8 @@
     "stage": {
       "enum": [
         "inventory",
-        "discovery"
+        "discovery",
+        "transforms"
       ],
       "title": "Stage",
       "type": "string"
