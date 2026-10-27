@@ -27,10 +27,11 @@ namespace Playtest.Bridge.Transport
         private readonly BridgeActionLease _lease;
         private readonly string _token;
         private readonly object _gate = new object();
+        private readonly object _freshnessGate = new object();
         private readonly HashSet<TcpClient> _clients = new HashSet<TcpClient>();
         private TcpListener _listener;
         private Thread _acceptThread;
-        private ClientSession _active;
+        private volatile ClientSession _active;
         private volatile bool _running;
         private int _port;
 
@@ -125,7 +126,11 @@ namespace Playtest.Bridge.Transport
             }
 
             _running = false;
-            _lease?.Stop("server stop", emitCancelled: false);
+            lock (_freshnessGate)
+            {
+                _lease?.Stop("server stop", emitCancelled: true);
+            }
+
             try
             {
                 _listener?.Stop();
@@ -270,6 +275,11 @@ namespace Playtest.Bridge.Transport
                     }
 
                     _active = session;
+                }
+
+                lock (_freshnessGate)
+                {
+                    _history.Clear();
                 }
 
                 WriteStatus(session);
@@ -485,6 +495,11 @@ namespace Playtest.Bridge.Transport
 
         private void HandleAct(ClientSession session, string line, long? requestSeq)
         {
+            if (!_running)
+            {
+                return;
+            }
+
             if (!BridgeProtocol.TryReadActRequest(line, out ActRequestMessage request, out ProtocolError error))
             {
                 WriteSessionError(session, requestSeq, error.Code, error.Message);
@@ -493,53 +508,72 @@ namespace Playtest.Bridge.Transport
 
             if (_lease == null || _input == null)
             {
-                RejectAct(session, request, BridgeRejectReason.InvalidParams, "no input backend is attached to this bridge");
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "no input backend is attached to this bridge");
                 return;
             }
 
             if (!_actions.TryGet(request.Action, out BridgeActionDefinition action))
             {
-                RejectAct(session, request, BridgeRejectReason.UnknownAction, "unknown action '" + request.Action + "'");
+                RejectAct(session, request, BridgeRejectReason.UnknownAction, "unknown action '" + request.Action + "'", null);
                 return;
             }
 
-            if (!_history.TryGet(request.BasedOnSeq, out BridgeObservationSnapshot basedOn))
+            lock (_freshnessGate)
             {
-                RejectAct(session, request, BridgeRejectReason.StaleAge, "no observation with seq " + request.BasedOnSeq);
-                return;
-            }
+                if (!_running)
+                {
+                    return;
+                }
 
-            double ageS = (DateTime.UtcNow - basedOn.CapturedWallUtc).TotalSeconds;
-            if (ageS > request.MaxAgeS)
-            {
-                RejectAct(
-                    session,
-                    request,
-                    BridgeRejectReason.StaleAge,
-                    "observation is " + ageS.ToString("0.###") + " s old; max_age_s is " + request.MaxAgeS.ToString("0.###"));
-                return;
-            }
+                if (!_history.TryGet(request.BasedOnSeq, out BridgeObservationSnapshot basedOn))
+                {
+                    RejectAct(session, request, BridgeRejectReason.StaleAge, "no observation with seq " + request.BasedOnSeq, null);
+                    return;
+                }
 
-            if (!basedOn.Playing)
-            {
-                RejectAct(session, request, BridgeRejectReason.NotPlaying, "the project is not playing");
-                return;
-            }
+                double ageS = (DateTime.UtcNow - basedOn.CapturedWallUtc).TotalSeconds;
+                if (ageS > request.MaxAgeS)
+                {
+                    RejectAct(
+                        session,
+                        request,
+                        BridgeRejectReason.StaleAge,
+                        "observation is " + ageS.ToString("0.###") + " s old; max_age_s is " + request.MaxAgeS.ToString("0.###"),
+                        request.BasedOnSeq);
+                    return;
+                }
 
-            if (!_history.TryGetLatest(out BridgeObservationSnapshot latest))
-            {
-                latest = basedOn;
-            }
+                if (!basedOn.Playing)
+                {
+                    RejectAct(session, request, BridgeRejectReason.NotPlaying, "the project is not playing", request.BasedOnSeq);
+                    return;
+                }
 
-            if (!DependsOnUnchanged(basedOn, latest, request.DependsOn))
-            {
-                RejectAct(session, request, BridgeRejectReason.StaleFields, "a declared field changed since seq " + request.BasedOnSeq);
-                return;
-            }
+                if (!_history.TryGetLatest(out BridgeObservationSnapshot latest))
+                {
+                    latest = basedOn;
+                }
 
-            if (!_lease.TryStart(request, action, request.BasedOnSeq, out string startError))
-            {
-                RejectAct(session, request, BridgeRejectReason.InvalidParams, startError);
+                if (!latest.Playing)
+                {
+                    RejectAct(session, request, BridgeRejectReason.NotPlaying, "the project is not playing", request.BasedOnSeq);
+                    return;
+                }
+
+                if (!DependsOnUnchanged(basedOn, latest, request.DependsOn))
+                {
+                    RejectAct(session, request, BridgeRejectReason.StaleFields, "a declared field changed since seq " + request.BasedOnSeq, request.BasedOnSeq);
+                    return;
+                }
+
+                if (!_lease.TryStart(request, action, request.BasedOnSeq, out string startError))
+                {
+                    RejectAct(session, request, BridgeRejectReason.InvalidParams, startError, request.BasedOnSeq);
+                }
             }
         }
 
@@ -562,7 +596,7 @@ namespace Playtest.Bridge.Transport
                     return false;
                 }
 
-                if (!JToken.DeepEquals(JToken.FromObject(before), JToken.FromObject(after)))
+                if (!SameValue(before, after))
                 {
                     return false;
                 }
@@ -571,7 +605,22 @@ namespace Playtest.Bridge.Transport
             return true;
         }
 
-        private void RejectAct(ClientSession session, ActRequestMessage request, string reason, string message)
+        private static bool SameValue(object before, object after)
+        {
+            if (before == null || after == null)
+            {
+                return before == null && after == null;
+            }
+
+            return JToken.DeepEquals(JToken.FromObject(before), JToken.FromObject(after));
+        }
+
+        private void RejectAct(
+            ClientSession session,
+            ActRequestMessage request,
+            string reason,
+            string message,
+            long? validatedAgainstSeq)
         {
             Log?.Invoke("act rejected: " + reason);
             EmitExecution(session, new ExecutionRecordMessage
@@ -579,19 +628,14 @@ namespace Playtest.Bridge.Transport
                 ActionId = request.ActionId,
                 Status = BridgeExecStatus.Rejected,
                 RejectReason = reason,
-                ValidatedAgainstSeq = request.BasedOnSeq,
+                ValidatedAgainstSeq = validatedAgainstSeq,
                 WallUtc = DateTime.UtcNow,
             });
         }
 
         private void EmitLeaseRecord(ExecutionRecordMessage record)
         {
-            ClientSession session;
-            lock (_gate)
-            {
-                session = _active;
-            }
-
+            ClientSession session = _active;
             if (session != null)
             {
                 EmitExecution(session, record);
@@ -709,17 +753,26 @@ namespace Playtest.Bridge.Transport
             }
 
             long sentSeq = -1;
-            if (!TryWrite(session, seq =>
+            lock (_freshnessGate)
             {
-                sentSeq = seq;
-                return BuildObservation(session, snapshot, seq);
-            }))
-            {
-                session.Close();
-                return false;
+                if (!ReferenceEquals(_active, session))
+                {
+                    return false;
+                }
+
+                if (!TryWrite(session, seq =>
+                {
+                    sentSeq = seq;
+                    return BuildObservation(session, snapshot, seq);
+                }))
+                {
+                    session.Close();
+                    return false;
+                }
+
+                _history.Add(sentSeq, snapshot);
             }
 
-            _history.Add(sentSeq, snapshot);
             return true;
         }
 

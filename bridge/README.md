@@ -13,11 +13,11 @@ Issues #14–#19 build it in layers:
 | Layer | Verb | Status |
 |---|---|---|
 | Transport, hello/status, project lock | `hello` | Landed (#14) |
-| Continuous observation stream | `observe` | This issue (#15) |
-| Bounded actions, freshness, input leases | `act` | #16 |
+| Continuous observation stream | `observe` | Landed (#15) |
+| Bounded actions, freshness, input leases | `act` | This issue (#16) |
 | Stop, release verification and clock | `stop`, `clock` | #17 |
 | Capture to an offscreen render target | `frame_ref` (part of `observe`) | #18 |
-| Core skeleton, bridge client, fake game | — | #19 |
+| Core skeleton, bridge client, fake game | — | Landed (#19) |
 
 ## Layout
 
@@ -65,6 +65,37 @@ Stop, Editor quit and the Editor's before-reload callback all stop the server an
 lock, so a script recompile leaves no stale lock or leaked socket behind. If another process
 already holds the project lock, Start stops its own server and records a warning with the owner's
 pid and port instead of throwing; the message is available as `BridgeEditorHost.LastError`.
+
+## Actions
+
+`act` executes a named action from a project catalog, not a compiled-in control. The v0 catalog
+is `<project>/Temp/playtest-bridge-actions.json`, written by the test harness for now and by
+preflight later. It is data and is not committed:
+
+```json
+{
+  "actions": {
+    "example_action": {
+      "backend": "input_system",
+      "device": "Keyboard",
+      "control": "w",
+      "default_lease_s": 0.25
+    }
+  }
+}
+```
+
+The bridge looks up the action, checks `based_on_seq`, `max_age_s`, the declared `depends_on`
+paths and the play state atomically, then applies it. A new act releases the previous lease and
+reports it `cancelled`; the new lease reports `running` and then `completed` (or `failed` if
+release cannot be verified). Unknown actions, stale observations, changed fields, a non-playing
+project and backend failures are rejected with the contract's reject reasons. `lease_s` is capped
+at 3600 s. In v0 `params` are free-form and ignored; the catalog's `default_lease_s` or the
+request's `lease_s` sets the hold. `frame_ref` is unavailable until capture (#18), so a
+`depends_on` on it fails closed. The v0 backend is Input System keyboard; the action catalog keeps
+every game-specific binding out of the package. In batch mode it scopes the Input System focus
+settings so injected keys reach the game loop, and restores the previous values on stop; an
+interactive Editor is left alone.
 
 ## Tests
 

@@ -130,6 +130,16 @@ namespace Playtest.Bridge.Actions
                     throw new ArgumentException("every action needs a name", nameof(definitions));
                 }
 
+                if (string.IsNullOrEmpty(definition.Control))
+                {
+                    throw new ArgumentException("action '" + definition.Name + "' needs a control", nameof(definitions));
+                }
+
+                if (definition.DefaultLeaseS <= 0 || double.IsNaN(definition.DefaultLeaseS) || double.IsInfinity(definition.DefaultLeaseS))
+                {
+                    throw new ArgumentException("action '" + definition.Name + "' default lease must be positive", nameof(definitions));
+                }
+
                 parsed[definition.Name] = definition;
             }
 
@@ -178,6 +188,9 @@ namespace Playtest.Bridge.Actions
         string Name { get; }
 
         bool IsAvailable { get; }
+
+        /// <summary>Side-effect-free check that the action can be applied by this backend.</summary>
+        bool TryValidate(BridgeActionDefinition action, out string error);
 
         bool TryApply(BridgeActionDefinition action, out string error);
 

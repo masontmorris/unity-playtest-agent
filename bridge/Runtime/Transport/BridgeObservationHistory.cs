@@ -15,7 +15,6 @@ namespace Playtest.Bridge.Transport
             new Dictionary<long, BridgeObservationSnapshot>();
         private readonly Queue<long> _order = new Queue<long>();
         private readonly int _capacity;
-        private long _latestSeq = -1;
         private BridgeObservationSnapshot _latest;
 
         public BridgeObservationHistory(int capacity = 2048)
@@ -54,9 +53,8 @@ namespace Playtest.Bridge.Transport
                 }
 
                 _bySeq[seq] = snapshot;
-                if (seq >= _latestSeq)
+                if (_latest == null || snapshot.CapturedWallUtc >= _latest.CapturedWallUtc)
                 {
-                    _latestSeq = seq;
                     _latest = snapshot;
                 }
 
@@ -92,7 +90,6 @@ namespace Playtest.Bridge.Transport
                 _bySeq.Clear();
                 _order.Clear();
                 _latest = null;
-                _latestSeq = -1;
             }
         }
     }

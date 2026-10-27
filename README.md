@@ -12,7 +12,7 @@ Day 2. The bridge transport exists; nothing plays a game yet. This section will 
 
 What exists so far:
 - **Contracts** (`src/playtest/contracts/`): typed models for the bridge protocol, choices, decisions, turn records, directives, findings and run records. JSON Schema is exported to `schemas/`, with shared fixtures in `fixtures/contracts/`.
-- **Bridge v0** (`bridge/`, Unity package): a generic loopback JSONL transport with `upa/0` protocol checks, token auth, a one-Editor project lock, and the `hello`/`status` handshake. It loads by reference in the clean FPSKit fork. `observe`, `act`, `stop` and `clock` land in #15–#19.
+- **Bridge v0** (`bridge/`, Unity package): a generic loopback JSONL transport with `upa/0` protocol checks, token auth, a one-Editor project lock, `hello`/`status`, a 20 Hz observation stream, and bounded actions with atomic freshness checks and input leases. It loads by reference in the clean FPSKit fork. `stop`/`clock` and capture land in #17–#18.
 - **S1 decision parsing**: rejects an invalid answer and never repairs it.
 - **Adherence checker**: fails a run if anything other than S1's choice reached the game.
 - **CI**: tests, a name-blind lint over the core, a generic-bridge lint, and a gitleaks secret scan.

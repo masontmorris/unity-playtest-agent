@@ -12,6 +12,7 @@ namespace Playtest.Bridge.Tests
     internal sealed class FakeInputBackend : IBridgeInputBackend
     {
         public bool Available = true;
+        public bool FailValidate;
         public bool FailApply;
         public bool FailRelease;
         public bool ReleaseVerified = true;
@@ -26,6 +27,30 @@ namespace Playtest.Bridge.Tests
         public bool IsAvailable
         {
             get { return Available; }
+        }
+
+        public bool TryValidate(BridgeActionDefinition action, out string error)
+        {
+            error = null;
+            if (!Available)
+            {
+                error = "the fake backend is unavailable";
+                return false;
+            }
+
+            if (action == null)
+            {
+                error = "missing action definition";
+                return false;
+            }
+
+            if (FailValidate)
+            {
+                error = "fake validate failure";
+                return false;
+            }
+
+            return true;
         }
 
         public bool TryApply(BridgeActionDefinition action, out string error)
@@ -274,6 +299,80 @@ namespace Playtest.Bridge.Tests
                 Assert.That(rejected.RejectReason, Is.EqualTo(BridgeRejectReason.StaleAge));
                 Assert.That(_input.Releases, Is.EqualTo(releasesBefore), "a stale act must not release the current lease");
                 Assert.That(_input.Applied, Is.EqualTo(new[] { "move" }));
+            }
+        }
+
+        [Test]
+        public void Act_OversizedLease_IsRejectedAndSessionSurvives()
+        {
+            using (var client = new TestClient(_server))
+            {
+                Handshake(client);
+                ObservationMessage observation = ObserveOnce(client);
+
+                client.Send(Act("a-huge", observation.Seq, leaseS: 1e300));
+                ExecutionRecordMessage rejected = ReadExecution(client);
+
+                Assert.That(rejected.Status, Is.EqualTo(BridgeExecStatus.Rejected));
+                Assert.That(rejected.RejectReason, Is.EqualTo(BridgeRejectReason.InvalidParams));
+                Assert.That(_input.Applied, Is.Empty);
+
+                ObservationMessage again = ObserveOnce(client);
+                Assert.That(again.Seq, Is.GreaterThan(observation.Seq));
+            }
+        }
+
+        [Test]
+        public void Act_NullDependencyValue_IsHandledWithoutDisconnecting()
+        {
+            _source.Current = new BridgeObservationSnapshot
+            {
+                Scene = "scene-test",
+                Playing = true,
+                TimeScale = 1,
+                Frame = 10,
+                GameS = 1.5,
+                Public = new Dictionary<string, object>(),
+                Ui = null,
+                ReaderErrors = new List<ObservationReaderError>(),
+                CapturedWallUtc = DateTime.UtcNow,
+            };
+
+            using (var client = new TestClient(_server))
+            {
+                Handshake(client);
+                ObservationMessage observation = ObserveOnce(client);
+
+                client.Send(Act("a-null-field", observation.Seq, dependsOn: new List<string> { "ui" }));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Running));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Completed));
+            }
+        }
+
+        [Test]
+        public void Act_BackendValidationFailure_DoesNotReleaseTheHeldLease()
+        {
+            using (var client = new TestClient(_server))
+            {
+                Handshake(client);
+                ObservationMessage first = ObserveOnce(client);
+                client.Send(Act("a-held", first.Seq, leaseS: 5.0));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Running));
+                int releasesBefore = _input.Releases;
+
+                _input.FailValidate = true;
+                client.Send(Act("a-invalid", first.Seq));
+                ExecutionRecordMessage rejected = ReadExecution(client);
+                Assert.That(rejected.RejectReason, Is.EqualTo(BridgeRejectReason.InvalidParams));
+                Assert.That(_input.Releases, Is.EqualTo(releasesBefore));
+
+                _input.FailValidate = false;
+                _source.Current = ActFakeObservationSource.Snapshot(true, 2);
+                ObservationMessage second = ObserveOnce(client);
+                client.Send(Act("a-next", second.Seq, leaseS: 0.05));
+                ExecutionRecordMessage cancelled = ReadExecution(client);
+                Assert.That(cancelled.ActionId, Is.EqualTo("a-held"));
+                Assert.That(cancelled.Status, Is.EqualTo(BridgeExecStatus.Cancelled));
             }
         }
 

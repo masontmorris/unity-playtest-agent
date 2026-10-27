@@ -12,6 +12,8 @@ namespace Playtest.Bridge.Actions
     /// </summary>
     public sealed class BridgeActionLease : IDisposable
     {
+        public const double MaxLeaseSeconds = 3600;
+
         private readonly IBridgeInputBackend _backend;
         private readonly Action<ExecutionRecordMessage> _emit;
         private readonly Func<DateTime> _utcNow;
@@ -86,6 +88,12 @@ namespace Playtest.Bridge.Actions
                 return false;
             }
 
+            if (leaseS > MaxLeaseSeconds)
+            {
+                error = "lease_s must be at most " + MaxLeaseSeconds.ToString("0") + " s";
+                return false;
+            }
+
             lock (_gate)
             {
                 if (_disposed)
@@ -100,9 +108,22 @@ namespace Playtest.Bridge.Actions
                     return false;
                 }
 
-                EndActiveLocked(BridgeExecStatus.Cancelled);
-                if (!_backend.TryApply(action, out error))
+                if (!_backend.TryValidate(action, out error))
                 {
+                    return false;
+                }
+
+                EndActiveLocked(BridgeExecStatus.Cancelled);
+                try
+                {
+                    if (!_backend.TryApply(action, out error))
+                    {
+                        return false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    error = ex.GetType().Name + ": " + ex.Message;
                     return false;
                 }
 
@@ -242,10 +263,17 @@ namespace Playtest.Bridge.Actions
             verified = false;
             try
             {
-                return _backend.TryRelease(out verified, out error);
+                bool released = _backend.TryRelease(out verified, out error);
+                if (!released)
+                {
+                    verified = false;
+                }
+
+                return released;
             }
             catch (Exception ex)
             {
+                verified = false;
                 error = ex.GetType().Name + ": " + ex.Message;
                 return false;
             }
