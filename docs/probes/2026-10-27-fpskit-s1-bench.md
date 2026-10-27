@@ -56,3 +56,6 @@ d1.1 API-reported usage; a reservation is not a bill or a provider-enforced spen
 
 A later human-reviewed revision can be scored offline against the original calls, with both label
 hashes and the reviewer recorded. A post-hoc review remains distinct from this frozen-draft result.
+
+A shuffled re-test of `mammoth-1` followed the same day. It randomises the id map and hold order per
+pass and adds the terminal decision; see [its results](2026-10-27-fpskit-s1-bench-retest.md).

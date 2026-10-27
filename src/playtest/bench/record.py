@@ -7,6 +7,8 @@ import asyncio
 import hashlib
 import json
 import math
+import os
+import random
 import subprocess
 import sys
 import time
@@ -28,6 +30,32 @@ OBJECTIVE = (
     "In this pass, check each offered control once, then finish. A check is a completed "
     "hold requested for 1.2 seconds with verified release; inspect its measured duration and effect."
 )
+
+
+PROTOCOLS = ("ascending", "shuffled")
+
+
+def pass_plan(protocol: str, seed: int | None, pass_no: int, count: int = 8) -> tuple[list[int], list[int]]:
+    """Ids and hold order for one pass.
+
+    Control `i` (in sorted-name order) gets the id `c{ids[i]}`, and the controls are held in `visit`
+    order. `ascending` is the first corpus: ids and hold order both follow the sorted names.
+    `shuffled` draws two independent permutations from the seed and redraws an identity id map, an
+    identity hold order, or a hold order whose ids ascend, so completed checks are not an id prefix.
+    """
+    identity = list(range(count))
+    ascending = [i + 1 for i in identity]
+    if protocol == "ascending":
+        return ascending, identity
+    if protocol != "shuffled" or isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("the shuffled protocol needs an integer seed")
+    rng = random.Random(f"s1-bench-shuffled:{seed}:{pass_no}")
+    while True:
+        ids, visit = ascending[:], identity[:]
+        rng.shuffle(ids)
+        rng.shuffle(visit)
+        if ids != ascending and visit != identity and [ids[i] for i in visit] != ascending:
+            return ids, visit
 
 
 def digest(value: str | bytes) -> str:
@@ -150,7 +178,8 @@ def _save(output: Path, data: dict[str, Any]) -> None:
 
 
 async def record(client: BridgeClient, selected: dict[str, Any], calibration: dict[str, Any],
-                 result: dict[str, Any], output: Path) -> None:
+                 result: dict[str, Any], output: Path, *, protocol: str = "ascending",
+                 seed: int | None = None) -> None:
     if selected.get("status") != "identified" or calibration.get("entity_id") != selected.get("entity_id"):
         raise ValueError("the identified entity and calibrated entity do not match")
     if selected.get("stop", {}).get("release_verified") is not True:
@@ -166,39 +195,59 @@ async def record(client: BridgeClient, selected: dict[str, Any], calibration: di
     if any(entities[0].get(k) != selected["entity"].get(k) for k in ("scene_id", "scene_path", "path")):
         raise ValueError("the entity descriptor changed")
     choices = calibrated_choices(calibration, discovery)
-    actions = [choice for choice in choices if choice.kind is ChoiceKind.action]
-    result["control_order"] = [choice.action for choice in actions]
+    controls = [choice for choice in choices if choice.kind is ChoiceKind.action]
+    core = [choice for choice in choices if choice.kind is not ChoiceKind.action]
+    result["control_order"] = [choice.action for choice in controls]
     result["choice_provenance"] = "calibration-derived provisional catalog, not a preflight manifest"
+    if protocol == "shuffled":
+        result.setdefault("protocol", {"name": protocol, "seed": seed, "passes": []})
     _save(output, result)
     initial = _entity_snapshot(await client.inspect("transforms"), entity_id)
     seen_errors, errors = _new_runtime_errors(initial, 0)
     if errors:
         raise ValueError("game errors were already present before recording")
+
+    async def decide(pass_no: int, frame_id: str, offered: list[Choice], completed: list[str],
+                     scripted: str | None, **extra: Any) -> tuple[dict[str, Any], Observation, dict[str, Any]]:
+        """Observe, build and checkpoint one decision frame; nothing is sent to the game."""
+        nonlocal seen_errors
+        before_response = await client.inspect("transforms")
+        before = _entity_snapshot(before_response, entity_id)
+        before["inspection_seq"] = before_response.seq
+        seen_errors, errors = _new_runtime_errors(before, seen_errors)
+        if errors:
+            raise ValueError("game errors appeared before the next hold")
+        obs = await client.observe_once()
+        if obs.clock_mode.value != "realtime" or not obs.playing or obs.paused or obs.time_scale != 1.0:
+            raise ValueError("a decision observation was not in unpaused real time at scale 1")
+        choice_set = ChoiceSet(set_version=len(result["frames"]), built_from_seq=obs.seq, choices=offered)
+        facts = list(completed)
+        facts.append(f"Entity position from inspection seq {before['inspection_seq']} at game time {before['game_time_s']}: "
+                     f"{before['position']} in Unity world units.")
+        frame = {"id": frame_id, "pass": pass_no, **extra,
+                 "objective": OBJECTIVE, "observation": obs.model_dump(mode="json"),
+                 "choice_set": choice_set.model_dump(mode="json"), "facts": facts,
+                 "age_s": None, "sample_gap_s": None, "game_view": None,
+                 "before_entity": before, "scripted_choice_id": scripted,
+                 "execution": None, "after_observation": None, "after_entity": None}
+        frame["payload_sha256"] = digest(canonical(context_for(frame)))
+        result["frames"].append(frame)
+        _save(output, result)  # Preserve an attempted turn if the bridge disconnects.
+        return frame, obs, before
+
     for pass_no in range(1, PASSES + 1):
+        ids, visit = pass_plan(protocol, seed, pass_no, len(controls))
+        if protocol == "shuffled":
+            result["protocol"]["passes"].append({"pass": pass_no, "ids": ids, "visit": visit})
+        held = [control.model_copy(update={"id": f"c{ids[i]}"}) for i, control in enumerate(controls)]
+        offered = sorted(held, key=lambda item: int(item.id[1:])) + core
         completed: list[str] = []
-        for choice in actions:
-            before_response = await client.inspect("transforms")
-            before = _entity_snapshot(before_response, entity_id)
-            before["inspection_seq"] = before_response.seq
-            seen_errors, errors = _new_runtime_errors(before, seen_errors)
-            if errors:
-                raise ValueError("game errors appeared before the next hold")
-            obs = await client.observe_once()
-            if obs.clock_mode.value != "realtime" or not obs.playing or obs.paused or obs.time_scale != 1.0:
-                raise ValueError("a decision observation was not in unpaused real time at scale 1")
-            choice_set = ChoiceSet(set_version=len(result["frames"]), built_from_seq=obs.seq, choices=choices)
-            facts = list(completed)
-            facts.append(f"Entity position from inspection seq {before['inspection_seq']} at game time {before['game_time_s']}: "
-                         f"{before['position']} in Unity world units.")
-            frame = {"id": f"pass-{pass_no:02d}-{choice.id}", "pass": pass_no,
-                     "objective": OBJECTIVE, "observation": obs.model_dump(mode="json"),
-                     "choice_set": choice_set.model_dump(mode="json"), "facts": facts,
-                     "age_s": None, "sample_gap_s": None, "game_view": None,
-                     "before_entity": before, "scripted_choice_id": choice.id,
-                     "execution": None, "after_observation": None, "after_entity": None}
-            frame["payload_sha256"] = digest(canonical(context_for(frame)))
-            result["frames"].append(frame)
-            _save(output, result)  # Preserve an attempted turn if the bridge disconnects.
+        for step, index in enumerate(visit, 1):
+            choice = held[index]
+            shuffled = protocol == "shuffled"
+            frame, obs, before = await decide(
+                pass_no, f"pass-{pass_no:02d}-s{step}" if shuffled else f"pass-{pass_no:02d}-{choice.id}",
+                offered, completed, choice.id, **({"position": step, "kind": "check"} if shuffled else {}))
             executions = await client.act(action_id=f"bench-{pass_no}-{choice.id}", choice_id=choice.id,
                                           action=choice.action, params=dict(choice.params), based_on_seq=obs.seq,
                                           max_age_s=2.0, lease_s=HOLD_S)
@@ -231,6 +280,10 @@ async def record(client: BridgeClient, selected: dict[str, Any], calibration: di
                              f"net displacement between inspection seq {before['inspection_seq']} and "
                              f"{after['inspection_seq']}: {distance} world units.")
             await asyncio.sleep(0.2)
+        if protocol == "shuffled":
+            # Every control is checked, so this is the decision the first corpus never recorded.
+            await decide(pass_no, f"pass-{pass_no:02d}-fin", offered, completed, None,
+                         position=len(visit) + 1, kind="terminal")
     final = _entity_snapshot(await client.inspect("transforms"), entity_id)
     _, errors = _new_runtime_errors(final, seen_errors)
     if errors:
@@ -240,7 +293,7 @@ async def record(client: BridgeClient, selected: dict[str, Any], calibration: di
 
 
 async def _run(project: Path, selected: dict[str, Any], calibration: dict[str, Any],
-               result: dict[str, Any], output: Path) -> None:
+               result: dict[str, Any], output: Path, protocol: str = "ascending", seed: int | None = None) -> None:
     def mark_inconclusive(message: str) -> None:
         previous = result.get("error")
         result.update(status="inconclusive", error=f"{previous}; {message}" if previous else message)
@@ -248,7 +301,7 @@ async def _run(project: Path, selected: dict[str, Any], calibration: dict[str, A
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
         result["unity_version"] = client.status.unity_version if client.status is not None else None
-        await record(client, selected, calibration, result, output)
+        await record(client, selected, calibration, result, output, protocol=protocol, seed=seed)
     except (BridgeError, ValueError, KeyError, TypeError) as exc:
         mark_inconclusive(f"{type(exc).__name__}: {exc}")
     finally:
@@ -270,7 +323,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--entity", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    # The Unity host starts this process with a fixed command line, so the environment can supply these.
+    parser.add_argument("--protocol", choices=PROTOCOLS, default=os.environ.get("UPA_BENCH_PROTOCOL") or "ascending")
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args(argv)
+    protocol = args.protocol
+    seed = args.seed
+    if seed is None and os.environ.get("UPA_BENCH_SEED"):
+        try:
+            seed = int(os.environ["UPA_BENCH_SEED"])
+        except ValueError:
+            parser.error("UPA_BENCH_SEED must be an integer")
+    if protocol not in PROTOCOLS:
+        parser.error(f"--protocol must be one of {', '.join(PROTOCOLS)}")
+    if protocol == "shuffled" and seed is None:
+        parser.error("the shuffled protocol needs --seed")
     project, output = args.project.resolve(), args.output.resolve()
     if output.is_relative_to(project) or output.exists():
         parser.error("--output must be a new file outside the Unity project")
@@ -279,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         entity_bytes, calibration_bytes = args.entity.read_bytes(), args.calibration.read_bytes()
         selected, calibration = json.loads(entity_bytes), json.loads(calibration_bytes)
         result: dict[str, Any] = {
-            "version": 1, "status": "recording", "error": None,
+            "version": 2 if protocol == "shuffled" else 1, "status": "recording", "error": None,
             "game_commit": _git_head(project), "repo_commit": _git_head(repo),
             "game_worktree_before": _game_worktree(project),
             "bridge_source_sha256": _source_hash(repo / "bridge", {".cs", ".asmdef", ".json"}),
@@ -290,10 +357,12 @@ def main(argv: list[str] | None = None) -> int:
             "clock_mode": "realtime", "reset": "one scene load; no reset between passes",
             "requested_hold_s": HOLD_S, "controller_lease_s": HOLD_S, "frames": [],
         }
+        if protocol == "shuffled":
+            result["protocol"] = {"name": protocol, "seed": seed, "passes": []}
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8") as stream:
             json.dump(result, stream, allow_nan=False)
-        asyncio.run(_run(project, selected, calibration, result, output))
+        asyncio.run(_run(project, selected, calibration, result, output, protocol, seed))
     except (OSError, ValueError, BridgeError, BridgeLockError) as exc:
         print(f"recording failed: {exc}", file=sys.stderr)
         return 1

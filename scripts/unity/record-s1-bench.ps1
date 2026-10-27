@@ -4,7 +4,9 @@ param(
     [Parameter(Mandatory = $true)][string]$EntityPath,
     [Parameter(Mandatory = $true)][string]$CalibrationPath,
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
-    [string]$UnityPath
+    [string]$UnityPath,
+    [ValidateSet('ascending', 'shuffled')][string]$Protocol = 'ascending',
+    [Nullable[int]]$Seed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,10 +28,12 @@ $expected = 'file:' + (Join-Path $repoRoot 'bridge').Replace('\', '/')
 if (-not [string]::Equals($manifest.dependencies.'com.playtest.bridge', $expected, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'The game is not wired to this checkout. Wire this bridge package before recording.'
 }
+if ($Protocol -eq 'shuffled' -and $null -eq $Seed) { throw 'The shuffled protocol needs -Seed.' }
 $python = (& uv run --directory $repoRoot python -c 'import sys; print(sys.executable)')
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($python)) { throw 'Could not locate the repository Python executable.' }
 New-Item -ItemType Directory -Path $output | Out-Null
-$names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION')
+$names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION',
+           'UPA_BENCH_PROTOCOL', 'UPA_BENCH_SEED')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
@@ -37,6 +41,8 @@ try {
     $env:UPA_BENCH_PYTHON = $python
     $env:UPA_BENCH_ENTITY = $entity
     $env:UPA_BENCH_CALIBRATION = $calibration
+    $env:UPA_BENCH_PROTOCOL = $Protocol
+    $env:UPA_BENCH_SEED = if ($null -ne $Seed) { [string]$Seed } else { '' }
     $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
     $runnerArgs = @('-ExecutionPolicy', 'Bypass', '-File', $runner, '-ProjectPath', $project,
                     '-TestPlatform', 'PlayMode', '-TestFilter', 'Playtest.Bridge.Tests.BenchRecordingPlayModeTests',

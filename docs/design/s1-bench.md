@@ -192,6 +192,72 @@ preflight manifest. Synthetic tests validate the machinery only and say nothing 
 results against unreviewed assistant-drafted labels are preliminary. The user approved the low-cost
 envelope and explicitly directed the run despite the unverified balances and Liquid d1.1 price.
 
+## Mammoth shuffled re-test
+
+Predeclared on 27 October 2026, after the first replay and before any model call on the new frames.
+The first replay gave `mammoth-1` 40/40 on a protocol that held the controls in id order, listed
+`c1` first, and never recorded the final decision. This re-test asks whether that result survives
+removing those regularities. It checks one arm. It is not a comparison, so it says nothing about
+`elephant-1` or `liquid-d1.1`, and it does not test play quality.
+
+- **Decision it informs:** whether `mammoth-1` can be described as having passed the state-tracking
+  screen. No threshold below converts a metric into an action; a person chooses.
+- **Unit and population:** one decision frame from a new recording on FPSKit `25e43fb`, Unity
+  `6000.5.4f1`: 5 passes × (8 check frames + 1 terminal frame) = 45 frames.
+- **What changes (a bundle, not an ablation):** per pass, a seeded permutation assigns the ids
+  `c1`–`c8` to the eight controls, and an independent seeded permutation sets the order the controls
+  are held in. Draws come from `random.Random("s1-bench-shuffled:2410:<pass>")`; identity
+  permutations, and a hold order whose ids ascend, are redrawn. The choice list stays sorted by id,
+  so which control is listed first now changes by pass, and the completed checks are no longer a
+  prefix of the id order. After the eighth hold a ninth frame records the decision with every control
+  checked; the recorder takes no action on it. A miss on a check frame cannot be attributed to the
+  permutation or the hold order separately; a miss on a terminal frame is attributable to that frame
+  class.
+- **Held fixed:** objective text, instructions, choice labels, calibration record, request body shape,
+  model alias (`decision-models/baseten-mammoth-27b-latest`), transport, and the production context
+  builder. Text only; no image.
+- **Labels (draft rule, frozen before any call):** on a check frame every control not yet completed
+  in that pass is acceptable; `wait`, `finish` and a completed control are not. On a terminal frame
+  only `finish` is acceptable. The completed set is read from the recorded facts and cross-checked
+  against the recorded executions, and a mismatch stops labelling. The author is Claude Sonnet 5.5 and
+  human review is pending, so the result is preliminary. The same single ruling as before carries the
+  weight: that repeating a completed check is a miss.
+- **Primary metric:** top-1 acceptable over the 45 frames, reported separately for the 40 check
+  frames and the 5 terminal frames, and by position and pass.
+- **Secondary:** acceptable mass (mean, minimum, and correct picks under 0.6), misses by kind
+  (re-check, premature `finish`, `wait`, missed `finish`), the share of check frames whose completed
+  set is a prefix of the id order (how far the shuffle broke the old regularity), p50/p95 latency
+  (the clock steps in about 15.6 ms), and cost, which is `null` because Baseten returns none.
+- **Determinism check:** five frames chosen by seed are sent a second time; report whether each
+  distribution is bit-identical.
+- **Reading rule:** every miss is named by frame id and kind. No interval, p-value or paired
+  comparison with the first corpus is claimed, because the frames differ. Three or more misses in 45
+  means the first result did not carry over; fewer means it carried over with the named exceptions.
+  A clean 45/45 would show no sign of dependence on id order, prefix completion or the missing
+  terminal frame. It would not show the model is good at play: the task is still bookkeeping, on one
+  game and one machine. An API failure is `unknown`, not a miss; an incomplete recording is
+  `inconclusive`.
+- **Budget:** at most 50 calls (45 + 5), `mammoth-1` only. The reserved bound is $0.00016 a call and
+  $0.008 in total, which is the first run's bound and not a Baseten price. `docs/budget.md` lists
+  Baseten as free until about 28 October with no published later price, and Baseten returns no cost
+  field, so billing is unknown rather than zero. The balance is unverified. The approval on record is
+  the user's reply "run the mammoth re-test!" to a proposal of about 50 Mammoth-only calls, made
+  after being told Baseten returns no cost and the trial is advertised as free.
+- **Freeze:** the plan binds the corpus, labels, approval, runner, replay-helper and recorder
+  source hashes. `src/playtest/bench/replay.py` is not edited, so the first run's plan still matches
+  its source.
+
+Run it with `scripts/unity/record-s1-bench.ps1 -Protocol shuffled -Seed 2410`, then
+`python -m playtest.bench.retest labels`, `run` and `score`.
+
+**Outcome and one deviation.** The first run stopped at request 41 of 50 when a call ended in a
+transport error with no response, which the runner treats as a stop because the outcome is unknown.
+The user was asked and chose to resume the nine unattempted requests and retry the failed frame, so the
+re-test used 51 requests, not the 50 predeclared. A continuation directory holds the 40 answered rows
+copied byte for byte plus the 10 new ones, and a reconciliation record documents the error; the failed
+row stays in the first ledger and `retest.py` was not edited. The result is in
+`docs/probes/2026-10-27-fpskit-s1-bench-retest.md`.
+
 ## S1 ownership and payload fidelity
 
 Each stored frame contains the original bridge observation, its sequence-bound choice set and
