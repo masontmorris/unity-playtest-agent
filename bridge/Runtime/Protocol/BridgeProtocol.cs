@@ -60,6 +60,11 @@ namespace Playtest.Bridge.Protocol
             "realtime", "stepped",
         };
 
+        public static readonly IReadOnlyList<string> InspectionStages = new[]
+        {
+            "inventory", "discovery",
+        };
+
         public static string Serialize(Envelope message)
         {
             if (message == null)
@@ -118,6 +123,16 @@ namespace Playtest.Bridge.Protocol
         public static bool TryReadClockRequest(string json, out ClockRequestMessage request, out ProtocolError error)
         {
             return TryRead(json, "clock", out request, out error);
+        }
+
+        public static bool TryReadInspectRequest(string json, out InspectRequestMessage request, out ProtocolError error)
+        {
+            return TryRead(json, "inspect", out request, out error);
+        }
+
+        public static bool TryReadInspectionResult(string json, out InspectionResultMessage result, out ProtocolError error)
+        {
+            return TryRead(json, "inspection", out result, out error);
         }
 
         public static bool TryRead<T>(string json, string expectedType, out T message, out ProtocolError error)
@@ -656,6 +671,227 @@ namespace Playtest.Bridge.Protocol
                 if (isSetScale != hasScale)
                 {
                     error = Invalid("time_scale is required exactly when op is 'set_scale'");
+                    return false;
+                }
+            }
+            else if (message is InspectRequestMessage inspect)
+            {
+                if (!HasString(obj, "stage") || !Contains(InspectionStages, inspect.Stage))
+                {
+                    error = Invalid("stage must be a known inspection stage");
+                    return false;
+                }
+            }
+            else if (message is InspectionResultMessage inspection)
+            {
+                if (!HasString(obj, "stage") || !Contains(InspectionStages, inspection.Stage))
+                {
+                    error = Invalid("stage must be a known inspection stage");
+                    return false;
+                }
+
+                if (!HasInteger(obj, "in_reply_to") || inspection.InReplyTo < 0)
+                {
+                    error = Invalid("in_reply_to is required and must be a non-negative integer");
+                    return false;
+                }
+
+                JToken data = obj["data"];
+                if (data == null || data.Type != JTokenType.Object)
+                {
+                    error = Invalid("data is required and must be an object");
+                    return false;
+                }
+
+                JToken caps = obj["caps"];
+                if (caps == null || caps.Type != JTokenType.Object)
+                {
+                    error = Invalid("caps is required and must be an object");
+                    return false;
+                }
+
+                foreach (JProperty property in ((JObject)caps).Properties())
+                {
+                    JToken cap = property.Value;
+                    if (cap == null || cap.Type != JTokenType.Object)
+                    {
+                        error = Invalid("caps." + property.Name + " must be an object");
+                        return false;
+                    }
+
+                    JToken limit = cap["limit"];
+                    if (limit == null || limit.Type != JTokenType.Integer || (long)limit <= 0)
+                    {
+                        error = Invalid("caps." + property.Name + ".limit must be a positive integer");
+                        return false;
+                    }
+
+                    JToken observed = cap["observed"];
+                    if (observed == null)
+                    {
+                        error = Invalid("caps." + property.Name + ".observed is required; use null when unknown");
+                        return false;
+                    }
+
+                    long? observedValue = null;
+                    if (observed.Type != JTokenType.Null)
+                    {
+                        if (observed.Type != JTokenType.Integer || (long)observed < 0)
+                        {
+                            error = Invalid("caps." + property.Name + ".observed must be null or a non-negative integer");
+                            return false;
+                        }
+
+                        observedValue = (long)observed;
+                    }
+
+                    JToken returned = cap["returned"];
+                    if (returned == null || returned.Type != JTokenType.Integer || (long)returned < 0)
+                    {
+                        error = Invalid("caps." + property.Name + ".returned must be a non-negative integer");
+                        return false;
+                    }
+
+                    JToken truncated = cap["truncated"];
+                    if (truncated == null)
+                    {
+                        error = Invalid("caps." + property.Name + ".truncated is required; use null when unknown");
+                        return false;
+                    }
+
+                    bool? truncatedValue = null;
+                    if (truncated.Type != JTokenType.Null)
+                    {
+                        if (truncated.Type != JTokenType.Boolean)
+                        {
+                            error = Invalid("caps." + property.Name + ".truncated must be null or a boolean");
+                            return false;
+                        }
+
+                        truncatedValue = (bool)truncated;
+                    }
+
+                    if (!ValidateCap(
+                        property.Name,
+                        (long)limit,
+                        observedValue,
+                        (long)returned,
+                        truncatedValue,
+                        out string capError))
+                    {
+                        error = Invalid(capError);
+                        return false;
+                    }
+                }
+
+                JToken errors = obj["errors"];
+                if (errors == null || errors.Type != JTokenType.Array)
+                {
+                    error = Invalid("errors is required and must be an array of strings");
+                    return false;
+                }
+
+                foreach (JToken item in errors.Children())
+                {
+                    if (item.Type != JTokenType.String)
+                    {
+                        error = Invalid("errors must contain only strings");
+                        return false;
+                    }
+                }
+            }
+
+            error = null;
+            return true;
+        }
+
+        /// <summary>
+        /// Checks the cross-field cap rules a source-built result must satisfy before it can be
+        /// sent. The exported JSON Schema cannot express them, so the DTO and every producer use
+        /// this helper; a contradiction is an error, never a silently clamped count.
+        /// </summary>
+        public static bool TryValidateInspectionCaps(Dictionary<string, InspectionCap> caps, out string error)
+        {
+            if (caps == null)
+            {
+                error = "caps is required and must be an object";
+                return false;
+            }
+
+            foreach (KeyValuePair<string, InspectionCap> entry in caps)
+            {
+                if (entry.Value == null)
+                {
+                    error = "caps." + entry.Key + " must be an object";
+                    return false;
+                }
+
+                if (!ValidateCap(
+                    entry.Key,
+                    entry.Value.Limit,
+                    entry.Value.Observed,
+                    entry.Value.Returned,
+                    entry.Value.Truncated,
+                    out error))
+                {
+                    return false;
+                }
+            }
+
+            error = null;
+            return true;
+        }
+
+        private static bool ValidateCap(
+            string name,
+            long limit,
+            long? observed,
+            long returned,
+            bool? truncated,
+            out string error)
+        {
+            string prefix = "caps." + name;
+            if (limit <= 0)
+            {
+                error = prefix + ".limit must be greater than 0";
+                return false;
+            }
+
+            if (returned < 0)
+            {
+                error = prefix + ".returned must be a non-negative integer";
+                return false;
+            }
+
+            if (returned > limit)
+            {
+                error = prefix + ".returned must not exceed limit";
+                return false;
+            }
+
+            if (observed.HasValue)
+            {
+                if (observed.Value < 0)
+                {
+                    error = prefix + ".observed must be null or a non-negative integer";
+                    return false;
+                }
+
+                if (observed.Value < returned)
+                {
+                    error = prefix + ".observed must be at least returned";
+                    return false;
+                }
+
+                if (truncated == true && returned >= observed.Value)
+                {
+                    error = prefix + ".truncated is true but returned covers observed";
+                    return false;
+                }
+
+                if (truncated == false && returned != observed.Value)
+                {
+                    error = prefix + ".truncated is false but returned differs from observed";
                     return false;
                 }
             }

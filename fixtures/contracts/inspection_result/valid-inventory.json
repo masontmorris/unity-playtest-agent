@@ -1,0 +1,28 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 1,
+  "game_s": null,
+  "wall_utc": "2026-10-26T18:00:02Z",
+  "type": "inspection",
+  "stage": "inventory",
+  "in_reply_to": 2,
+  "data": {
+    "unity_version": "6000.5.4f1",
+    "scripts": [
+      {
+        "name": "Example.Assembly",
+        "path": "Assets/Scripts/Example.cs"
+      }
+    ]
+  },
+  "caps": {
+    "scripts": {
+      "limit": 1000,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    }
+  },
+  "errors": []
+}

@@ -57,3 +57,18 @@ def test_schema_not_drifted(name):
     committed = SCHEMA_DIR / f"{name}.schema.json"
     assert committed.exists(), "run `uv run playtest-export-schemas`"
     assert committed.read_text(encoding="utf-8") == render(name), "schema drifted: run `uv run playtest-export-schemas`"
+
+
+def test_inspection_caps_fail_for_their_intended_rule():
+    """Cap fixtures must fail on the cross-field rule, not on a missing field or bad type."""
+    reasons = {
+        "invalid-returned-over-limit": "returned must not exceed limit",
+        "invalid-observed-below-returned": "observed must be at least returned",
+        "invalid-truncated-false-below-observed": "truncated is false",
+        "invalid-truncated-true-complete": "truncated is true",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "inspection_result" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["inspection_result"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"

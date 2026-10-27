@@ -18,6 +18,8 @@ CONTRACTS: dict[str, type[BaseModel]] = {
     "stop_request": bridge.StopRequest,
     "stop_result": bridge.StopResult,
     "clock_request": bridge.ClockRequest,
+    "inspect_request": bridge.InspectRequest,
+    "inspection_result": bridge.InspectResult,
     "bridge_error": bridge.BridgeError,
     "choice_set": loop.ChoiceSet,
     "decision": loop.Decision,

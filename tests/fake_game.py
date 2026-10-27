@@ -32,6 +32,9 @@ from playtest.contracts.bridge import (
     ExecStatus,
     Hello,
     InputBackend,
+    InspectRequest,
+    InspectResult,
+    InspectionCap,
     ObserveRequest,
     Observation,
     RejectReason,
@@ -63,7 +66,7 @@ def _resolve(node: object, path: str) -> object:
 
 
 class FakeGame:
-    """An asyncio TCP server implementing the five bridge verbs."""
+    """An asyncio TCP server implementing the six bridge verbs."""
 
     def __init__(
         self,
@@ -74,6 +77,8 @@ class FakeGame:
         rate_hz: float = 20.0,
         clock_mode: ClockMode = ClockMode.realtime,
         clock_control: bool = True,
+        inspect_supported: bool = True,
+        inspect_silent: bool = False,
         reject_acts: RejectReason | None = None,
     ) -> None:
         env_token = os.environ.get("UPA_BRIDGE_TOKEN")
@@ -83,6 +88,8 @@ class FakeGame:
         self._rate_hz = rate_hz
         self._clock_mode = clock_mode
         self._clock_control = clock_control
+        self._inspect_supported = inspect_supported
+        self._inspect_silent = inspect_silent
         self._reject_acts = reject_acts
         self._server: asyncio.Server | None = None
         self._session: str | None = None
@@ -240,6 +247,17 @@ class FakeGame:
             type="stopped",
             released=released,
             release_verified=True,
+        )
+
+    def _inspection(self, request: InspectRequest, seq: int, session: str) -> InspectResult:
+        return InspectResult(
+            **self._envelope(seq, session),
+            type="inspection",
+            stage=request.stage,
+            in_reply_to=request.seq,
+            data={"stage": request.stage, "records": ["alpha", "beta"]},
+            caps={"records": InspectionCap(limit=64, observed=2, returned=2, truncated=False)},
+            errors=[],
         )
 
     def _error(
@@ -406,6 +424,19 @@ class FakeGame:
                     async with self._lock:
                         self._apply_clock(request)
                         await self._send(writer, self._status(next_seq(), session))
+                elif kind == "inspect":
+                    try:
+                        request = InspectRequest.model_validate(body)
+                    except ValidationError:
+                        await fail("invalid", "bad inspect", req_seq, session)
+                        return
+                    if not self._inspect_supported:
+                        await fail("internal", "no inspection source is attached", request.seq, session)
+                        return
+                    if self._inspect_silent:
+                        continue
+                    async with self._lock:
+                        await self._send(writer, self._inspection(request, next_seq(), session))
                 else:
                     await fail("invalid", f"unknown verb {kind!r}", req_seq, session)
                     return

@@ -8,7 +8,7 @@ The bridge is game-agnostic by design: it carries generic verbs and facts, never
 control, field or genre. Game knowledge lives only in the preflight-generated manifest, and the
 test games are external subjects.
 
-Issues #14–#19 build it in layers:
+The bridge is built in layers:
 
 | Layer | Verb | Status |
 |---|---|---|
@@ -18,6 +18,7 @@ Issues #14–#19 build it in layers:
 | Stop, release verification and clock | `stop`, `clock` | Landed (#17) |
 | Capture to an offscreen render target | `frame_ref` (part of `observe`) | This issue (#18) |
 | Core skeleton, bridge client, fake game | — | Landed (#19) |
+| Editor-only project inspection | `inspect` | Stage 0–1 (#21) |
 
 ## Layout
 
@@ -66,6 +67,32 @@ Stop, Editor quit and the Editor's before-reload callback all stop the server an
 lock, so a script recompile leaves no stale lock or leaked socket behind. If another process
 already holds the project lock, Start stops its own server and records a warning with the owner's
 pid and port instead of throwing; the message is available as `BridgeEditorHost.LastError`.
+
+## Inspecting a project
+
+The authenticated `inspect` request runs on the Editor main thread and reads project data without
+writing to the project. Request `inventory` in Edit mode and `discovery` in Play mode. An
+incompatible mode returns an error. The response carries its stage, request sequence, data, caps
+and errors. A cap includes the limit, observed count, returned count and whether it truncated;
+unknown counts and truncation remain null.
+
+The source excerpts are unranked authored scripts, including scripts in local or embedded
+packages. The IL scan reports direct field stores and unresolved cases; it does not prove that a
+field is configuration or that a method ran. Review its scope, caps and errors before using an
+absence as evidence. Snapshot sizes over the transport limit fail explicitly. Full dumps can
+contain third-party source and must remain local. This stage does not create a manifest
+fingerprint; a later fingerprint must include the recorded caps.
+
+With the bridge running, save each stage outside the inspected project:
+
+```powershell
+uv run playtest-inspect --project "C:\path\to\game" --stage inventory --output runs/preflight/survey.json
+# Enter Play mode and load the scene under test before the next request.
+uv run playtest-inspect --project "C:\path\to\game" --stage discovery --output runs/preflight/discovery.json
+```
+
+The command refuses to overwrite a file. For a repeatable batch capture using the first enabled
+build scene, see `scripts/unity/capture-preflight.ps1`.
 
 ## Actions
 

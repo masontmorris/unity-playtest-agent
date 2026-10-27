@@ -1,7 +1,7 @@
 """asyncio JSONL client for the bridge wire protocol.
 
 One TCP connection over loopback. The client speaks first (`hello`), then
-`observe` / `act` / `stop` / `clock`. A background reader demultiplexes
+`observe` / `act` / `stop` / `clock` / `inspect`. A background reader demultiplexes
 replies: observations go to the stream or once queues, execution records
 accumulate per `action_id`, and errors complete the matching request.
 
@@ -27,6 +27,8 @@ from playtest.contracts.bridge import (
     ClockRequest,
     ExecutionRecord,
     Hello,
+    InspectRequest,
+    InspectResult,
     Observation,
     ObserveRequest,
     Status,
@@ -277,6 +279,8 @@ class BridgeClient:
                 message = ExecutionRecord.model_validate(body)
             elif kind == "stopped":
                 message = StopResult.model_validate(body)
+            elif kind == "inspection":
+                message = InspectResult.model_validate(body)
             elif kind == "error":
                 message = WireError.model_validate(body)
             else:
@@ -292,6 +296,8 @@ class BridgeClient:
             self._on_execution(message)
         elif isinstance(message, StopResult):
             self._on_stopped(message)
+        elif isinstance(message, InspectResult):
+            self._on_inspection(message)
         else:
             self._on_error(message)
 
@@ -333,6 +339,15 @@ class BridgeClient:
     def _on_stopped(self, message: StopResult) -> None:
         future, self._stop_future = self._stop_future, None
         if future is not None and not future.done():
+            future.set_result(message)
+        self._sweep()
+
+    def _on_inspection(self, message: InspectResult) -> None:
+        future = self._by_seq.pop(message.in_reply_to, None)
+        if future is None:
+            self._connection_lost(f"unmatched inspection reply for seq {message.in_reply_to}")
+            return
+        if not future.done():
             future.set_result(message)
         self._sweep()
 
@@ -504,6 +519,34 @@ class BridgeClient:
             time_scale=time_scale,
         )
         return await self._request_status(request)
+
+    async def inspect(self, stage: str) -> InspectResult:
+        """Request one Editor inspection snapshot.
+
+        Inspection exists only in the Editor. Requests are serialized so at most one is in
+        flight; the reply is correlated by `in_reply_to`, never by arrival order.
+        """
+        loop = self._require_open()
+        async with self._lock:
+            request = InspectRequest(
+                session=self._session,
+                seq=self._next_seq(),
+                game_s=None,
+                wall_utc=_utcnow(),
+                stage=stage,  # type: ignore[arg-type]
+            )
+            future: asyncio.Future = loop.create_future()
+            self._register(request.seq, future)
+            await self._send(request)
+            try:
+                result = await self._await(request.seq, future)
+            finally:
+                self._forget(request.seq, future)
+        assert isinstance(result, InspectResult)
+        if result.stage != request.stage:
+            self._connection_lost("inspection reply stage does not match the request")
+            raise BridgeError("protocol", "inspection reply stage does not match the request", request.seq)
+        return result
 
     async def stop(self, reason: str = "finish") -> StopResult | None:
         """Cancel the action, release every held input, verify release."""

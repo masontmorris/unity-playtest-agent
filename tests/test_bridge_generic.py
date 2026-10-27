@@ -13,7 +13,10 @@ import re
 from pathlib import Path
 
 BRIDGE = Path(__file__).resolve().parents[1] / "bridge"
-ROOTS = (BRIDGE / "Runtime", BRIDGE / "Editor", BRIDGE / "Tests" / "EditMode", BRIDGE / "Tests" / "PlayMode")
+ROOTS = (
+    BRIDGE / "Runtime", BRIDGE / "Editor", BRIDGE / "Tests" / "EditMode",
+    BRIDGE / "Tests" / "PlayMode", BRIDGE / "Tests" / "Fixtures",
+)
 
 BANNED = frozenset(
     """
@@ -40,6 +43,20 @@ def violations(root: Path) -> list[str]:
     found = []
     for path in sorted(root.rglob("*.cs")):
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            # The stage name is protocol vocabulary. Permit it only in the declarations and
+            # protocol tests that use that literal; a gameplay field or an arbitrary string
+            # with the same name remains subject to the lint.
+            stripped = line.strip()
+            if path.name == "BridgeProtocol.cs" and stripped == '"inventory", "discovery",':
+                line = line.replace('"inventory"', '""', 1)
+            elif path.name == "EditorInspectionSource.cs" and stripped == 'if (stage == "inventory")':
+                line = line.replace('"inventory"', '""', 1)
+            elif path.name == "UnityInspectionSurveyTests.cs":
+                for form in ('source.Inspect("inventory")', 'Stage = "inventory",'):
+                    line = line.replace(form, form.replace('"inventory"', '""'), 1)
+            elif path.name == "BridgeInspectTests.cs":
+                for form in ('Inspect("inventory",', 'Is.EqualTo("inventory")', 'new[] { "inventory" }'):
+                    line = line.replace(form, form.replace('"inventory"', '""'), 1)
             hits = words(line) & BANNED
             if hits:
                 found.append(f"{path.relative_to(root.parent)}:{n}: {sorted(hits)}")
@@ -66,3 +83,14 @@ def test_lint_catches_planted_words(tmp_path):
     (pkg / "y.cs").write_text("var genericEntityPos = 0;\n", encoding="utf-8")
     found = violations(pkg)
     assert len(found) == 1 and "player" in found[0] and "health" in found[0]
+
+
+def test_protocol_stage_literals_do_not_hide_identifiers(tmp_path):
+    pkg = tmp_path / "Runtime"
+    pkg.mkdir()
+    (pkg / "BridgeProtocol.cs").write_text(
+        '"inventory", "discovery",\nvar inventory = 1;\nvar description = "inventory";\n',
+        encoding="utf-8",
+    )
+    found = violations(pkg)
+    assert len(found) == 2 and all("inventory" in item for item in found)

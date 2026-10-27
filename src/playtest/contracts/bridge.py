@@ -1,7 +1,8 @@
 """Bridge wire protocol (build bible 5.1, 5.2, 5.5).
 
-Five verbs: hello/status, observe, act, stop, clock. Requests flow core -> bridge;
-observations and execution records flow back.
+Six verbs: hello/status, observe, act, stop, clock and inspect. Requests flow core -> bridge;
+observations, execution records and inspection results flow back. `inspect` exists only in the
+Editor and is the only path that runs discovery; it never writes to the project.
 """
 
 from __future__ import annotations
@@ -180,6 +181,56 @@ class ClockRequest(Envelope):
         if (self.op == "set_scale") != (self.time_scale is not None):
             raise ValueError("time_scale is required exactly when op is 'set_scale'")
         return self
+
+
+# --- inspect (Editor only) ------------------------------------------------------
+
+
+class InspectRequest(Envelope):
+    type: Literal["inspect"] = "inspect"
+    stage: Literal["inventory", "discovery"]
+
+
+class InspectionCap(Strict):
+    """How completely one collection was sampled.
+
+    An uncounted total stays null; it is never guessed from the returned sample. A known
+    observed count must agree with `truncated`: true means some items were left out, false
+    means the returned sample is the whole collection.
+    """
+
+    limit: int = Field(gt=0)
+    observed: int | None = Field(ge=0, description="Items seen, or null when the total is unknown")
+    returned: int = Field(ge=0)
+    truncated: bool | None = Field(description="Whether the sample was capped, or null when unknown")
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "InspectionCap":
+        if self.returned > self.limit:
+            raise ValueError("returned must not exceed limit")
+        if self.observed is not None:
+            if self.observed < self.returned:
+                raise ValueError("observed must be at least returned")
+            if self.truncated is True and self.returned >= self.observed:
+                raise ValueError("truncated is true but returned covers observed")
+            if self.truncated is False and self.returned != self.observed:
+                raise ValueError("truncated is false but returned differs from observed")
+        return self
+
+
+class InspectResult(Envelope):
+    """One Editor inspection snapshot.
+
+    `data` is open because each stage carries game-defined reflection descriptors. `caps` is
+    mandatory even when empty so a capped sample can never be mistaken for the whole project.
+    """
+
+    type: Literal["inspection"] = "inspection"
+    stage: Literal["inventory", "discovery"]
+    in_reply_to: int = Field(ge=0)
+    data: dict[str, Any]
+    caps: dict[str, InspectionCap]
+    errors: list[str]
 
 
 class BridgeError(Envelope):
