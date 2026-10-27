@@ -91,26 +91,68 @@ def test_trial_subtracts_observed_idle_velocity_and_rejects_unverified_release()
         _trial_measure(before, dict(after, real_time_s=2.0), idle, [record(True)], 0.4)
 
 
-def test_scene_reload_reports_only_measured_restoration():
-    calibration = {"status": "measured_with_gaps", "stop": {"release_verified": True}, "entity_id": "entity"}
-    def field(value, comparable=True):
-        return {"id": "one", "state": "present", "kind": "number", "value": value, "comparable": comparable}
-    evidence = {"method": "scene_reload", "entity_id": "entity", "initial_position": [0, 0, 0],
-                "before_reload_position": [1, 0, 0], "after_reload_position": [0.001, 0, 0],
-                "initial_fields": [field("1")], "before_reload_fields": [field("2")],
-                "after_reload_fields": [field("1")]}
-    result = combine(calibration, evidence)["reset"]
-    assert result["scene_reload"]["entity_position_restored"] is True
-    assert result["scene_reload"]["full_state_restored"] is None
-    assert result["scene_reload"]["fields"][0]["changed_before_reload"] is True
-    assert result["scene_reload"]["fields"][0]["matches_initial_after_reload"] is True
-    assert result["save_load"]["works"] is None
-    uncertain = dict(evidence, before_reload_position=[0, 0, 0], after_reload_fields=[field(None, False)])
-    uncertain_result = combine(calibration, uncertain)["reset"]["scene_reload"]
-    assert uncertain_result["entity_position_restored"] is None
-    assert uncertain_result["fields"][0]["matches_initial_after_reload"] is None
+def reload_field(value, field_id="one", comparable=True):
+    return {"id": field_id, "state": "present", "kind": "number", "value": value, "comparable": comparable}
+
+
+def reload_trial(*, before=(5, 0, 0), after=(0.001, 0, 0), initial=("1",), changed=("2",), reloaded=("1",),
+                 verified=True):
+    return {"key": "a", "requested_hold_s": 1.2, "applied_hold_s": 1.21, "release_verified": verified,
+            "initial_position": [0, 0, 0], "before_reload_position": list(before),
+            "after_reload_position": list(after),
+            "initial_fields": [reload_field(v) for v in initial],
+            "before_reload_fields": [reload_field(v) for v in changed],
+            "after_reload_fields": [reload_field(v) for v in reloaded]}
+
+
+CALIBRATED = {"status": "measured_with_gaps", "stop": {"release_verified": True}, "entity_id": "entity"}
+
+
+def reset_evidence(*trials):
+    return {"method": "scene_reload", "entity_id": "entity", "trials": list(trials)}
+
+
+def test_scene_reload_reports_k_of_n_over_trials_that_moved_the_entity():
+    reload = combine(CALIBRATED, reset_evidence(
+        reload_trial(),                                  # moved 5, back to start
+        reload_trial(after=(0.5, 0, 0), reloaded=("9",)),  # moved 5, not back
+        reload_trial(before=(0.4, 0, 0)),                # barely moved: reported, not counted
+    ))["reset"]["scene_reload"]
+
+    assert reload["trial_count"] == 3
+    assert reload["moved_trial_count"] == 2
+    assert reload["position_restored"] == {"restored": 1, "of": 2}
+    assert [t["entity_moved_before_reload"] for t in reload["trials"]] == [True, True, False]
+    assert [t["entity_position_restored"] for t in reload["trials"]] == [True, False, None]
+    assert reload["minimum_pre_reset_movement"] == 1.0
+    assert reload["full_state_restored"] is None
+    # The one field changed in both moved trials and came back in one of them.
+    assert reload["fields"] == [{"id": "one", "trials_compared": 2, "changed_before_reload": 2,
+                                 "restored_after_change": 1, "matches_initial_after_reload": 1}]
+
+
+def test_scene_reload_leaves_unmeasured_values_unknown_and_never_counts_them():
+    nothing_moved = combine(CALIBRATED, reset_evidence(reload_trial(before=(0.2, 0, 0))))["reset"]["scene_reload"]
+    assert nothing_moved["moved_trial_count"] == 0
+    assert nothing_moved["position_restored"] is None
+    assert nothing_moved["fields"] == []
+
+    uncertain = reload_trial()
+    uncertain["after_reload_fields"] = [reload_field(None, comparable=False)]
+    unknown = combine(CALIBRATED, reset_evidence(uncertain))["reset"]["scene_reload"]["fields"]
+    assert unknown == [{"id": "one", "trials_compared": 0, "changed_before_reload": None,
+                        "restored_after_change": None, "matches_initial_after_reload": None}]
+
+
+def test_scene_reload_rejects_missing_trials_and_unverified_release():
+    with pytest.raises(ValueError, match="no trials"):
+        combine(CALIBRATED, reset_evidence())
+    with pytest.raises(ValueError, match="verify the key release"):
+        combine(CALIBRATED, reset_evidence(reload_trial(verified=False)))
     with pytest.raises(ValueError, match="verified input release"):
-        combine(dict(calibration, stop=None), evidence)
+        combine(dict(CALIBRATED, stop=None), reset_evidence(reload_trial()))
+    with pytest.raises(ValueError, match="does not match"):
+        combine(CALIBRATED, dict(reset_evidence(reload_trial()), entity_id="other"))
 
 
 class FakeCalibrationBridge:
@@ -258,9 +300,7 @@ def test_full_calibration_records_action_field_and_clock_evidence(monkeypatch):
     result["stop"] = {"protocol": "upa/0", "session": "s", "seq": 1, "game_s": None,
                       "wall_utc": "2026-10-27T00:00:00Z", "type": "stopped", "released": [],
                       "release_verified": True}
-    reset = {"method": "scene_reload", "entity_id": "entity", "initial_position": [0, 0, 0],
-             "before_reload_position": [0, 0, 1], "after_reload_position": [0, 0, 0],
-             "initial_fields": [], "before_reload_fields": [], "after_reload_fields": []}
+    reset = reset_evidence(reload_trial(before=(0, 0, 3), after=(0, 0, 0), initial=(), changed=(), reloaded=()))
     assert CalibrationRecord.model_validate(combine(result, reset)).status == "measured_with_gaps"
 
 
