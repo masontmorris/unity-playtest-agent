@@ -105,6 +105,8 @@ namespace Playtest.Bridge.Tests
     {
         public BridgeObservationSnapshot Current { get; set; } = Snapshot(true, 1);
 
+        public bool CaptureAvailable { get; set; }
+
         public BridgeObservationSnapshot GetObservation()
         {
             return Current;

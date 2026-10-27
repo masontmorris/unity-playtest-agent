@@ -27,6 +27,7 @@ namespace Playtest.Bridge.Editor
         private static UnityObservationSource _observations;
         private static InputSystemInputBackend _input;
         private static UnityClockController _clock;
+        private static UnityCapture _capture;
         private static BridgeLockFile _lock;
         private static string _lastError;
         private static int _lockOwnerPid;
@@ -123,19 +124,24 @@ namespace Playtest.Bridge.Editor
             UnityObservationSource observations = null;
             InputSystemInputBackend input = null;
             UnityClockController clock = null;
+            UnityCapture capture = null;
             BridgeLockFile acquired = null;
             int ownerPid = 0;
             try
             {
                 token = BridgeToken.Create();
                 ownerPid = CurrentProcessId();
+                string projectRoot = Path.GetDirectoryName(Application.dataPath);
                 var status = new UnityStatusSource(ownerPid);
+                capture = new UnityCapture(Path.Combine(projectRoot, "Temp", "playtest-bridge-frames"));
+                status.Capture = capture.Available;
+                status.CaptureSelfTest = capture.SelfTest;
                 clock = new UnityClockController();
                 clock.Start();
-                observations = new UnityObservationSource(clock);
+                observations = new UnityObservationSource(clock, capture);
                 observations.Start();
+                capture.Start();
 
-                string projectRoot = Path.GetDirectoryName(Application.dataPath);
                 string actionsPath = Path.Combine(projectRoot, "Temp", "playtest-bridge-actions.json");
                 BridgeActionCatalog actions;
                 try
@@ -189,6 +195,7 @@ namespace Playtest.Bridge.Editor
                 StopObservations(observations);
                 StopInput(input);
                 StopClock(clock);
+                StopCapture(capture);
                 _lockOwnerPid = busyOwnerPid;
                 SetError("the project lock is already held by " + owner, token);
                 return;
@@ -199,6 +206,7 @@ namespace Playtest.Bridge.Editor
                 StopObservations(observations);
                 StopInput(input);
                 StopClock(clock);
+                StopCapture(capture);
                 SetError("could not start: " + ex.GetType().Name + ": " + ex.Message, token);
                 return;
             }
@@ -207,6 +215,7 @@ namespace Playtest.Bridge.Editor
             _observations = observations;
             _input = input;
             _clock = clock;
+            _capture = capture;
             _lock = acquired;
             _lockOwnerPid = ownerPid;
             _lastError = null;
@@ -220,6 +229,7 @@ namespace Playtest.Bridge.Editor
             UnityObservationSource observations = _observations;
             InputSystemInputBackend input = _input;
             UnityClockController clock = _clock;
+            UnityCapture capture = _capture;
             BridgeLockFile held = _lock;
             bool wasActive = server != null || held != null;
 
@@ -227,6 +237,7 @@ namespace Playtest.Bridge.Editor
             _observations = null;
             _input = null;
             _clock = null;
+            _capture = null;
             _lock = null;
             _lockOwnerPid = 0;
             _lastError = null;
@@ -235,6 +246,7 @@ namespace Playtest.Bridge.Editor
             StopObservations(observations);
             StopInput(input);
             StopClock(clock);
+            StopCapture(capture);
 
             if (held != null)
             {
@@ -333,6 +345,23 @@ namespace Playtest.Bridge.Editor
             catch (Exception ex)
             {
                 Debug.LogWarning(LogPrefix + " stopping clock control failed: " + ex.GetType().Name);
+            }
+        }
+
+        private static void StopCapture(UnityCapture capture)
+        {
+            if (capture == null)
+            {
+                return;
+            }
+
+            try
+            {
+                capture.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(LogPrefix + " stopping capture failed: " + ex.GetType().Name);
             }
         }
 

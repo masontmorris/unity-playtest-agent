@@ -491,16 +491,6 @@ namespace Playtest.Bridge.Transport
                 return;
             }
 
-            if (request.WithFrame)
-            {
-                WriteSessionError(
-                    session,
-                    request.Seq,
-                    BridgeErrorCode.Invalid,
-                    "with_frame is not supported yet: frames arrive with capture, so resend without with_frame");
-                return;
-            }
-
             if (_observations == null)
             {
                 WriteSessionError(
@@ -510,6 +500,18 @@ namespace Playtest.Bridge.Transport
                     "no observation source is attached to this bridge");
                 return;
             }
+
+            if (request.WithFrame && !_observations.CaptureAvailable)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Invalid,
+                    "with_frame is not available: capture failed its startup self-test or there is no graphics device");
+                return;
+            }
+
+            session.WithFrame = request.WithFrame;
 
             switch (request.Mode)
             {
@@ -992,7 +994,7 @@ namespace Playtest.Bridge.Transport
                 Frame = snapshot.Frame,
                 Public = snapshot.Public,
                 Ui = snapshot.Ui,
-                FrameRef = null,
+                FrameRef = session.WithFrame ? snapshot.FrameRef : null,
                 ReaderErrors = snapshot.ReaderErrors,
             };
         }
@@ -1065,6 +1067,9 @@ namespace Playtest.Bridge.Transport
             public JsonLineConnection Connection;
 
             public string Session;
+
+            /// <summary>Whether this session's observations carry a frame reference.</summary>
+            public bool WithFrame;
 
             public readonly object WriteGate = new object();
 

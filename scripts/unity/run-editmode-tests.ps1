@@ -51,8 +51,14 @@ against the project.
 .PARAMETER MutexTimeoutMinutes
 How long to wait for another bridge test run. Default 15.
 
-.EXAMPLE
-powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"
+.PARAMETER NoGraphics
+Runs Unity with -nographics. PlayMode defaults to a graphics device because the
+capture tests render to a render target; EditMode defaults to -nographics. Pass
+this switch on a machine without a usable graphics device.
+
+.PARAMETER Graphics
+Runs EditMode with a graphics device, for the capture self-test outside play
+mode. PlayMode already defaults to graphics. Do not combine with -NoGraphics.
 
 .EXAMPLE
 powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project" -TestFilter "Playtest.Bridge.Tests"
@@ -80,7 +86,11 @@ param(
 
     [string]$LogPath,
 
-    [int]$MutexTimeoutMinutes = 15
+    [int]$MutexTimeoutMinutes = 15,
+
+    [switch]$NoGraphics,
+
+    [switch]$Graphics
 )
 
 Set-StrictMode -Version 2.0
@@ -356,6 +366,10 @@ try {
     Write-Host "Project:     $projectFull"
     Write-Host "Unity:       $unityFull ($editorFolderVersion)"
     Write-Host "Platform:    $TestPlatform"
+    $useNoGraphics = if ($NoGraphics.IsPresent) { $true }
+        elseif ($Graphics.IsPresent) { $false }
+        else { $TestPlatform -ne 'PlayMode' }
+    Write-Host ("Graphics:    {0}" -f $(if ($useNoGraphics) { 'disabled (-nographics)' } else { 'enabled' }))
     Write-Host "Repo root:   $repoRoot  (UPA_REPO_ROOT)"
     Write-Host "Results:     $ResultsPath"
     Write-Host "Log:         $LogPath"
@@ -386,8 +400,12 @@ try {
     }
 
     $unityArguments = @(
-        '-batchmode',
-        '-nographics',
+        '-batchmode'
+    )
+    if ($useNoGraphics) {
+        $unityArguments += '-nographics'
+    }
+    $unityArguments += @(
         '-projectPath', $projectFull,
         '-runTests',
         '-testPlatform', $TestPlatform,

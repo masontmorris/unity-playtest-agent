@@ -60,7 +60,13 @@ EditMode is the default:
 powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\FPSKit-bridge-v0"
 ```
 
-PlayMode, which runs the measurement test against the project's scene:
+EditMode with a graphics device, which measures the capture self-test outside play mode:
+
+```powershell
+powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\FPSKit-bridge-v0" -Graphics
+```
+
+PlayMode, which runs the measurement and capture tests against the project:
 
 ```powershell
 powershell -File scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\FPSKit-bridge-v0" -TestPlatform PlayMode
@@ -76,6 +82,8 @@ Optional parameters:
 | `-ResultsPath` | `<repo>/runs/bridge-tests/<project>/<platform>-results.xml` |
 | `-LogPath` | `<repo>/runs/bridge-tests/<project>/<platform>.log` |
 | `-MutexTimeoutMinutes` | `15` |
+| `-NoGraphics` | off for PlayMode (a graphics device is created); EditMode always uses `-nographics` unless `-Graphics` is passed |
+| `-Graphics` | off for EditMode; runs EditMode with a graphics device for the capture self-test. PlayMode already defaults to graphics |
 
 `<platform>` is `editmode` or `playmode`, so the two suites keep separate
 result and log files. Relative result and log paths are resolved against the
@@ -100,12 +108,15 @@ What it does, in order:
 6. Deletes stale result and log files, then runs:
 
    ```
-   Unity.exe -batchmode -nographics -projectPath <project> -runTests
+   Unity.exe -batchmode [-nographics] -projectPath <project> -runTests
              -testPlatform <EditMode|PlayMode> -testResults <results> -logFile <log>
              [-testFilter <filter>]
    ```
 
-   `-quit` is deliberately not passed; it is incompatible with `-runTests`.
+   `-nographics` is always used for EditMode and is used for PlayMode only with
+   `-NoGraphics`. PlayMode defaults to a graphics device because the capture
+   tests render to a render target. `-quit` is deliberately not passed; it is
+   incompatible with `-runTests`.
 7. Reads `<test-run result=... total=... passed=... failed=... skipped=...>`
    from the NUnit XML and prints one summary line plus the result and log paths.
    A missing `failed` attribute is reported as unknown and is not treated as
@@ -115,7 +126,7 @@ What it does, in order:
 ### What the PlayMode run measures
 
 `-TestPlatform PlayMode` passes `-testPlatform PlayMode`, so Unity enters Play
-mode in batch mode. Five tests run against the project:
+mode in batch mode. Nine tests run against the project:
 
 - **Stream** loads the first enabled scene from the project's Build Settings
   additively (the FPSKit test scene in that fork), makes it the active scene,
@@ -134,6 +145,19 @@ mode in batch mode. Five tests run against the project:
   the bridge closes.
 - **Input release** applies a key through the Input System backend and checks
   that the release is queued, reported and verified as no longer pressed.
+- **Capture self-test** renders a temporary camera and overlay canvas through
+  the offscreen composite, decodes the JPEG and checks both halves.
+- **Host status** starts the Editor host and reads `capture` and
+  `capture_self_test` from its `status` reply.
+- **Capture window** renders a hidden camera at 10 fps, trims the frame window
+  and decodes a 640-wide frame.
+- **Frame reference** observes with `with_frame`, checks that the observation
+  names an existing JPEG, then checks that a request without it omits the field.
+
+The capture tests need a graphics device. PlayMode runs without `-nographics` by
+default for that reason. On a machine without one, pass `-NoGraphics`; the
+capture tests then fail with the self-test's message instead of pretending
+frames were captured.
 
 The stream test measures, rather than assumes:
 

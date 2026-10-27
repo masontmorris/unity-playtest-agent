@@ -62,6 +62,8 @@ namespace Playtest.Bridge.Unity
 
         private readonly IBridgeClock _clock;
 
+        private readonly IBridgeCapture _capture;
+
         private BridgeObservationSnapshot _current;
 
         private Dictionary<string, object> _ui;
@@ -78,12 +80,19 @@ namespace Playtest.Bridge.Unity
 
         private bool _disposed;
 
-        public UnityObservationSource(IBridgeClock clock = null)
+        public UnityObservationSource(IBridgeClock clock = null, IBridgeCapture capture = null)
         {
             _clock = clock;
+            _capture = capture;
             _ui = CreateEmptyUi();
             _lastUiRefresh = double.NegativeInfinity;
             _current = CreateUnsampledSnapshot(_ui);
+        }
+
+        /// <summary>True only when the capture service passed its startup self-test.</summary>
+        public bool CaptureAvailable
+        {
+            get { return _capture != null && _capture.Available; }
         }
 
         /// <summary>
@@ -242,6 +251,7 @@ namespace Playtest.Bridge.Unity
                 GameS = playing ? Time.timeAsDouble : (double?)null,
                 Public = publicFacts,
                 Ui = _ui,
+                FrameRef = _capture == null ? null : _capture.LatestFrameRef,
                 ReaderErrors = errors,
                 CapturedWallUtc = DateTime.UtcNow,
             };
