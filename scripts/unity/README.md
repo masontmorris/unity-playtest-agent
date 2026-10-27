@@ -252,3 +252,37 @@ path outside the game; the output file is never overwritten. The script uses the
 version checks and mutex as the bridge tests. Unity may still update its own cache or package lock.
 Without an explicitly requested measurement, the normal PlayMode suite checks that the preflight
 host rejects a missing catalog; that check does not measure a controlled entity.
+
+## Calibrate the controlled entity
+
+After a completed stage 2 record, with this checkout's bridge wired into the project and no other
+Editor using it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/calibrate-preflight.ps1 `
+  -ProjectPath "C:\path\to\game" -EntityPath "C:\path\outside\game\entity.json" `
+  -OutputDirectory "C:\path\outside\game\calibration-run"
+```
+
+The script refuses to run unless the game is wired to this checkout, the stage 2 record is
+`identified`, and the output directory is outside the game and has no earlier `calibration.json`,
+`reset.json` or `record.json`. In Play mode on the first enabled scene it re-discovers the keyboard
+bindings, requires them to match the stage 2 record, and then measures:
+
+- **Per key:** net entity displacement after each of five requested holds (0.05–1.2 s), twice each,
+  against an idle baseline: mean, sample variance, the lowest tested hold that responded in both
+  repeats, and inversion relative to the entity's own basis where the binding names a direction.
+  The keyboard backend is binary, so a dead zone is recorded as unknown, not zero.
+- **Per field:** freshness from repeated samples, once at idle and again while Unity's input update
+  reports the key held. A change is exact inequality between adjacent samples; values the field
+  reader cannot compare (vectors, structs, collections, object references) stay `unknown`.
+- **Clock:** pause, a 0.2 s step and resume. Whether stepped mode is supported stays `null`,
+  because animation, physics and game timers are not fully measured.
+- **Reset:** unload and reload the scene, then compare the entity position and sampled fields.
+  Save/load and checkpoints are not exercised and stay `null`.
+
+Game exceptions logged during a key's input are recorded as evidence, that trial is marked invalid
+and the key is not pressed again. The script writes `calibration.json` (raw samples), `reset.json`
+and the combined `record.json`. These can contain game field values, so keep them local. The
+calibration is a code-driven probe: every action is a discovered key sent once through the bridge,
+with release verified, and no model is called.

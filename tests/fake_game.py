@@ -79,7 +79,10 @@ class FakeGame:
         clock_control: bool = True,
         inspect_supported: bool = True,
         inspect_silent: bool = False,
+        inspect_delay_s: float = 0.0,
         reject_acts: RejectReason | None = None,
+        action_run_s: float | None = None,
+        action_stall: bool = False,
     ) -> None:
         env_token = os.environ.get("UPA_BRIDGE_TOKEN")
         self._token = token if token is not None else (env_token or "")
@@ -90,10 +93,18 @@ class FakeGame:
         self._clock_control = clock_control
         self._inspect_supported = inspect_supported
         self._inspect_silent = inspect_silent
+        self._inspect_delay_s = inspect_delay_s
         self._reject_acts = reject_acts
+        if action_run_s is not None and (
+            isinstance(action_run_s, bool) or action_run_s < 0
+        ):
+            raise ValueError("action_run_s must be a non-negative number or None")
+        self._action_run_s = action_run_s
+        self._action_stall = action_stall
         self._server: asyncio.Server | None = None
         self._session: str | None = None
         self.input_log: list[dict] = []
+        self.inspect_requests: list[InspectRequest] = []
         self._lock = asyncio.Lock()
         self._pos = [0.0, 0.0, 0.0]
         self._vel = [0.0, 0.0, 0.0]
@@ -107,6 +118,7 @@ class FakeGame:
         self._held: dict[str, str] = {}
         self._expiry: dict[str, asyncio.Task] = {}
         self._obs_history: dict[int, tuple[float, dict]] = {}
+        self._action_tasks: set[asyncio.Task] = set()
 
     @property
     def reject_acts(self) -> RejectReason | None:
@@ -138,8 +150,9 @@ class FakeGame:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        tasks = list(self._expiry.values())
+        tasks = list(self._expiry.values()) + list(self._action_tasks)
         self._expiry.clear()
+        self._action_tasks.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -241,6 +254,17 @@ class FakeGame:
             ),
         )
 
+    def _running(
+        self, seq: int, session: str, *, action_id: str, validated_against_seq: int | None
+    ) -> ExecutionRecord:
+        return ExecutionRecord(
+            **self._envelope(seq, session),
+            type="execution",
+            action_id=action_id,
+            status=ExecStatus.running,
+            validated_against_seq=validated_against_seq,
+        )
+
     def _stopped(self, seq: int, session: str, released: list[str]) -> StopResult:
         return StopResult(
             **self._envelope(seq, session),
@@ -282,6 +306,11 @@ class FakeGame:
         session: str | None = None
         bound_here = False
         stream: asyncio.Task | None = None
+        pending: set[asyncio.Task] = set()
+
+        def discard_pending(task: asyncio.Task) -> None:
+            pending.discard(task)
+            self._action_tasks.discard(task)
 
         def next_seq() -> int:
             nonlocal seq
@@ -320,6 +349,27 @@ class FakeGame:
                     await current
                 except asyncio.CancelledError:
                     pass
+
+        async def finish_action(
+            request: ActRequest, record: ExecutionRecord, delay: float
+        ) -> None:
+            """Emit the terminal record after a simulated running window."""
+            try:
+                await asyncio.sleep(delay)
+                assert session is not None
+                terminal = self._execution(
+                    next_seq(),
+                    session,
+                    action_id=request.action_id,
+                    status=record.status,
+                    validated_against_seq=record.validated_against_seq,
+                    held=request.action == "hold",
+                    started_game_s=record.input_start_game_s,
+                    started_wall_s=record.input_start_wall_s,
+                )
+                await self._send(writer, terminal)
+            except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):
+                pass
 
         try:
             while True:
@@ -396,7 +446,26 @@ class FakeGame:
                         return
                     async with self._lock:
                         record = self._apply(request, next_seq(), session)
-                    await self._send(writer, record)
+                    if self._action_run_s is not None and record.status is ExecStatus.completed:
+                        await self._send(
+                            writer,
+                            self._running(
+                                next_seq(),
+                                session,
+                                action_id=request.action_id,
+                                validated_against_seq=record.validated_against_seq,
+                            ),
+                        )
+                        if not self._action_stall:
+                            task = asyncio.create_task(
+                                finish_action(request, record, self._action_run_s),
+                                name="fake-action",
+                            )
+                            pending.add(task)
+                            self._action_tasks.add(task)
+                            task.add_done_callback(discard_pending)
+                    else:
+                        await self._send(writer, record)
                 elif kind == "stop":
                     try:
                         request = StopRequest.model_validate(body)
@@ -430,11 +499,14 @@ class FakeGame:
                     except ValidationError:
                         await fail("invalid", "bad inspect", req_seq, session)
                         return
+                    self.inspect_requests.append(request)
                     if not self._inspect_supported:
                         await fail("internal", "no inspection source is attached", request.seq, session)
-                        return
+                        continue
                     if self._inspect_silent:
                         continue
+                    if self._inspect_delay_s:
+                        await asyncio.sleep(self._inspect_delay_s)
                     async with self._lock:
                         await self._send(writer, self._inspection(request, next_seq(), session))
                 else:
@@ -443,6 +515,10 @@ class FakeGame:
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
+            for task in list(pending):
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
             await join_stream()
             async with self._lock:
                 if self._held:

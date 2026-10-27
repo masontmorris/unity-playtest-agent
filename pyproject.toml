@@ -29,6 +29,8 @@ dev = [
 playtest-export-schemas = "playtest.contracts.export:main"
 playtest-inspect = "playtest.preflight.cli:main"
 playtest-measure-entity = "playtest.preflight.entity:main"
+playtest-calibrate = "playtest.preflight.calibrate:main"
+playtest-calibration-record = "playtest.preflight.calibration_record:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/playtest"]

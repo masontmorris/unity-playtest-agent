@@ -62,7 +62,7 @@ namespace Playtest.Bridge.Protocol
 
         public static readonly IReadOnlyList<string> InspectionStages = new[]
         {
-            "inventory", "discovery", "transforms",
+            "inventory", "discovery", "transforms", "fields",
         };
 
         public static string Serialize(Envelope message)

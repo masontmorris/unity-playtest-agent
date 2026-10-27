@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from playtest.contracts.bridge import (
     ActRequest,
     BridgeError as WireError,
     ClockRequest,
+    ExecStatus,
     ExecutionRecord,
     Hello,
     InspectRequest,
@@ -40,6 +42,16 @@ from playtest.contracts.common import PROTOCOL
 from .bridge_lock import BridgeEndpoint, read_bridge_lock, read_project_lock
 
 MAX_LINE_SIZE = 8 * 1024 * 1024
+MAX_INSPECTION_SAMPLES = 1024
+
+
+def _finite_positive(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite positive number")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return number
 
 
 class BridgeError(Exception):
@@ -306,7 +318,9 @@ class BridgeClient:
             future.set_exception(exc)
 
     def _sweep(self) -> None:
-        done = [seq for seq, future in self._by_seq.items() if future.done()]
+        # Cancelled inspection tombstones must survive unrelated replies until
+        # their own late reply arrives or the connection closes.
+        done = [seq for seq, future in self._by_seq.items() if future.done() and not future.cancelled()]
         for seq in done:
             del self._by_seq[seq]
 
@@ -330,6 +344,11 @@ class BridgeClient:
         if entry is None:
             return
         entry["records"].append(message)
+        first = entry.get("first")
+        if first is not None and not first.done() and (
+            message.status is ExecStatus.running or message.status in TERMINAL_STATUSES
+        ):
+            first.set_result(message)
         if message.status in TERMINAL_STATUSES:
             done = entry["done"]
             if not done.done():
@@ -458,6 +477,44 @@ class BridgeClient:
                 except asyncio.QueueEmpty:
                     break
 
+    def _prepare_act_locked(
+        self,
+        *,
+        action_id: str,
+        choice_id: str,
+        action: str,
+        params: dict | None = None,
+        based_on_seq: int,
+        max_age_s: float,
+        depends_on: list[str] | tuple[str, ...] = (),
+        lease_s: float | None = None,
+        with_first: bool = False,
+    ) -> tuple[ActRequest, asyncio.Future, asyncio.Future | None]:
+        """Build and register one act request. The caller holds the lock."""
+        loop = asyncio.get_running_loop()
+        request = ActRequest(
+            session=self._session,
+            seq=self._next_seq(),
+            game_s=None,
+            wall_utc=_utcnow(),
+            action_id=action_id,
+            choice_id=choice_id,
+            action=action,
+            params=dict(params or {}),
+            based_on_seq=based_on_seq,
+            max_age_s=max_age_s,
+            depends_on=list(depends_on),
+            lease_s=lease_s,
+        )
+        done: asyncio.Future = loop.create_future()
+        first: asyncio.Future | None = loop.create_future() if with_first else None
+        entry: dict = {"records": [], "done": done}
+        if first is not None:
+            entry["first"] = first
+        self._exec[action_id] = entry
+        self._register(request.seq, first if first is not None else done)
+        return request, done, first
+
     async def act(
         self,
         *,
@@ -475,32 +532,137 @@ class BridgeClient:
         A rejection comes back as data (a terminal record with status
         `rejected`), never as an exception to repair.
         """
-        loop = self._require_open()
+        self._require_open()
         async with self._lock:
-            request = ActRequest(
-                session=self._session,
-                seq=self._next_seq(),
-                game_s=None,
-                wall_utc=_utcnow(),
+            request, done, _first = self._prepare_act_locked(
                 action_id=action_id,
                 choice_id=choice_id,
                 action=action,
-                params=dict(params or {}),
+                params=params,
                 based_on_seq=based_on_seq,
                 max_age_s=max_age_s,
-                depends_on=list(depends_on),
+                depends_on=depends_on,
                 lease_s=lease_s,
             )
-            done: asyncio.Future = loop.create_future()
-            self._exec[action_id] = {"records": [], "done": done}
-            self._register(request.seq, done)
-            await self._send(request)
             try:
+                await self._send(request)
                 records = await self._await(request.seq, done)
             finally:
                 self._exec.pop(action_id, None)
         assert isinstance(records, list) and records
         return records  # type: ignore[return-value]
+
+    async def act_with_inspections(
+        self,
+        *,
+        action_id: str,
+        choice_id: str,
+        action: str,
+        params: dict | None = None,
+        based_on_seq: int,
+        max_age_s: float,
+        depends_on: list[str] | tuple[str, ...] = (),
+        lease_s: float | None = None,
+        inspection_stage: str,
+        interval_s: float,
+        max_samples: int,
+    ) -> tuple[list[ExecutionRecord], list[InspectResult]]:
+        """Send one action once and sample one inspection stage while it runs.
+
+        This is generic instrumentation for a code-driven preflight probe, not a
+        policy: the supplied action is sent exactly once and is never retried,
+        ranked, replaced or synthesized. The client lock is held for the whole
+        operation, so no other request can interleave with the sampled window.
+
+        The first execution record is awaited. A terminal rejection there returns
+        immediately with no inspections. Otherwise the first sample is taken
+        immediately, later samples are separated by `interval_s`, and sampling
+        stops at `max_samples` or when the terminal record arrives. The terminal
+        record is always awaited before returning.
+
+        If inspection fails, or the operation is cancelled or times out after the
+        action was sent, the input is released with `stop` after the lock is
+        released, and the original exception is re-raised.
+        """
+        interval_s = _finite_positive(interval_s, "interval_s")
+        if (
+            isinstance(max_samples, bool)
+            or not isinstance(max_samples, int)
+            or not 1 <= max_samples <= MAX_INSPECTION_SAMPLES
+        ):
+            raise ValueError(f"max_samples must be an integer in 1..{MAX_INSPECTION_SAMPLES}")
+        self._require_open()
+        sent = False
+        try:
+            async with self._lock:
+                request, done, first = self._prepare_act_locked(
+                    action_id=action_id,
+                    choice_id=choice_id,
+                    action=action,
+                    params=params,
+                    based_on_seq=based_on_seq,
+                    max_age_s=max_age_s,
+                    depends_on=depends_on,
+                    lease_s=lease_s,
+                    with_first=True,
+                )
+                assert first is not None
+                try:
+                    sent = True
+                    await self._send(request)
+                    first_record = await self._await(request.seq, first)
+                    assert isinstance(first_record, ExecutionRecord)
+                    inspections: list[InspectResult] = []
+                    while (
+                        first_record.status not in TERMINAL_STATUSES
+                        and len(inspections) < max_samples
+                        and not done.done()
+                    ):
+                        inspections.append(
+                            await self._inspect_locked(inspection_stage, keep_late_reply=True)
+                        )
+                        if len(inspections) >= max_samples or done.done():
+                            break
+                        await self._pause_between_samples(done, interval_s)
+                    records = await self._await(request.seq, done)
+                    assert isinstance(records, list) and records
+                    return records, inspections
+                finally:
+                    if done.done() and not done.cancelled():
+                        try:
+                            done.exception()
+                        except BaseException:
+                            pass
+                    self._exec.pop(action_id, None)
+        except BaseException:
+            if sent:
+                await self._stop_after_failure()
+            raise
+
+    async def _pause_between_samples(self, done: asyncio.Future, interval_s: float) -> None:
+        """Wait one sampling interval, returning early once the terminal record arrives."""
+        try:
+            await asyncio.wait_for(asyncio.shield(done), interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+    async def _stop_after_failure(self) -> None:
+        """Best-effort release for a sent action; never masks the original error."""
+        task = asyncio.ensure_future(self.stop(reason="error"))
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if task.done():
+                    break
+                continue
+            except BaseException:
+                break
+        if task.done():
+            try:
+                task.exception()
+            except BaseException:
+                pass
 
     async def clock(
         self,
@@ -526,22 +688,48 @@ class BridgeClient:
         Inspection exists only in the Editor. Requests are serialized so at most one is in
         flight; the reply is correlated by `in_reply_to`, never by arrival order.
         """
-        loop = self._require_open()
+        self._require_open()
         async with self._lock:
-            request = InspectRequest(
-                session=self._session,
-                seq=self._next_seq(),
-                game_s=None,
-                wall_utc=_utcnow(),
-                stage=stage,  # type: ignore[arg-type]
-            )
-            future: asyncio.Future = loop.create_future()
-            self._register(request.seq, future)
-            await self._send(request)
-            try:
-                result = await self._await(request.seq, future)
-            finally:
+            return await self._inspect_locked(stage)
+
+    async def _inspect_locked(self, stage: str, *, keep_late_reply: bool = False) -> InspectResult:
+        """Request one inspection while the caller holds the lock.
+
+        With `keep_late_reply`, a cancelled request keeps a cancelled tombstone in
+        the correlation table so a reply that arrives during cleanup is dropped
+        instead of failing the connection before `stop` can be answered.
+        """
+        loop = asyncio.get_running_loop()
+        request = InspectRequest(
+            session=self._session,
+            seq=self._next_seq(),
+            game_s=None,
+            wall_utc=_utcnow(),
+            stage=stage,  # type: ignore[arg-type]
+        )
+        future: asyncio.Future = loop.create_future()
+        self._register(request.seq, future)
+        await self._send(request)
+        try:
+            result = await self._await(request.seq, future)
+        except asyncio.CancelledError:
+            if keep_late_reply:
+                if not future.done():
+                    future.cancel()
+            else:
                 self._forget(request.seq, future)
+            raise
+        except BridgeError as exc:
+            if keep_late_reply and exc.code == "timeout" and not self._closed:
+                self._register(request.seq, future)
+            else:
+                self._forget(request.seq, future)
+            raise
+        except BaseException:
+            self._forget(request.seq, future)
+            raise
+        else:
+            self._forget(request.seq, future)
         assert isinstance(result, InspectResult)
         if result.stage != request.stage:
             self._connection_lost("inspection reply stage does not match the request")

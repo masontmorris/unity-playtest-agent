@@ -60,6 +60,12 @@ namespace Playtest.Bridge.Tests
             AssertPosition(parentRow, new Vector3(10f, 2f, -3f));
             AssertPosition(childRow, new Vector3(11f, 4f, 0f));
 
+            parent.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
+            Dictionary<string, object> rotated = TransformWithId(SceneTransformCollector.Collect(10000), (string)discoveryParent["id"]);
+            Assert.That(rotated["basis_state"], Is.EqualTo("present"));
+            Assert.That((float[])rotated["world_forward"], Is.EqualTo(new[] { 1f, 0f, 0f }).Within(0.0001f));
+            Assert.That((float[])rotated["world_right"], Is.EqualTo(new[] { 0f, 0f, -1f }).Within(0.0001f));
+
             var discoveryIds = new HashSet<string>(DiscoveryRows(discovery).Select(row => (string)row["id"]));
             var transformIds = new HashSet<string>(TransformRows(transforms).Select(row => (string)row["id"]));
             Assert.That(transformIds.SetEquals(discoveryIds), Is.True,
