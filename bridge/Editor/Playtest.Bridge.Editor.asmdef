@@ -2,7 +2,8 @@
   "name": "Playtest.Bridge.Editor",
   "rootNamespace": "Playtest.Bridge.Editor",
   "references": [
-    "Playtest.Bridge"
+    "Playtest.Bridge",
+    "Unity.InputSystem"
   ],
   "includePlatforms": [
     "Editor"

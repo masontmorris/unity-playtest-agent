@@ -25,6 +25,7 @@ namespace Playtest.Bridge.Transport
         private readonly BridgeActionCatalog _actions;
         private readonly IBridgeInputBackend _input;
         private readonly IBridgeClock _clock;
+        private readonly IBridgeInspectionSource _inspection;
         private readonly BridgeObservationHistory _history = new BridgeObservationHistory();
         private readonly BridgeActionLease _lease;
         private readonly string _token;
@@ -77,7 +78,8 @@ namespace Playtest.Bridge.Transport
         /// <paramref name="clock"/> are optional capabilities; without them the matching verbs
         /// are rejected. The caller owns the input backend and clock and disposes them after the
         /// server stops; the server stops the lease and releases held input but does not dispose
-        /// those services.
+        /// those services. Use the overload with an inspection source for the Editor-only
+        /// <c>inspect</c> verb.
         /// </summary>
         public BridgeServer(
             BridgeServerOptions options,
@@ -87,6 +89,24 @@ namespace Playtest.Bridge.Transport
             IBridgeInputBackend input,
             IBridgeClock clock,
             string token)
+            : this(options, status, observations, actions, input, clock, null, token)
+        {
+        }
+
+        /// <summary>
+        /// Full constructor with the Editor-only inspection source. The source is called from the
+        /// transport thread and must marshal to the main thread itself; transport never calls Unity
+        /// APIs. Without a source, inspect requests get a clear internal error and no invented data.
+        /// </summary>
+        public BridgeServer(
+            BridgeServerOptions options,
+            IBridgeStatusSource status,
+            IBridgeObservationSource observations,
+            BridgeActionCatalog actions,
+            IBridgeInputBackend input,
+            IBridgeClock clock,
+            IBridgeInspectionSource inspection,
+            string token)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _status = status ?? throw new ArgumentNullException(nameof(status));
@@ -94,6 +114,7 @@ namespace Playtest.Bridge.Transport
             _actions = actions ?? BridgeActionCatalog.Empty;
             _input = input;
             _clock = clock;
+            _inspection = inspection;
             if (string.IsNullOrEmpty(token))
             {
                 throw new ArgumentException("token must not be empty", nameof(token));
@@ -475,6 +496,12 @@ namespace Playtest.Bridge.Transport
                 return;
             }
 
+            if (string.Equals(type, "inspect", StringComparison.Ordinal))
+            {
+                HandleInspect(session, line, requestSeq);
+                return;
+            }
+
             string label = string.IsNullOrEmpty(type) ? "(missing)" : type;
             WriteSessionError(
                 session,
@@ -576,6 +603,113 @@ namespace Playtest.Bridge.Transport
             }
 
             WriteStatus(session);
+        }
+
+        private void HandleInspect(ClientSession session, string line, long? requestSeq)
+        {
+            if (!BridgeProtocol.TryReadInspectRequest(line, out InspectRequestMessage request, out ProtocolError error))
+            {
+                WriteSessionError(session, requestSeq, error.Code, error.Message);
+                return;
+            }
+
+            if (!ProtocolVersion.IsSupported(request.Protocol) ||
+                !string.Equals(request.Session, session.Session, StringComparison.Ordinal))
+            {
+                WriteSessionError(session, request.Seq, BridgeErrorCode.Protocol,
+                    "inspection request does not match the active protocol and session");
+                return;
+            }
+
+            if (_inspection == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "no inspection source is attached to this bridge");
+                return;
+            }
+
+            BridgeInspectionSnapshot snapshot;
+            try
+            {
+                snapshot = _inspection.Inspect(request.Stage);
+            }
+            catch (BridgeInspectionUnavailableException ex)
+            {
+                WriteSessionError(session, request.Seq, BridgeErrorCode.Invalid, ex.Message);
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke("inspection source failed: " + ex.GetType().Name);
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the inspection source failed");
+                return;
+            }
+
+            if (snapshot == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the inspection source returned no snapshot");
+                return;
+            }
+
+            if (snapshot.Data == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the inspection source returned no data");
+                return;
+            }
+
+            if (snapshot.Errors == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the inspection source returned no errors list");
+                return;
+            }
+
+            if (!BridgeProtocol.TryValidateInspectionCaps(snapshot.Caps, out string capsError))
+            {
+                Log?.Invoke("inspection source returned invalid caps: " + capsError);
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the inspection source returned invalid caps: " + capsError);
+                return;
+            }
+
+            bool written = TryWrite(session, seq => new InspectionResultMessage
+            {
+                Session = session.Session,
+                Seq = seq,
+                GameS = null,
+                WallUtc = DateTime.UtcNow,
+                Stage = request.Stage,
+                InReplyTo = request.Seq,
+                Data = snapshot.Data,
+                Caps = snapshot.Caps,
+                Errors = snapshot.Errors,
+            });
+
+            if (!written)
+            {
+                session.Close();
+            }
         }
 
         /// <summary>

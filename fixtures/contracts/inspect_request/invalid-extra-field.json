@@ -1,0 +1,10 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 2,
+  "game_s": null,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "inspect",
+  "stage": "inventory",
+  "depth": 2
+}

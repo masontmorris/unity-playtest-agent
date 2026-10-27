@@ -1,0 +1,144 @@
+{
+  "$defs": {
+    "InspectionCap": {
+      "additionalProperties": false,
+      "description": "How completely one collection was sampled.\n\nAn uncounted total stays null; it is never guessed from the returned sample. A known\nobserved count must agree with `truncated`: true means some items were left out, false\nmeans the returned sample is the whole collection.",
+      "properties": {
+        "limit": {
+          "exclusiveMinimum": 0,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Items seen, or null when the total is unknown",
+          "title": "Observed"
+        },
+        "returned": {
+          "minimum": 0,
+          "title": "Returned",
+          "type": "integer"
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether the sample was capped, or null when unknown",
+          "title": "Truncated"
+        }
+      },
+      "required": [
+        "limit",
+        "observed",
+        "returned",
+        "truncated"
+      ],
+      "title": "InspectionCap",
+      "type": "object"
+    }
+  },
+  "$id": "upa/inspection_result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One Editor inspection snapshot.\n\n`data` is open because each stage carries game-defined reflection descriptors. `caps` is\nmandatory even when empty so a capped sample can never be mistaken for the whole project.",
+  "properties": {
+    "caps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/InspectionCap"
+      },
+      "title": "Caps",
+      "type": "object"
+    },
+    "data": {
+      "additionalProperties": true,
+      "title": "Data",
+      "type": "object"
+    },
+    "errors": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "in_reply_to": {
+      "minimum": 0,
+      "title": "In Reply To",
+      "type": "integer"
+    },
+    "protocol": {
+      "default": "upa/0",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "stage": {
+      "enum": [
+        "inventory",
+        "discovery"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "type": {
+      "const": "inspection",
+      "default": "inspection",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "stage",
+    "in_reply_to",
+    "data",
+    "caps",
+    "errors"
+  ],
+  "title": "InspectResult",
+  "type": "object"
+}

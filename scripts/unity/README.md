@@ -210,3 +210,19 @@ or the wiring above:
 ```powershell
 dotnet test bridge/Tests/DotNet~ --artifacts-path "$env:TEMP\upa-dotnet-<name>"
 ```
+
+## Capture preflight stages 0–1
+
+After wiring this checkout's bridge into the project, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/capture-preflight.ps1 `
+  -ProjectPath "C:\path\to\game" -OutputDirectory "C:\path\outside\game\preflight-run"
+```
+
+The script runs an EditMode survey and then a PlayMode inspection of the first enabled build
+scene, using the same version checks, project-lock check and mutex as the test runner. It writes
+`survey.json` and `discovery.json` outside the game and refuses to overwrite them. The files may
+contain game source; keep them local. Discovery includes every loaded scene, including Unity's
+test-runner scene. Review `caps`, `errors` and IL issues before treating a sample as complete.
+This captures code and live state only; it does not perform control calibration or call a model.

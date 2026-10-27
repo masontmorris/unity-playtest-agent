@@ -120,3 +120,85 @@ def test_wrong_token_is_refused():
             await game.stop()
 
     asyncio.run(main())
+
+
+def test_inspect_round_trip_and_concurrent_requests():
+    async def main():
+        game, client, _port = await _started()
+        try:
+            first, second = await asyncio.gather(
+                client.inspect("inventory"),
+                client.inspect("discovery"),
+            )
+            assert first.type == "inspection"
+            assert first.stage == "inventory"
+            assert second.stage == "discovery"
+            assert first.in_reply_to < second.in_reply_to
+            assert first.caps["records"].limit == 64
+            assert first.caps["records"].observed == 2
+            assert first.caps["records"].truncated is False
+            assert second.data["stage"] == "discovery"
+        finally:
+            await client.aclose()
+            await game.stop()
+
+    asyncio.run(main())
+
+
+def test_inspect_error_is_typed():
+    async def main():
+        game = FakeGame(token=TOKEN, inspect_supported=False)
+        port = await game.start()
+        client = BridgeClient("127.0.0.1", port, TOKEN)
+        await client.connect()
+        try:
+            with pytest.raises(BridgeError) as exc_info:
+                await client.inspect("inventory")
+            assert exc_info.value.code == "internal"
+            assert exc_info.value.in_reply_to is not None
+        finally:
+            await client.aclose()
+            await game.stop()
+
+    asyncio.run(main())
+
+
+def test_inspect_rejects_a_reply_for_the_wrong_stage():
+    class WrongStageGame(FakeGame):
+        def _inspection(self, request, seq, session):
+            return super()._inspection(request, seq, session).model_copy(update={"stage": "discovery"})
+
+    async def main():
+        game = WrongStageGame(token=TOKEN)
+        port = await game.start()
+        client = BridgeClient("127.0.0.1", port, TOKEN)
+        await client.connect()
+        try:
+            with pytest.raises(BridgeError) as exc_info:
+                await client.inspect("inventory")
+            assert exc_info.value.code == "protocol"
+            assert client.closed
+        finally:
+            await client.aclose()
+            await game.stop()
+
+    asyncio.run(main())
+
+
+def test_inspect_times_out_without_corrupting_the_connection():
+    async def main():
+        game = FakeGame(token=TOKEN, inspect_silent=True)
+        port = await game.start()
+        client = BridgeClient("127.0.0.1", port, TOKEN)
+        await client.connect()
+        try:
+            client._timeout_s = 0.2
+            with pytest.raises(BridgeError) as exc_info:
+                await client.inspect("inventory")
+            assert exc_info.value.code == "timeout"
+            assert (await client.observe_once()).public["counter"] == 0
+        finally:
+            await client.aclose()
+            await game.stop()
+
+    asyncio.run(main())

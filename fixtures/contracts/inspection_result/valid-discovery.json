@@ -1,0 +1,37 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 2,
+  "game_s": 12.5,
+  "wall_utc": "2026-10-26T18:00:03Z",
+  "type": "inspection",
+  "stage": "discovery",
+  "in_reply_to": 3,
+  "data": {
+    "components": [
+      {
+        "type": "Example.Behaviour",
+        "fields": [
+          "value"
+        ]
+      }
+    ]
+  },
+  "caps": {
+    "components": {
+      "limit": 100,
+      "observed": 240,
+      "returned": 100,
+      "truncated": true
+    },
+    "bindings": {
+      "limit": 50,
+      "observed": null,
+      "returned": 4,
+      "truncated": null
+    }
+  },
+  "errors": [
+    "component read timed out"
+  ]
+}
