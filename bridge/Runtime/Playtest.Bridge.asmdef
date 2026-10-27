@@ -1,7 +1,9 @@
 {
   "name": "Playtest.Bridge",
   "rootNamespace": "Playtest.Bridge",
-  "references": [],
+  "references": [
+    "Unity.InputSystem"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
