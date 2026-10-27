@@ -105,6 +105,12 @@ namespace Playtest.Bridge.Editor.Preflight
                     throw new BridgeInspectionUnavailableException("the requested stage requires Play mode");
                 Merge(snapshot, SceneTransformCollector.Collect(TransformLimit));
             }
+            else if (stage == "fields")
+            {
+                if (!EditorApplication.isPlaying)
+                    throw new BridgeInspectionUnavailableException("the requested stage requires Play mode");
+                Merge(snapshot, SceneFieldsCollector.Collect(ComponentLimit, FieldLimit, BindingLimit));
+            }
             else throw new BridgeInspectionUnavailableException("unknown inspection stage");
 
             // Leave room for the response envelope, and fail explicitly instead of writing a

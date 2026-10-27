@@ -106,6 +106,21 @@ namespace Playtest.Bridge.Tests
         }
 
         [Test]
+        public void Inspect_FieldsStageIsPassedThrough()
+        {
+            using (TestClient client = Connect(_server))
+            {
+                client.Send(Inspect("fields", seq: 4));
+
+                InspectionResultMessage result = ReadInspection(client);
+
+                Assert.That(result.Stage, Is.EqualTo("fields"));
+                Assert.That(result.InReplyTo, Is.EqualTo(4));
+                Assert.That(_source.Stages, Is.EqualTo(new[] { "fields" }));
+            }
+        }
+
+        [Test]
         public void Inspect_WithoutSource_ReturnsInternal()
         {
             _server.Dispose();

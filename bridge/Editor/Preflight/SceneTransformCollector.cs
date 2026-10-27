@@ -55,8 +55,10 @@ namespace Playtest.Bridge.Editor.Preflight
                 _document.Data["position_space"] = "world";
                 _document.Data["position_unit"] = "unity_world_unit";
                 _document.Data["position_order"] = new[] { "x", "y", "z" };
+                _document.Data["orientation_space"] = "world";
                 _document.Data["time_unit"] = "seconds";
                 _document.Data["game_objects"] = _objects;
+                _document.Data["runtime_errors"] = SceneRuntimeErrors.Snapshot();
 
                 SampleInstant();
 
@@ -199,6 +201,10 @@ namespace Playtest.Bridge.Editor.Preflight
                     ["active_in_hierarchy"] = TryBool(() => gameObject.activeInHierarchy, objectId, "active_in_hierarchy"),
                     ["position_state"] = "unavailable",
                     ["position"] = null,
+                    ["basis_state"] = "unavailable",
+                    ["world_forward"] = null,
+                    ["world_right"] = null,
+                    ["basis_error"] = null,
                 };
                 _objects.Add(entry);
 
@@ -230,6 +236,24 @@ namespace Playtest.Bridge.Editor.Preflight
                 catch (Exception ex)
                 {
                     _document.Errors.Add("object " + objectId + ": position: " + Describe(ex));
+                }
+
+                try
+                {
+                    Vector3 forward = transform.forward;
+                    Vector3 right = transform.right;
+                    if (IsFinite(forward.x) && IsFinite(forward.y) && IsFinite(forward.z) &&
+                        IsFinite(right.x) && IsFinite(right.y) && IsFinite(right.z))
+                    {
+                        entry["world_forward"] = new[] { forward.x, forward.y, forward.z };
+                        entry["world_right"] = new[] { right.x, right.y, right.z };
+                        entry["basis_state"] = "present";
+                    }
+                    else entry["basis_error"] = "orientation basis is not finite";
+                }
+                catch (Exception ex)
+                {
+                    entry["basis_error"] = Describe(ex);
                 }
 
                 int childCount;

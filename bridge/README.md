@@ -71,16 +71,24 @@ pid and port instead of throwing; the message is available as `BridgeEditorHost.
 ## Inspecting a project
 
 The authenticated `inspect` request runs on the Editor main thread and reads project data without
-writing to the project. Request `inventory` in Edit mode; request `discovery` and `transforms` in
-Play mode. An incompatible mode returns an error. The response carries its stage, request sequence,
-data, caps and errors. A cap includes the limit, observed count, returned count and whether it
-truncated; unknown counts and truncation remain null.
+writing to the project. Request `inventory` in Edit mode; request `discovery`, `transforms` and
+`fields` in Play mode. An incompatible mode returns an error. The response carries its stage,
+request sequence, data, caps and errors. A cap includes the limit, observed count, returned count
+and whether it truncated; unknown counts and truncation remain null.
 
 The `transforms` stage samples every loaded scene's GameObjects once: their discovery ids, parent
 id, active state, scene path and world-space position `[x, y, z]`, plus the sampling `frame`,
 `real_time_s` and `game_time_s`. `position_unit` is `unity_world_unit`. A position that cannot be
 read stays null with an error; it is never replaced by zero. This is a sample only: calibration
 that presses controls twice and compares displacement against an idle baseline is a separate step.
+
+The `fields` stage is the repeated freshness sample. It runs the same bounded discovery collection
+as `discovery`, with the same component, field and binding limits, so its `game_objects` and
+`fields` rows carry exactly the discovery ids and coverage. It returns only those two collections
+with their two caps and errors, plus the sampling `frame`, `real_time_s`, `game_time_s` and
+`time_unit` (`seconds`). It does not repeat source excerpts, IL or input-binding rows on every
+tick, does not write to the project and does not generate input. Request it repeatedly in Play mode
+to measure how a field changes between samples; unknown coverage stays null.
 
 The source excerpts are unranked authored scripts, including scripts in local or embedded
 packages. The IL scan reports direct field stores and unresolved cases; it does not prove that a
@@ -96,6 +104,7 @@ uv run playtest-inspect --project "C:\path\to\game" --stage inventory --output r
 # Enter Play mode and load the scene under test before the next request.
 uv run playtest-inspect --project "C:\path\to\game" --stage discovery --output runs/preflight/discovery.json
 uv run playtest-inspect --project "C:\path\to\game" --stage transforms --output runs/preflight/transforms-1.json
+uv run playtest-inspect --project "C:\path\to\game" --stage fields --output runs/preflight/fields-1.json
 ```
 
 The command refuses to overwrite a file. For a repeatable batch capture using the first enabled

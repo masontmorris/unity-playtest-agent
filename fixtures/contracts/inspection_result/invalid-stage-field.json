@@ -1,0 +1,13 @@
+{
+  "protocol": "upa/0",
+  "session": "s-inspect",
+  "seq": 9,
+  "game_s": 14.75,
+  "wall_utc": "2026-10-26T18:00:09Z",
+  "type": "inspection",
+  "stage": "field",
+  "in_reply_to": 8,
+  "data": {},
+  "caps": {},
+  "errors": []
+}

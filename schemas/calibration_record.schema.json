@@ -1,0 +1,519 @@
+{
+  "$defs": {
+    "ActionCalibration": {
+      "additionalProperties": false,
+      "properties": {
+        "bindings": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Bindings",
+          "type": "array"
+        },
+        "control": {
+          "minLength": 1,
+          "title": "Control",
+          "type": "string"
+        },
+        "dead_zone": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dead Zone"
+        },
+        "dead_zone_reason": {
+          "title": "Dead Zone Reason",
+          "type": "string"
+        },
+        "holds": {
+          "items": {
+            "$ref": "#/$defs/HoldMeasurement"
+          },
+          "title": "Holds",
+          "type": "array"
+        },
+        "inverted_relative_to_entity_basis": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Inverted Relative To Entity Basis"
+        },
+        "lowest_tested_effective_requested_hold_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lowest Tested Effective Requested Hold S"
+        },
+        "minimum_hold_scope": {
+          "title": "Minimum Hold Scope",
+          "type": "string"
+        },
+        "resolution": {
+          "title": "Resolution",
+          "type": "string"
+        },
+        "shortest_observed_effective_hold_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Shortest Observed Effective Hold S"
+        },
+        "signed_basis_projections": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Signed Basis Projections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "control",
+        "bindings",
+        "resolution",
+        "holds",
+        "lowest_tested_effective_requested_hold_s",
+        "shortest_observed_effective_hold_s",
+        "minimum_hold_scope",
+        "inverted_relative_to_entity_basis",
+        "signed_basis_projections",
+        "dead_zone",
+        "dead_zone_reason"
+      ],
+      "title": "ActionCalibration",
+      "type": "object"
+    },
+    "HoldMeasurement": {
+      "additionalProperties": false,
+      "properties": {
+        "effective_in_all_repeats": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "True when every valid repeat's net displacement met the plan's effect tolerance. False is not proof the input had no effect: motion that returns to its start nets to zero",
+          "title": "Effective In All Repeats"
+        },
+        "mean_delta": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mean net entity displacement over the valid trials: the change between the read before the input and the read just after it, minus the idle baseline",
+          "title": "Mean Delta"
+        },
+        "mean_magnitude": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mean of each valid trial's net displacement magnitude, with the same net meaning",
+          "title": "Mean Magnitude"
+        },
+        "requested_hold_s": {
+          "description": "Probe setting, not the applied duration",
+          "exclusiveMinimum": 0,
+          "title": "Requested Hold S",
+          "type": "number"
+        },
+        "sample_variance": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sample variance of the per-trial net displacement magnitudes",
+          "title": "Sample Variance"
+        },
+        "valid_trials": {
+          "minimum": 0,
+          "title": "Valid Trials",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requested_hold_s",
+        "valid_trials",
+        "mean_delta",
+        "mean_magnitude",
+        "sample_variance",
+        "effective_in_all_repeats"
+      ],
+      "title": "HoldMeasurement",
+      "type": "object"
+    },
+    "InspectionCap": {
+      "additionalProperties": false,
+      "description": "How completely one collection was sampled.\n\nAn uncounted total stays null; it is never guessed from the returned sample. A known\nobserved count must agree with `truncated`: true means some items were left out, false\nmeans the returned sample is the whole collection.",
+      "properties": {
+        "limit": {
+          "exclusiveMinimum": 0,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Items seen, or null when the total is unknown",
+          "title": "Observed"
+        },
+        "returned": {
+          "minimum": 0,
+          "title": "Returned",
+          "type": "integer"
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether the sample was capped, or null when unknown",
+          "title": "Truncated"
+        }
+      },
+      "required": [
+        "limit",
+        "observed",
+        "returned",
+        "truncated"
+      ],
+      "title": "InspectionCap",
+      "type": "object"
+    },
+    "StopResult": {
+      "additionalProperties": false,
+      "properties": {
+        "game_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Game clock; null when no game is running",
+          "title": "Game S"
+        },
+        "protocol": {
+          "default": "upa/0",
+          "pattern": "^upa/\\d+$",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "release_verified": {
+          "title": "Release Verified",
+          "type": "boolean"
+        },
+        "released": {
+          "description": "Inputs released",
+          "items": {
+            "type": "string"
+          },
+          "title": "Released",
+          "type": "array"
+        },
+        "seq": {
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session": {
+          "minLength": 1,
+          "title": "Session",
+          "type": "string"
+        },
+        "type": {
+          "const": "stopped",
+          "default": "stopped",
+          "title": "Type",
+          "type": "string"
+        },
+        "wall_utc": {
+          "format": "date-time",
+          "title": "Wall Utc",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "seq",
+        "wall_utc",
+        "released",
+        "release_verified"
+      ],
+      "title": "StopResult",
+      "type": "object"
+    }
+  },
+  "$id": "upa/calibration_record.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_cap": {
+      "$ref": "#/$defs/InspectionCap"
+    },
+    "action_summaries": {
+      "items": {
+        "$ref": "#/$defs/ActionCalibration"
+      },
+      "title": "Action Summaries",
+      "type": "array"
+    },
+    "actions": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Actions",
+      "type": "array"
+    },
+    "clock": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Clock"
+    },
+    "coordinate_frame": {
+      "title": "Coordinate Frame",
+      "type": "string"
+    },
+    "discovery_coverage": {
+      "additionalProperties": {
+        "$ref": "#/$defs/InspectionCap"
+      },
+      "title": "Discovery Coverage",
+      "type": "object"
+    },
+    "entity": {
+      "additionalProperties": true,
+      "title": "Entity",
+      "type": "object"
+    },
+    "entity_id": {
+      "minLength": 1,
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "freshness": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Freshness"
+    },
+    "idle_fields": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Idle Fields",
+      "type": "array"
+    },
+    "input_field_segments": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Input Field Segments",
+      "type": "array"
+    },
+    "physical_unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Physical Unit"
+    },
+    "plan": {
+      "additionalProperties": true,
+      "title": "Plan",
+      "type": "object"
+    },
+    "reset": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reset"
+    },
+    "runtime_errors": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Runtime Errors"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "measured_with_gaps",
+        "inconclusive"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "stop": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StopResult"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trials": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Trials",
+      "type": "array"
+    },
+    "units": {
+      "title": "Units",
+      "type": "string"
+    },
+    "unsupported_bindings": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Unsupported Bindings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "status",
+    "error",
+    "entity_id",
+    "entity",
+    "coordinate_frame",
+    "units",
+    "physical_unit",
+    "plan",
+    "action_cap",
+    "actions",
+    "unsupported_bindings",
+    "discovery_coverage",
+    "idle_fields",
+    "input_field_segments",
+    "trials",
+    "action_summaries",
+    "freshness",
+    "clock",
+    "reset",
+    "runtime_errors",
+    "stop"
+  ],
+  "title": "CalibrationRecord",
+  "type": "object"
+}
