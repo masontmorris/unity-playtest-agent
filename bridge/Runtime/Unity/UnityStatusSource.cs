@@ -39,6 +39,14 @@ namespace Playtest.Bridge.Unity
             _inputBackends = ReadInputBackends();
         }
 
+        /// <summary>The bridge has a clock controller; the host may override this.</summary>
+        public bool ClockControl { get; set; } = true;
+
+        /// <summary>Capture arrives in #18; it stays false until then.</summary>
+        public bool Capture { get; set; }
+
+        public string CaptureSelfTest { get; set; } = Unknown;
+
         /// <summary>Loopback port the server bound. Written on the main thread after start.</summary>
         public int Port
         {
@@ -59,9 +67,9 @@ namespace Playtest.Bridge.Unity
                 UnityVersion = _unityVersion,
                 Project = _project,
                 InputBackends = Array.AsReadOnly((string[])_inputBackends.Clone()),
-                ClockControl = false,
-                Capture = false,
-                CaptureSelfTest = Unknown,
+                ClockControl = this.ClockControl,
+                Capture = this.Capture,
+                CaptureSelfTest = this.CaptureSelfTest,
                 OwnerPid = _ownerPid,
             };
         }

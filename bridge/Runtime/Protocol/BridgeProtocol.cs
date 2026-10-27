@@ -105,6 +105,21 @@ namespace Playtest.Bridge.Protocol
             return TryRead(json, "execution", out record, out error);
         }
 
+        public static bool TryReadStopRequest(string json, out StopRequestMessage request, out ProtocolError error)
+        {
+            return TryRead(json, "stop", out request, out error);
+        }
+
+        public static bool TryReadStopResult(string json, out StopResultMessage result, out ProtocolError error)
+        {
+            return TryRead(json, "stopped", out result, out error);
+        }
+
+        public static bool TryReadClockRequest(string json, out ClockRequestMessage request, out ProtocolError error)
+        {
+            return TryRead(json, "clock", out request, out error);
+        }
+
         public static bool TryRead<T>(string json, string expectedType, out T message, out ProtocolError error)
             where T : Envelope
         {
@@ -569,6 +584,78 @@ namespace Playtest.Bridge.Protocol
 
                 if (!ValidateEffects(obj, "expected_effect", out error) || !ValidateEffects(obj, "observed_effect", out error))
                 {
+                    return false;
+                }
+            }
+            else if (message is StopRequestMessage stop)
+            {
+                if (!HasString(obj, "reason") || !Contains(BridgeStopReason.All, stop.Reason))
+                {
+                    error = Invalid("reason must be user, reset, scene_change, disconnect, error or finish");
+                    return false;
+                }
+            }
+            else if (message is StopResultMessage stopped)
+            {
+                JToken released = obj["released"];
+                if (released == null || released.Type != JTokenType.Array)
+                {
+                    error = Invalid("released is required and must be an array of strings");
+                    return false;
+                }
+
+                foreach (JToken item in released.Children())
+                {
+                    if (item.Type != JTokenType.String)
+                    {
+                        error = Invalid("released must contain only strings");
+                        return false;
+                    }
+                }
+
+                if (obj["release_verified"]?.Type != JTokenType.Boolean)
+                {
+                    error = Invalid("release_verified is required and must be a boolean");
+                    return false;
+                }
+            }
+            else if (message is ClockRequestMessage clock)
+            {
+                if (!HasString(obj, "op") || !Contains(BridgeClockOps.All, clock.Op))
+                {
+                    error = Invalid("op must be pause, resume, step or set_scale");
+                    return false;
+                }
+
+                JToken step = obj["step_game_s"];
+                if (step != null && step.Type != JTokenType.Null
+                    && ((step.Type != JTokenType.Float && step.Type != JTokenType.Integer) || !IsPositiveFinite((double)step)))
+                {
+                    error = Invalid("step_game_s must be null or a positive number");
+                    return false;
+                }
+
+                JToken scale = obj["time_scale"];
+                if (scale != null && scale.Type != JTokenType.Null
+                    && ((scale.Type != JTokenType.Float && scale.Type != JTokenType.Integer) || (double)scale < 0 || double.IsNaN((double)scale) || double.IsInfinity((double)scale)))
+                {
+                    error = Invalid("time_scale must be null or a non-negative number");
+                    return false;
+                }
+
+                bool isStep = string.Equals(clock.Op, BridgeClockOps.Step, System.StringComparison.Ordinal);
+                bool hasStep = step != null && step.Type != JTokenType.Null;
+                if (isStep != hasStep)
+                {
+                    error = Invalid("step_game_s is required exactly when op is 'step'");
+                    return false;
+                }
+
+                bool isSetScale = string.Equals(clock.Op, BridgeClockOps.SetScale, System.StringComparison.Ordinal);
+                bool hasScale = scale != null && scale.Type != JTokenType.Null;
+                if (isSetScale != hasScale)
+                {
+                    error = Invalid("time_scale is required exactly when op is 'set_scale'");
                     return false;
                 }
             }

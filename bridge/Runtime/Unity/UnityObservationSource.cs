@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Threading;
+using Playtest.Bridge.Clock;
 using Playtest.Bridge.Protocol;
 using Playtest.Bridge.Transport;
 using UnityEngine;
@@ -59,6 +60,8 @@ namespace Playtest.Bridge.Unity
 
         private readonly object _gate = new object();
 
+        private readonly IBridgeClock _clock;
+
         private BridgeObservationSnapshot _current;
 
         private Dictionary<string, object> _ui;
@@ -75,8 +78,9 @@ namespace Playtest.Bridge.Unity
 
         private bool _disposed;
 
-        public UnityObservationSource()
+        public UnityObservationSource(IBridgeClock clock = null)
         {
+            _clock = clock;
             _ui = CreateEmptyUi();
             _lastUiRefresh = double.NegativeInfinity;
             _current = CreateUnsampledSnapshot(_ui);
@@ -229,7 +233,7 @@ namespace Playtest.Bridge.Unity
 
             var snapshot = new BridgeObservationSnapshot
             {
-                ClockMode = ClockModeRealtime,
+                ClockMode = _clock == null ? ClockModeRealtime : _clock.ClockMode,
                 Scene = scene,
                 Playing = playing,
                 Paused = paused,

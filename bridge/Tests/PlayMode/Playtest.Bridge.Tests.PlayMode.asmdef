@@ -3,6 +3,7 @@
   "rootNamespace": "Playtest.Bridge.Tests",
   "references": [
     "Playtest.Bridge",
+    "Unity.InputSystem",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],

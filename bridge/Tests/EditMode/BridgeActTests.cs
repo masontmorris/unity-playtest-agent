@@ -16,12 +16,19 @@ namespace Playtest.Bridge.Tests
         public bool FailApply;
         public bool FailRelease;
         public bool ReleaseVerified = true;
+        public bool VerifyRelease = true;
         public readonly List<string> Applied = new List<string>();
+        public readonly List<string> Released = new List<string>();
         public int Releases;
 
         public string Name
         {
             get { return "input_system"; }
+        }
+
+        public IReadOnlyList<string> ReleasedInputs
+        {
+            get { return Released; }
         }
 
         public bool IsAvailable
@@ -62,6 +69,7 @@ namespace Playtest.Bridge.Tests
             }
 
             Applied.Add(action.Name);
+            Released.Clear();
             error = null;
             return true;
         }
@@ -69,6 +77,8 @@ namespace Playtest.Bridge.Tests
         public bool TryRelease(out bool releaseVerified, out string error)
         {
             Releases++;
+            Released.Clear();
+            Released.AddRange(Applied);
             releaseVerified = ReleaseVerified;
             if (FailRelease)
             {
@@ -78,6 +88,12 @@ namespace Playtest.Bridge.Tests
 
             error = null;
             return true;
+        }
+
+        public bool TryVerifyRelease(out string error)
+        {
+            error = VerifyRelease ? null : "fake release verification failure";
+            return VerifyRelease;
         }
 
         public void Dispose()

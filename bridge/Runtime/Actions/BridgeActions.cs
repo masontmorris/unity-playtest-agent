@@ -192,8 +192,14 @@ namespace Playtest.Bridge.Actions
         /// <summary>Side-effect-free check that the action can be applied by this backend.</summary>
         bool TryValidate(BridgeActionDefinition action, out string error);
 
+        /// <summary>Inputs released by the last <see cref="TryRelease"/> call.</summary>
+        IReadOnlyList<string> ReleasedInputs { get; }
+
         bool TryApply(BridgeActionDefinition action, out string error);
 
         bool TryRelease(out bool releaseVerified, out string error);
+
+        /// <summary>Checks that the released inputs are no longer held. May be called after TryRelease.</summary>
+        bool TryVerifyRelease(out string error);
     }
 }

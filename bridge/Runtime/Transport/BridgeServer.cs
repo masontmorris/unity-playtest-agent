@@ -7,6 +7,7 @@ using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Playtest.Bridge.Actions;
+using Playtest.Bridge.Clock;
 using Playtest.Bridge.Protocol;
 
 namespace Playtest.Bridge.Transport
@@ -23,6 +24,7 @@ namespace Playtest.Bridge.Transport
         private readonly IBridgeObservationSource _observations;
         private readonly BridgeActionCatalog _actions;
         private readonly IBridgeInputBackend _input;
+        private readonly IBridgeClock _clock;
         private readonly BridgeObservationHistory _history = new BridgeObservationHistory();
         private readonly BridgeActionLease _lease;
         private readonly string _token;
@@ -66,12 +68,32 @@ namespace Playtest.Bridge.Transport
             BridgeActionCatalog actions,
             IBridgeInputBackend input,
             string token)
+            : this(options, status, observations, actions, input, null, token)
+        {
+        }
+
+        /// <summary>
+        /// Full constructor. <paramref name="actions"/>, <paramref name="input"/> and
+        /// <paramref name="clock"/> are optional capabilities; without them the matching verbs
+        /// are rejected. The caller owns the input backend and clock and disposes them after the
+        /// server stops; the server stops the lease and releases held input but does not dispose
+        /// those services.
+        /// </summary>
+        public BridgeServer(
+            BridgeServerOptions options,
+            IBridgeStatusSource status,
+            IBridgeObservationSource observations,
+            BridgeActionCatalog actions,
+            IBridgeInputBackend input,
+            IBridgeClock clock,
+            string token)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _status = status ?? throw new ArgumentNullException(nameof(status));
             _observations = observations;
             _actions = actions ?? BridgeActionCatalog.Empty;
             _input = input;
+            _clock = clock;
             if (string.IsNullOrEmpty(token))
             {
                 throw new ArgumentException("token must not be empty", nameof(token));
@@ -128,9 +150,18 @@ namespace Playtest.Bridge.Transport
             }
 
             _running = false;
-            lock (_freshnessGate)
+            ClientSession active = _active;
+            if (active != null)
             {
-                _lease?.Stop("server stop", emitCancelled: true);
+                StopSession(active, "user", sendResult: true);
+            }
+            else
+            {
+                lock (_freshnessGate)
+                {
+                    _clock?.Reset();
+                    _lease?.Stop("server stop", emitCancelled: true);
+                }
             }
 
             try
@@ -321,7 +352,7 @@ namespace Playtest.Bridge.Transport
 
                 if (wasActive)
                 {
-                    _lease?.Stop("disconnect", emitCancelled: false);
+                    StopSession(session, "disconnect", sendResult: false);
                 }
 
                 if (session != null)
@@ -432,6 +463,18 @@ namespace Playtest.Bridge.Transport
                 return;
             }
 
+            if (string.Equals(type, "stop", StringComparison.Ordinal))
+            {
+                HandleStop(session, line, requestSeq);
+                return;
+            }
+
+            if (string.Equals(type, "clock", StringComparison.Ordinal))
+            {
+                HandleClock(session, line, requestSeq);
+                return;
+            }
+
             string label = string.IsNullOrEmpty(type) ? "(missing)" : type;
             WriteSessionError(
                 session,
@@ -495,9 +538,161 @@ namespace Playtest.Bridge.Transport
             }
         }
 
-        private void HandleAct(ClientSession session, string line, long? requestSeq)
+        private void HandleStop(ClientSession session, string line, long? requestSeq)
         {
-            if (!_running)
+            if (!BridgeProtocol.TryReadStopRequest(line, out StopRequestMessage request, out ProtocolError error))
+            {
+                WriteSessionError(session, requestSeq, error.Code, error.Message);
+                return;
+            }
+
+            StopSession(session, request.Reason, sendResult: true);
+        }
+
+        private void HandleClock(ClientSession session, string line, long? requestSeq)
+        {
+            if (!BridgeProtocol.TryReadClockRequest(line, out ClockRequestMessage request, out ProtocolError error))
+            {
+                WriteSessionError(session, requestSeq, error.Code, error.Message);
+                return;
+            }
+
+            if (_clock == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Invalid,
+                    "clock control is not available on this bridge");
+                return;
+            }
+
+            if (!_clock.TryApply(request, out string applyError))
+            {
+                WriteSessionError(session, request.Seq, BridgeErrorCode.Invalid, applyError);
+                return;
+            }
+
+            WriteStatus(session);
+        }
+
+        /// <summary>
+        /// Stops the active session for a bridge-side reason (scene change, user, reset, error).
+        /// Sends a stopped result when the caller is still connected, releases every input and
+        /// verifies the release before closing. Safe to call from the Unity main thread.
+        /// </summary>
+        public StopResultMessage StopActiveSession(string reason)
+        {
+            ClientSession session = _active;
+            if (session == null)
+            {
+                return null;
+            }
+
+            return StopSession(session, reason, sendResult: true);
+        }
+
+        private StopResultMessage StopSession(ClientSession session, string reason, bool sendResult)
+        {
+            if (session == null)
+            {
+                return null;
+            }
+
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_active, session))
+                {
+                    return null;
+                }
+            }
+
+            lock (_freshnessGate)
+            {
+                session.StopStream();
+                _clock?.Reset();
+                if (_lease != null)
+                {
+                    _lease.Stop("stop:" + reason, emitCancelled: true);
+                }
+                else if (_input != null)
+                {
+                    _input.TryRelease(out _, out _);
+                }
+
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_active, session))
+                    {
+                        _active = null;
+                    }
+                }
+            }
+
+            var released = new List<string>();
+            if (_input != null)
+            {
+                released.AddRange(_input.ReleasedInputs);
+            }
+
+            bool verified = VerifyRelease(_options.ReleaseVerifyTimeoutMs);
+
+            var result = new StopResultMessage
+            {
+                Session = session.Session,
+                Seq = 0,
+                WallUtc = DateTime.UtcNow,
+                Released = released,
+                ReleaseVerified = verified,
+            };
+
+            if (sendResult && !session.IsClosed)
+            {
+                bool written = TryWrite(session, seq =>
+                {
+                    result.Session = session.Session;
+                    result.Seq = seq;
+                    result.WallUtc = DateTime.UtcNow;
+                    return result;
+                });
+
+                if (!written)
+                {
+                    session.Close();
+                }
+            }
+
+            session.Close();
+            Log?.Invoke("stop (" + reason + "): released=" + released.Count + " verified=" + verified);
+            return result;
+        }
+
+        private bool VerifyRelease(int timeoutMs)
+        {
+            if (_input == null)
+            {
+                return true;
+            }
+
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMs));
+            while (true)
+            {
+                if (_input.TryVerifyRelease(out _))
+                {
+                    return true;
+                }
+
+                if (DateTime.UtcNow >= deadline)
+                {
+                    return false;
+                }
+
+                Thread.Sleep(10);
+            }
+        }
+
+        private void HandleAct(ClientSession session, string line, long? requestSeq)
+        {            if (!_running)
             {
                 return;
             }
