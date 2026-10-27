@@ -87,8 +87,8 @@ namespace Playtest.Bridge.Transport
                     value = snapshot.Ui;
                     return true;
                 case "frame_ref":
-                    value = null;
-                    return false;
+                    value = snapshot.FrameRef;
+                    return !string.IsNullOrEmpty(snapshot.FrameRef);
                 default:
                     value = null;
                     return false;

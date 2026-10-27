@@ -28,6 +28,9 @@ namespace Playtest.Bridge.Transport
 
         public Dictionary<string, object> Ui { get; set; }
 
+        /// <summary>Path to the latest completed JPEG frame, or null when capture is unavailable.</summary>
+        public string FrameRef { get; set; }
+
         public List<ObservationReaderError> ReaderErrors { get; set; } = new List<ObservationReaderError>();
 
         /// <summary>When the sample was taken; the observation's wall_utc is this value.</summary>
@@ -41,5 +44,8 @@ namespace Playtest.Bridge.Transport
     public interface IBridgeObservationSource
     {
         BridgeObservationSnapshot GetObservation();
+
+        /// <summary>True when the startup self-test proved the capture path can render.</summary>
+        bool CaptureAvailable { get; }
     }
 }

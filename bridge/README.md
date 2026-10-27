@@ -15,8 +15,8 @@ Issues #14–#19 build it in layers:
 | Transport, hello/status, project lock | `hello` | Landed (#14) |
 | Continuous observation stream | `observe` | Landed (#15) |
 | Bounded actions, freshness, input leases | `act` | Landed (#16) |
-| Stop, release verification and clock | `stop`, `clock` | This issue (#17) |
-| Capture to an offscreen render target | `frame_ref` (part of `observe`) | #18 |
+| Stop, release verification and clock | `stop`, `clock` | Landed (#17) |
+| Capture to an offscreen render target | `frame_ref` (part of `observe`) | This issue (#18) |
 | Core skeleton, bridge client, fake game | — | Landed (#19) |
 
 ## Layout
@@ -28,7 +28,7 @@ bridge/
   Runtime/Actions/              action catalog, input lease, clock interface (no Unity dependency)
   Runtime/Lock/                 project lock file (PID, port, token)
   Runtime/Transport/            TCP listener, JSONL framing, token, single session
-  Runtime/Unity/                Unity status, observation, input and clock sources
+  Runtime/Unity/                Unity status, observation, input, clock and capture sources
   Editor/                       Editor lifecycle and Tools/Playtest Bridge menu
   Tests/EditMode/               EditMode tests (the acceptance check)
   Tests/DotNet~/                Unity-free fast tests; ignored by Unity
@@ -92,11 +92,11 @@ reports it `cancelled`; the new lease reports `running` and then `completed` (or
 release cannot be verified). Unknown actions, stale observations, changed fields, a non-playing
 project and backend failures are rejected with the contract's reject reasons. `lease_s` is capped
 at 3600 s. In v0 `params` are free-form and ignored; the catalog's `default_lease_s` or the
-request's `lease_s` sets the hold. `frame_ref` is unavailable until capture (#18), so a
-`depends_on` on it fails closed. The v0 backend is Input System keyboard; the action catalog keeps
-every game-specific binding out of the package. In batch mode it scopes the Input System focus
-settings so injected keys reach the game loop, and restores the previous values on stop; an
-interactive Editor is left alone.
+request's `lease_s` sets the hold. A `depends_on` on `frame_ref` fails closed until a frame
+exists. The v0 backend is Input System keyboard; the action catalog keeps every game-specific
+binding out of the package. In batch mode it scopes the Input System focus settings so injected
+keys reach the game loop, and restores the previous values on stop; an interactive Editor is left
+alone.
 
 ## Stop and clock
 
@@ -112,14 +112,38 @@ game clock, `resume` returns to realtime, `set_scale` changes the scale, and `st
 time by the requested interval and returns to paused. The observation's `clock_mode` is
 `stepped` while paused/stepping and `realtime` otherwise. `status.clock_control` is true.
 
+## Capture
+
+Capture is offscreen: every enabled screen camera renders into a dedicated render target, then
+the Screen Space - Overlay canvases are lent a temporary camera and blended on top. Nothing reads
+the Game view back buffer, so a hidden or unfocused Game view cannot replace the frame with its
+clear colour. The composite is read back and encoded as JPEG at 640 px wide; a worker thread
+writes the bytes at 10 frames per second into a bounded window under
+`<project>/Temp/playtest-bridge-frames/`, which holds the latest 120 frames by default.
+`frame_ref` is the absolute path of the latest complete file, so a frame is never named before
+its bytes are on disk.
+
+At start the capture runs a self-test: a temporary camera and a top-half overlay canvas go through
+the same composite, the JPEG is decoded again and both halves are checked. The result appears in
+`status.capture` and `status.capture_self_test` (`passed`, `failed` or `unknown`). The self-test
+also runs outside play mode, which is when the Editor host starts; the EditMode runner measures
+that path with `-Graphics`, while the default no-graphics run measures the fail-closed result.
+Without a graphics device (`-nographics`) the self-test fails closed: `capture` is false and
+`observe` with `with_frame` is rejected. `with_frame` is only meaningful when capture is
+available; observations without it never carry `frame_ref`.
+
+Capture is on by default while the project plays. Tests that need it must run Unity without
+`-nographics`; the PlayMode test script does that by default and accepts `-NoGraphics` for
+machines without a device.
+
 ## Tests
 
 Three layers:
 
 | Layer | What it covers | Command |
 |---|---|---|
-| EditMode | protocol, transport, observations, lock and status | `./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"` |
-| PlayMode | the continuous stream, measured against a running scene | the same command with `-TestPlatform PlayMode` |
+| EditMode | protocol, transport, observations, lock, status, stop/clock and the fail-closed capture path; `-Graphics` measures the self-test outside play mode | `./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"` |
+| PlayMode | stream, act, clock, stop, real input release, capture (self-test, status, frame window, frame_ref) | the same command with `-TestPlatform PlayMode` |
 | Unity-free | pure C# transport, seconds, no Editor | `dotnet test bridge/Tests/DotNet~` |
 
 Acceptance (EditMode, run from the test game project):
@@ -134,22 +158,25 @@ PlayMode measurement, against the same project and the same `testables` entry:
 ./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project" -TestPlatform PlayMode
 ```
 
-`-TestPlatform` defaults to `EditMode`. `PlayMode` enters Play mode in batch mode and runs one
-test that loads the first enabled scene from the project's Build Settings additively, makes it
-active, starts the loopback server with the Unity sources, then subscribes at 20 Hz and measures
-the stream: 45-75 observations in a 3 s window, a 40-67 ms median interval (Windows timer
-resolution rounds a 50 ms wait to ~62.5 ms in batch mode), no gap over 250 ms,
-observations at most 150 ms old on arrival, strictly increasing `seq`, an advancing `frame`, the
-running scene, `playing`, `time_scale`, a non-null `ui` object and `reader_errors` as an array.
-It then unsubscribes and requires silence apart from at most one in-flight observation. The test
-sends no `stop`; that verb is a later issue. Additive loading keeps the test runner's own scene
-alive, and the scene is unloaded during cleanup. A PlayMode run needs at least one enabled scene
-in Build Settings, and the same one-Editor-at-a-time rule as any other run.
+`-TestPlatform` defaults to `EditMode`. `PlayMode` enters Play mode in batch mode and runs nine
+tests: the stream measurement, act, clock, a main-thread stop with a real held key, input release,
+the capture self-test, the host's capture status, the JPEG frame window, and the `frame_ref` round
+trip. The stream test loads the
+first enabled scene from the project's Build Settings additively, makes it active, starts the
+loopback server with the Unity sources, then subscribes at 20 Hz and measures: 45-75 observations
+in a 3 s window, a 40-67 ms median interval (Windows timer resolution rounds a 50 ms wait to
+~62.5 ms in batch mode), no gap over 250 ms, observations at most 150 ms old on arrival, strictly
+increasing `seq`, an advancing `frame`, the running scene, `playing`, `time_scale`, a non-null
+`ui` object and `reader_errors` as an array. It then unsubscribes and requires silence apart from
+at most one in-flight observation. Additive loading keeps the test runner's own scene alive, and
+the scene is unloaded during cleanup. A stream test needs at least one enabled scene in Build
+Settings, and every run follows the same one-Editor-at-a-time rule.
 
 Both suites need `com.playtest.bridge` in the project's `Packages/manifest.json` under
 `testables`; without that entry neither test assembly is compiled or discovered. The PlayMode
-assembly lives in `Tests/PlayMode/` and references only `Playtest.Bridge` plus the test framework,
-so it compiles in the Editor without Editor-only APIs.
+assembly lives in `Tests/PlayMode/` and references `Playtest.Bridge`, `Unity.InputSystem` and
+`UnityEngine.UI` plus the test framework, so it compiles in the Editor without Editor-only APIs.
+PlayMode defaults to a graphics device; pass `-NoGraphics` only when the capture tests cannot run.
 
 Fast transport tests (no Unity, seconds):
 

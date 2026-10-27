@@ -55,6 +55,8 @@ namespace Playtest.Bridge.Tests
             }
         }
 
+        public bool CaptureAvailable { get; set; }
+
         public BridgeObservationSnapshot Snapshot
         {
             get
@@ -92,6 +94,7 @@ namespace Playtest.Bridge.Tests
                     GameS = current.GameS.HasValue ? current.GameS.Value + sample * 0.01 : (double?)null,
                     Public = current.Public,
                     Ui = current.Ui,
+                    FrameRef = current.FrameRef,
                     ReaderErrors = current.ReaderErrors,
                     CapturedWallUtc = current.CapturedWallUtc.AddMilliseconds(sample),
                 };
@@ -389,6 +392,29 @@ namespace Playtest.Bridge.Tests
 
                 client.Send(Observe("once", seq: 18));
                 Assert.That(ReadObservation(client).Seq, Is.EqualTo(2), "the session survives a rejected with_frame request");
+            }
+        }
+
+        [Test]
+        public void WithFrame_CarriesTheLatestFrameRefOnceCaptureIsAvailable()
+        {
+            _observations.CaptureAvailable = true;
+            BridgeObservationSnapshot snapshot = _observations.Snapshot;
+            snapshot.FrameRef = "frames/f-000007.jpg";
+            _observations.Snapshot = snapshot;
+
+            using (var client = new TestClient(_server))
+            {
+                client.Send(BridgeTestSupport.Hello(session: "s-frame"));
+                client.ReadStatus();
+
+                client.Send(Observe("once", seq: 19, withFrame: true));
+                ObservationMessage withFrame = ReadObservation(client);
+                Assert.That(withFrame.FrameRef, Is.EqualTo("frames/f-000007.jpg"));
+
+                client.Send(Observe("once", seq: 20));
+                ObservationMessage withoutFrame = ReadObservation(client);
+                Assert.That(withoutFrame.FrameRef, Is.Null, "frame_ref is only sent when the caller asked for it");
             }
         }
 

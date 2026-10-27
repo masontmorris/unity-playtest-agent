@@ -164,7 +164,7 @@ namespace Playtest.Bridge.Tests
                 Assert.That(status.Lock.OwnerPid, Is.EqualTo(CurrentProcessId()));
                 Assert.That(status.Lock.Port, Is.EqualTo(BridgeEditorHost.Port));
                 Assert.That(status.Capture, Is.False);
-                Assert.That(status.CaptureSelfTest, Is.EqualTo(UnityStatusSource.Unknown));
+                Assert.That(status.CaptureSelfTest, Is.EqualTo(UnityCapture.Failed));
             }
         }
 
