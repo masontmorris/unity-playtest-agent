@@ -242,9 +242,16 @@ def test_full_calibration_records_action_field_and_clock_evidence(monkeypatch):
     assert result["status"] == "measured_with_gaps"
     assert result["plan"]["quiet_intervals"] == calibrate.QUIET_INTERVALS
     assert result["plan"]["requested_field_interval_s"] == calibrate.FIELD_INTERVAL_S
-    assert len(client.calls) == len(result["trials"]) == 4
-    assert len(result["input_field_segments"]) == 2
+    assert result["plan"]["field_repeats"] == calibrate.FIELD_REPEATS
+    # Two repeats at the shorter hold, and the field-sampled hold repeated more often.
+    assert len(client.calls) == len(result["trials"]) == calibrate.REPEATS + calibrate.FIELD_REPEATS
+    assert len(result["input_field_segments"]) == calibrate.FIELD_REPEATS
+    assert len(result["idle_fields"]) == calibrate.IDLE_SAMPLES
+    assert [len(window) for window in result["later_idle_windows"]] == [calibrate.IDLE_SAMPLES]
+    assert result["freshness"]["field"]["idle"]["segment_count"] == 2
     assert result["freshness"]["field"]["input"]["classification"] == "observed_continuous"
+    assert result["freshness"]["field"]["held_controls"]["changed"] == ["w"]
+    assert result["freshness"]["field"]["input_by_control"]["w"]["window_count"] == calibrate.FIELD_REPEATS
     assert result["action_summaries"][0]["lowest_tested_effective_requested_hold_s"] == 0.1
     assert result["clock"]["stepped_mode_supported"] is None
     assert client.paused is False

@@ -6,15 +6,19 @@ escalate an action, and a freshness class never becomes an input decision here.
 Terms
 -----
 A *window* is one list of samples whose adjacent pairs may be compared. The
-idle samples form one window. Every item in ``input_segments`` is a separate
-held-input window; the edge between two windows is never an interval.
+first idle window, each later idle window and every item in ``input_segments``
+are separate windows; the edge between two windows is never an interval.
 
 A *comparable* value is one of:
 
 * ``value_state == "present"`` with ``value_kind`` in
   ``{"number", "integer", "boolean", "enum", "string"}``, a JSON primitive
   value of the matching type, no read error, no truncation and a finite numeric
-  value; or
+  value;
+* ``value_state == "present"`` with ``value_kind`` a vector kind (``vector2``,
+  ``vector3``, ``vector4``, ``quaternion``, ``vector2_int``, ``vector3_int``)
+  and a list of exactly that many finite numbers (integers for the ``_int``
+  kinds), compared component by component with exact equality; or
 * ``value_state == "null"`` with ``is_null is True`` and ``value is None``.
 
 An *interval* is one adjacent pair inside a window. It is comparable only when
@@ -32,9 +36,19 @@ it means no change was seen in the comparable intervals.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from typing import Any
 
 COMPARABLE_KINDS = frozenset({"number", "integer", "boolean", "enum", "string"})
+# Component arrays from the field reader: kind -> (length, whole-number components only).
+VECTOR_KINDS = {
+    "vector2": (2, False),
+    "vector3": (3, False),
+    "vector4": (4, False),
+    "quaternion": (4, False),
+    "vector2_int": (2, True),
+    "vector3_int": (3, True),
+}
 CHANGED_CLASSIFICATIONS = frozenset({"observed_continuous", "observed_change"})
 SAMPLING_LIMITATION = (
     "Freshness is measured only from adjacent samples inside one window. Values "
@@ -119,8 +133,19 @@ def _comparable(row: dict | None) -> tuple[str, object] | None:
         return None
 
     kind = row.get("value_kind")
-    if not isinstance(kind, str) or kind not in COMPARABLE_KINDS:
+    if not isinstance(kind, str) or (kind not in COMPARABLE_KINDS and kind not in VECTOR_KINDS):
         return None
+
+    if kind in VECTOR_KINDS:
+        size, whole = VECTOR_KINDS[kind]
+        if not isinstance(value, list) or len(value) != size:
+            return None
+        for part in value:
+            if isinstance(part, bool) or not isinstance(part, int if whole else (int, float)):
+                return None
+            if isinstance(part, float) and not math.isfinite(part):
+                return None
+        return (kind, tuple(value))
 
     if kind == "string":
         # A string without an explicit "not truncated" flag could hide a change
@@ -214,6 +239,7 @@ def _aggregate_segments(segments: list[dict[str, Any]]) -> dict[str, Any]:
         default=0,
     )
     incomplete = [segment["index"] for segment in segments if not segment["complete"]]
+    judged = [segment["classification"] for segment in segments if segment["comparable_intervals"] > 0]
     return {
         "segment_count": len(segments),
         "sample_count": sample_count,
@@ -228,6 +254,10 @@ def _aggregate_segments(segments: list[dict[str, Any]]) -> dict[str, Any]:
         "incomplete_segments": incomplete,
         "segments": segments,
         "classification": _classification(comparable, changed, max_run),
+        "window_classifications": dict(sorted(Counter(s["classification"] for s in segments).items())),
+        # Whether the windows that had any comparable interval all got the same class;
+        # None when fewer than two did, so there is nothing to compare.
+        "windows_agree": None if len(judged) < 2 else len(set(judged)) == 1,
     }
 
 
@@ -264,40 +294,70 @@ def _continuous_overall(idle_classification: str, input_classification: str) -> 
 def analyze_freshness(
     idle_samples: list[dict],
     input_segments: list[list[dict]],
+    *,
+    input_controls: list[str] | None = None,
+    later_idle_windows: list[list[dict]] | tuple[list[dict], ...] = (),
 ) -> dict[str, dict]:
     """Report per-field freshness evidence for idle and held-input windows.
 
-    ``idle_samples`` is one window. Each item in ``input_segments`` is a distinct
-    held-input window; adjacent samples are compared only within their own
-    window. ``real_time_s`` must be finite and strictly increasing in every
-    window. A repeated field id inside one sample raises ``ValueError``, as do
-    malformed sample structures and non-increasing timestamps.
+    ``idle_samples`` is the first idle window and each item in
+    ``later_idle_windows`` another one, taken later in the run. Each item in
+    ``input_segments`` is a distinct held-input window. Adjacent samples are
+    compared only within their own window. ``real_time_s`` must be finite and
+    strictly increasing in every window. A repeated field id inside one sample
+    raises ``ValueError``, as do malformed sample structures and non-increasing
+    timestamps.
+
+    ``input_controls``, when given, names the key held in each input window, in
+    the same order; it adds a per-key split of the held evidence and lists which
+    keys' windows showed a change. Without it those entries are ``None``.
 
     The returned mapping is keyed by field id. Every value has separate ``idle``
     and ``input`` evidence, an overall ``classification`` and the sampling
     limitation. Counts always describe observed intervals only; unknown
     intervals are reported separately and never folded into unchanged intervals.
+    ``windows_agree`` says whether the windows that had any comparable interval
+    got the same class, and ``varied_between_windows`` names where they did not
+    (``None`` when no scope had two such windows).
     """
-    idle_maps = _validated_fields(idle_samples, "idle")
+    if not isinstance(later_idle_windows, (list, tuple)):
+        raise ValueError("later_idle_windows must be a list of sample windows")
+    idle_window_maps = [_validated_fields(idle_samples, "idle")] + [
+        _validated_fields(window, f"idle window {index}")
+        for index, window in enumerate(later_idle_windows, start=1)
+    ]
     if not isinstance(input_segments, list):
         raise ValueError("input_segments must be a list of sample windows")
     segment_maps = [
         _validated_fields(segment, f"input segment {index}")
         for index, segment in enumerate(input_segments)
     ]
+    controls: list[str] | None = None
+    if input_controls is not None:
+        if (
+            not isinstance(input_controls, (list, tuple))
+            or len(input_controls) != len(segment_maps)
+            or any(not isinstance(control, str) or not control for control in input_controls)
+        ):
+            raise ValueError("input_controls must name the key held in every input segment")
+        controls = list(input_controls)
 
     field_ids: set[str] = set()
-    for mapping in idle_maps:
-        field_ids.update(mapping)
+    for window in idle_window_maps:
+        for sample in window:
+            field_ids.update(sample)
     for mapping in segment_maps:
         for sample in mapping:
             field_ids.update(sample)
 
     result: dict[str, dict] = {}
     for field_id in sorted(field_ids):
-        idle_comparables = [_comparable(sample.get(field_id)) for sample in idle_maps]
-        idle_present = [field_id in sample for sample in idle_maps]
-        idle = _stats(idle_comparables, idle_present)
+        idle_windows: list[dict[str, Any]] = []
+        for index, window in enumerate(idle_window_maps):
+            comparables = [_comparable(sample.get(field_id)) for sample in window]
+            present = [field_id in sample for sample in window]
+            idle_windows.append({"index": index, **_stats(comparables, present)})
+        idle = _aggregate_segments(idle_windows)
 
         segments: list[dict[str, Any]] = []
         for index, mapping in enumerate(segment_maps):
@@ -306,13 +366,62 @@ def analyze_freshness(
             segments.append({"index": index, **_stats(comparables, present)})
 
         input_evidence = _aggregate_segments(segments)
+        by_control, held_controls = _split_by_control(segments, controls)
         result[field_id] = {
             "id": field_id,
             "idle": idle,
             "input": input_evidence,
+            "input_by_control": by_control,
+            "held_controls": held_controls,
+            "varied_between_windows": _varied_between_windows(idle, by_control),
             "classification": _overall(idle["classification"], input_evidence["classification"]),
             "classification_scope": "where_any_change_was_observed",
             "continuous_classification": _continuous_overall(idle["classification"], input_evidence["classification"]),
             "sampling_limitation": SAMPLING_LIMITATION,
         }
     return result
+
+
+def _split_by_control(
+    segments: list[dict[str, Any]], controls: list[str] | None
+) -> tuple[dict[str, dict] | None, dict[str, list[str]] | None]:
+    """Aggregate a field's held windows per key, and list the keys by what they showed."""
+    if controls is None:
+        return None, None
+    by_control: dict[str, dict] = {}
+    for control in sorted(set(controls)):
+        mine = [segment for segment, held in zip(segments, controls) if held == control]
+        whole = _aggregate_segments(mine)
+        by_control[control] = {
+            "windows": [segment["index"] for segment in mine],
+            "window_count": len(mine),
+            **{
+                name: whole[name]
+                for name in (
+                    "comparable_intervals",
+                    "changed_intervals",
+                    "unchanged_intervals",
+                    "unknown_intervals",
+                    "consecutive_changed_intervals_max",
+                    "classification",
+                    "window_classifications",
+                    "windows_agree",
+                )
+            },
+        }
+    held_controls = {
+        "changed": [c for c, ev in by_control.items() if ev["classification"] in CHANGED_CLASSIFICATIONS],
+        "unchanged": [c for c, ev in by_control.items() if ev["classification"] == "no_change_observed"],
+        "unknown": [c for c, ev in by_control.items() if ev["classification"] == "unknown"],
+    }
+    return by_control, held_controls
+
+
+def _varied_between_windows(idle: dict[str, Any], by_control: dict[str, dict] | None) -> list[dict] | None:
+    """Name the scopes whose repeated windows disagreed; None if none could be compared."""
+    scopes = [({"scope": "idle"}, idle["windows_agree"])]
+    for control, evidence in (by_control or {}).items():
+        scopes.append(({"scope": "input", "control": control}, evidence["windows_agree"]))
+    if all(agree is None for _, agree in scopes):
+        return None
+    return [scope for scope, agree in scopes if agree is False]

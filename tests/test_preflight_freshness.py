@@ -374,3 +374,132 @@ def test_empty_input_has_no_fabricated_evidence():
     assert evidence["input"]["complete"] is False
     assert evidence["input"]["classification"] == "unknown"
     assert evidence["classification"] == "unknown"
+
+
+def vec(components, kind="vector3") -> dict:
+    return row(components, kind=kind)
+
+
+def test_vector_fields_are_compared_component_by_component_with_exact_equality():
+    still = analyze_freshness(series([vec([1.0, 2.0, 3.0]), vec([1.0, 2.0, 3.0]), vec([1.0, 2.0, 3.0])]), [])["f"]
+    assert still["idle"]["comparable_intervals"] == 2
+    assert still["idle"]["changed_intervals"] == 0
+    assert still["idle"]["classification"] == "no_change_observed"
+
+    nudged = [vec([0.0, 0.0, 0.0]), vec([0.0, 0.0, 1e-9]), vec([0.0, 0.0, 2e-9])]
+    moving = analyze_freshness(series(nudged), [])["f"]["idle"]
+    assert moving["changed_intervals"] == 2
+    assert moving["classification"] == "observed_continuous"
+
+
+def test_the_same_numbers_under_different_vector_kinds_are_different_values():
+    same_numbers = [vec([1.0, 2.0, 3.0, 4.0], kind="vector4"), vec([1.0, 2.0, 3.0, 4.0], kind="quaternion")]
+    assert analyze_freshness(series(same_numbers), [])["f"]["idle"]["changed_intervals"] == 1
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [1.0, 2.0],
+        [1.0, 2.0, 3.0, 4.0],
+        [1.0, True, 3.0],
+        [1.0, math.nan, 3.0],
+        [1.0, math.inf, 3.0],
+        [1.0, "2", 3.0],
+        "1,2,3",
+    ],
+)
+def test_malformed_vector_values_are_unknown(bad):
+    samples = series([vec([1.0, 2.0, 3.0]), vec(bad), vec([1.0, 2.0, 3.0])])
+    evidence = analyze_freshness(samples, [])["f"]["idle"]
+    assert evidence["comparable_intervals"] == 0
+    assert evidence["changed_intervals"] == 0
+    assert evidence["unknown_intervals"] == 2
+    assert evidence["classification"] == "unknown"
+
+
+def test_whole_number_vectors_reject_fractions_and_special_vectors_are_unknown():
+    cells = analyze_freshness(series([vec([1, 2], kind="vector2_int")] * 3), [])["f"]["idle"]
+    assert cells["comparable_intervals"] == 2
+    assert cells["classification"] == "no_change_observed"
+
+    fractional = [vec([1, 2], kind="vector2_int"), vec([1.5, 2], kind="vector2_int"), vec([1, 2], kind="vector2_int")]
+    assert analyze_freshness(series(fractional), [])["f"]["idle"]["classification"] == "unknown"
+
+    special = [vec([1.0, 2.0, 3.0]), row(["NaN", 2.0, 3.0], kind="special_vector"), vec([1.0, 2.0, 3.0])]
+    assert analyze_freshness(series(special), [])["f"]["idle"]["classification"] == "unknown"
+
+
+def test_held_changes_are_split_by_key_and_the_pooled_class_is_kept():
+    windows = [series([0, 1, 2], start=10.0), series([0, 1, 2], start=20.0), series([9, 9, 9], start=30.0)]
+    evidence = analyze_freshness(series([5, 5, 5]), windows, input_controls=["w", "w", "s"])["f"]
+
+    assert evidence["held_controls"] == {"changed": ["w"], "unchanged": ["s"], "unknown": []}
+    w = evidence["input_by_control"]["w"]
+    assert w["windows"] == [0, 1]
+    assert w["window_count"] == 2
+    assert w["classification"] == "observed_continuous"
+    assert w["windows_agree"] is True
+    assert evidence["input_by_control"]["s"]["classification"] == "no_change_observed"
+    assert evidence["input"]["classification"] == "observed_continuous"
+    assert evidence["varied_between_windows"] == []
+
+
+def test_a_key_whose_repeated_windows_disagree_is_named_and_not_averaged_away():
+    windows = [series([0, 1, 2], start=0.0), series([4, 4, 4], start=10.0)]
+    evidence = analyze_freshness(series([1, 1, 1]), windows, input_controls=["space", "space"])["f"]
+
+    space = evidence["input_by_control"]["space"]
+    assert space["windows_agree"] is False
+    assert space["window_classifications"] == {"no_change_observed": 1, "observed_continuous": 1}
+    assert evidence["varied_between_windows"] == [{"scope": "input", "control": "space"}]
+    assert evidence["held_controls"]["changed"] == ["space"]
+
+
+def test_a_key_with_no_comparable_windows_is_unknown_not_unchanged():
+    unreadable = row(None, state="unsupported", kind="unsupported")
+    windows = [series([unreadable, unreadable, unreadable]), series([3, 3, 3], start=10.0)]
+    evidence = analyze_freshness(series([1, 1, 1]), windows, input_controls=["a", "d"])["f"]
+    assert evidence["held_controls"] == {"changed": [], "unchanged": ["d"], "unknown": ["a"]}
+
+
+def test_controls_are_none_when_absent_and_must_match_the_windows():
+    evidence = analyze_freshness(series([1, 1, 1]), [series([0, 1, 2])])["f"]
+    assert evidence["input_by_control"] is None
+    assert evidence["held_controls"] is None
+    assert evidence["varied_between_windows"] is None
+
+    with pytest.raises(ValueError, match="input_controls"):
+        analyze_freshness(series([1, 1, 1]), [series([0, 1])], input_controls=[])
+    with pytest.raises(ValueError, match="input_controls"):
+        analyze_freshness(series([1, 1, 1]), [series([0, 1])], input_controls=[""])
+
+
+def test_later_idle_windows_are_separate_windows_that_can_disagree():
+    evidence = analyze_freshness(series([0, 1, 2]), [], later_idle_windows=[series([5, 5, 5], start=100.0)])["f"]
+
+    idle = evidence["idle"]
+    assert idle["segment_count"] == 2
+    assert idle["comparable_intervals"] == 4
+    assert idle["changed_intervals"] == 2
+    assert idle["consecutive_changed_intervals_max"] == 2
+    assert idle["window_classifications"] == {"no_change_observed": 1, "observed_continuous": 1}
+    assert idle["windows_agree"] is False
+    assert evidence["varied_between_windows"] == [{"scope": "idle"}]
+    assert evidence["classification"] == "idle"
+
+
+def test_the_edge_between_idle_windows_is_not_an_interval():
+    evidence = analyze_freshness(series([0, 0, 0]), [], later_idle_windows=[series([9, 9, 9], start=50.0)])["f"]
+    assert evidence["idle"]["comparable_intervals"] == 4
+    assert evidence["idle"]["changed_intervals"] == 0
+    assert evidence["idle"]["windows_agree"] is True
+    assert evidence["idle"]["classification"] == "no_change_observed"
+
+
+def test_later_idle_window_timestamps_are_checked_on_their_own():
+    bad = [{"real_time_s": 1.0, "fields": [row(0)]}, {"real_time_s": 1.0, "fields": [row(0)]}]
+    with pytest.raises(ValueError, match="idle window 1.*strictly increase"):
+        analyze_freshness(series([0, 1]), [], later_idle_windows=[bad])
+    with pytest.raises(ValueError, match="later_idle_windows"):
+        analyze_freshness(series([0, 1]), [], later_idle_windows="nope")

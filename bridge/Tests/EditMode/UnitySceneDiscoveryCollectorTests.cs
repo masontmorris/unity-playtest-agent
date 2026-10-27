@@ -130,6 +130,41 @@ namespace Playtest.Bridge.Tests
         }
 
         [Test]
+        public void Collect_ReportsVectorsAndQuaternionsAsExactComponents()
+        {
+            string componentId = CollectVectorProbe(out SceneDiscoveryResult result);
+
+            AssertComponents(FieldNamed(result, componentId, "Planar"), "vector2", new[] { 1.5f, -2.25f });
+            AssertComponents(FieldNamed(result, componentId, "Velocity"), "vector3", new[] { 1f, 2f, 3f });
+            AssertComponents(FieldNamed(result, componentId, "Tint"), "vector4", new[] { 0.25f, 0.5f, 0.75f, 1f });
+            AssertComponents(FieldNamed(result, componentId, "Facing"), "quaternion", new[] { 0f, 0.5f, 0f, 0.5f });
+
+            Dictionary<string, object> cell = FieldNamed(result, componentId, "Cell");
+            Assert.That(cell["value_state"], Is.EqualTo("present"));
+            Assert.That(cell["value_kind"], Is.EqualTo("vector2_int"));
+            Assert.That((int[])cell["value"], Is.EqualTo(new[] { 3, -4 }));
+
+            Dictionary<string, object> voxel = FieldNamed(result, componentId, "Voxel");
+            Assert.That(voxel["value_kind"], Is.EqualTo("vector3_int"));
+            Assert.That((int[])voxel["value"], Is.EqualTo(new[] { 5, 6, -7 }));
+        }
+
+        [Test]
+        public void Collect_NamesNonFiniteVectorComponentsAndLeavesOtherStructsUnsupported()
+        {
+            string componentId = CollectVectorProbe(out SceneDiscoveryResult result);
+
+            Dictionary<string, object> broken = FieldNamed(result, componentId, "Broken");
+            Assert.That(broken["value_state"], Is.EqualTo("present"));
+            Assert.That(broken["value_kind"], Is.EqualTo("special_vector"));
+            Assert.That((object[])broken["value"], Is.EqualTo(new object[] { "NaN", 1f, "Infinity" }));
+
+            Dictionary<string, object> paint = FieldNamed(result, componentId, "Paint");
+            Assert.That(paint["value_state"], Is.EqualTo("unsupported"));
+            Assert.That(paint["value"], Is.Null);
+        }
+
+        [Test]
         public void Collect_RejectsNonPositiveLimits()
         {
             Assert.Throws<ArgumentOutOfRangeException>(() => SceneDiscoveryCollector.Collect(0, 1, 1));
@@ -205,6 +240,23 @@ namespace Playtest.Bridge.Tests
         {
             GameObject gameObject = Track(new GameObject(name));
             return gameObject.AddComponent<SceneDiscoveryProbe>();
+        }
+
+        private string CollectVectorProbe(out SceneDiscoveryResult result)
+        {
+            GameObject host = Track(new GameObject(Unique("vectors")));
+            host.AddComponent<SceneVectorProbe>();
+            result = SceneDiscoveryCollector.Collect(10000, 10000, 10000);
+            return (string)ComponentOf(result, (string)ObjectNamed(result, host.name)["id"],
+                typeof(SceneVectorProbe))["id"];
+        }
+
+        private static void AssertComponents(Dictionary<string, object> row, string kind, float[] expected)
+        {
+            Assert.That(row["value_state"], Is.EqualTo("present"));
+            Assert.That(row["value_kind"], Is.EqualTo(kind));
+            Assert.That(row["is_null"], Is.EqualTo(false));
+            Assert.That((float[])row["value"], Is.EqualTo(expected));
         }
 
         private InputAction CreateInlineAction()

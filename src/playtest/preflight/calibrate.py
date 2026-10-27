@@ -19,14 +19,16 @@ from playtest.preflight.entity import _complete, _norm, _objects, _sub, _vector,
 
 HOLD_S = (0.05, 0.1, 0.2, 0.4, 1.2)
 REPEATS = 2
+FIELD_REPEATS = 4
 MAX_ACTIONS = 32
 EFFECT_TOLERANCE = 0.03
 IDLE_TOLERANCE = 0.01
 QUIET_INTERVALS = 2
 FIELD_INTERVAL_S = 0.1
-FIELD_SAMPLES = 4
+FIELD_SAMPLES = 6
+IDLE_SAMPLES = 8
 MAX_KEYBOARD_STATE_AGE_S = 0.1
-MEASUREMENT_BUDGET_S = 240.0
+MEASUREMENT_BUDGET_S = 300.0
 KEY_PATH = re.compile(r"^<Keyboard>/([a-zA-Z0-9]+)$", re.IGNORECASE)
 MODIFIER_KEYS = {"shift": "leftshift", "ctrl": "leftctrl", "alt": "leftalt"}
 
@@ -187,6 +189,16 @@ async def _read_fields(client: BridgeClient, scene_id: str) -> dict[str, Any]:
     return _field_snapshot(await client.inspect("fields"), scene_id)
 
 
+async def _idle_window(client: BridgeClient, scene_id: str) -> list[dict[str, Any]]:
+    """Settle briefly, then sample the fields with no input running."""
+    await asyncio.sleep(0.75)
+    window = []
+    for i in range(IDLE_SAMPLES):
+        if i: await asyncio.sleep(FIELD_INTERVAL_S)
+        window.append(await _read_fields(client, scene_id))
+    return window
+
+
 async def _quiet_window(client: BridgeClient, entity_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Return the last two reads once the entity has held still for QUIET_INTERVALS intervals in a row.
 
@@ -344,23 +356,21 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
         "units": "Unity world units", "physical_unit": None,
         "plan": {"requested_holds_s": list(HOLD_S), "repeats": REPEATS,
                  "effect_tolerance": EFFECT_TOLERANCE, "idle_tolerance": IDLE_TOLERANCE,
-                 "quiet_intervals": QUIET_INTERVALS,
+                 "field_repeats": FIELD_REPEATS, "quiet_intervals": QUIET_INTERVALS,
                  "requested_field_interval_s": FIELD_INTERVAL_S, "field_samples": FIELD_SAMPLES,
+                 "idle_samples": IDLE_SAMPLES,
                  "max_keyboard_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
                  "wall_budget_s": MEASUREMENT_BUDGET_S},
         "action_cap": cap, "actions": actions[:MAX_ACTIONS], "unsupported_bindings": unsupported,
         "discovery_coverage": discovery["inspection_coverage"], "idle_fields": [],
-        "input_field_segments": [], "trials": [], "action_summaries": [],
+        "later_idle_windows": [], "input_field_segments": [], "trials": [], "action_summaries": [],
         "freshness": None, "clock": None, "reset": None, "runtime_errors": None}
     if cap["truncated"] or not actions:
         result["error"] = "action candidates are incomplete" if cap["truncated"] else "no drivable keyboard bindings"
         return result
     try:
         async with asyncio.timeout(MEASUREMENT_BUDGET_S):
-            await asyncio.sleep(0.75)
-            for i in range(FIELD_SAMPLES):
-                if i: await asyncio.sleep(FIELD_INTERVAL_S)
-                result["idle_fields"].append(await _read_fields(client, scene_id))
+            result["idle_fields"] = await _idle_window(client, scene_id)
             initial_monitor = await _read_entity(client, entity_id)
             seen_errors, initial_errors = _new_runtime_errors(initial_monitor, 0)
             result["runtime_errors"] = initial_monitor["runtime_errors"]
@@ -369,7 +379,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
             unsupported_controls: set[str] = set()
             previous_trial: dict[str, Any] | None = None
             for hold in HOLD_S:
-                for repeat in range(REPEATS):
+                for repeat in range(FIELD_REPEATS if hold == HOLD_S[-1] else REPEATS):
                     for action in actions:
                         if action["control"] in unsupported_controls:
                             continue
@@ -448,8 +458,12 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
                                 "execution_end_wall_s": terminal.input_end_wall_s})
                         await asyncio.sleep(0.2)
             from playtest.preflight.freshness import analyze_freshness
-            result["freshness"] = analyze_freshness(result["idle_fields"],
-                                                     [segment["samples"] for segment in result["input_field_segments"]])
+            result["later_idle_windows"].append(await _idle_window(client, scene_id))
+            segments = result["input_field_segments"]
+            result["freshness"] = analyze_freshness(
+                result["idle_fields"], [segment["samples"] for segment in segments],
+                input_controls=[segment["control"] for segment in segments],
+                later_idle_windows=result["later_idle_windows"])
             result["action_summaries"] = [summarize_action(action,
                 [trial for trial in result["trials"] if trial["control"] == action["control"]]) for action in actions]
             result["clock"] = await measure_clock(client, entity_id, scene_id)

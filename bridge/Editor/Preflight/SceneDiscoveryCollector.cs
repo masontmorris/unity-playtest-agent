@@ -935,12 +935,77 @@ namespace Playtest.Bridge.Editor.Preflight
                     return;
                 }
 
+                if (runtimeType == typeof(Vector2))
+                {
+                    Vector2 vec2 = (Vector2)value;
+                    PresentComponents(entry, "vector2", vec2.x, vec2.y);
+                    return;
+                }
+
+                if (runtimeType == typeof(Vector3))
+                {
+                    Vector3 vec3 = (Vector3)value;
+                    PresentComponents(entry, "vector3", vec3.x, vec3.y, vec3.z);
+                    return;
+                }
+
+                if (runtimeType == typeof(Vector4))
+                {
+                    Vector4 vec4 = (Vector4)value;
+                    PresentComponents(entry, "vector4", vec4.x, vec4.y, vec4.z, vec4.w);
+                    return;
+                }
+
+                if (runtimeType == typeof(Quaternion))
+                {
+                    Quaternion rotation = (Quaternion)value;
+                    PresentComponents(entry, "quaternion", rotation.x, rotation.y, rotation.z, rotation.w);
+                    return;
+                }
+
+                if (runtimeType == typeof(Vector2Int))
+                {
+                    Vector2Int cell = (Vector2Int)value;
+                    Present(entry, "vector2_int", new[] { cell.x, cell.y });
+                    return;
+                }
+
+                if (runtimeType == typeof(Vector3Int))
+                {
+                    Vector3Int cell = (Vector3Int)value;
+                    Present(entry, "vector3_int", new[] { cell.x, cell.y, cell.z });
+                    return;
+                }
+
                 entry["value_state"] = "unsupported";
                 entry["value_kind"] = "unsupported";
                 entry["value"] = null;
                 entry["is_null"] = null;
                 entry["destroyed"] = null;
                 entry["unsupported_type"] = TypeName(runtimeType);
+            }
+
+            // Vectors and quaternions are exact component arrays. JSON has no NaN or Infinity, so a
+            // vector with a non-finite component keeps its finite parts as numbers and names the
+            // rest, and is reported as a different kind that nothing can compare.
+            private static void PresentComponents(Dictionary<string, object> entry, string kind, params float[] components)
+            {
+                foreach (float component in components)
+                {
+                    if (!float.IsNaN(component) && !float.IsInfinity(component)) continue;
+
+                    var mixed = new object[components.Length];
+                    for (int i = 0; i < components.Length; i++)
+                    {
+                        float part = components[i];
+                        mixed[i] = float.IsNaN(part) || float.IsInfinity(part) ? (object)SpecialFloat(part) : part;
+                    }
+
+                    Present(entry, "special_vector", mixed);
+                    return;
+                }
+
+                Present(entry, kind, components);
             }
 
             private static void NoteInputKind(Dictionary<string, object> entry, string kind)

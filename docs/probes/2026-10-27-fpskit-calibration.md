@@ -93,7 +93,7 @@ change in every adjacent interval of a window, with at least two in a row.
   serialize (including 13 `Vector3`, 7 `Vector2`, 2 `Vector4` and one `Quaternion`, plus structs,
   arrays and masks), 24 are object references, 11 are input actions, 2 are destroyed references,
   and 1 was null at idle but held an unsupported type once input began. Vector-valued state such as
-  velocity is outside this measurement.
+  velocity is outside this measurement. (Measured since: see `2026-10-27-fpskit-freshness.md`.)
 - **No change observed** means no change in the sampled intervals. It does not show that a field is
   constant or configuration, and nothing between samples was observed.
 - **Held windows pool all eight keys**, so a held class is not attributed to one key; the record

@@ -273,9 +273,13 @@ bindings, requires them to match the stage 2 record, and then measures:
   against an idle baseline: mean, sample variance, the lowest tested hold that responded in both
   repeats, and inversion relative to the entity's own basis where the binding names a direction.
   The keyboard backend is binary, so a dead zone is recorded as unknown, not zero.
-- **Per field:** freshness from repeated samples, once at idle and again while Unity's input update
-  reports the key held. A change is exact inequality between adjacent samples; values the field
-  reader cannot compare (vectors, structs, collections, object references) stay `unknown`.
+- **Per field:** freshness from repeated samples, in two idle windows (one before the key trials and
+  one after) and in held windows taken while Unity's input update reports the key held. The longest
+  hold is repeated four times per key to give more windows. A change is exact inequality between
+  adjacent samples, compared component by component for vectors and quaternions; values the field
+  reader cannot compare (structs, collections, masks, object references) stay `unknown`. Each field
+  also gets a per-key split of the held windows, the keys whose windows showed a change, and the
+  scopes where repeated windows disagreed.
 - **Clock:** pause, a 0.2 s step and resume. Whether stepped mode is supported stays `null`,
   because animation, physics and game timers are not fully measured.
 - **Reset:** unload and reload the scene, then compare the entity position and sampled fields.
