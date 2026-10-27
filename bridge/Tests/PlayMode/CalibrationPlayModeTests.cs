@@ -8,6 +8,7 @@ using NUnit.Framework;
 using Playtest.Bridge.Actions;
 using Playtest.Bridge.Editor;
 using Playtest.Bridge.Editor.Preflight;
+using Playtest.Bridge.Unity;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
@@ -18,7 +19,17 @@ namespace Playtest.Bridge.Tests
     /// <summary>Runs the explicitly requested calibration and records a scene-reload experiment.</summary>
     public sealed class CalibrationPlayModeTests
     {
-        [Serializable] private sealed class EntityReference { public string entity_id; public string status; }
+        // Each trial moves the entity with a held key, then compares it before and after a scene reload.
+        private const int ResetTrials = 3;
+        private const double ResetHoldS = 1.2;
+
+        [Serializable] private sealed class Candidate { public string control; }
+        [Serializable] private sealed class EntityReference
+        {
+            public string entity_id;
+            public string status;
+            public Candidate[] candidates;
+        }
         [Serializable] private sealed class FieldSample
         {
             public string id;
@@ -32,6 +43,14 @@ namespace Playtest.Bridge.Tests
             public string method = "scene_reload";
             public string scene_path;
             public string entity_id;
+            public ResetTrial[] trials;
+        }
+        [Serializable] private sealed class ResetTrial
+        {
+            public string key;
+            public double requested_hold_s;
+            public double applied_hold_s;
+            public bool release_verified;
             public float[] initial_position;
             public float[] before_reload_position;
             public float[] after_reload_position;
@@ -70,6 +89,8 @@ namespace Playtest.Bridge.Tests
             Assert.That(selected, Is.Not.Null);
             Assert.That(selected.status, Is.EqualTo("identified"));
             Assert.That(selected.entity_id, Is.Not.Null.And.Not.Empty);
+            string movementKey = selected.candidates != null && selected.candidates.Length > 0 ? selected.candidates[0].control : null;
+            Assert.That(movementKey, Is.Not.Null.And.Not.Empty, "the stage 2 record names no movement key");
             int separator = selected.entity_id.IndexOf("::", StringComparison.Ordinal);
             Assert.That(separator, Is.GreaterThan(0));
             string sceneId = selected.entity_id.Substring(0, separator);
@@ -84,10 +105,7 @@ namespace Playtest.Bridge.Tests
                 yield return Load(scenePath, scene => loaded = scene);
                 yield return new WaitForSecondsRealtime(1f);
                 var evidence = new ResetEvidence { scene_path = scenePath, entity_id = selected.entity_id };
-                evidence.initial_position = Position(selected.entity_id);
-                evidence.initial_fields = Fields(sceneId);
-                evidence.initial_game_s = Time.timeAsDouble;
-                evidence.initial_real_s = Time.realtimeSinceStartupAsDouble;
+                var trials = new List<ResetTrial> { BeginTrial(selected.entity_id, sceneId) };
 
                 SceneRuntimeErrors.Start();
                 observingErrors = true;
@@ -126,29 +144,36 @@ namespace Playtest.Bridge.Tests
                 SceneRuntimeErrors.Stop();
                 SceneKeyboardState.Stop();
                 observingErrors = false;
-                yield return new WaitForSecondsRealtime(0.75f);
-                evidence.before_reload_position = Position(selected.entity_id);
-                evidence.before_reload_fields = Fields(sceneId);
-                evidence.before_reload_game_s = Time.timeAsDouble;
-                evidence.before_reload_real_s = Time.realtimeSinceStartupAsDouble;
-
-                for (int i = 0; i < SceneManager.sceneCount; i++)
+                for (int index = 0; index < ResetTrials; index++)
                 {
-                    Scene other = SceneManager.GetSceneAt(i);
-                    if (other.IsValid() && other != loaded) { SceneManager.SetActiveScene(other); break; }
+                    ResetTrial trial = trials[index];
+                    trial.key = movementKey;
+                    trial.requested_hold_s = ResetHoldS;
+                    yield return Displace(movementKey, trial);
+                    yield return new WaitForSecondsRealtime(0.75f);
+                    trial.before_reload_position = Position(selected.entity_id);
+                    trial.before_reload_fields = Fields(sceneId);
+                    trial.before_reload_game_s = Time.timeAsDouble;
+                    trial.before_reload_real_s = Time.realtimeSinceStartupAsDouble;
+
+                    yield return Reload(loaded, scenePath, scene => loaded = scene);
+                    yield return new WaitForSecondsRealtime(1f);
+                    trial.after_reload_position = Position(selected.entity_id);
+                    trial.after_reload_fields = Fields(sceneId);
+                    trial.after_reload_game_s = Time.timeAsDouble;
+                    trial.after_reload_real_s = Time.realtimeSinceStartupAsDouble;
+
+                    // The freshly reloaded scene is the next trial's starting state.
+                    if (index + 1 < ResetTrials)
+                        trials.Add(new ResetTrial
+                        {
+                            initial_position = trial.after_reload_position,
+                            initial_fields = trial.after_reload_fields,
+                            initial_game_s = trial.after_reload_game_s,
+                            initial_real_s = trial.after_reload_real_s,
+                        });
                 }
-                AsyncOperation unloading = SceneManager.UnloadSceneAsync(loaded);
-                Assert.That(unloading, Is.Not.Null);
-                deadline = DateTime.UtcNow.AddSeconds(30);
-                while (!unloading.isDone && DateTime.UtcNow < deadline) yield return null;
-                Assert.That(unloading.isDone, Is.True, "the scene did not unload");
-                loaded = default(Scene);
-                yield return Load(scenePath, scene => loaded = scene);
-                yield return new WaitForSecondsRealtime(1f);
-                evidence.after_reload_position = Position(selected.entity_id);
-                evidence.after_reload_fields = Fields(sceneId);
-                evidence.after_reload_game_s = Time.timeAsDouble;
-                evidence.after_reload_real_s = Time.realtimeSinceStartupAsDouble;
+                evidence.trials = trials.ToArray();
                 Directory.CreateDirectory(Path.GetDirectoryName(resetPath));
                 using (var writer = new StreamWriter(new FileStream(resetPath, FileMode.CreateNew, FileAccess.Write)))
                     writer.WriteLine(JsonUtility.ToJson(evidence, true));
@@ -174,6 +199,52 @@ namespace Playtest.Bridge.Tests
                     SceneManager.UnloadSceneAsync(loaded);
                 }
             }
+        }
+
+        private static ResetTrial BeginTrial(string entityId, string sceneId)
+        {
+            return new ResetTrial
+            {
+                initial_position = Position(entityId),
+                initial_fields = Fields(sceneId),
+                initial_game_s = Time.timeAsDouble,
+                initial_real_s = Time.realtimeSinceStartupAsDouble,
+            };
+        }
+
+        // Holds the key through the input backend the bridge uses, then checks that it was released.
+        private static IEnumerator Displace(string key, ResetTrial trial)
+        {
+            var action = new BridgeActionDefinition { Name = "preflight_key_" + key, Control = key, DefaultLeaseS = ResetHoldS };
+            using (var input = new InputSystemInputBackend())
+            {
+                string error;
+                Assert.That(input.TryApply(action, out error), Is.True, error);
+                double started = Time.realtimeSinceStartupAsDouble;
+                while (Time.realtimeSinceStartupAsDouble - started < ResetHoldS) yield return null;
+                trial.applied_hold_s = Time.realtimeSinceStartupAsDouble - started;
+                bool released;
+                Assert.That(input.TryRelease(out released, out error), Is.True, error);
+                yield return null;
+                trial.release_verified = input.TryVerifyRelease(out error);
+                Assert.That(trial.release_verified, Is.True, error);
+            }
+        }
+
+        private static IEnumerator Reload(Scene loaded, string scenePath, Action<Scene> assign)
+        {
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                Scene other = SceneManager.GetSceneAt(i);
+                if (other.IsValid() && other != loaded) { SceneManager.SetActiveScene(other); break; }
+            }
+            AsyncOperation unloading = SceneManager.UnloadSceneAsync(loaded);
+            Assert.That(unloading, Is.Not.Null);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+            while (!unloading.isDone && DateTime.UtcNow < deadline) yield return null;
+            Assert.That(unloading.isDone, Is.True, "the scene did not unload");
+            assign(default(Scene));
+            yield return Load(scenePath, assign);
         }
 
         private static string OutsideProject(string path, string project)

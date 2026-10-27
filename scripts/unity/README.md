@@ -282,8 +282,12 @@ bindings, requires them to match the stage 2 record, and then measures:
   scopes where repeated windows disagreed.
 - **Clock:** pause, a 0.2 s step and resume. Whether stepped mode is supported stays `null`,
   because animation, physics and game timers are not fully measured.
-- **Reset:** unload and reload the scene, then compare the entity position and sampled fields.
-  Save/load and checkpoints are not exercised and stay `null`.
+- **Reset:** three scene-reload trials. Each holds one of the entity's movement keys for 1.2 s
+  through the same input backend the bridge uses (release verified), then unloads and reloads the
+  scene and compares the entity position and sampled fields before and after. Only trials that moved
+  the entity at least 1 world unit count, and the result is k of n for the position and per-field
+  counts of how often each field changed and came back. Save/load and checkpoints are not exercised
+  and stay `null`.
 
 Game exceptions logged during a key's input are recorded as evidence, that trial is marked invalid
 and the key is not pressed again. The script writes `calibration.json` (raw samples), `reset.json`
