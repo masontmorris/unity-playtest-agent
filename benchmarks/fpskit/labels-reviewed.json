@@ -1,0 +1,555 @@
+{
+  "version": 1,
+  "corpus_sha256": "3bdd5ff6ac026a739e40d56369ab7c199e702192fdd613d335ccaf7c89a698f6",
+  "authorship": {
+    "kind": "assistant_draft",
+    "author": "Codex",
+    "human_review": "completed",
+    "reviewer": "Mason Morris",
+    "reviewed_at": "2026-10-27",
+    "review_method": "Reviewed at the level of the drafting rule, not row by row. The reviewer approved the rule: any control not yet checked in the pass is acceptable, in any order; repeating a checked control, wait, and finish before all eight are checked are not. The reviewer also ruled on the two holds whose measured effect was off: pass 1 c6 (held 1.367 s, moved 5.53 units against 6.022 calibrated) counts as checked, and repeating pass 4 c2 (held 1.2 s, moved 4.93 units against 6.023 calibrated) is not acceptable. Both rulings match the draft, so no row changed. The reviewer had seen the model results before the review, and no second labeller took part.",
+    "draft_sha256": "9a43e01cff6214e891b2ea3d96f440799af5becdacf802cf7a05b3feedb74c45"
+  },
+  "labels": [
+    {
+      "frame_id": "pass-01-c1",
+      "payload_sha256": "d8c2a3dc8cbaace1efcd4cea533e6ec3133a1a50fc0d5833b9ef9191eb27c7df",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are none. The unchecked actions c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c2",
+      "payload_sha256": "ea1b7b495b46c82c0ef3558b3618fd34a7cc4824dcddb2abe3df5c508dcbed4e",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1. The unchecked actions c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c3",
+      "payload_sha256": "e5a9b6f3dec982c9c9c5b61963f5cf8fab21e72b42c6b91539a19becdc160d50",
+      "acceptable": [
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2. The unchecked actions c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c4",
+      "payload_sha256": "8a99271519ae3aac8239beb2ea2f74ad9463151701301dd5b70196d0f982463f",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2, c3. The unchecked actions c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c5",
+      "payload_sha256": "76e776b019093bbded80fe06b9b025f3a077dcb425b9a76ccfd9e1f0e7396a0d",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2, c3, c4. The unchecked actions c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c6",
+      "payload_sha256": "3ba9e63cd0e72f235b7955ad177ec54b3802b6d16da309ae09ab5a43710e96fc",
+      "acceptable": [
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2, c3, c4, c5. The unchecked actions c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c7",
+      "payload_sha256": "ee2527abc392f2754d032ab87108db16adcd7c7c296ad5cc64532ec124624e1c",
+      "acceptable": [
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2, c3, c4, c5, c6. The unchecked actions c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-01-c8",
+      "payload_sha256": "28c670ec6baea3eb345050413faa23583fd5f6924d6e56fc8e11c0a3620f0b84",
+      "acceptable": [
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2, c3, c4, c5, c6, c7. The unchecked actions c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c1",
+      "payload_sha256": "f7ce7eae6ae7513ea5ec8607e2fbb6d1d09692099d1b01d543728b9ec772d5c5",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are none. The unchecked actions c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c2",
+      "payload_sha256": "c3c7a70ea21bbeff748ffffeeb38e92d365bd4fdc9332f202d9c7636d5ce5f4e",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1. The unchecked actions c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c3",
+      "payload_sha256": "91fe3fa79f8e7768c4c40d5ff240f84bf4b7a38e126bc5442b9708804b0743b4",
+      "acceptable": [
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2. The unchecked actions c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c4",
+      "payload_sha256": "f4825899e7ce0c32d9057feab75f9d26eb580d253bab09df810922e298e5c4c3",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2, c3. The unchecked actions c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c5",
+      "payload_sha256": "42c5f7becdbc6fb4e775aacde88a944c2b41e86fa1584a74492341a11d4a8b7e",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2, c3, c4. The unchecked actions c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c6",
+      "payload_sha256": "9bc69106299a7a670a7bc14be094e95cf79ef8fb80f33dd5885c80c58cd9921a",
+      "acceptable": [
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2, c3, c4, c5. The unchecked actions c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c7",
+      "payload_sha256": "8f5a0f89af1f904c540185c4471af9d114debd3a41b6815af1824ab7a0eb8907",
+      "acceptable": [
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2, c3, c4, c5, c6. The unchecked actions c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-02-c8",
+      "payload_sha256": "1dbefdc2f13ae485cf07f8f3273f849c16471f6e40331dee6eecf0a960e1a7e2",
+      "acceptable": [
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2, c3, c4, c5, c6, c7. The unchecked actions c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c1",
+      "payload_sha256": "102e459b7b5ad40165ec761eb2c99b8d2668688b27311f6f037a9f8274fb8487",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are none. The unchecked actions c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c2",
+      "payload_sha256": "f1ce1550b06d56d9a1070975021296aa1b6907a5208b943f2327bfce885bd923",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1. The unchecked actions c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c3",
+      "payload_sha256": "d737615d13bae9b3e9403a38afa36b1147056da038be07d4a92f23cd4c256a94",
+      "acceptable": [
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2. The unchecked actions c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c4",
+      "payload_sha256": "9a05b0fc5be6ece27f41b21bf8d196acc1436f7503ab559a190c9b469bf7bbeb",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2, c3. The unchecked actions c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c5",
+      "payload_sha256": "1743dcad542d819538905de06c1528f8926c610df2a86ca4655be6f5a7683a45",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2, c3, c4. The unchecked actions c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c6",
+      "payload_sha256": "7e5df98518f194cb992a2a21f6ae7c022c1401b9aade9cdc17bb0f90bc628ae7",
+      "acceptable": [
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2, c3, c4, c5. The unchecked actions c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c7",
+      "payload_sha256": "b152b9556ba837e615d2b27e640f890ef5972fb55d4cc3dd08fa05f9b9c0bfab",
+      "acceptable": [
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2, c3, c4, c5, c6. The unchecked actions c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-03-c8",
+      "payload_sha256": "fe6fddfab04fa1c2ac7cfd042e8985329fb5cfd59fabdb7c3596e88bd8370791",
+      "acceptable": [
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2, c3, c4, c5, c6, c7. The unchecked actions c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c1",
+      "payload_sha256": "4be98bbb845bc662ff39d0906eeda22315da036d2f14960882a6bd1e2351a564",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are none. The unchecked actions c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c2",
+      "payload_sha256": "db92a744ddfe710692344aafc9ef6be4121441b7547b69881532be1cbab6be56",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1. The unchecked actions c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c3",
+      "payload_sha256": "f2baa956b3681c3be5e12adb924eb8605ff6255ba79a57596e1c7c847295842e",
+      "acceptable": [
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2. The unchecked actions c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c4",
+      "payload_sha256": "653f16bf5f97634764dc5547ff11551b8d6aeddcff21e6530bd43db880c8f10c",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2, c3. The unchecked actions c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c5",
+      "payload_sha256": "57cb0addbd2dc42eb550f0ca4444b8ee0546481a1a17d07e7162afd6de4a86dd",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2, c3, c4. The unchecked actions c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c6",
+      "payload_sha256": "435b3410554c4e23333bb2695e49057d5b1ddc949bf3c5811cb3ad18a28c57ab",
+      "acceptable": [
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2, c3, c4, c5. The unchecked actions c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c7",
+      "payload_sha256": "2d82e93800a3dd35031094b2f4a3ba87cda1cbbbbceab307bbbbb6e7cd30d5ec",
+      "acceptable": [
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2, c3, c4, c5, c6. The unchecked actions c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-04-c8",
+      "payload_sha256": "5ed5aaefaf760cade66d74f411a18d76f83876c900edbb0e91242a3deae68dfc",
+      "acceptable": [
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2, c3, c4, c5, c6, c7. The unchecked actions c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c1",
+      "payload_sha256": "1890f4feb5af20809bd8a99e387bb17e57084d63adaf4a932748b4873e83aa06",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are none. The unchecked actions c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c2",
+      "payload_sha256": "67123cad84193513e6dbee089b9e02607f4a41dc8fdbe5f753227bc976da6b62",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1. The unchecked actions c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c3",
+      "payload_sha256": "af764b84fc61825c716c8ee4127a135f8caff01515f989cfc29830c95e44fa34",
+      "acceptable": [
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2. The unchecked actions c3, c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c4",
+      "payload_sha256": "8ad81cec585f6901807383a9da8c4a37df8e61ceecc1ed3918fc203addd96089",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2, c3. The unchecked actions c4, c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c5",
+      "payload_sha256": "ef5cc897e636fb624c6cb6b66c37608595f84575cdd55d95b09456230f47bf74",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2, c3, c4. The unchecked actions c5, c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c6",
+      "payload_sha256": "8bc7281a38f56c95ed580b9deb755b5ea0f25001c06d070efe240159b2b00c43",
+      "acceptable": [
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2, c3, c4, c5. The unchecked actions c6, c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c7",
+      "payload_sha256": "42b2aaabbadaf884227009f71babfe2c5477b7b83d633fac2b7e1865d414248c",
+      "acceptable": [
+        "c7",
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2, c3, c4, c5, c6. The unchecked actions c7, c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    },
+    {
+      "frame_id": "pass-05-c8",
+      "payload_sha256": "09398ce858748e3f231a159e735b511d500a85042505a9c9a2b6e68fe7b4a136",
+      "acceptable": [
+        "c8"
+      ],
+      "labeller": "Codex (assistant draft)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2, c3, c4, c5, c6, c7. The unchecked actions c8 advance the stated checklist; waiting or finishing would leave controls unchecked."
+    }
+  ]
+}

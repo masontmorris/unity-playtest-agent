@@ -1,0 +1,605 @@
+{
+  "version": 2,
+  "corpus_sha256": "b84524b51a8aed22dc55c680734f136be05be9e03ef8e3b24e44ee27680d4bf1",
+  "authorship": {
+    "kind": "assistant_draft",
+    "author": "Claude Sonnet 5.5",
+    "human_review": "completed",
+    "reviewer": "Mason Morris",
+    "reviewed_at": "2026-10-27",
+    "review_method": "Reviewed at the level of the drafting rule, not row by row. The reviewer approved the rule: any control not yet checked in the pass is acceptable, in any order; repeating a checked control, wait, and finish before all eight are checked are not; on each pass's final frame, with all eight checked, only finish is acceptable. No hold in this corpus needed a separate ruling: every hold lasted 1.199 to 1.212 s and moved within 0.07 units of its calibrated displacement. No row changed. The reviewer had seen the model results before the review, and no second labeller took part.",
+    "draft_sha256": "b067d24eb4dd02bd5850b40af475fc92fa124725993a40d1d6c557a20112c0d6"
+  },
+  "labels": [
+    {
+      "frame_id": "pass-01-s1",
+      "payload_sha256": "91afd90ac3c2655633c4512f13b2649e31789580b8b86a3480db1c2abdd03feb",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 1: completed checks are none. The unchecked controls c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s2",
+      "payload_sha256": "b3e645d4b1438878323c5c170678c73640246ec0b74177729b5c2580411ecda5",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 2: completed checks are c3. The unchecked controls c1, c2, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s3",
+      "payload_sha256": "abdf1751baa768cf486845524a24c0ad07998d3cb9cd7444d433f3431c8e8363",
+      "acceptable": [
+        "c2",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 3: completed checks are c1, c3. The unchecked controls c2, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s4",
+      "payload_sha256": "3f04a6918a2d93e7235fc8a3803bb6a89184eb2d29788ef9c3892ac8113f4537",
+      "acceptable": [
+        "c2",
+        "c4",
+        "c5",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 4: completed checks are c1, c3, c6. The unchecked controls c2, c4, c5, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s5",
+      "payload_sha256": "c0a965a8268e76786b77bc90b30c0db644a713c4a4ff29281e53fb653e47b86d",
+      "acceptable": [
+        "c2",
+        "c4",
+        "c5",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 5: completed checks are c1, c3, c6, c8. The unchecked controls c2, c4, c5, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s6",
+      "payload_sha256": "4c879827cd78d21711c3c92bd23d5a4ba41670daa3edad6dc74210aac6a10825",
+      "acceptable": [
+        "c2",
+        "c4",
+        "c5"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 6: completed checks are c1, c3, c6, c7, c8. The unchecked controls c2, c4, c5 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s7",
+      "payload_sha256": "fae8aca7abf6997322352d1413da6532474ebc7d8273f7a6dce59c03698077ca",
+      "acceptable": [
+        "c4",
+        "c5"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 7: completed checks are c1, c2, c3, c6, c7, c8. The unchecked controls c4, c5 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-s8",
+      "payload_sha256": "fb8df5ac9eea1b41472383727cbbaf86b9caea8b32370afb6e9bf1cfe455fe0e",
+      "acceptable": [
+        "c4"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1, step 8: completed checks are c1, c2, c3, c5, c6, c7, c8. The unchecked controls c4 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-01-fin",
+      "payload_sha256": "85d33376412a794ad252996f77e4e584d9410306dc8dfe85f34c8c1770cc9b35",
+      "acceptable": [
+        "finish"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 1: completed checks are c1, c2, c3, c4, c5, c6, c7, c8. Every control is checked, so finishing completes the stated checklist; repeating a control or waiting would not advance it."
+    },
+    {
+      "frame_id": "pass-02-s1",
+      "payload_sha256": "776eea9909543ceff7191e9fbd0580cfd125c449ac70a6b1c1e8a8b230d38bf1",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 1: completed checks are none. The unchecked controls c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s2",
+      "payload_sha256": "8b7613d29827d7bc1daae4f5d9eda164d8a2b63089ae3aec782dea7888629dbe",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 2: completed checks are c3. The unchecked controls c1, c2, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s3",
+      "payload_sha256": "b34bf920533404a25f5c1596ecac8db05d8e952659c089d08ddefbf44f5fc75f",
+      "acceptable": [
+        "c1",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 3: completed checks are c2, c3. The unchecked controls c1, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s4",
+      "payload_sha256": "6b1f05b690c18f5c83727aae685f387ea65a0e72ff97ac5ccd3c537361357f95",
+      "acceptable": [
+        "c1",
+        "c4",
+        "c5",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 4: completed checks are c2, c3, c6. The unchecked controls c1, c4, c5, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s5",
+      "payload_sha256": "ac60164de1e2b8edfb3de9152d91114e0f653603db89c0921764768c592d65b2",
+      "acceptable": [
+        "c1",
+        "c5",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 5: completed checks are c2, c3, c4, c6. The unchecked controls c1, c5, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s6",
+      "payload_sha256": "57c82e9dd86fbe1d829ea72573607d37019d4357018ca8778edb7006d2ea8f69",
+      "acceptable": [
+        "c5",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 6: completed checks are c1, c2, c3, c4, c6. The unchecked controls c5, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s7",
+      "payload_sha256": "675e9bc8e0c82d51cc23ff8689970fe34c2d76f51c66e4fbb9350f0a71c15b8d",
+      "acceptable": [
+        "c5",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 7: completed checks are c1, c2, c3, c4, c6, c8. The unchecked controls c5, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-s8",
+      "payload_sha256": "84a0036bc20bbac0b3f3dccdee44c2adc6b94bbc9d6c15d03dbb5f09de4e9160",
+      "acceptable": [
+        "c5"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2, step 8: completed checks are c1, c2, c3, c4, c6, c7, c8. The unchecked controls c5 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-02-fin",
+      "payload_sha256": "0652ba851d1307634f012ac78c858300168258b65d7b127e90fe8320fedadfbb",
+      "acceptable": [
+        "finish"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 2: completed checks are c1, c2, c3, c4, c5, c6, c7, c8. Every control is checked, so finishing completes the stated checklist; repeating a control or waiting would not advance it."
+    },
+    {
+      "frame_id": "pass-03-s1",
+      "payload_sha256": "722e8e71d7c60235f1dc02f1ef88d2dffde329cd30780b70179cc7254c0b9783",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 1: completed checks are none. The unchecked controls c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s2",
+      "payload_sha256": "7981684e78f05155e50a731c7f369a0659e3e87b33aebf75825a26ac38cc9f35",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 2: completed checks are c7. The unchecked controls c1, c2, c3, c4, c5, c6, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s3",
+      "payload_sha256": "37f60925bb26c033d72fe097e4f39daa51d5fb170b7fbf043a0b180c560abcd6",
+      "acceptable": [
+        "c1",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 3: completed checks are c2, c7. The unchecked controls c1, c3, c4, c5, c6, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s4",
+      "payload_sha256": "e05aacd066e6db6412d59a46de71d948b40afe3f4294c890369b1e565f3d83ca",
+      "acceptable": [
+        "c1",
+        "c4",
+        "c5",
+        "c6",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 4: completed checks are c2, c3, c7. The unchecked controls c1, c4, c5, c6, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s5",
+      "payload_sha256": "0ad35921baeccb53bdb4aed83293f529e86f1290e325a5fa4c59d86751e23ae3",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 5: completed checks are c1, c2, c3, c7. The unchecked controls c4, c5, c6, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s6",
+      "payload_sha256": "87a5c1ea07b3159ada6ce2aaa2b1430d936f6fc17fbfd98763ec0c44812c9e2e",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 6: completed checks are c1, c2, c3, c4, c7. The unchecked controls c5, c6, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s7",
+      "payload_sha256": "5cbb215c7b1bfad025f093d784d9dcd8ca5db3179cf423a401cad7df744b93c0",
+      "acceptable": [
+        "c5",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 7: completed checks are c1, c2, c3, c4, c6, c7. The unchecked controls c5, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-s8",
+      "payload_sha256": "dd95f9dc62a2435874f9f64a9c388048038fa21fc42947448191eb2434911679",
+      "acceptable": [
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3, step 8: completed checks are c1, c2, c3, c4, c5, c6, c7. The unchecked controls c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-03-fin",
+      "payload_sha256": "6b4ba43ab1bfa56f12b267d68b25f55fed6c2bdc7b82c3a579e343af0985138b",
+      "acceptable": [
+        "finish"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 3: completed checks are c1, c2, c3, c4, c5, c6, c7, c8. Every control is checked, so finishing completes the stated checklist; repeating a control or waiting would not advance it."
+    },
+    {
+      "frame_id": "pass-04-s1",
+      "payload_sha256": "d7b3bfba51d1a7e1728a48c0f3b81f63b49608c4136ae7751c468414d6fd7ad9",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 1: completed checks are none. The unchecked controls c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s2",
+      "payload_sha256": "7516a3c137671e54ba6ea11ec5a3bea8284115900c21356977e89b82331c2dfa",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 2: completed checks are c8. The unchecked controls c1, c2, c3, c4, c5, c6, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s3",
+      "payload_sha256": "936c8a2bf6e84342d0a9c7ca4b3fb80c5c0005308eb96ce7b59aa771bab325f6",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 3: completed checks are c1, c8. The unchecked controls c2, c3, c4, c5, c6, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s4",
+      "payload_sha256": "63ca37848e50082a3b415ff093b0ce0d534d59a6b354f40f93c2b327e55ce7da",
+      "acceptable": [
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 4: completed checks are c1, c2, c8. The unchecked controls c3, c4, c5, c6, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s5",
+      "payload_sha256": "1f840f67e6812930b6c26f9565355985e85a57c9385b204fa3ac15dd75918bda",
+      "acceptable": [
+        "c4",
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 5: completed checks are c1, c2, c3, c8. The unchecked controls c4, c5, c6, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s6",
+      "payload_sha256": "7b0677d51aefb7deb10e41f0a45bad99c6dc220f6dff516fbb7c0f5af039ee42",
+      "acceptable": [
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 6: completed checks are c1, c2, c3, c4, c8. The unchecked controls c5, c6, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s7",
+      "payload_sha256": "e67e2fe74b8781fcf4be5aba20bc872b29931ea41d16bda9f44f89a6fbb46450",
+      "acceptable": [
+        "c5",
+        "c6"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 7: completed checks are c1, c2, c3, c4, c7, c8. The unchecked controls c5, c6 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-s8",
+      "payload_sha256": "c12a05f5eceeb1e8d1305a30b5f987e204ed0909db2439430dc062e622572031",
+      "acceptable": [
+        "c5"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4, step 8: completed checks are c1, c2, c3, c4, c6, c7, c8. The unchecked controls c5 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-04-fin",
+      "payload_sha256": "a54330af32e2d63fad2fb7df319b91ed17c7031bd883b8b174910b246a978aec",
+      "acceptable": [
+        "finish"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 4: completed checks are c1, c2, c3, c4, c5, c6, c7, c8. Every control is checked, so finishing completes the stated checklist; repeating a control or waiting would not advance it."
+    },
+    {
+      "frame_id": "pass-05-s1",
+      "payload_sha256": "fef652a3cf683d585e487558195aa1fa450bf90e16fc4b3d7dcc3c99ce7686ef",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 1: completed checks are none. The unchecked controls c1, c2, c3, c4, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s2",
+      "payload_sha256": "20c5efe4bd2ce9a966a758a0ea41cd3901d661b580f68021e614ee4b278d56c6",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c5",
+        "c6",
+        "c7",
+        "c8"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 2: completed checks are c4. The unchecked controls c1, c2, c3, c5, c6, c7, c8 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s3",
+      "payload_sha256": "d2217ecc738170c9862895fbf4d2834bd66bd61b0a2a380567d7d0c2e534ef2e",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c5",
+        "c6",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 3: completed checks are c4, c8. The unchecked controls c1, c2, c3, c5, c6, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s4",
+      "payload_sha256": "5b47e9bcf3a141c9f4c22b91932047cff197a059c42e1242330d0e8548d39769",
+      "acceptable": [
+        "c1",
+        "c2",
+        "c3",
+        "c5",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 4: completed checks are c4, c6, c8. The unchecked controls c1, c2, c3, c5, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s5",
+      "payload_sha256": "5aadc834b1637c8d3c5a662a0b9f18a95f0a3c5a99c21c790af6eda3481a2c89",
+      "acceptable": [
+        "c2",
+        "c3",
+        "c5",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 5: completed checks are c1, c4, c6, c8. The unchecked controls c2, c3, c5, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s6",
+      "payload_sha256": "81759690bf319cc70a168f96516ae2b7386e7b9160fb8bc0b76aea67bd7a4724",
+      "acceptable": [
+        "c2",
+        "c5",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 6: completed checks are c1, c3, c4, c6, c8. The unchecked controls c2, c5, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s7",
+      "payload_sha256": "55db25beb01fe758c9f7f2e7ccb644b2a291d7e4b6ea13dc8fb3d94a44f5f1c9",
+      "acceptable": [
+        "c2",
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 7: completed checks are c1, c3, c4, c5, c6, c8. The unchecked controls c2, c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-s8",
+      "payload_sha256": "ef0d5a9cd47be6d2b1df40269ca5829beca7fbfbe8bdabf845f4fd8be5ec1543",
+      "acceptable": [
+        "c7"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5, step 8: completed checks are c1, c2, c3, c4, c5, c6, c8. The unchecked controls c7 advance the stated checklist; repeating a completed control, waiting or finishing would not."
+    },
+    {
+      "frame_id": "pass-05-fin",
+      "payload_sha256": "f1dbd522ac5cd7e0c0e1a09b74c444d65b4a269ab78e9827596f1f8d72c4cefc",
+      "acceptable": [
+        "finish"
+      ],
+      "labeller": "Claude Sonnet 5.5 (assistant draft; mechanical rule from the recorded facts)",
+      "date": "2026-10-27",
+      "rationale": "Pass 5: completed checks are c1, c2, c3, c4, c5, c6, c7, c8. Every control is checked, so finishing completes the stated checklist; repeating a control or waiting would not advance it."
+    }
+  ]
+}

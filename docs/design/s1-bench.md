@@ -7,7 +7,8 @@ game, against labels a person wrote.
 
 This note predeclares the experiment and records its preparation. A 40-frame corpus and
 assistant-drafted labels now exist. The first replay is recorded in
-`docs/probes/2026-10-27-fpskit-s1-bench.md`; its labels have not yet been reviewed by a person.
+`docs/probes/2026-10-27-fpskit-s1-bench.md`; a person reviewed its labels on 27 October and changed
+none (see Labels).
 
 ## Decision
 
@@ -17,7 +18,8 @@ assistant-drafted labels now exist. The first replay is recorded in
   so the bench measures the payload S1 will actually receive, not a copy of it.
 - Labels carry the labeller, date and rationale. On 27 October the user asked for assistant-drafted
   labels to review later, and approved proceeding with low-cost replay before that review. The
-  draft's authorship and pending review are explicit; results using it are preliminary.
+  draft's authorship is explicit, and results using it were preliminary until the review recorded
+  under Labels.
 - No paid call starts before the call count and cost envelope below are approved (#25).
 
 ## Unit and estimand
@@ -80,9 +82,15 @@ assistant-drafted labels now exist. The first replay is recorded in
   declared precondition. `wait` is acceptable only when no action can produce a new observation (for
   example while an input is still held). `finish` is not acceptable before the objective's checks are
   complete.
-- The user plans to review the draft later. A second pass of at least 10% was originally planned;
-  separate annotations and disagreements are retained, not averaged away. Until human review,
-  agreement and labelling uncertainty remain unknown.
+- **Review, 27 October:** Mason Morris reviewed both drafts at the level of the rule above, not row
+  by row, and ruled on the two holds in the first corpus whose measured effect differed from
+  calibration: the pass 1 `c6` hold (1.367 s) counts as a check, and repeating the pass 4 `c2` hold
+  (4.93 units against 6.02) is a miss. Both rulings match the drafts, so no row changed. The reviewed
+  copies are `benchmarks/fpskit/labels-reviewed.json` and `labels-shuffled-reviewed.json`; the
+  drafts stay as the frozen inputs the runs pin. The reviewer had seen the model results first.
+- A second pass of at least 10% was originally planned and was not done, so agreement between
+  labellers and labelling uncertainty remain unknown. Separate annotations and disagreements, if
+  added, are retained, not averaged away.
 - The draft labels live in `benchmarks/fpskit/labels.json`; the complete recorded frames stay under
   `runs/bench/issue24-fpskit-03/frames.json`. The review sheet's `contexts.json` presents the same
   decision payloads, so a label can be reviewed without re-recording.
@@ -257,6 +265,47 @@ re-test used 51 requests, not the 50 predeclared. A continuation directory holds
 copied byte for byte plus the 10 new ones, and a reconciliation record documents the error; the failed
 row stays in the first ledger and `retest.py` was not edited. The result is in
 `docs/probes/2026-10-27-fpskit-s1-bench-retest.md`.
+
+## Live loop smoke test
+
+Predeclared on 27 October 2026, before any call. The replays send frozen frames to a model and never
+execute its answer. This test puts `mammoth-1` in the production `TurnLoop` on FPSKit in real time, to
+see what a replay cannot: staleness under real model latency, the input that reaches the game, and the
+observation that follows. It is a miniature of the Day 4 gate in the build bible ("a 10-minute FPSKit
+run: no crashes, 100% adherence, no code-selected actions, every action with expected vs observed
+effect"). It is not a quality benchmark.
+
+- **Real:** `TurnLoop` with its defaults (a 0.5 s freshness window, the execution controller, answer
+  validation that never repairs), real-time clock mode, the bridge, `build_context` with the
+  observation's measured age, `check_adherence`, and the full core choice set (`wait`, `escalate`,
+  `delegate` and `finish` beside the eight controls). Holds are 1.2 s leases, as calibrated. Each
+  episode draws a fresh seeded id map, as the shuffled protocol does.
+- **Stand-ins, named so they are not mistaken for the product:** the facts (no facts builder or
+  monitor exists yet, so the harness writes them from measured results in the replays' wording and adds
+  one line for a stale, failed or invalid turn); the `escalate` and `delegate` labels (no manifest
+  wording exists); the S1 adapter (one blocking call per turn, because the loop's decision source is
+  synchronous); and the checklist objective (no frontier directive exists). No frontier model runs, so
+  an escalation records a pending helper that never resolves, and a help turn's `while_pending` defaults
+  to `wait` as the loop specifies. Text only.
+- **Episodes:** 3, each of the replays' checklist objective, ending when S1 picks `finish` or after 16
+  turns. The game is not reset between episodes.
+- **Scoring:** each decision uses the replays' mechanical rule on the facts S1 saw: an unchecked control
+  is acceptable, and `finish` is acceptable once all eight have a completed hold. Anything else is a
+  miss, named by kind (re-check, premature finish, wait, escalate, delegate). A stale rejection is not a
+  check, so its control stays unchecked. An invalid answer is `unknown`, not a miss.
+- **Reported, not thresholded:** crashes and verified release at stop; adherence rate; for each episode
+  whether it finished with eight completed controls; stale, invalid and help turns; S1 and whole-turn
+  latency; expected (calibrated) and observed displacement for every executed action; misses by kind.
+  A harness error or an unverified release is `inconclusive`. A provider failure stops the run with no
+  retry and is `unknown`, not a miss.
+- **Budget:** at most 48 calls (3 × 16), `mammoth-1` only, reserved bound $0.00016 a call and $0.00768
+  in total. Baseten is free until about 28 October and returns no cost, so billing is unknown, and the
+  balance is unverified. The approval on record is the user's request to "run a small test that's as
+  close as possible to expected use", with this envelope stated before any call.
+- **Freeze:** the plan binds the runner, replay-helper and recorder source hashes and the approval.
+
+Run it with `scripts/unity/run-live-s1.ps1` (it needs `BASETEN_API_KEY` in the session and an approval
+file). The result is in `docs/probes/2026-10-27-fpskit-s1-live.md`.
 
 ## S1 ownership and payload fidelity
 

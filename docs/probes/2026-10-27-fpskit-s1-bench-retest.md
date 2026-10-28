@@ -3,9 +3,10 @@
 On 27 October 2026 `mammoth-1` was replayed over a new FPSKit recording that removes three
 regularities of the [first corpus](2026-10-27-fpskit-s1-bench.md): controls held in id order, `c1`
 always listed first, and no decision after the last check. It scored **45/45** acceptable. This is a
-robustness check of one arm, not a comparison, and it is **preliminary** because the labels are an
-assistant draft with human review pending. The design and the reading rule were predeclared in
-`docs/design/s1-bench.md` before any call on the new frames.
+robustness check of one arm, not a comparison. The labels are an assistant draft that Mason Morris
+reviewed the same day without changing any (see the [first replay's label
+review](2026-10-27-fpskit-s1-bench.md#label-review)). The design and the reading rule were
+predeclared in `docs/design/s1-bench.md` before any call on the new frames.
 
 ## Result
 
@@ -51,7 +52,11 @@ probe of that one.
   and `finish` on a terminal frame. It is derived from the recorded facts and cross-checked against the
   recorded executions. No pick sits on the contested ruling that repeating a completed check is a
   miss, or on `wait`, so a reviewer would have to reject "choose an unchecked control" or "finish when
-  every control is checked" to change a score.
+  every control is checked" to change a score. The review approved both, and no hold here needed a
+  separate ruling (every hold was within 0.07 units of calibration). The reviewed copy is
+  `benchmarks/fpskit/labels-shuffled-reviewed.json`. `retest.py` scores only the labels its run pins,
+  so the copy was compared with the draft instead: all 45 accept-lists are identical, and re-scoring
+  the run gives the same result, apart from the 16th significant digit of some acceptable-mass sums.
 - **Calls:** `decision-models/baseten-mammoth-27b-latest` (the alias came back unchanged; no immutable
   revision), one request per frame and a second request on five frames drawn by seed.
 
@@ -85,7 +90,8 @@ and not a bill. The balance was not verified; the user directed the run.
 
 - Corpus `runs/bench/issue24-fpskit-04/frames.json`, SHA-256
   `b84524b51a8aed22dc55c680734f136be05be9e03ef8e3b24e44ee27680d4bf1`.
-- Draft labels SHA-256 `b067d24eb4dd02bd5850b40af475fc92fa124725993a40d1d6c557a20112c0d6`.
+- Draft labels SHA-256 `b067d24eb4dd02bd5850b40af475fc92fa124725993a40d1d6c557a20112c0d6`; reviewed
+  copy `4ecb214602c2224aae4cccf9105199d82304641fbfccf1b301b28858b19df296`.
 - Approvals: first `3664f83350f97a9be63433f57e74ba8a0ed27fd295d9bcfd21c4b8238b8b92fe`, continuation
   `db0abd3c37317ed24d90e1f59c0722d1a0397618e4fdd3eacd10f4f0df6ffdbb`.
 - Plans: first `381bc693c7f605ed165cab1f010a67a3a66223e974af82bb4911fc96673f5bdb`, continuation

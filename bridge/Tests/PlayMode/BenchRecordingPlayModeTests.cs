@@ -72,10 +72,19 @@ namespace Playtest.Bridge.Tests
                 }
                 BridgeEditorHost.StartForPreflight(BridgeActionCatalog.FromDefinitions(definitions));
                 Assert.That(BridgeEditorHost.IsRunning, Is.True, BridgeEditorHost.LastError);
+                // The environment picks the client module and its time limit; the default is the recorder.
+                string module = Environment.GetEnvironmentVariable("UPA_BENCH_MODULE");
+                if (string.IsNullOrEmpty(module)) module = "playtest.bench.record";
+                Assert.That(System.Text.RegularExpressions.Regex.IsMatch(module, "^playtest\\.[A-Za-z0-9_.]+$"), Is.True,
+                            "the bench client module name is not valid");
+                double timeoutS;
+                if (!double.TryParse(Environment.GetEnvironmentVariable("UPA_BENCH_TIMEOUT_S"),
+                        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                        out timeoutS) || timeoutS < 30 || timeoutS > 1800) timeoutS = 240;
                 var start = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = python,
-                    Arguments = "-m playtest.bench.record --project \"" + project + "\" --entity \"" +
+                    Arguments = "-m " + module + " --project \"" + project + "\" --entity \"" +
                                 entity + "\" --calibration \"" + calibration + "\" --output \"" + output + "\"",
                     WorkingDirectory = repo,
                     UseShellExecute = false,
@@ -83,10 +92,10 @@ namespace Playtest.Bridge.Tests
                 };
                 process = System.Diagnostics.Process.Start(start);
                 Assert.That(process, Is.Not.Null);
-                DateTime deadline = DateTime.UtcNow.AddSeconds(240);
+                DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutS);
                 while (!process.HasExited && DateTime.UtcNow < deadline) yield return null;
-                Assert.That(process.HasExited, Is.True, "the recording client timed out");
-                Assert.That(process.ExitCode, Is.EqualTo(0), "recording failed; inspect the local output");
+                Assert.That(process.HasExited, Is.True, "the bench client timed out");
+                Assert.That(process.ExitCode, Is.EqualTo(0), "the bench client failed; inspect the local output");
                 Assert.That(File.Exists(output), Is.True);
             }
             finally
