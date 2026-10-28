@@ -320,3 +320,30 @@ the field outcome; the rest are reported with their calibration counts. The repo
 `different` or `inconclusive`, and the script fails on anything but `verified`. It never writes to
 the game, refuses existing output or handshake files, and uses the same Editor lock, version checks
 and mutex as the bridge tests. A scene reload sample is not full game-state restoration.
+
+## Run a manifest session (the real-time turn loop)
+
+`run-session.ps1` puts S1 in the production turn loop on a wired game, in real time, driven by a
+saved preflight manifest. It hosts the bridge in the same PlayMode bench host as `run-live-s1.ps1` and
+starts `playtest.runner.cli` (`playtest-run`) against it. That host registers one bridge action per
+keyboard key, named by the key's control, so any number of manifest actions can run in one session; the
+manifest's offered controls carry each action's bridge action name, and the request's `lease_s` carries
+its hold. The stage 7 host runs exactly one action and one module, so it cannot host a session. See
+`docs/design/turn-loop.md`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
+  -ProjectPath "C:\path\to\game" -EntityPath "C:\path\outside\game\entity.json" `
+  -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
+  -ApprovalPath "C:\path\outside\game\approval.json" -MaxCalls <n> `
+  -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.5] `
+  [-Objective "<text>" | -ObjectivePath "<file>"]
+```
+
+The call cap and the approval file are required: no paid call starts without them, and every call
+reserves its row in `<OutputDirectory>/calls` before it is sent. `BASETEN_API_KEY` is checked by name
+only. The output directory must be new and outside the game, and the game must be wired to this
+checkout. The summary is `run.json` and the trace is `trace.jsonl` beside it; both stay local. The run
+ends when S1 chooses `finish`, the wall limit passes (default 600 s, at most 1500), or three
+consecutive S1 calls give no usable answer (`-MaxProviderFailures`); it then stops and verifies that
+every held input was released.

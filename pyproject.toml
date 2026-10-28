@@ -35,6 +35,7 @@ playtest-preflight-manifest = "playtest.preflight.manifest_cli:main"
 playtest-validate-manifest = "playtest.preflight.validate_cli:main"
 playtest-preflight-cache = "playtest.preflight.cache_cli:main"
 playtest-trace = "playtest.core.trace_cli:main"
+playtest-run = "playtest.runner.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/playtest"]

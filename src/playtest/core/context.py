@@ -8,6 +8,10 @@ module never drops, reorders, ranks or rewrites any of them, and it never adds a
 
 `as_of` carries the age the caller measured. A missing age stays `null`; it is never inferred from
 wall time, because the game clock can be paused or stepped.
+
+`pending_help` is always present: `null` when no help request is open, an object when one is.
+`guidance` is present only once a helper's result has been adopted, so a payload built without any
+keeps its exact bytes (frozen corpora hash their payloads). Each entry carries its source and age.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ def build_context(
     age_s: float | None = None,
     sample_gap_s: float | None = None,
     game_view: str | None = None,
+    guidance: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build the S1 request payload without changing what S1 is allowed to see.
 
@@ -54,7 +59,7 @@ def build_context(
     if age_s is not None and age_s < 0:
         raise ValueError("observation age cannot be negative")
 
-    return {
+    payload: dict[str, Any] = {
         "objective": objective,
         "as_of": {
             "seq": observation.seq,
@@ -80,6 +85,9 @@ def build_context(
         "instructions": INSTRUCTIONS,
         "game_view": game_view,
     }
+    if guidance:
+        payload["guidance"] = [dict(item) for item in guidance]
+    return payload
 
 
 def canonical(payload: Mapping[str, Any]) -> str:

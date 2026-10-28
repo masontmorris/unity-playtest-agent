@@ -1,0 +1,210 @@
+"""`playtest-run`: put S1 in the production turn loop on a wired game, driven by a preflight manifest.
+
+It runs under the PlayMode bench host the way `playtest.bench.live` does (`scripts/unity/run-session.ps1`
+starts the host, which starts this module with `--project --entity --calibration --output`). The host
+registers one bridge action per keyboard key, so a manifest action runs under the bridge action its
+control names. The manifest, approval and limits arrive as flags or `UPA_RUN_*` variables, because the
+host's command line is fixed.
+
+Budget before spend: no paid call starts without an approval file and a call cap, every call reserves
+its row in `<output dir>/calls` before it is sent, and the cap and the approved envelope are checked
+before the bridge is even contacted. The key is only checked for by name and is never printed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+
+from playtest.bench import call_budget, replay
+from playtest.bench import record as recording
+from playtest.bench.record import digest
+from playtest.contracts.manifest import PreflightManifest
+from playtest.core.adherence import adherence_rate
+from playtest.core.bridge_client import BridgeClient
+from playtest.preflight import manifest as manifest_checks
+
+from .choices import ManifestChoices, build_choices
+from .output import build_run_record, close_trace, open_trace, secret_values, write_trace
+from .probe import DisplacementProbe, make_snapshot
+from .s1 import ARM, SystemOneS1
+from .session import MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
+
+DEFAULT_OBJECTIVE = (
+    "Play the game for the time allowed, using only the offered choices. Try the available controls and "
+    "observe their effects. Finish when you judge there is nothing more to try."
+)
+MAX_AGE_S = 0.5
+
+
+def _env(name: str, cast: Any, default: Any) -> Any:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        raise SystemExit(f"playtest-run: {name} is not a valid {cast.__name__}") from None
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="playtest-run", description=__doc__)
+    for name in ("project", "entity", "calibration", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, default=_env("UPA_RUN_MANIFEST", Path, None))
+    parser.add_argument("--approval", type=Path, default=_env("UPA_RUN_APPROVAL", Path, None),
+                        help="the approval file naming the call and cost caps (also UPA_RUN_APPROVAL)")
+    parser.add_argument("--max-calls", type=int, default=_env("UPA_RUN_MAX_CALLS", int, None),
+                        help="the most paid calls this run may make (also UPA_RUN_MAX_CALLS)")
+    parser.add_argument("--wall-limit-s", type=float, default=_env("UPA_RUN_WALL_LIMIT_S", float, WALL_LIMIT_S))
+    parser.add_argument("--max-age-s", type=float, default=_env("UPA_RUN_MAX_AGE_S", float, MAX_AGE_S),
+                        help="the oldest observation the bridge will still run an action against")
+    parser.add_argument("--max-provider-failures", type=int,
+                        default=_env("UPA_RUN_MAX_PROVIDER_FAILURES", int, MAX_PROVIDER_FAILURES))
+    parser.add_argument("--objective", default=None)
+    parser.add_argument("--objective-file", type=Path, default=_env("UPA_RUN_OBJECTIVE_FILE", Path, None))
+    return parser
+
+
+def _objective(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    if args.objective is not None and args.objective_file is not None:
+        parser.error("give --objective or --objective-file, not both")
+    if args.objective_file is not None:
+        try:
+            text = args.objective_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            parser.error(f"cannot read the objective file: {exc}")
+    else:
+        text = args.objective if args.objective is not None else DEFAULT_OBJECTIVE
+    if not text.strip():
+        parser.error("the objective is empty")
+    return text.strip()
+
+
+def _fits(approval: dict[str, Any], calls: int) -> None:
+    """The approved envelope must cover the most the run may spend."""
+    limit = approval["arms"][ARM]
+    bound = replay._decimal(limit["per_call_max_usd"], "per-call bound")
+    if (calls > approval["max_calls"] or calls > limit["max_calls"]
+            or bound * calls > replay._decimal(approval["max_cost_usd"], "overall limit")
+            or bound * calls > replay._decimal(limit["max_cost_usd"], "arm limit")):
+        raise ValueError("the approved call or cost envelope is smaller than the call cap")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    project, output = args.project.resolve(), args.output.resolve()
+    if args.approval is None:
+        parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
+    if args.max_calls is None or args.max_calls < 1:
+        parser.error("--max-calls (or UPA_RUN_MAX_CALLS) is required and must be at least 1")
+    if args.manifest is None:
+        parser.error("--manifest (or UPA_RUN_MANIFEST) is required")
+    if args.wall_limit_s <= 0 or args.max_age_s <= 0 or args.max_provider_failures < 1:
+        parser.error("the wall limit and maximum age must be positive and the failure limit at least 1")
+    if output.is_relative_to(project) or output.exists():
+        parser.error("--output must be a new file outside the Unity project")
+    if not os.environ.get(replay.ARMS[ARM][1]):
+        parser.error(f"{replay.ARMS[ARM][1]} is not set in the environment")
+    objective = _objective(parser, args)
+
+    run_dir = output.parent
+    summary: dict[str, Any] = {"version": 1, "status": "inconclusive", "error": None}
+    try:
+        manifest_bytes = args.manifest.read_bytes()
+        manifest = PreflightManifest.model_validate_json(manifest_bytes, strict=True)
+        problems = manifest_checks.validate(manifest)
+        if problems:
+            raise ValueError("the manifest does not validate: " + "; ".join(problems))
+        entity = json.loads(args.entity.read_bytes())
+        calibration = json.loads(args.calibration.read_bytes())
+        if entity.get("entity_id") != manifest.entity_id or calibration.get("entity_id") != manifest.entity_id:
+            raise ValueError("the manifest, the entity record and the calibration record name different entities")
+        approval, approval_sha = replay._load(args.approval)
+        replay.validate_approval(approval, [ARM])
+        _fits(approval, args.max_calls)
+        built = build_choices(manifest)
+        if not any(c.source.value == "manifest" for c in built.choices):
+            raise ValueError("the manifest offers no executable action")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        manifest_sha = digest(manifest_bytes)
+        plan = {"version": 1, "kind": "session", "arm": ARM, "approval_sha256": approval_sha,
+                "manifest_sha256": manifest_sha, "max_calls": args.max_calls,
+                "wall_limit_s": args.wall_limit_s, "max_age_s": args.max_age_s,
+                "max_provider_failures": args.max_provider_failures, "objective_sha256": digest(objective),
+                "offered": [c.id for c in built.choices], "not_offered": built.not_offered,
+                "budget_assumptions": {"balance_override": approval.get("unverified_balance_override")}}
+        replay._write(run_dir / "plan.json", plan, exclusive=True)
+        ledger = call_budget.Ledger(run_dir, approval, ARM)
+        before = recording._game_worktree(project)
+        summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha,
+                                   recording._git_head(project)))
+        after = recording._game_worktree(project)
+        summary["game_worktree_changed"] = None if before is None or after is None else before != after
+        if summary["game_worktree_changed"] is True and summary["status"] == "complete":
+            summary.update(status="inconclusive", error="the game worktree changed during the run")
+    except Exception as exc:  # noqa: BLE001 - fail closed: _run released the bridge; leave the cause in the summary
+        summary.update(status="inconclusive", error=f"{type(exc).__name__}: {exc}")
+        print(f"playtest-run: {type(exc).__name__}: {exc}", file=sys.stderr)
+    finally:
+        if run_dir.is_dir():
+            try:
+                replay._write(output, summary, exclusive=True)
+            except OSError as exc:
+                print(f"playtest-run: could not write the summary: {exc}", file=sys.stderr)
+    print(f"run {summary['status']}: turns={summary.get('turns')} ending={summary.get('ending')}")
+    return 0 if summary["status"] == "complete" else 1
+
+
+async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
+               ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
+               manifest_sha: str, game_commit: str | None) -> dict[str, Any]:
+    run_dir = args.output.resolve().parent
+    client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
+    try:
+        snapshot = make_snapshot(client, manifest.entity_id)
+        await snapshot()  # before any paid call: the manifest's entity must be in the running game
+        s1 = SystemOneS1(ledger, max_calls=args.max_calls)
+        status = client.status
+        sink = open_trace(build_run_record(
+            run_id=uuid.uuid4().hex, project=project, objective=objective, s1_provider=s1.provider,
+            s1_model=s1.model, prompt_sha256=s1.prompt_sha256, wall_limit_s=args.wall_limit_s,
+            max_usd=float(approval["max_cost_usd"]), manifest_fingerprint=manifest_sha, game_commit=game_commit,
+            unity_version=status.unity_version if status is not None else None,
+            bridge_version=status.bridge_version if status is not None else None,
+            input_mode=status.input_backends[0].value if status is not None and status.input_backends else None))
+        result = await run_session(
+            client, built, s1=s1, objective=objective, probe=DisplacementProbe(snapshot, built.expected),
+            sink=sink, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
+            max_provider_failures=args.max_provider_failures)
+        secrets = secret_values()
+        redactions = close_trace(sink, status=result.status, error=result.error, turns=result.turns,
+                                 secrets=secrets)
+        write_trace(run_dir / "trace.jsonl", sink.entries, secrets)
+        turns = result.loop.turns
+        return {
+            "version": 1, "status": result.status, "ending": result.ending, "error": result.error,
+            "turns": result.turns, "outcomes": result.outcomes, "provider_failures": result.provider_failures,
+            "adherence": {"rate": adherence_rate(turns), "violations": [v.__dict__ for v in result.adherence]},
+            "stop": result.stop.model_dump(mode="json") if result.stop is not None else None,
+            "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
+                   "calls": s1.calls_reserved, "call_cap": args.max_calls},
+            "manifest": {"sha256": manifest_sha, "entity_id": manifest.entity_id,
+                         "offered": [c.id for c in built.choices], "not_offered": built.not_offered},
+            "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,
+                         "max_provider_failures": args.max_provider_failures},
+            "trace": "trace.jsonl", "redactions": redactions,
+        }
+    finally:
+        await client.aclose()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
