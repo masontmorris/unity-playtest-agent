@@ -402,7 +402,10 @@ def _progress(part: ProgressPart, discovery: Discovery, aliases: Mapping[str, st
         unused = sorted(k for k in ("field", "min", "max", "direction", "when", "then", "unless")
                         if k not in _USES[rule.kind] and getattr(rule, k) is not None)
         if unused:
-            problems.append(f"{where}: a {rule.kind} rule leaves {', '.join(unused)} null")
+            # Say what to do: "leaves unless null" was read as a complaint that unless was null.
+            article = "an" if rule.kind[0] in "aeiou" else "a"
+            problems.append(f"{where}: {article} {rule.kind} rule does not use {', '.join(unused)}; "
+                            f"set {'it' if len(unused) == 1 else 'them'} to null")
         if rule.kind == "implies":
             for side in ("when", "then"):
                 check = getattr(rule, side)

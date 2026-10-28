@@ -294,3 +294,29 @@ and the key is not pressed again. The script writes `calibration.json` (raw samp
 and the combined `record.json`. These can contain game field values, so keep them local. The
 calibration is a code-driven probe: every action is a discovered key sent once through the bridge,
 with release verified, and no model is called.
+
+## Verify one manifest action and reset (stage 7)
+
+With a saved manifest and the calibration record it was built from, this checkout's bridge wired
+into the project, and no other Editor using it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/verify-preflight.ps1 `
+  -ProjectPath "C:\path\to\game" -ManifestPath "C:\path\outside\game\manifest.json" `
+  -CalibrationPath "C:\path\outside\game\record.json" -Action <manifest action name> `
+  -OutputPath "C:\path\outside\game\stage7.json"
+```
+
+The caller names exactly one manifest action; the script never picks one. It must be a single
+button with a repeated effective calibration hold. In Play mode on the first enabled scene the
+Editor hosts a one-entry catalog with that action's name, control and hold, and the Python client
+executes it once, without retry or substitution. The measured world-space effect is compared with
+the calibration hold's mean, within the hold's measured spread plus a predeclared allowance for
+two reads. If the bridge-measured hold differs from the matching calibration trials' applied holds
+by more than 10 ms, the input was not reproduced and the effect is inconclusive. The client then asks the Editor for one scene reload through handshake files next to
+the output, and compares the reloaded entity position and sampled fields with their pre-action
+values. Only fields that calibration's reload trials restored every time, at least twice, decide
+the field outcome; the rest are reported with their calibration counts. The report is `verified`,
+`different` or `inconclusive`, and the script fails on anything but `verified`. It never writes to
+the game, refuses existing output or handshake files, and uses the same Editor lock, version checks
+and mutex as the bridge tests. A scene reload sample is not full game-state restoration.
