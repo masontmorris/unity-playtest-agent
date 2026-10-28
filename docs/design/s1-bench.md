@@ -307,6 +307,64 @@ effect"). It is not a quality benchmark.
 Run it with `scripts/unity/run-live-s1.ps1` (it needs `BASETEN_API_KEY` in the session and an approval
 file). The result is in `docs/probes/2026-10-27-fpskit-s1-live.md`.
 
+## Mammoth latency at full context size
+
+Predeclared on 27 October 2026, before any call. Issue #25 picks the S1 model partly on p50 and p95
+latency "at our real context size". The bench and live payloads were about 2,000 tokens, where
+`mammoth-1` answered in about 250 ms, and the live test showed that a decision taking 0.5 s or more
+leaves the loop's action stale. A Day 1 probe on a synthetic packet put Mammoth at about 750 ms at about
+11,000 tokens. This test measures Mammoth on production payloads at the sizes S1 is designed to see,
+sent the way a production adapter would send them. It does not score answers.
+
+- **Decision it informs:** whether Mammoth's latency at full context size fits the loop's timing, for
+  the #25 decision record. No threshold below turns a number into a choice; a person decides.
+- **Payloads:** each call's state is `build_context` output for a different frame of the shuffled
+  corpus, with the live test's choice set (the eight controls plus `wait`, `escalate`, `delegate` and
+  `finish`). Five conditions:
+  - `base`: as recorded, about 2,000 tokens, which is what the live loop sent.
+  - `base+frame`: `base` plus one 1280×720 frame (about 1,000 tokens on Day 1).
+  - `mid`: facts extended to about 6,000 tokens in all.
+  - `full`: facts extended to about 11,000 tokens, near the 12,000-token design budget.
+  - `full+frame`: `full` plus the frame, about 12,000 tokens. This is the most S1 is designed to see,
+    under Baseten's 16,384-token limit.
+- **Padding (a stand-in):** a long run's context grows through measured facts and directive history.
+  No facts builder or frontier exists yet, so the extra facts are real fact lines from the two
+  recordings and the live trace (217 distinct lines), in a seeded order and placed before the frame's
+  own facts. No line repeats within a call. The sizes are estimated at 0.3675 tokens a character, the
+  ratio measured on the re-test's 45 calls; Baseten's reported input tokens are the measured size. The
+  padding mixes lines from other passes, so answers are checked for validity only and not scored.
+- **Frame:** the Day 1 synthetic 1280×720 test pattern (PNG, 96,218 bytes, SHA-256 `de18fdfa…`), sent
+  through Baseten's image transport as on Day 1: the state as text beside an image part in
+  `state.messages`. A real game frame may be larger to upload; that is untested.
+- **Transport and pacing:** one persistent HTTPS connection, as a production adapter would hold. The
+  bench and live test opened a new connection for every call. After each answer the runner pauses
+  1.2 s, the live loop's hold, before the next call. Latency is timed with `time.perf_counter` from
+  sending the request to reading the whole answer, and a call made on a new connection is marked.
+- **Order:** one warm-up call (`base`), then 8 rounds that each send the five conditions once in a
+  seeded random order (seed 2510): 41 calls.
+- **Reported, not thresholded:** for each condition, n, p50, p95 (with n = 8 this is the slowest
+  call), maximum, Baseten's reported input tokens, calls at 0.5 s or more, invalid answers and
+  new-connection calls. The warm-up is reported separately.
+- **Stop:** any non-200 answer or transport error stops the run with no retry.
+- **Budget:** 41 calls, `mammoth-1` only. Baseten advertised the free week to about 28 October, has
+  published no later price and returns no cost field, so billing is unknown. The reserved bound is
+  $0.005 a call and $0.205 in total, which assumes at most $0.40 per million input tokens at 12,500
+  tokens; that is an assumption, not a Baseten price. The balance is unverified. The approval on record
+  is the user's "run the full load test on mammoth-1", in reply to a proposal of about 40 Mammoth calls
+  at realistic input sizes, free during the trial.
+- **Freeze:** the plan binds the corpus, the fact sources, the frame, the approval, the schedule and
+  the runner, replay-helper, live-runner and context-builder source hashes.
+
+Run it with `python -m playtest.bench.load run`, then `score`.
+
+**Outcome and two deviations.** The padded sizes came out larger than estimated, because the added
+fact lines tokenize more heavily than the calibration payloads: about 7,000, 13,200 and 14,300 tokens
+rather than 6,000, 11,000 and 12,000. The result reports the measured sizes. Baseten answered HTTP 429
+to the 24th call, which stopped the run. The user was asked and chose to resume at once, so
+`playtest.bench.load_resume` copied the 23 answered rows byte for byte into a continuation, sent a
+warm-up on the new connection and then indexes 23–40; `load.py` was not edited. The run used 43
+requests, not the 41 predeclared. The result is in `docs/probes/2026-10-27-fpskit-s1-load.md`.
+
 ## S1 ownership and payload fidelity
 
 Each stored frame contains the original bridge observation, its sequence-bound choice set and
