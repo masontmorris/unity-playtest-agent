@@ -9,7 +9,7 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | Role | Model | Measured cost per call | Basis |
 |---|---|---|---|
 | S1 turn | Liquid d1.1 | $0.00003 small, $0.00006 with a frame, $0.00026 at 13k tokens | `usage.cost` returned by the API |
-| S1 turn | mammoth-1 / elephant-1 | $0 during the Baseten free week (until about 28 Oct); unknown after | No published post-trial price; Baseten credits requested (#8) |
+| S1 turn | mammoth-1 / elephant-1 | $0 during the Baseten free week (until about 28 Oct); unknown after | No published post-trial price; no notice of Baseten credits (#8) |
 | Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007); $0.0066 and $0.0087 with the #73 candidate schema | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
 | Frontier call | Muse Spark 1.3, `low` or default effort | $0.018–0.029 (median about $0.024) | Same |
 | Clip in a frontier call | Muse Spark 1.3 | about $0.0013 per 4 s at 640×360, 10 fps | 1,056 extra input tokens |
@@ -48,8 +48,8 @@ The frontier count is set by latency, not policy. With one pending request at a 
 | Source | Amount | Status (26 Oct) |
 |---|---|---|
 | Meta Model API | $150 | Received |
-| Baseten | $100 | Requested, no response |
-| Modal | $100 | Requested, no response |
+| Baseten | $100 | Requested (#8). No refusal: a representative said the final wave was being sent on 27 Oct, and no notice has arrived |
+| Modal | $100 | Received (27 Oct) |
 | Spent so far | $0.508 | Day 1 probes: Meta $0.507, including $0.055 for the full-load preflight, $0.078 for #70 (99 calls) and $0.154 for #73 (98 calls); Liquid $0.0011 |
 
 ## Rules

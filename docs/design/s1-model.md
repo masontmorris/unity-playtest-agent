@@ -47,10 +47,12 @@ each on a synthetic packet.
 ## Open conditions
 
 1. **Price after the trial.** Unknown. Baseten's pricing page, checked on 27 October, lists
-   mammoth-1 without a price, and the credit request (#8) has had no reply. *This changes the choice
-   if* the price, or a lack of credits, makes a 10-minute run (400–1,000 calls) unaffordable.
-   *Fallbacks:* the open weights (`baselabs/mammoth-1`) on Modal if Modal credits arrive (#8), then
-   liquid-d1.1, which is priced but made 19 more mistakes in 40 and gives inconsistent answers.
+   mammoth-1 without a price. The credits requested in #8 are unconfirmed: a Baseten representative
+   said the final wave was being sent on 27 October and no notice has arrived, with no refusal.
+   Modal's $100 did arrive. *This changes the choice if* the price, or a lack of credits, makes a
+   10-minute run (400–1,000 calls) unaffordable. *Fallbacks:* the open weights (`baselabs/mammoth-1`)
+   on Modal, which the Modal credits can fund (its cost, cold start and throughput are untested),
+   then liquid-d1.1, which is priced but made 19 more mistakes in 40 and gives inconsistent answers.
 2. **Latency at full context size.** Near the 12,000-token design budget Mammoth's median is about
    800 ms, and the loop rejects an action whose decision took 0.5 s or more. *Keeping Mammoth needs at
    least one of:* S1 payloads under about 7,000 tokens (less with a frame), freshness judged per action
@@ -75,6 +77,6 @@ each on a synthetic packet.
 
 #100 is the scheduled revisit, on Day 5 after the Day 4 ten-minute run. Earlier if:
 
-- Baseten publishes a price or answers #8.
+- Baseten publishes a price, or its credits show up.
 - The production payload size is known, once a facts builder and directive history exist.
 - A real game frame can be captured, to measure its upload size and latency.
