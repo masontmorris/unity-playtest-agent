@@ -219,6 +219,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             try:
                 req = TraceExecutionRequest.model_validate(exrow.body["request"])
                 records = [ExecutionRecord.model_validate(x) for x in exrow.body["records"]]
+                if not records:
+                    issue("execution has no records: the act raised before the bridge answered", exrow, turn_no)
                 if req.based_on_seq != obs.seq:
                     issue("execution based_on_seq differs from observation", exrow, turn_no)
                 if any(x.action_id != req.action_id for x in records):

@@ -19,14 +19,16 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
 - `s1_call` (s1; refs the context): one per provider call, so a help turn may add a follow-up:
   `{"question", "provider", "model", "resolved_model", "request_sha256", "http_status",
   "latency_ms", "problem", "response", "usage"}`. `response` is the provider's parsed reply body;
-  request headers and credentials are never part of an entry.
+  request headers and credentials are never part of an entry. `question` is null when the port
+  failed before naming one.
 - `decision` (core; refs the choice set and every `s1_call` of the turn):
   `{"answer": <the exact object passed to parse_decision, or null>, "clock_mode", "valid", "error",
   "policy_default", "decision": <Decision or null>}`.
 - `execution` (bridge; refs the decision): zero, one or two per turn:
   `{"purpose": "choice" | "while_pending", "request": {"action_id", "choice_id", "action", "params",
   "based_on_seq", "max_age_s", "depends_on", "lease_s"}, "records": [<every ExecutionRecord the
-  bridge returned, terminal last>]}`.
+  bridge returned, terminal last>]}`. `records` is empty only when the act raised before any came
+  back; the turn then has no `turn` entry.
 - `effect` (core; refs the execution and any measurement it cites): one per execution whose effect
   was measured, after that execution and before the turn entry:
   `{"choice_id", "action", "expected": <object or null>, "observed": <object or null>}`.

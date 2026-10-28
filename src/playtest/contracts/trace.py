@@ -101,11 +101,12 @@ class TraceEntry(Strict):
             if self.kind is TraceKind.execution:
                 TraceExecutionRequest.model_validate(self.body["request"])
                 records = self.body["records"]
-                if not isinstance(records, list) or not records:
-                    raise ValueError("execution records must be a non-empty list")
+                if not isinstance(records, list):
+                    raise ValueError("execution records must be a list")
+                # Empty only when the act raised after the request may have reached the bridge.
                 typed_records = [ExecutionRecord.model_validate(item) for item in records]
                 terminal = {"completed", "failed", "cancelled", "timed_out", "rejected"}
-                if typed_records[-1].status.value not in terminal:
+                if typed_records and typed_records[-1].status.value not in terminal:
                     raise ValueError("last execution record must have a terminal status")
             if self.kind is TraceKind.decision:
                 body = self.body
@@ -117,8 +118,10 @@ class TraceEntry(Strict):
                     raise ValueError("decision valid must be true exactly when decision is non-null")
             if self.kind is TraceKind.s1_call:
                 body = self.body
-                if not isinstance(body["question"], str) or not body["question"].strip():
-                    raise ValueError("s1_call question must be a non-empty string")
+                # Null when the port failed before naming a question.
+                question = body["question"]
+                if question is not None and (not isinstance(question, str) or not question.strip()):
+                    raise ValueError("s1_call question must be a non-empty string or null")
                 if body["http_status"] is not None and (isinstance(body["http_status"], bool) or not isinstance(body["http_status"], int)):
                     raise ValueError("s1_call http_status must be an integer or null")
                 latency = body["latency_ms"]
