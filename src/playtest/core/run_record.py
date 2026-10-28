@@ -27,10 +27,15 @@ def build_run_record(*, game_project: str | Path, status: Status | None, scene: 
     except (OSError, subprocess.SubprocessError):
         commit = UNKNOWN
     try:
-        output = subprocess.run(["git", "-C", str(project), "status", "--porcelain", "-z", "--untracked-files=all"],
+        output = subprocess.run(["git", "-C", str(project), "status", "--porcelain", "-z", "--untracked-files=normal"],
                                 check=True, capture_output=True, text=True, timeout=10).stdout
-        fields = output.split("\0")
-        modified_paths = [item[3:] for item in fields if item]
+        fields = iter(output.split("\0"))
+        for item in fields:
+            if not item:
+                continue
+            modified_paths.append(item[3:])
+            if "R" in item[:2] or "C" in item[:2]:
+                next(fields, None)  # a rename or copy is followed by its source path
         worktree = "modified" if modified_paths else "clean"
     except (OSError, subprocess.SubprocessError):
         worktree = "unknown"

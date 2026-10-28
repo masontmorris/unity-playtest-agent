@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import copy
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +38,7 @@ class TraceWriter:
         if self._closed:
             raise ValueError("trace is closed")
         seq = self.next_seq
-        # Mirror MemorySink's enum, turn, ref and body-copy checks.
+        # Mirror MemorySink's enum, turn and ref checks.
         kind = TraceKind(kind)
         author = TraceAuthor(author)
         if turn is not None and (isinstance(turn, bool) or not isinstance(turn, int) or turn < 0):
@@ -49,9 +48,8 @@ class TraceWriter:
             raise ValueError(f"refs must cite earlier entries (0..{seq - 1}), not {cited!r}")
         row = {"trace_seq": seq, "run_id": self.run_id, "kind": kind.value, "author": author.value,
                "turn": turn, "refs": cited, "wall_utc": datetime.now(timezone.utc).isoformat(),
-               "body": copy.deepcopy(dict(body))}
-        # Validate before serialization and again after redaction, before touching the file.
-        TraceEntry.model_validate(row)
+               "body": dict(body)}
+        # Validate exactly what is written: the serialized, redacted line, before touching the file.
         line = json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         replacements = 0
         for secret in self._secrets:

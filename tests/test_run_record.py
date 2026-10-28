@@ -42,3 +42,18 @@ def test_modified_worktree_paths_are_measured(tmp_path):
     rec = build(tmp_path)
     assert rec.game_worktree == "modified"
     assert rec.game_modified_paths == ["changed.txt"]
+
+
+def test_renames_and_untracked_directories_are_listed_once(tmp_path):
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    (tmp_path / "old.txt").write_text("kept")
+    subprocess.run([*git, "add", "old.txt"], check=True, capture_output=True)
+    subprocess.run([*git, "commit", "-m", "initial"], check=True, capture_output=True)
+    subprocess.run([*git, "mv", "old.txt", "new.txt"], check=True, capture_output=True)
+    (tmp_path / "scratch").mkdir()
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / "scratch" / name).write_text(name)
+    rec = build(tmp_path)
+    assert rec.game_worktree == "modified"
+    assert sorted(rec.game_modified_paths) == ["new.txt", "scratch/"]

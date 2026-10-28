@@ -79,3 +79,17 @@ def test_verify_reports_bad_tail_after_replaying_prefix(tmp_path, monkeypatch, c
     output = capsys.readouterr().out
     assert "problems=1" in output
     assert "truncated or unparseable final line" in output
+
+
+def test_writer_validates_the_serialized_line(tmp_path):
+    """A JSON-ready body may hold a tuple; what is validated and written is its JSON form."""
+    path = tmp_path / "trace.jsonl"
+    record = {"protocol": "upa/0", "session": "s", "seq": 3, "game_s": 1.0, "wall_utc": "2026-10-28T00:00:00Z",
+              "type": "execution", "action_id": "a1", "status": "completed", "validated_against_seq": 2,
+              "release_verified": True}
+    request = {"action_id": "a1", "choice_id": "c1", "action": "act", "params": {}, "based_on_seq": 2,
+               "max_age_s": 0.5, "depends_on": ("one",), "lease_s": 1.2}
+    with TraceWriter(path, run()) as writer:
+        writer.append("execution", {"purpose": "choice", "request": request, "records": [record]},
+                      author="bridge", turn=0)
+    assert read_trace(path)[1].body["request"]["depends_on"] == ["one"]
