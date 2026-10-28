@@ -16,7 +16,10 @@ namespace Playtest.Bridge.Tests
     /// <summary>Hosts an explicitly requested offline bench recording; no model is called.</summary>
     public sealed class BenchRecordingPlayModeTests
     {
-        [UnityTest]
+        // The Test Framework ends a UnityTest after 180 s by default, which cut a 10-minute session off
+        // at three minutes. The host keeps its own deadline (UPA_BENCH_TIMEOUT_S, at most 1800 s); this
+        // only has to outlast it.
+        [UnityTest, Timeout(1900000)]
         public IEnumerator RecordRequestedFrames()
         {
             string output = Environment.GetEnvironmentVariable("UPA_BENCH_OUTPUT");
