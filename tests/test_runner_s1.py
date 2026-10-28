@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import threading
 from datetime import datetime, timezone
@@ -39,10 +40,21 @@ def context(version: int = 4) -> dict[str, Any]:
                          choices=ChoiceSet(set_version=version, built_from_seq=7, choices=choices()))
 
 
-def adapter(tmp_path: Path, *replies: Any, max_calls: int = 10, limit: int = 12) -> tuple[SystemOneS1, Send, call_budget.Ledger]:
+class Meter:
+    """A token meter that keeps what the adapter reported: (tokens, estimated)."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[int, bool]] = []
+
+    def record(self, tokens: int, *, estimated: bool = False) -> None:
+        self.records.append((tokens, estimated))
+
+
+def adapter(tmp_path: Path, *replies: Any, max_calls: int = 10, limit: int = 12,
+            budget: Meter | None = None) -> tuple[SystemOneS1, Send, call_budget.Ledger]:
     ledger = call_budget.Ledger(tmp_path, approval(limit), ARM)
     send = Send(tmp_path, *replies)
-    return SystemOneS1(ledger, max_calls=max_calls, send=send), send, ledger
+    return SystemOneS1(ledger, max_calls=max_calls, send=send, budget=budget), send, ledger
 
 
 def decide(port: SystemOneS1, ctx: dict[str, Any]):
@@ -177,6 +189,107 @@ def test_provider_model_and_prompt_hash_are_exposed_for_the_run_record(tmp_path:
     assert (port.provider, port.model) == ("baseten", MODEL)
     assert port.prompt_sha256 == digest(canonical({"next_action": INSTRUCTIONS, "while_pending": FOLLOW_UP_INSTRUCTIONS}))
     assert len(port.prompt_sha256) == 64
+
+
+# --- tokens reported for pacing ---------------------------------------------------------------
+
+
+def estimate_for(body: dict[str, Any]) -> int:
+    return math.ceil(len(canonical(body)) / 2.5)
+
+
+def test_input_tokens_alone_are_reported_when_the_provider_gave_no_output_count(tmp_path: Path):
+    meter = Meter()
+    port, _, _ = adapter(tmp_path, reply("next_action", "w", usage={"input_tokens": 2214}), budget=meter)
+    decide(port, context())
+    assert meter.records == [(2214, False)]
+
+
+def test_input_and_output_tokens_are_both_counted(tmp_path: Path):
+    meter = Meter()
+    port, _, _ = adapter(tmp_path, reply("next_action", "w", usage={"input_tokens": 2214, "output_tokens": 61}),
+                         budget=meter)
+    decide(port, context())
+    assert meter.records == [(2275, False)]
+
+
+def test_missing_usage_is_estimated_from_the_request_and_marked_as_an_estimate(tmp_path: Path):
+    meter = Meter()
+    unusable = [{"tokens": 5}, {"input_tokens": "2214"}, {"input_tokens": -3}, {"input_tokens": True},
+                {"output_tokens": 61}, "usage", None]
+    replies = [reply("next_action", "w", usage=value if value is not None else {}) for value in unusable]
+    port, send, _ = adapter(tmp_path, *replies, budget=meter)
+    for _ in unusable:
+        decide(port, context())
+    # None of those carries an input count, so each is the length of its own request over 2.5, rounded up.
+    assert meter.records == [(estimate_for(body), True) for body in send.bodies]
+    assert len(meter.records) == len(unusable)
+
+
+def test_a_reply_without_a_usage_key_at_all_is_estimated_too(tmp_path: Path):
+    meter = Meter()
+    bare = (200, {"answers": {"next_action": {"type": "choice", "choice": "w"}}}, 9.0, None)
+    port, send, _ = adapter(tmp_path, bare, budget=meter)
+    decide(port, context())
+    assert meter.records == [(estimate_for(send.bodies[0]), True)]
+
+
+def test_a_rate_limited_call_is_a_provider_failure_counted_as_an_estimate_and_never_retried(tmp_path: Path):
+    meter = Meter()
+    port, send, _ = adapter(tmp_path, (429, None, 5.0, "HTTP error"), reply("next_action", "c1"), budget=meter)
+    got = decide(port, context())
+    assert got.answer is None and got.failure == "HTTP error (HTTP 429)" and got.halt is None
+    assert len(send.bodies) == 1 and got.calls[0].http_status == 429          # one request: nothing was retried
+    assert meter.records == [(estimate_for(send.bodies[0]), True)]            # it still spent a request's tokens
+
+
+def test_every_call_of_a_help_turn_is_reported_and_a_429_on_the_follow_up_leaves_while_pending_absent(tmp_path: Path):
+    meter = Meter()
+    port, send, _ = adapter(tmp_path, reply("next_action", "h", usage={"input_tokens": 2200, "output_tokens": 40}),
+                            (429, None, 5.0, "HTTP error"), budget=meter)
+    got = decide(port, context())
+    assert got.answer["choice_id"] == "h" and "while_pending" not in got.answer and got.failure is None
+    assert [c.question for c in got.calls] == ["next_action", "while_pending"] and got.calls[1].http_status == 429
+    assert len(send.bodies) == 2
+    assert meter.records == [(2240, False), (estimate_for(send.bodies[1]), True)]
+
+
+def test_an_adapter_exception_is_counted_as_an_estimate_because_the_request_may_have_been_sent(tmp_path: Path):
+    def boom(body):
+        raise RuntimeError("socket exploded")
+
+    meter = Meter()
+    port, send, _ = adapter(tmp_path, boom, budget=meter)
+    got = decide(port, context())
+    assert got.answer is None and got.failure == "adapter error: RuntimeError"
+    assert meter.records == [(estimate_for(send.bodies[0]), True)]
+
+
+def test_a_call_that_was_never_sent_reports_nothing(tmp_path: Path):
+    capped, enveloped = Meter(), Meter()
+    port, send, _ = adapter(tmp_path / "cap", reply("next_action", "c1"), max_calls=1, budget=capped)
+    decide(port, context())
+    assert decide(port, context()).halt and len(send.bodies) == 1             # the cap was reached: nothing was sent
+    assert len(capped.records) == 1
+    port2, send2, _ = adapter(tmp_path / "envelope", reply("next_action", "w"), max_calls=5, limit=1, budget=enveloped)
+    decide(port2, context())
+    assert decide(port2, context()).halt and len(send2.bodies) == 1           # the approved envelope is spent
+    assert len(enveloped.records) == 1
+
+
+def test_without_a_meter_the_adapter_behaves_as_before(tmp_path: Path):
+    port, send, _ = adapter(tmp_path, reply("next_action", "c1"))
+    assert decide(port, context()).answer["choice_id"] == "c1" and len(send.bodies) == 1
+
+
+def test_pacing_changes_nothing_the_adapter_returns(tmp_path: Path):
+    answers = []
+    for budget in (None, Meter()):
+        port, send, _ = adapter(tmp_path / str(budget is None), reply("next_action", "h", favoured="c2"),
+                                reply("while_pending", "c1"), budget=budget)
+        got = decide(port, context())
+        answers.append((got.answer, [c.body() for c in got.calls], got.failure, got.halt))
+    assert answers[0] == answers[1]
 
 
 def test_no_credential_reaches_a_record(tmp_path: Path, monkeypatch):

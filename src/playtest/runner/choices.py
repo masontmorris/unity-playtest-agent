@@ -4,7 +4,8 @@ Each executable `ManifestAction` becomes one `action` choice, carrying the inten
 and the calibrated effect for that hold exactly as the manifest records them. The four core choices
 (wait, escalate, delegate, finish) come after. The only action not offered is one the current bridge
 cannot execute; it is listed with the manifest field that says so, and nothing is ranked, reordered
-or rewritten (S1 ownership: S1 chooses among the actions as declared).
+or rewritten (S1 ownership: S1 chooses among the actions as declared). The wait choice names its
+duration (`duration_game_s`), which the turn loop honors in real time.
 
 The bridge action named on the choice is the one the manifest's offered controls carry for the
 action's control. The PlayMode bench host registers one action per keyboard key under those names, so
@@ -23,6 +24,7 @@ from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSource
 from playtest.contracts.manifest import ManifestAction, ManifestCheck, PreflightManifest
 
 UNIT = "world units"  # the unit of the entity positions that calibration and the effect probe measure
+WAIT_GAME_S = 0.5  # what the wait choice waits: game seconds with no input
 
 
 @dataclass(frozen=True)
@@ -36,9 +38,13 @@ class ManifestChoices:
 
 
 def core_choices() -> list[Choice]:
-    """The choices every game has. Their wording is the one the live smoke used."""
+    """The choices every game has.
+
+    Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
+    """
     return [
-        Choice(id="wait", kind=ChoiceKind.wait, label="Wait", source=ChoiceSource.core),
+        Choice(id="wait", kind=ChoiceKind.wait, label=f"Wait {WAIT_GAME_S:g} s with no input",
+               params={"duration_game_s": WAIT_GAME_S}, source=ChoiceSource.core),
         Choice(id="escalate", kind=ChoiceKind.escalate, label="Ask the frontier model for help",
                role="frontier", source=ChoiceSource.core),
         Choice(id="delegate", kind=ChoiceKind.delegate, label="Hand a bounded task to a helper",

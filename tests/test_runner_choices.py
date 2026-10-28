@@ -41,6 +41,16 @@ def test_the_core_choices_follow_the_actions_and_the_set_is_valid():
     ChoiceSet(set_version=0, built_from_seq=0, choices=built.choices)
 
 
+def test_the_wait_choice_names_the_game_seconds_it_waits():
+    built = build_choices(manifest(action("move", holds=[hold(0.2)])))
+    wait = next(c for c in built.choices if c.kind is ChoiceKind.wait)
+    assert (wait.id, wait.label, wait.params, wait.source) == (
+        "wait", "Wait 0.5 s with no input", {"duration_game_s": 0.5}, ChoiceSource.core)
+    assert wait.action is None and wait.skill is None            # it still sends no input
+    others = [c for c in built.choices if c.source is ChoiceSource.core and c.kind is not ChoiceKind.wait]
+    assert all(c.params == {} for c in others)                   # no other core choice carries a duration
+
+
 def test_a_tap_hold_is_the_requested_hold_and_the_lease():
     built = build_choices(manifest(action("tap", "w", hold_s=None, tap_hold_s=0.1, holds=[hold(0.1)])))
     assert built.choices[0].params == {"hold_s": 0.1} and built.leases == {"tap": 0.1}

@@ -11,7 +11,10 @@ Law 1 branches:
 
 - invalid answer, or a provider that gave none: the turn is rejected, no input is sent, nothing is
   repaired or substituted, and the problem is recorded.
-- `wait` / `finish`: no input.
+- `wait` / `finish`: no input. In real time a `wait` choice whose `params` hold a positive finite
+  `duration_game_s` then sleeps that many game seconds (`duration / time_scale` wall seconds) before the
+  turn ends, so the next observation is taken after it; a wait without the param ends at once. A stepped
+  clock never sleeps.
 - action / skill: one `ActRequest` bound to the observation the set was built from; a bridge
   rejection is recorded as `rejected_stale` with no substitute input.
 - escalate / delegate: at most one helper request is open. A repeat while one is open is recorded
@@ -32,8 +35,9 @@ import asyncio
 import copy
 import dataclasses
 import hashlib
+import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -162,6 +166,7 @@ class TurnLoop:
         effects: EffectProbe | None = None,
         sink: TraceSink | None = None,
         clock: Callable[[], datetime] = _utcnow,
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     ) -> None:
         if s1 is not None and not (objective and objective.strip()):
             raise ValueError("a loop with an S1 port needs an objective")
@@ -180,6 +185,7 @@ class TurnLoop:
         self._effects = effects
         self._sink = sink
         self._clock = clock
+        self._sleep = sleep
         self._set_version = 0
         self._turns: list[TurnRecord] = []
         self._reports: list[TurnReport] = []
@@ -345,6 +351,8 @@ class TurnLoop:
                 outcome = TurnOutcome.escalated if selected.kind is ChoiceKind.escalate else TurnOutcome.delegated
             else:
                 outcome = TurnOutcome.finished
+                if selected.kind is ChoiceKind.wait:
+                    await self._wait_out(selected, observation)
 
         record = TurnRecord(
             turn=turn,
@@ -412,6 +420,26 @@ class TurnLoop:
         if self._previous is None:
             return None
         return _elapsed_s(self._previous.wall_utc, observation.wall_utc)
+
+    # --- waiting ----------------------------------------------------------------------------
+
+    async def _wait_out(self, choice: Choice, observation: Observation) -> None:
+        """Sleep a wait choice's `duration_game_s` of game time. No input is sent; only the next observation waits."""
+        seconds = self._wait_s(choice, observation)
+        if seconds is not None:
+            await self._sleep(seconds)
+
+    def _wait_s(self, choice: Choice, observation: Observation) -> float | None:
+        """Wall seconds to sleep, or `None` for none: a stepped clock, no valid duration, or a game clock not running."""
+        if self._clock_mode is not ClockMode.realtime:
+            return None
+        duration = choice.params.get("duration_game_s")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            return None
+        if not math.isfinite(duration) or duration <= 0 or not observation.time_scale > 0:
+            return None
+        seconds = duration / observation.time_scale
+        return seconds if math.isfinite(seconds) and seconds > 0 else None
 
     # --- execution --------------------------------------------------------------------------
 

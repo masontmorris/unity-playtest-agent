@@ -337,7 +337,7 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
   -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
   -ApprovalPath "C:\path\outside\game\approval.json" -MaxCalls <n> `
   -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.5] `
-  [-Objective "<text>" | -ObjectivePath "<file>"]
+  [-TokensPerMinute 85000] [-Objective "<text>" | -ObjectivePath "<file>"]
 ```
 
 The call cap and the approval file are required: no paid call starts without them, and every call
@@ -346,4 +346,6 @@ only. The output directory must be new and outside the game, and the game must b
 checkout. The summary is `run.json` and the trace is `trace.jsonl` beside it; both stay local. The run
 ends when S1 chooses `finish`, the wall limit passes (default 600 s, at most 1500), or three
 consecutive S1 calls give no usable answer (`-MaxProviderFailures`); it then stops and verifies that
-every held input was released.
+every held input was released. S1's calls are paced to `-TokensPerMinute` (default 85000, 15% under the
+provider's 100,000 limit for `mammoth-1`): the runner waits before a turn when the last minute's tokens
+plus the next call's would pass it, and states the wait to S1 as a measured fact.

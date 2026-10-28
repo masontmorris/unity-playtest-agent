@@ -13,13 +13,13 @@ from datetime import datetime, timezone
 import pytest
 
 from loop_fakes import (
-    FakeHelp, FakeProbe, FakeS1, Raw, choices, fail, pick, rig, run,
+    FakeHelp, FakeProbe, FakeS1, Raw, Sleeps, choices, fail, pick, rig, run,
 )
 from turn_trace_check import problems
 
 from playtest.contracts.bridge import ExecStatus, ExecutionRecord, Observation, RejectReason
 from playtest.contracts.common import ClockMode
-from playtest.contracts.loop import ChoiceSet, TurnOutcome, TurnRecord
+from playtest.contracts.loop import Choice, ChoiceSet, TurnOutcome, TurnRecord
 from playtest.contracts.trace import TraceAuthor, TraceKind
 from playtest.core.adherence import check_adherence
 from playtest.core.context import build_context
@@ -76,6 +76,105 @@ def test_an_explicit_wait_sends_no_input():
             assert r.s1.contexts[1]["facts"] == ["Turn 0: w was chosen; no input was sent."]
             await r.loop.stop("finish")
             finish_trace(r)
+        finally:
+            await r.close()
+
+    run(main)
+
+
+def timed_wait(duration, choice_id: str = "w5") -> Choice:
+    return Choice(id=choice_id, kind="wait", label=f"Wait {duration} s with no input",
+                  params={"duration_game_s": duration}, source="core")
+
+
+def test_a_wait_with_a_duration_sleeps_that_long_after_the_decision_and_sends_no_input():
+    async def main():
+        holder = {}
+        seen = []
+
+        async def spy(seconds):
+            entries = holder["rig"].sink.entries
+            seen.append((seconds, entries[-1]["kind"], sum(e["kind"] == "turn" for e in entries)))
+
+        r = await rig("w5", "w5", choices=[*choices(), timed_wait(0.5)], sleep=spy)
+        holder["rig"] = r
+        try:
+            await r.turns(2)
+            # It slept the game seconds at time scale 1, with the decision written and the turn not yet closed.
+            assert seen == [(0.5, "decision", 0), (0.5, "decision", 1)]
+            assert [t.outcome for t in r.loop.turns] == [TurnOutcome.finished] * 2
+            assert [(t.raw_choice, t.effective_choice, t.executed_action) for t in r.loop.turns] == [("w5", "w5", None)] * 2
+            assert r.game.applied() == [] and r.game.input_log == [] and r.sink.of_kind("execution") == []
+            assert r.kinds(0) == ["observation", "choice_set", "context", "s1_call", "decision", "turn"]
+            await r.loop.stop("finish")
+            finish_trace(r)
+        finally:
+            await r.close()
+
+    run(main)
+
+
+def test_a_wait_without_a_duration_does_not_sleep_and_neither_does_anything_else():
+    async def main():
+        sleeps = Sleeps()
+        # An untimed wait, an invalid answer, a finish, an action, and a help turn that waits while pending.
+        r = await rig("w", pick("zz"), "f", "c1", pick("h"), choices=[*choices(), timed_wait(0.5)], sleep=sleeps)
+        try:
+            await r.turns(5)
+            assert sleeps.calls == []
+            assert r.game.applied() == ["shift"]
+            await r.loop.stop("finish")
+            finish_trace(r)
+        finally:
+            await r.close()
+
+    run(main)
+
+
+def test_a_duration_that_is_not_a_positive_finite_number_is_not_slept():
+    async def main():
+        sleeps = Sleeps()
+        bad = [timed_wait(value, f"b{i}") for i, value in enumerate((0, -1.0, "0.5", True, None))]
+        r = await rig(*[c.id for c in bad], "w5", choices=[*choices(), *bad, timed_wait(2)], sleep=sleeps)
+        try:
+            await r.turns(6)
+            assert [t.outcome for t in r.loop.turns] == [TurnOutcome.finished] * 6
+            assert sleeps.calls == [2]                       # only the last, valid, one slept
+            await r.loop.stop("finish")
+        finally:
+            await r.close()
+
+    run(main)
+
+
+def test_the_wait_is_game_seconds_so_the_sleep_follows_the_time_scale():
+    async def main():
+        sleeps = Sleeps()
+        r = await rig("w5", "w5", "w5", "w5", choices=[*choices(), timed_wait(0.5)], sleep=sleeps)
+        try:
+            await r.turns(1)
+            await r.client.clock("set_scale", time_scale=2.0)
+            await r.turns(1)
+            await r.client.clock("set_scale", time_scale=0.25)
+            await r.turns(1)
+            await r.client.clock("set_scale", time_scale=0.0)       # a game that is not running: nothing to wait for
+            await r.turns(1)
+            assert sleeps.calls == [0.5, 0.25, 2.0]
+            await r.loop.stop("finish")
+        finally:
+            await r.close()
+
+    run(main)
+
+
+def test_a_stepped_clock_never_sleeps_for_a_wait():
+    async def main():
+        sleeps = Sleeps()
+        r = await rig("w5", choices=[*choices(), timed_wait(0.5)], sleep=sleeps, clock_mode=ClockMode.stepped)
+        try:
+            await r.turns(1)
+            assert sleeps.calls == [] and r.loop.turns[0].outcome is TurnOutcome.finished
+            await r.loop.stop("finish")
         finally:
             await r.close()
 

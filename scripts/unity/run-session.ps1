@@ -17,6 +17,9 @@ Editor may own a game project, and the bridge test runner serializes them.
 
 The host stops a client after -WallLimitSeconds plus a margin, and accepts at most 1800 seconds, so the
 wall limit is capped at 1500. Every environment variable the script sets is restored when it exits.
+
+S1's calls are paced to -TokensPerMinute (default 85000, which leaves 15% headroom under the provider's
+100,000): the runner waits before a turn when the last minute's tokens plus the next call's would pass it.
 #>
 [CmdletBinding()]
 param(
@@ -30,6 +33,7 @@ param(
     [int]$WallLimitSeconds = 600,
     [double]$MaxAgeSeconds = 0.5,
     [int]$MaxProviderFailures = 3,
+    [int]$TokensPerMinute = 85000,
     [string]$Objective,
     [string]$ObjectivePath,
     [string]$UnityPath
@@ -50,6 +54,7 @@ if ($MaxCalls -lt 1) { throw '-MaxCalls must be at least 1: no paid call starts 
 if ($WallLimitSeconds -lt 30 -or $WallLimitSeconds -gt 1500) { throw '-WallLimitSeconds must be between 30 and 1500.' }
 if ($MaxAgeSeconds -le 0) { throw '-MaxAgeSeconds must be positive.' }
 if ($MaxProviderFailures -lt 1) { throw '-MaxProviderFailures must be at least 1.' }
+if ($TokensPerMinute -lt 1) { throw '-TokensPerMinute must be at least 1.' }
 if ($Objective -and $ObjectivePath) { throw 'Give -Objective or -ObjectivePath, not both.' }
 if ($ObjectivePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($ObjectivePath))) { throw "Missing objective file: $ObjectivePath" }
 if ($output.Equals($project, [StringComparison]::OrdinalIgnoreCase) -or
@@ -75,7 +80,7 @@ elseif ($Objective) {
 $invariant = [Globalization.CultureInfo]::InvariantCulture
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
-           'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_OBJECTIVE_FILE')
+           'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
@@ -91,6 +96,7 @@ try {
     $env:UPA_RUN_WALL_LIMIT_S = [string]$WallLimitSeconds
     $env:UPA_RUN_MAX_AGE_S = $MaxAgeSeconds.ToString($invariant)
     $env:UPA_RUN_MAX_PROVIDER_FAILURES = [string]$MaxProviderFailures
+    $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
     $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
     $runnerArgs = @('-ExecutionPolicy', 'Bypass', '-File', $runner, '-ProjectPath', $project,

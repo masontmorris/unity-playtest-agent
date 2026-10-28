@@ -10,16 +10,17 @@ from __future__ import annotations
 import asyncio
 
 from fake_game import FakeGame
-from loop_fakes import TOKEN, FakeHelp, FakeProbe, FakeS1, Raw, choices, pick
+from loop_fakes import TOKEN, FakeHelp, FakeProbe, FakeS1, Raw, Sleeps, choices, pick
 from playtest.contracts.bridge import RejectReason
 from playtest.contracts.common import ClockMode
 from playtest.contracts.investigation import Budget, RunRecord
-from playtest.contracts.loop import TurnOutcome
+from playtest.contracts.loop import Choice, TurnOutcome
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.ports import S1Answer, S1Call
 from playtest.core.trace import TraceWriter, read_trace
 from playtest.core.trace_replay import replay
 from playtest.core.turn_loop import TurnLoop
+from playtest.runner.pacing import PacingFacts
 
 
 def _run_record() -> RunRecord:
@@ -27,14 +28,15 @@ def _run_record() -> RunRecord:
                      objective="Exercise the controls.", budget=Budget(), core_version="0.0.1")
 
 
-async def _loop(path, *steps, game=None, help=None, probe=None):
+async def _loop(path, *steps, game=None, help=None, probe=None, **loop_kwargs):
     game = FakeGame(token=TOKEN) if game is None else game
     port = await game.start()
     client = BridgeClient("127.0.0.1", port, TOKEN)
     await client.connect()
     writer = TraceWriter(path, _run_record())
-    loop = TurnLoop(client, choices=choices(), objective="Exercise the controls.", s1=FakeS1(*steps),
-                    help=help, effects=probe, sink=writer)
+    loop_kwargs.setdefault("choices", choices())
+    loop = TurnLoop(client, objective="Exercise the controls.", s1=FakeS1(*steps),
+                    help=help, effects=probe, sink=writer, **loop_kwargs)
     return game, client, writer, loop
 
 
@@ -113,6 +115,36 @@ def test_a_port_that_raises_is_written_and_replays_clean(tmp_path):
     entries = read_trace(path)
     calls = [e.body for e in entries if e.kind.value == "s1_call"]
     assert calls[0]["question"] is None and calls[0]["problem"] == "port error: RuntimeError"
+    assert replay(entries) == []
+
+
+def test_a_timed_wait_and_a_pacing_fact_replay_clean(tmp_path):
+    """A wait with a duration and a context that states a pacing wait are ordinary entries: the replay is unchanged."""
+    path = tmp_path / "trace.jsonl"
+    timed = Choice(id="w5", kind="wait", label="Wait 0.5 s with no input", params={"duration_game_s": 0.5},
+                   source="core")
+    paced, sleeps = PacingFacts(), Sleeps()
+
+    async def main():
+        game, client, writer, loop = await _loop(path, "c1", "w5", pick("h"), "w5", pick("f"), sleep=sleeps,
+                                                 choices=[*choices(), timed], facts=paced)
+        try:
+            for turn in range(5):
+                paced.note(0.84 if turn == 1 else 0.0)        # the session notes each turn's wait before the turn runs
+                await loop.run_turn()
+            result = await loop.stop("finish")
+            assert result is not None and result.release_verified is True
+            writer.close("complete")
+        finally:
+            await _close(game, client)
+
+    asyncio.run(main())
+    assert sleeps.calls == [0.5, 0.5]
+    entries = read_trace(path)
+    contexts = [e.body["payload"]["facts"] for e in entries if e.kind.value == "context"]
+    line = "Before this observation the harness waited 0.84 s to stay under the provider's token rate limit."
+    assert [line in facts for facts in contexts] == [False, True, False, False, False]
+    assert [e.body["effective_choice"] for e in entries if e.kind.value == "turn"] == ["c1", "w5", "h", "w5", "f"]
     assert replay(entries) == []
 
 

@@ -11,13 +11,19 @@ fail-closed harness rule, never an action choice or an escalation:
 
 Whatever the cause, the loop is then stopped: a pending helper is cancelled, every held input is
 released and the bridge verifies it. A run whose release is unverified is `inconclusive`, never complete.
+
+With a `TokenBudget` the session awaits `budget.ready()` before each turn. That is before the turn's
+observation, so the wait never ages the observation an action is bound to. The wait only delays when
+the next turn begins: it is not a stop rule, it never decides or opens help, and S1 reads the measured
+wait as a fact in that turn's context (`PacingFacts`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +36,7 @@ from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
 from .choices import ManifestChoices
+from .pacing import PacingFacts, PacingStats, TokenBudget
 
 MAX_PROVIDER_FAILURES = 3
 WALL_LIMIT_S = 600.0
@@ -48,6 +55,7 @@ class SessionResult:
     stop: StopResult | None
     adherence: list[Violation]
     loop: TurnLoop
+    pacing: PacingStats | None = None  # `None` when the session ran without a token budget
 
 
 async def run_session(
@@ -63,15 +71,21 @@ async def run_session(
     wall_limit_s: float = WALL_LIMIT_S,
     max_provider_failures: int = MAX_PROVIDER_FAILURES,
     clock: Callable[[], float] = time.monotonic,
+    budget: TokenBudget | None = None,
+    sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> SessionResult:
+    """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration."""
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
+    paced = PacingFacts() if budget is not None else None
     loop = TurnLoop(
         client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
-        objective=objective, s1=s1, help=help, effects=probe, sink=sink,
+        objective=objective, s1=s1, help=help, facts=paced, effects=probe, sink=sink, sleep=sleep,
     )
     deadline = clock() + wall_limit_s
     failures = total_failures = 0
+    waited_s = longest_s = 0.0
+    turns_waited = 0
     ending: str | None = None
     error: str | None = None
     try:
@@ -79,6 +93,14 @@ async def run_session(
             if clock() >= deadline:
                 ending = "wall_limit"
                 break
+            if budget is not None and paced is not None:
+                waited = await budget.ready()
+                paced.note(waited)
+                if waited > 0:
+                    waited_s, longest_s, turns_waited = waited_s + waited, max(longest_s, waited), turns_waited + 1
+                    if clock() >= deadline:  # the wait itself used up the time allowed
+                        ending = "wall_limit"
+                        break
             await loop.run_turn()
             report = loop.last_report
             assert report is not None
@@ -122,4 +144,5 @@ async def run_session(
     return SessionResult(
         status=status, ending=ending or "error", error=error, turns=len(turns), outcomes=outcomes,
         provider_failures=total_failures, stop=stop, adherence=violations, loop=loop,
+        pacing=PacingStats(waited_s, longest_s, turns_waited) if budget is not None else None,
     )

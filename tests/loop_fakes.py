@@ -50,6 +50,31 @@ def pick(choice_id: str, **extra: Any) -> dict[str, Any]:
     return {"choice_id": choice_id, **extra}
 
 
+class Sleeps:
+    """A `sleep` that records what it was asked for and returns at once, so no test really waits."""
+
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
+class FakeTime:
+    """A clock the test moves. Its `sleep` records the request and moves the clock by exactly that much."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.slept: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
 def fail(problem: str) -> S1Answer:
     return S1Answer(answer=None, calls=(S1Call(question="next_action", provider="fake", problem=problem),),
                     failure=problem)

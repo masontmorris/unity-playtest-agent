@@ -11,6 +11,10 @@ Every call reserves a ledger row before it is sent (`playtest.bench.call_budget`
 HTTP call runs in a worker thread so the bridge client keeps reading on the event loop. The adapter
 holds no policy: it never retries, repairs, ranks or substitutes, and the returned distribution is
 recorded and never used to select.
+
+Every call that was sent also reports its tokens to an injected meter (`playtest.runner.pacing`
+paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
+it gave them, else an estimate from the request body, reported as an estimate.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Protocol
 
 from playtest.bench import call_budget, replay
 from playtest.bench.record import digest
@@ -38,6 +42,27 @@ PROMPTS = {PRIMARY: INSTRUCTIONS, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
 _PROVIDERS = {"liquid-d1.1": "liquid"}
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
+CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
+
+
+class TokenMeter(Protocol):
+    def record(self, tokens: int, *, estimated: bool = False) -> None:
+        """Count one call's tokens; `estimated` says the provider did not report them."""
+        ...
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _tokens(usage: Any) -> int | None:
+    """Input plus output tokens when the provider reported input tokens; `None` when it did not."""
+    if not isinstance(usage, dict):
+        return None
+    used = _count(usage.get("input_tokens"))
+    if used is None:
+        return None
+    return used + (_count(usage.get("output_tokens")) or 0)
 
 
 class _Reply:
@@ -60,6 +85,7 @@ class SystemOneS1:
         arm: str = ARM,
         clock_mode: ClockMode = ClockMode.realtime,
         episode: int = 1,
+        budget: TokenMeter | None = None,
     ) -> None:
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
@@ -71,6 +97,7 @@ class SystemOneS1:
         self._arm = arm
         self._clock_mode = clock_mode
         self._episode = episode
+        self._budget = budget
         self._turn = 0
         self._reserved = 0
 
@@ -122,7 +149,8 @@ class SystemOneS1:
                 "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
                 "state": context}
         try:
-            request_sha = digest(canonical(body))
+            request_text = canonical(body)
+            request_sha = digest(request_text)
         except ValueError:
             return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
         if self._reserved >= self._max_calls:
@@ -139,12 +167,14 @@ class SystemOneS1:
             status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, body)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
             note = f"adapter error: {type(exc).__name__}"
+            self._count_tokens(None, request_text)  # the request may have reached the provider
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
                                resolved_model=None, usage=None, cost_usd=None)
             return _Reply(self._record(question, request_sha, None, None, None, note, None), failure=note)
         choice, distribution, answer_problem = replay.parse_answer(
             self._as_next_action(data if status == 200 else None, question), set(criteria))
         usage = (data or {}).get("usage")
+        self._count_tokens(usage, request_text)
         raw_cost = usage.get("cost") if isinstance(usage, dict) else None
         cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0 else None)
@@ -159,6 +189,16 @@ class SystemOneS1:
             failure = (note or "no usable answer") + (f" (HTTP {status})" if status not in (None, 200) else "")
         halt = "a provider-reported cost exceeded the per-call bound" if row["cost_bound_exceeded"] else None
         return _Reply(call, choice, distribution, failure, halt)
+
+    def _count_tokens(self, usage: Any, request_text: str) -> None:
+        """Report what a sent call used: the provider's own count, else an estimate marked as one."""
+        if self._budget is None:
+            return
+        used = _tokens(usage)
+        if used is not None:
+            self._budget.record(used)
+        else:
+            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN), estimated=True)
 
     @staticmethod
     def _as_next_action(data: dict[str, Any] | None, question: str) -> dict[str, Any] | None:

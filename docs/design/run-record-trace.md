@@ -16,7 +16,9 @@ the supplied bridge status. Modified paths are repo-relative and empty for a cle
 models and prompt hashes, objective, budget and reset method from its caller. It records the game
 directory name, generated run id and installed core version. Missing bridge status and optional
 inputs are written as `unknown`; the commit is `unknown` when Git cannot measure it. No absolute
-project path is stored.
+project path is stored. The manifest fingerprint is whatever the caller supplies: `playtest-run` passes the
+SHA-256 of the manifest file, not the preflight cache's authored-structure fingerprint
+(see `turn-loop.md`).
 
 Replay checks sequence and run identity, backward references, end placement, turn ordering and
 completeness, required references, observation and choice-set binding, increasing set versions,

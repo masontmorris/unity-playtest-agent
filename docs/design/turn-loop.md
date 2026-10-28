@@ -23,7 +23,9 @@ here claims one.
 7. **Act on the choice, and only the choice.**
    - action or skill: one `ActRequest` bound to the observation (`execution`, purpose `choice`); the
      bridge checks freshness per action, and a rejection is recorded as `rejected_stale` with no input.
-   - `wait` or `finish`: no input.
+   - `wait` or `finish`: no input. In real time, a `wait` choice whose params hold a positive finite
+     `duration_game_s` then sleeps `duration / time_scale` wall seconds, so the next observation is taken
+     after it (see "The wait choice").
    - `escalate` or `delegate`: open the one help request, or record a repeat (`help` `opened` or `repeat`),
      then run exactly the `while_pending` choice S1 gave (`execution`, purpose `while_pending`). A missing
      or invalid `while_pending` is `wait` with `policy_default` recorded; a valid primary choice stands.
@@ -43,7 +45,7 @@ The loop never writes `run` or `end`: the harness owns them.
 | provider failure | HTTP or transport error, unparseable or unoffered answer, a port that raised | none | none | none | `rejected_invalid` (the problem is on the `s1_call` entry) |
 | action, skill | valid | the choice | the choice | the choice | `executed` |
 | action, skill | bridge rejects (age or fields) | the choice | the choice | none | `rejected_stale` |
-| `wait`, `finish` | valid | the choice | the choice | none | `finished` |
+| `wait`, `finish` | valid (a timed `wait` also sleeps) | the choice | the choice | none | `finished` |
 | escalate, delegate | valid, `while_pending` wait | the choice | the choice | none | `escalated`, `delegated` |
 | escalate, delegate | valid, `while_pending` continue | the choice | the choice | the continued choice | `escalated`, `delegated` |
 | escalate, delegate | `while_pending` missing or invalid | the choice | the choice | none, `policy_default` | `escalated`, `delegated` |
@@ -67,6 +69,9 @@ All are in `playtest.core.ports`; each takes only what it needs and returns data
 
 A scripted source passed to `run_turn` (the Day 2 invariants and the live smoke use one) replaces the S1
 port for that turn: no context, no provider call.
+
+The loop also takes `sleep` (default `asyncio.sleep`), used only to wait out a wait choice's duration, so
+tests never really wait.
 
 ## The context
 
@@ -113,10 +118,68 @@ reserves a ledger row before it is sent (`bench/call_budget.py`), the HTTP call 
 send. The follow-up is bound to the same observation as the primary answer, so on a help turn the
 continued input is older by a second call's latency when the bridge checks it; `--max-age-s` is the knob.
 
+## Pacing the calls
+
+Baseten rate-limits `mammoth-1` to 100,000 tokens per minute. The 27 October live smoke sent about 2,200
+input tokens a call, and an executed turn took about 1.46 s (a 1.2 s hold and a 0.27 s call): about 41
+calls and 90,000 tokens a minute, right at the limit. A wait, a stale rejection or a help follow-up has no
+hold, so a run can outpace it. A 429 is a provider failure: the turn is rejected, nothing is retried, and
+three in a row end the run. So the runner paces itself first.
+
+`playtest.runner.pacing.TokenBudget(tokens_per_minute, *, window_s=60.0, clock=time.monotonic,
+sleep=asyncio.sleep, initial_estimate=3000)`:
+
+- `record(tokens, *, estimated=False)` stores a call's tokens at the current clock time.
+- `async ready() -> float` waits until the tokens recorded in the trailing window, plus the next call's
+  expected tokens, fit under the limit, and returns the seconds it waited: exactly `0.0` when it did not.
+  It sleeps just until enough of the oldest calls have left the window, then looks again.
+- The next call's expected tokens are the most recent recorded call's tokens, or `initial_estimate` before
+  the first. A call whose expected tokens alone exceed the limit goes out once the window is empty, since
+  waiting longer could never make it fit.
+
+The session awaits `ready()` before every `run_turn()`. That is before the turn adopts a helper's result,
+takes the probe's reading and observes, so a wait never ages the observation an action is bound to. The
+wall limit is checked before the wait and again after one. The help follow-up call is not paced
+separately: it goes out right after the primary call, and a 429 on it leaves `while_pending` absent, so the
+loop records the policy default as before.
+
+`SystemOneS1` reports every call it sent to the budget: `usage.input_tokens` plus `usage.output_tokens`
+when present, or, when the reply has no usable input count (a 429, a transport or adapter error, missing
+usage), `ceil(len(canonical(request body)) / 2.5)` reported as an estimate. A call refused before it was
+sent (the call cap, the approved envelope) reports nothing. An estimate counts in the window like a
+measurement and is only marked; the summary says how many calls were estimated.
+
+**The wait is a measured fact, not a decision.** `PacingFacts` wraps the loop's facts source. When the wait
+before a turn was above zero, that turn's facts end with `Before this observation the harness waited 0.84 s
+to stay under the provider's token rate limit.` It states the measurement and never advice, it appears in
+that turn's context only, and the trace records it there (the `context` payload); no entry kind was added.
+
+Pacing only delays when the next turn begins. It never skips, replaces or alters a decision, it is not
+an escalation and can never open help, it is not a stop rule, and nothing retries. `--tokens-per-minute`
+(`UPA_RUN_TOKENS_PER_MINUTE`, `-TokensPerMinute` in `run-session.ps1`) sets the limit; the default is
+85,000, which leaves 15% headroom. The next call is expected to cost what the last did, and a help turn
+makes two calls, so one call's tokens of overshoot are possible; the headroom is what covers it.
+
+## The wait choice
+
+The runner's wait is `{"id": "wait", "kind": "wait", "label": "Wait 0.5 s with no input", "params":
+{"duration_game_s": 0.5}}` (build bible 5.3's example). Before, a wait had no duration and the next S1 call
+followed at once. In real time the loop now sends no input and sleeps `duration_game_s / time_scale` wall
+seconds, with `time_scale` read from the observation the decision was made on, so the wait is game
+seconds at any speed. The sleep is skipped when `time_scale` is not positive. A wait without the param, or
+with one that is not a positive finite number, keeps the old behavior and ends at once. The core reads only
+the generic `duration_game_s` param; the 0.5 s is the runner's.
+
+The sleep falls between the `decision` and `turn` entries, so the trace and its replay are unchanged: the
+outcome is still `finished`, nothing is executed, and the turn's `latency_ms` includes the sleep. A `wait`
+in `while_pending` (help is pending) names no choice and no duration, so it does not sleep. A stepped clock
+never sleeps: waiting out game time there means stepping it, and stepped waits are out of scope here.
+
 ## Stop rules
 
 The per-turn logic never stops the run. The session driver (`playtest.runner.session`) does, and every rule
-is a fail-closed harness rule, never an action choice or an escalation:
+is a fail-closed harness rule, never an action choice or an escalation (the pacing wait before a turn is a
+delay, not one of them):
 
 - S1 chose `finish`, or the wall-clock limit passed (default 600 s): a normal end, `complete`.
 - N consecutive turns got no usable answer from the provider (default 3), or the port asked to halt (the
@@ -160,18 +223,43 @@ the observation an act is bound to; the reading after follows the act.
 ## Output
 
 `playtest-run` writes, under the output directory, `run.json` (the summary), `trace.jsonl`, `plan.json`
-and `calls/`. Until the trace writer (#30) lands the trace goes through a `MemorySink` and is dumped once at
-the end, `run` first and `end` last, with any `*_API_KEY` value replaced and counted. A harness that
-injects its own sink owns `run` and `end` instead. Full traces stay local.
+and `calls/`. The trace goes through the #30 writer (`playtest.core.trace.TraceWriter`, see
+`run-record-trace.md`). The runner opens it at `<run dir>/trace.jsonl` before the first turn, so the `run`
+entry is first and every line is validated and flushed as it is appended, and closes it exactly once, with
+the session's status and error, after the loop's `stop` entry. That includes an exception that escapes: the
+loop is stopped and its inputs released first, and `end` then reads `inconclusive` with the exception. The
+writer replaces the value of every `*_API_KEY` environment variable and counts the replacements
+(`redactions`, in `end` and in the summary). A harness that injects its own sink owns `run` and `end`
+instead. Full traces stay local.
+
+The run record comes from `playtest.core.run_record.build_run_record`, which measures the game's commit and
+worktree state with git and reads the Unity and bridge versions from the bridge's status. The runner gives it:
+
+- `game_project` (stored as the directory name only) and `status` (the bridge's);
+- `scene`, from one `observe_once()` taken after the entity check and before the trace opens;
+- `manifest_fingerprint`, the SHA-256 of the manifest file's bytes (the same value as `manifest.sha256` in
+  the summary). It hashes the file; it is not the authored-structure fingerprint the preflight cache keys
+  on (`playtest.preflight.cache.fingerprint`);
+- `clock_mode` realtime, `input_mode` the first of the status's input backends, `reset_method` `none`
+  because this runner never resets the game;
+- `models`, one `s1` entry with the provider, the model and the adapter's prompt hash. `resolved_model`
+  stays `unknown` at the start; each `s1_call` entry records the model the provider resolved;
+- `objective`, and `budget`: the wall limit, the approved cost cap and no frontier calls.
+
+The summary adds `settings.tokens_per_minute` and `pacing`: `waited_s` (the total seconds the session
+waited before turns), `longest_wait_s`, `turns_waited`, and `calls_counted` and `calls_estimated` (how many
+calls the budget counted, and how many of those were estimates). `plan.json` records `tokens_per_minute`.
+The trace's `end` states the session's own status; the summary is written after it and can only downgrade
+it (for example when the game worktree changed during the run).
 
 ## Not done yet
 
-- **Deciding during a hold** (pipelining) and stepped-clock work. A hold blocks the bridge client until its
-  terminal record, so the cycle is the hold plus the S1 call.
+- **Deciding during a hold** (pipelining) and stepped-clock work, including stepped waits (a wait choice's
+  duration is honored only in real time). A hold blocks the bridge client until its terminal record, so the
+  cycle is the hold plus the S1 call.
 - **The frontier and helper implementations.** The port, request and result types exist; nothing answers.
 - **A facts window.** Facts describe the last turn only, and guidance is never windowed or compacted.
 - **Per-action freshness.** `depends_on` is empty because reader freshness is `null` in the manifest.
 - **A runtime choice builder.** The choice set is static, preconditions are not evaluated, and the
   manifest's readers are not installed in the live observation source, so S1 cannot see them.
-- **The run record from #30.** The interim record here carries `scene: unknown`.
 - **Any live run.** The runner has never talked to a real Editor; its script has been parsed, not run.
