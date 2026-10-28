@@ -289,7 +289,14 @@ INVARIANT_CASES = [
     (
         "range_with_direction",
         [range_rule(lo=0.0, hi=1.0) | {"direction": "non_decreasing"}],
-        "a range rule leaves direction null",
+        "a range rule does not use direction; set it to null",
+    ),
+    (
+        "implies_with_unless",
+        [rule("imp", "implies", when={"field": "item_held", "op": "==", "value": True},
+              then={"field": "counter", "op": "changed", "value": None},
+              unless={"field": "item_held", "op": "==", "value": False})],
+        "an implies rule does not use unless; set it to null",
     ),
     (
         "monotonic_without_direction",

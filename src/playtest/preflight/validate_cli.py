@@ -10,7 +10,7 @@ import sys
 from playtest.contracts.bridge import InspectResult
 from playtest.contracts.calibration import CalibrationRecord
 from playtest.contracts.manifest import PreflightManifest
-from playtest.preflight import manifest, packet
+from playtest.preflight import cache, manifest, packet
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,6 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--screenshot", type=Path, help="the original screenshot, if the manifest has one")
     parser.add_argument("--expected-model", choices=("muse-spark-1.3", "muse-spark-1.3-contributor"))
+    parser.add_argument("--project", type=Path, help="the Unity project, required for cache-hit validation")
+    parser.add_argument("--cache-dir", type=Path, help="the selection cache, required for cache-hit validation")
     args = parser.parse_args(argv)
     try:
         value = PreflightManifest.model_validate_json(args.manifest.read_text(encoding="utf-8"), strict=True)
@@ -33,11 +35,40 @@ def main(argv: list[str] | None = None) -> int:
                                       value.image.same_session, value.image.capture_game_s)
         elif args.screenshot is not None:
             raise ValueError("the manifest does not describe a screenshot")
-        built = packet.build(InspectResult.model_validate_json(args.inventory.read_text(encoding="utf-8")),
-                             InspectResult.model_validate_json(args.discovery.read_text(encoding="utf-8")),
-                             CalibrationRecord.model_validate_json(args.calibration.read_text(encoding="utf-8")),
-                             image=image)
+        inventory = InspectResult.model_validate_json(args.inventory.read_text(encoding="utf-8"))
+        discovery = InspectResult.model_validate_json(args.discovery.read_text(encoding="utf-8"))
+        calibration = CalibrationRecord.model_validate_json(args.calibration.read_text(encoding="utf-8"))
+        built = packet.build(inventory, discovery, calibration, image=image)
         ledger = [json.loads(line) for line in args.ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if len(ledger) == 1 and isinstance(ledger[0], dict) and ledger[0].get("kind") == "cache_hit":
+            if args.project is None or args.cache_dir is None:
+                raise ValueError("cache-hit validation requires --project and --cache-dir")
+            project, directory = args.project.resolve(strict=True), args.cache_dir.resolve()
+            if directory == project or directory.is_relative_to(project):
+                raise ValueError("the cache directory must be outside the Unity project")
+            event = ledger[0]
+            model = event.get("model")
+            if args.expected_model is not None and model != args.expected_model:
+                raise ValueError("the cached model differs from the required model")
+            key = event.get("fingerprint")
+            if not isinstance(key, str):
+                raise ValueError("the cache-hit fingerprint is missing")
+            entry = cache.read_entry(directory, key)
+            if entry is None:
+                raise ValueError("the referenced cache entry is unavailable")
+            before = cache._snapshot_from_data(event.get("authored_before"))
+            after = cache._snapshot_from_data(event.get("authored_after"))
+            cache._check_window(before, after, inventory, discovery, calibration)
+            if cache.capture_authored(project).files != after.files:
+                raise ValueError("the authored project differs from the cache hit's after snapshot")
+            replayed, detail = cache.replay_entry(entry, after, inventory, discovery, calibration, image,
+                                                   model=model)
+            detail.update(authored_before=cache._snapshot_data(before), authored_after=cache._snapshot_data(after))
+            if replayed != value or event != {"kind": "cache_hit", **detail}:
+                raise ValueError("the cache-hit ledger or manifest differs from replay")
+            print("manifest and cache source validate against current authored files and descriptors")
+            print("live action effects and reset verification remain unverified")
+            return 0
         if len(ledger) % 2:
             raise ValueError("ledger has an unresolved in-flight request")
         rows = []

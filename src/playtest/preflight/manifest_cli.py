@@ -13,7 +13,7 @@ import sys
 
 from playtest.contracts.bridge import InspectResult
 from playtest.contracts.calibration import CalibrationRecord
-from playtest.preflight import manifest, packet, provider, stages
+from playtest.preflight import cache, manifest, packet, provider, stages
 from playtest.roles import preflight, strict
 
 
@@ -54,8 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ledger", type=Path, required=True, help="new per-attempt JSONL outside the Unity project")
     parser.add_argument("--max-retries", type=int, choices=range(4), default=3)
     parser.add_argument("--model", choices=tuple(provider.MODEL_PRICES), default=provider.meta.MODEL)
-    parser.add_argument("--approved-calls", type=int, required=True, help="user-approved maximum request count")
-    parser.add_argument("--approved-estimate-usd", required=True, help="user-approved planning estimate in USD")
+    parser.add_argument("--cache-dir", type=Path, help="local selection cache outside the Unity project")
+    parser.add_argument("--current-before", type=Path,
+                        help="authored snapshot captured before the current inspections and calibration")
+    parser.add_argument("--approved-calls", type=int, help="user-approved maximum request count on a cache miss")
+    parser.add_argument("--approved-estimate-usd", help="user-approved planning estimate in USD on a cache miss")
     args = parser.parse_args(argv)
     project, output, ledger = args.project.resolve(), args.output.resolve(), args.ledger.resolve()
     if not project.is_dir():
@@ -64,8 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("manifest and ledger must be different paths outside the Unity project")
     if output.exists() or ledger.exists():
         parser.error("manifest and ledger must be new files")
+    cache_dir = args.cache_dir.resolve() if args.cache_dir is not None else None
+    if cache_dir is not None and (cache_dir == project or cache_dir.is_relative_to(project)):
+        parser.error("the cache directory must be outside the Unity project")
     try:
-        max_calls, estimate = _approved_budget(args.max_retries, args.approved_calls, args.approved_estimate_usd, args.model)
         inventory = InspectResult.model_validate_json(args.inventory.read_text(encoding="utf-8"))
         discovery = InspectResult.model_validate_json(args.discovery.read_text(encoding="utf-8"))
         calibration = CalibrationRecord.model_validate_json(args.calibration.read_text(encoding="utf-8"))
@@ -75,6 +80,43 @@ def main(argv: list[str] | None = None) -> int:
         built = packet.build(inventory, discovery, calibration, image=image)
         # Render before creating a ledger or making any paid request.
         preflight.schema(built.discovery)
+        if cache_dir is not None:
+            cached = detail = None
+            try:
+                if args.current_before is None:
+                    raise ValueError("cache replay requires --current-before from before the current preflight")
+                before = cache._snapshot_from_data(json.loads(args.current_before.read_text(encoding="utf-8")))
+                authored = cache.capture_authored(project)
+                # This preflight's own inspections are the descriptors' current resolution.
+                cache._check_window(before, authored, inventory, discovery, calibration)
+                identity = cache.fingerprint(authored, inventory, discovery, model=args.model)
+                print(f"preflight cache fingerprint {identity['sha256']}")
+                entry = cache.read_entry(cache_dir, identity["sha256"])
+                if entry is not None:
+                    cached, detail = cache.replay_entry(entry, authored, inventory, discovery, calibration, image,
+                                                        model=args.model)
+                    detail.update(authored_before=cache._snapshot_data(before),
+                                  authored_after=cache._snapshot_data(authored))
+                else:
+                    print("preflight cache miss: no entry for the current fingerprint")
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                print(f"preflight cache miss: {exc}")
+            if cached is not None:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                ledger.parent.mkdir(parents=True, exist_ok=True)
+                with ledger.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(json.dumps({"kind": "cache_hit", **detail}, ensure_ascii=False,
+                                            allow_nan=False) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                with output.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(cached.model_dump_json(indent=2) + "\n")
+                print(f"cache hit: zero model calls; manifest saved to {output}")
+                print("stage 7 remains a separate live verification")
+                return 0
+        if args.approved_calls is None or args.approved_estimate_usd is None:
+            raise ValueError("a cache miss needs an approved call count and estimated dollar envelope")
+        max_calls, estimate = _approved_budget(args.max_retries, args.approved_calls, args.approved_estimate_usd, args.model)
         print(f"approved envelope: at most {max_calls} calls, estimated up to ${estimate:.3f} "
               "at the recorded prices and context bound; actual charges are not capped by this estimate")
         output.parent.mkdir(parents=True, exist_ok=True)
