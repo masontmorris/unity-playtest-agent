@@ -1,0 +1,106 @@
+{
+  "schema_version": 2,
+  "packet_sha256": "c7ce35801dca83247cb991e05a58d46d8bed1bc75425ead7dfc8e8b42eddf252",
+  "entity_id": "entity",
+  "entity": {
+    "id": "entity",
+    "path": "root",
+    "scene_id": "scene",
+    "scene_path": "Assets/scene"
+  },
+  "inventory_caps": {},
+  "discovery_caps": {
+    "bindings": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "components": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "fields": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "game_objects": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    },
+    "input_asset_bindings": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "source_characters": {
+      "limit": 100,
+      "observed": 7,
+      "returned": 7,
+      "truncated": false
+    },
+    "source_files": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    }
+  },
+  "image": null,
+  "readers": [],
+  "actions": [],
+  "skills": [],
+  "progress": [],
+  "invariants": [],
+  "gaps": {
+    "scope": "model_report_relative_to_offered_and_selected_evidence",
+    "unobservable": [
+      "no readable fields"
+    ],
+    "uncontrollable": [
+      "no offered controls"
+    ],
+    "unjudgeable": [
+      "no readers"
+    ],
+    "coverage": [
+      "field freshness is unknown until calibration field identity is established",
+      "the current bridge cannot execute multi-step skills",
+      "selected readers are not installed or verified in the live observation source",
+      "the manifest action catalog is not installed or verified in a live run",
+      "reset has not been verified as part of this manifest run",
+      "reset method candidates are not emitted by the current discovery collector",
+      "no screenshot was supplied",
+      "no discovered field was offered as a reader",
+      "no measured control was offered"
+    ]
+  },
+  "selection": {
+    "offered_fields": [],
+    "unselected_field_ids": [],
+    "unoffered_fields": [],
+    "offered_controls": [],
+    "unoffered_controls": [],
+    "unsupported_bindings": [],
+    "reader_cap": 16,
+    "reader_cap_reached": false,
+    "action_cap": 14,
+    "action_cap_reached": false,
+    "skill_cap": 6,
+    "skill_cap_reached": false,
+    "gap_caps_reached": {
+      "unobservable": false,
+      "uncontrollable": false,
+      "unjudgeable": false
+    }
+  },
+  "reset_bindings": null,
+  "reset_bindings_reason": "discovery did not emit callable reset candidates; no binding was selected"
+}

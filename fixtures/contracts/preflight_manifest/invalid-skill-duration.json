@@ -1,0 +1,303 @@
+{
+  "schema_version": 2,
+  "packet_sha256": "3de3d82378de6f5ceb46a903c0f610f5d1ff1efd866364f10a650738c8fe3c77",
+  "entity_id": "entity",
+  "entity": {
+    "id": "entity",
+    "path": "root",
+    "scene_id": "scene",
+    "scene_path": "Assets/scene"
+  },
+  "inventory_caps": {},
+  "discovery_caps": {
+    "bindings": {
+      "limit": 100,
+      "observed": 2,
+      "returned": 2,
+      "truncated": false
+    },
+    "components": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "fields": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    },
+    "game_objects": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    },
+    "input_asset_bindings": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "source_characters": {
+      "limit": 100,
+      "observed": 7,
+      "returned": 7,
+      "truncated": false
+    },
+    "source_files": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    }
+  },
+  "image": null,
+  "readers": [
+    {
+      "alias": "speed",
+      "selection_id": "field_00000",
+      "field_id": "field",
+      "why": "read",
+      "declared_type": "System.Single",
+      "kind": "number",
+      "descriptor": {
+        "field_type": "System.Single",
+        "id": "field",
+        "scene_id": "scene",
+        "value_kind": "number",
+        "value_state": "present"
+      },
+      "freshness": null,
+      "freshness_reason": "field identity across captures is not established",
+      "freshness_evidence": {
+        "classification": "unknown",
+        "continuous_classification": null,
+        "field_id": "field_00000",
+        "sampling_limitation": null,
+        "identity_verified": false
+      }
+    }
+  ],
+  "actions": [
+    {
+      "name": "chord",
+      "intent": "act",
+      "inputs": [
+        {
+          "control_id": "w",
+          "x": null,
+          "y": null
+        },
+        {
+          "control_id": "a",
+          "x": null,
+          "y": null
+        }
+      ],
+      "hold_s": 0.2,
+      "tap_hold_s": null,
+      "preconditions": [],
+      "calibrations": [
+        {
+          "control": "w",
+          "bindings": [
+            {
+              "action_id": "action",
+              "binding_id": "binding",
+              "part": "up",
+              "path": "<Keyboard>/w",
+              "source_object_id": "entity"
+            }
+          ],
+          "resolution": "unity_key_name",
+          "holds": [],
+          "lowest_tested_effective_requested_hold_s": null,
+          "shortest_observed_effective_hold_s": null,
+          "minimum_hold_scope": "unknown",
+          "inverted_relative_to_entity_basis": null,
+          "signed_basis_projections": [],
+          "dead_zone": null,
+          "dead_zone_reason": "not measured"
+        },
+        {
+          "control": "a",
+          "bindings": [
+            {
+              "action_id": "action",
+              "binding_id": "other",
+              "part": "up",
+              "path": "<Keyboard>/a",
+              "source_object_id": "entity"
+            }
+          ],
+          "resolution": "unity_key_name",
+          "holds": [],
+          "lowest_tested_effective_requested_hold_s": null,
+          "shortest_observed_effective_hold_s": null,
+          "minimum_hold_scope": "unknown",
+          "inverted_relative_to_entity_basis": null,
+          "signed_basis_projections": [],
+          "dead_zone": null,
+          "dead_zone_reason": "not measured"
+        }
+      ],
+      "axis": false,
+      "max_hold_s": null,
+      "hold_effect": null,
+      "execution_supported": false
+    }
+  ],
+  "skills": [
+    {
+      "name": "sequence",
+      "purpose": "bounded sequence",
+      "steps": [
+        {
+          "inputs": [
+            {
+              "control_id": "w",
+              "x": null,
+              "y": null
+            },
+            {
+              "control_id": "a",
+              "x": null,
+              "y": null
+            }
+          ],
+          "hold_s": 0.2,
+          "wait_s": 0.0
+        }
+      ],
+      "max_s": 0.1,
+      "calibrations": [
+        {
+          "control": "w",
+          "bindings": [
+            {
+              "action_id": "action",
+              "binding_id": "binding",
+              "part": "up",
+              "path": "<Keyboard>/w",
+              "source_object_id": "entity"
+            }
+          ],
+          "resolution": "unity_key_name",
+          "holds": [],
+          "lowest_tested_effective_requested_hold_s": null,
+          "shortest_observed_effective_hold_s": null,
+          "minimum_hold_scope": "unknown",
+          "inverted_relative_to_entity_basis": null,
+          "signed_basis_projections": [],
+          "dead_zone": null,
+          "dead_zone_reason": "not measured"
+        },
+        {
+          "control": "a",
+          "bindings": [
+            {
+              "action_id": "action",
+              "binding_id": "other",
+              "part": "up",
+              "path": "<Keyboard>/a",
+              "source_object_id": "entity"
+            }
+          ],
+          "resolution": "unity_key_name",
+          "holds": [],
+          "lowest_tested_effective_requested_hold_s": null,
+          "shortest_observed_effective_hold_s": null,
+          "minimum_hold_scope": "unknown",
+          "inverted_relative_to_entity_basis": null,
+          "signed_basis_projections": [],
+          "dead_zone": null,
+          "dead_zone_reason": "not measured"
+        }
+      ],
+      "execution_supported": false
+    }
+  ],
+  "progress": [],
+  "invariants": [],
+  "gaps": {
+    "scope": "model_report_relative_to_offered_and_selected_evidence",
+    "unobservable": [],
+    "uncontrollable": [],
+    "unjudgeable": [],
+    "coverage": [
+      "field freshness is unknown until calibration field identity is established",
+      "the current bridge cannot execute multi-step skills",
+      "selected readers are not installed or verified in the live observation source",
+      "the manifest action catalog is not installed or verified in a live run",
+      "reset has not been verified as part of this manifest run",
+      "reset method candidates are not emitted by the current discovery collector",
+      "no screenshot was supplied",
+      "some selected action holds have no established effective response",
+      "some selected actions cannot be executed by the current bridge",
+      "selected skills are preserved but cannot be executed by the current bridge"
+    ]
+  },
+  "selection": {
+    "offered_fields": [
+      {
+        "field_type": "System.Single",
+        "id": "field_00000",
+        "same_scene_as_entity": true,
+        "source_field_id": "field"
+      }
+    ],
+    "unselected_field_ids": [],
+    "unoffered_fields": [],
+    "offered_controls": [
+      {
+        "action": "preflight_key_a",
+        "bindings": [
+          {
+            "action_id": "action",
+            "binding_id": "other",
+            "part": "up",
+            "path": "<Keyboard>/a",
+            "source_object_id": "entity"
+          }
+        ],
+        "control": "a",
+        "control_type": "Button",
+        "id": "a",
+        "resolution": "unity_key_name"
+      },
+      {
+        "action": "preflight_key_w",
+        "bindings": [
+          {
+            "action_id": "action",
+            "binding_id": "binding",
+            "part": "up",
+            "path": "<Keyboard>/w",
+            "source_object_id": "entity"
+          }
+        ],
+        "control": "w",
+        "control_type": "Button",
+        "id": "w",
+        "resolution": "unity_key_name"
+      }
+    ],
+    "unoffered_controls": [],
+    "unsupported_bindings": [],
+    "reader_cap": 16,
+    "reader_cap_reached": false,
+    "action_cap": 14,
+    "action_cap_reached": false,
+    "skill_cap": 6,
+    "skill_cap_reached": false,
+    "gap_caps_reached": {
+      "unobservable": false,
+      "uncontrollable": false,
+      "unjudgeable": false
+    }
+  },
+  "reset_bindings": null,
+  "reset_bindings_reason": "discovery did not emit callable reset candidates; no binding was selected"
+}

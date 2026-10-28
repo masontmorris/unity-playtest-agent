@@ -1,0 +1,1129 @@
+{
+  "$defs": {
+    "ActionCalibration": {
+      "additionalProperties": false,
+      "properties": {
+        "bindings": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Bindings",
+          "type": "array"
+        },
+        "control": {
+          "minLength": 1,
+          "title": "Control",
+          "type": "string"
+        },
+        "dead_zone": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dead Zone"
+        },
+        "dead_zone_reason": {
+          "title": "Dead Zone Reason",
+          "type": "string"
+        },
+        "holds": {
+          "items": {
+            "$ref": "#/$defs/HoldMeasurement"
+          },
+          "title": "Holds",
+          "type": "array"
+        },
+        "inverted_relative_to_entity_basis": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Inverted Relative To Entity Basis"
+        },
+        "lowest_tested_effective_requested_hold_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lowest Tested Effective Requested Hold S"
+        },
+        "minimum_hold_scope": {
+          "title": "Minimum Hold Scope",
+          "type": "string"
+        },
+        "resolution": {
+          "title": "Resolution",
+          "type": "string"
+        },
+        "shortest_observed_effective_hold_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Shortest Observed Effective Hold S"
+        },
+        "signed_basis_projections": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Signed Basis Projections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "control",
+        "bindings",
+        "resolution",
+        "holds",
+        "lowest_tested_effective_requested_hold_s",
+        "shortest_observed_effective_hold_s",
+        "minimum_hold_scope",
+        "inverted_relative_to_entity_basis",
+        "signed_basis_projections",
+        "dead_zone",
+        "dead_zone_reason"
+      ],
+      "title": "ActionCalibration",
+      "type": "object"
+    },
+    "Comparator": {
+      "enum": [
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "changed",
+        "unchanged"
+      ],
+      "title": "Comparator",
+      "type": "string"
+    },
+    "HoldMeasurement": {
+      "additionalProperties": false,
+      "properties": {
+        "effective_in_all_repeats": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "True when every valid repeat's net displacement met the plan's effect tolerance. False is not proof the input had no effect: motion that returns to its start nets to zero",
+          "title": "Effective In All Repeats"
+        },
+        "mean_delta": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mean net entity displacement over the valid trials: the change between the read before the input and the read just after it, minus the idle baseline",
+          "title": "Mean Delta"
+        },
+        "mean_magnitude": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mean of each valid trial's net displacement magnitude, with the same net meaning",
+          "title": "Mean Magnitude"
+        },
+        "requested_hold_s": {
+          "description": "Probe setting, not the applied duration",
+          "exclusiveMinimum": 0,
+          "title": "Requested Hold S",
+          "type": "number"
+        },
+        "sample_variance": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sample variance of the per-trial net displacement magnitudes",
+          "title": "Sample Variance"
+        },
+        "valid_trials": {
+          "minimum": 0,
+          "title": "Valid Trials",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requested_hold_s",
+        "valid_trials",
+        "mean_delta",
+        "mean_magnitude",
+        "sample_variance",
+        "effective_in_all_repeats"
+      ],
+      "title": "HoldMeasurement",
+      "type": "object"
+    },
+    "InspectionCap": {
+      "additionalProperties": false,
+      "description": "How completely one collection was sampled.\n\nAn uncounted total stays null; it is never guessed from the returned sample. A known\nobserved count must agree with `truncated`: true means some items were left out, false\nmeans the returned sample is the whole collection.",
+      "properties": {
+        "limit": {
+          "exclusiveMinimum": 0,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Items seen, or null when the total is unknown",
+          "title": "Observed"
+        },
+        "returned": {
+          "minimum": 0,
+          "title": "Returned",
+          "type": "integer"
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether the sample was capped, or null when unknown",
+          "title": "Truncated"
+        }
+      },
+      "required": [
+        "limit",
+        "observed",
+        "returned",
+        "truncated"
+      ],
+      "title": "InspectionCap",
+      "type": "object"
+    },
+    "ManifestAction": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "title": "Axis",
+          "type": "boolean"
+        },
+        "calibrations": {
+          "items": {
+            "$ref": "#/$defs/ActionCalibration"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Calibrations",
+          "type": "array"
+        },
+        "execution_supported": {
+          "description": "Whether the current bridge can execute this declaration",
+          "title": "Execution Supported",
+          "type": "boolean"
+        },
+        "hold_effect": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Entity-displacement response in repeated trials, or null if not established",
+          "title": "Hold Effect"
+        },
+        "hold_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Hold S"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/ManifestInput"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Inputs",
+          "type": "array"
+        },
+        "intent": {
+          "minLength": 1,
+          "title": "Intent",
+          "type": "string"
+        },
+        "max_hold_s": {
+          "description": "No per-action override limit has been measured",
+          "title": "Max Hold S",
+          "type": "null"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "preconditions": {
+          "items": {
+            "$ref": "#/$defs/ManifestCheck"
+          },
+          "maxItems": 3,
+          "title": "Preconditions",
+          "type": "array"
+        },
+        "tap_hold_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tested requested hold, not observed applied duration",
+          "title": "Tap Hold S"
+        }
+      },
+      "required": [
+        "name",
+        "intent",
+        "inputs",
+        "hold_s",
+        "tap_hold_s",
+        "preconditions",
+        "calibrations",
+        "axis",
+        "max_hold_s",
+        "hold_effect",
+        "execution_supported"
+      ],
+      "title": "ManifestAction",
+      "type": "object"
+    },
+    "ManifestCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Field",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Comparator"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "title": "ManifestCheck",
+      "type": "object"
+    },
+    "ManifestGaps": {
+      "additionalProperties": false,
+      "properties": {
+        "coverage": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Coverage",
+          "type": "array"
+        },
+        "scope": {
+          "const": "model_report_relative_to_offered_and_selected_evidence",
+          "title": "Scope",
+          "type": "string"
+        },
+        "uncontrollable": {
+          "description": "Model-reported gaps; harness limitations are recorded separately",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Uncontrollable",
+          "type": "array"
+        },
+        "unjudgeable": {
+          "description": "Model-reported gaps relative to the selected readers",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Unjudgeable",
+          "type": "array"
+        },
+        "unobservable": {
+          "description": "Model-reported gaps relative to the offered and selected evidence",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Unobservable",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scope",
+        "unobservable",
+        "uncontrollable",
+        "unjudgeable",
+        "coverage"
+      ],
+      "title": "ManifestGaps",
+      "type": "object"
+    },
+    "ManifestImage": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "capture_game_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Capture Game S"
+        },
+        "mime": {
+          "enum": [
+            "image/png",
+            "image/jpeg"
+          ],
+          "title": "Mime",
+          "type": "string"
+        },
+        "provenance": {
+          "minLength": 1,
+          "title": "Provenance",
+          "type": "string"
+        },
+        "same_session": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Same Session"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mime",
+        "bytes",
+        "sha256",
+        "provenance",
+        "same_session",
+        "capture_game_s"
+      ],
+      "title": "ManifestImage",
+      "type": "object"
+    },
+    "ManifestInput": {
+      "additionalProperties": false,
+      "properties": {
+        "control_id": {
+          "minLength": 1,
+          "title": "Control Id",
+          "type": "string"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": -1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": -1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Y"
+        }
+      },
+      "required": [
+        "control_id",
+        "x",
+        "y"
+      ],
+      "title": "ManifestInput",
+      "type": "object"
+    },
+    "ManifestInvariant": {
+      "additionalProperties": false,
+      "properties": {
+        "catches": {
+          "description": "Model-proposed failure meaning; not a verified finding",
+          "minLength": 1,
+          "title": "Catches",
+          "type": "string"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "non_decreasing",
+                "non_increasing"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Direction"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]{0,39}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Field"
+        },
+        "kind": {
+          "enum": [
+            "range",
+            "monotonic",
+            "implies"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max"
+        },
+        "min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Min"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "description": "Model-cited source; not independently verified",
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "then": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManifestCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unless": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManifestCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManifestCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "source",
+        "catches",
+        "field",
+        "direction",
+        "min",
+        "max",
+        "when",
+        "then",
+        "unless"
+      ],
+      "title": "ManifestInvariant",
+      "type": "object"
+    },
+    "ManifestProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "up",
+            "down"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "field": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Field",
+          "type": "string"
+        },
+        "why": {
+          "minLength": 1,
+          "title": "Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "direction",
+        "why"
+      ],
+      "title": "ManifestProgress",
+      "type": "object"
+    },
+    "ManifestReader": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Alias",
+          "type": "string"
+        },
+        "declared_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Declared Type"
+        },
+        "descriptor": {
+          "additionalProperties": true,
+          "title": "Descriptor",
+          "type": "object"
+        },
+        "field_id": {
+          "minLength": 1,
+          "title": "Field Id",
+          "type": "string"
+        },
+        "freshness": {
+          "title": "Freshness",
+          "type": "null"
+        },
+        "freshness_evidence": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Freshness Evidence"
+        },
+        "freshness_reason": {
+          "minLength": 1,
+          "title": "Freshness Reason",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "bool",
+                "number",
+                "string",
+                "vector",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Kind"
+        },
+        "selection_id": {
+          "description": "The field token selected by the model",
+          "minLength": 1,
+          "title": "Selection Id",
+          "type": "string"
+        },
+        "why": {
+          "minLength": 1,
+          "title": "Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alias",
+        "selection_id",
+        "field_id",
+        "why",
+        "declared_type",
+        "kind",
+        "descriptor",
+        "freshness",
+        "freshness_reason",
+        "freshness_evidence"
+      ],
+      "title": "ManifestReader",
+      "type": "object"
+    },
+    "ManifestSkill": {
+      "additionalProperties": false,
+      "properties": {
+        "calibrations": {
+          "items": {
+            "$ref": "#/$defs/ActionCalibration"
+          },
+          "title": "Calibrations",
+          "type": "array"
+        },
+        "execution_supported": {
+          "const": false,
+          "title": "Execution Supported",
+          "type": "boolean"
+        },
+        "max_s": {
+          "exclusiveMinimum": 0,
+          "title": "Max S",
+          "type": "number"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "purpose": {
+          "minLength": 1,
+          "title": "Purpose",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/ManifestSkillStep"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "purpose",
+        "steps",
+        "max_s",
+        "calibrations",
+        "execution_supported"
+      ],
+      "title": "ManifestSkill",
+      "type": "object"
+    },
+    "ManifestSkillStep": {
+      "additionalProperties": false,
+      "properties": {
+        "hold_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Hold S"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/ManifestInput"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Inputs",
+          "type": "array"
+        },
+        "wait_s": {
+          "minimum": 0,
+          "title": "Wait S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "inputs",
+        "hold_s",
+        "wait_s"
+      ],
+      "title": "ManifestSkillStep",
+      "type": "object"
+    },
+    "SelectionCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "action_cap": {
+          "const": 14,
+          "title": "Action Cap",
+          "type": "integer"
+        },
+        "action_cap_reached": {
+          "title": "Action Cap Reached",
+          "type": "boolean"
+        },
+        "gap_caps_reached": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Gap Caps Reached",
+          "type": "object"
+        },
+        "offered_controls": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Offered Controls",
+          "type": "array"
+        },
+        "offered_fields": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Offered Fields",
+          "type": "array"
+        },
+        "reader_cap": {
+          "const": 16,
+          "title": "Reader Cap",
+          "type": "integer"
+        },
+        "reader_cap_reached": {
+          "title": "Reader Cap Reached",
+          "type": "boolean"
+        },
+        "skill_cap": {
+          "const": 6,
+          "title": "Skill Cap",
+          "type": "integer"
+        },
+        "skill_cap_reached": {
+          "title": "Skill Cap Reached",
+          "type": "boolean"
+        },
+        "unoffered_controls": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Unoffered Controls",
+          "type": "array"
+        },
+        "unoffered_fields": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Unoffered Fields",
+          "type": "array"
+        },
+        "unselected_field_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unselected Field Ids",
+          "type": "array"
+        },
+        "unsupported_bindings": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Unsupported Bindings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "offered_fields",
+        "unselected_field_ids",
+        "unoffered_fields",
+        "offered_controls",
+        "unoffered_controls",
+        "unsupported_bindings",
+        "reader_cap",
+        "reader_cap_reached",
+        "action_cap",
+        "action_cap_reached",
+        "skill_cap",
+        "skill_cap_reached",
+        "gap_caps_reached"
+      ],
+      "title": "SelectionCoverage",
+      "type": "object"
+    }
+  },
+  "$id": "upa/preflight_manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/ManifestAction"
+      },
+      "maxItems": 14,
+      "title": "Actions",
+      "type": "array"
+    },
+    "discovery_caps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/InspectionCap"
+      },
+      "title": "Discovery Caps",
+      "type": "object"
+    },
+    "entity": {
+      "additionalProperties": true,
+      "title": "Entity",
+      "type": "object"
+    },
+    "entity_id": {
+      "minLength": 1,
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "gaps": {
+      "$ref": "#/$defs/ManifestGaps"
+    },
+    "image": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ManifestImage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "invariants": {
+      "items": {
+        "$ref": "#/$defs/ManifestInvariant"
+      },
+      "maxItems": 12,
+      "title": "Invariants",
+      "type": "array"
+    },
+    "inventory_caps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/InspectionCap"
+      },
+      "title": "Inventory Caps",
+      "type": "object"
+    },
+    "packet_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Packet Sha256",
+      "type": "string"
+    },
+    "progress": {
+      "items": {
+        "$ref": "#/$defs/ManifestProgress"
+      },
+      "maxItems": 6,
+      "title": "Progress",
+      "type": "array"
+    },
+    "readers": {
+      "items": {
+        "$ref": "#/$defs/ManifestReader"
+      },
+      "maxItems": 16,
+      "title": "Readers",
+      "type": "array"
+    },
+    "reset_bindings": {
+      "title": "Reset Bindings",
+      "type": "null"
+    },
+    "reset_bindings_reason": {
+      "minLength": 1,
+      "title": "Reset Bindings Reason",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "selection": {
+      "$ref": "#/$defs/SelectionCoverage"
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/$defs/ManifestSkill"
+      },
+      "maxItems": 6,
+      "title": "Skills",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "packet_sha256",
+    "entity_id",
+    "entity",
+    "inventory_caps",
+    "discovery_caps",
+    "image",
+    "readers",
+    "actions",
+    "skills",
+    "progress",
+    "invariants",
+    "gaps",
+    "selection",
+    "reset_bindings",
+    "reset_bindings_reason"
+  ],
+  "title": "PreflightManifest",
+  "type": "object"
+}

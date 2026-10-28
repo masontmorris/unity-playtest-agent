@@ -31,6 +31,8 @@ playtest-inspect = "playtest.preflight.cli:main"
 playtest-measure-entity = "playtest.preflight.entity:main"
 playtest-calibrate = "playtest.preflight.calibrate:main"
 playtest-calibration-record = "playtest.preflight.calibration_record:main"
+playtest-preflight-manifest = "playtest.preflight.manifest_cli:main"
+playtest-validate-manifest = "playtest.preflight.validate_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/playtest"]

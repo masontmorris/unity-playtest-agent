@@ -22,7 +22,7 @@ nine times and cost about 7,500 prompt tokens for a 224-field project (#73).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import Field
@@ -228,6 +228,7 @@ class Discovery:
 
     field_types: Mapping[str, str]
     control_types: Mapping[str, str]
+    field_kinds: Mapping[str, str | None] = field(default_factory=dict)
 
     @classmethod
     def from_records(cls, fields: Sequence[Mapping[str, Any]], controls: Sequence[Mapping[str, Any]]) -> Discovery:
@@ -240,7 +241,23 @@ class Discovery:
 
 def schema(discovery: Discovery, **render_args: Any) -> dict[str, Any]:
     """The provider schema for a project: identical for every stage and retry of its chain."""
-    return render(StageAnswer, discovery.enums(), **render_args)
+    enums = discovery.enums()
+    # The strict renderer requires nonempty enums. If a collection is empty, its sentinel is
+    # unreachable: every array that could contain that identifier is constrained to zero items.
+    if not enums["field_ids"]:
+        enums["field_ids"] = ["__no_field_available__"]
+    if not enums["control_ids"]:
+        enums["control_ids"] = ["__no_control_available__"]
+    rendered = render(StageAnswer, enums, **render_args)
+    if not discovery.field_types:
+        rendered["$defs"]["ReadersPart"]["properties"]["readers"]["maxItems"] = 0
+        rendered["$defs"]["ProgressPart"]["properties"]["progress"]["maxItems"] = 0
+        rendered["$defs"]["ProgressPart"]["properties"]["invariants"]["maxItems"] = 0
+        rendered["$defs"]["Action"]["properties"]["preconditions"]["maxItems"] = 0
+    if not discovery.control_types:
+        rendered["$defs"]["ActionsPart"]["properties"]["actions"]["maxItems"] = 0
+        rendered["$defs"]["ActionsPart"]["properties"]["skills"]["maxItems"] = 0
+    return rendered
 
 
 # --- validation ----------------------------------------------------------------------------------
@@ -277,7 +294,8 @@ def _reader_kind(where: str, alias: str | None, discovery: Discovery,
     field_id = aliases.get(alias)
     if field_id is None:
         return None, [f"{where}: {alias!r} is not a stage-4 reader alias"]
-    return value_kind(discovery.field_types.get(field_id)), []
+    kind = discovery.field_kinds.get(field_id, value_kind(discovery.field_types.get(field_id)))
+    return (None, [f"{where}: reader kind is unknown"]) if kind is None else (kind, [])
 
 
 def _check(where: str, check: Check, discovery: Discovery, aliases: Mapping[str, str]) -> list[str]:
@@ -289,8 +307,8 @@ def _check(where: str, check: Check, discovery: Discovery, aliases: Mapping[str,
 
 def _readers(part: ReadersPart, discovery: Discovery) -> list[str]:
     problems: list[str] = []
-    if not part.readers:
-        problems.append("stage_4.readers: choose at least one field")
+    if not part.readers and not part.unobservable:
+        problems.append("stage_4.readers: choose at least one field or explain the gap")
     seen_ids: set[str] = set()
     seen_alias: set[str] = set()
     for i, r in enumerate(part.readers):
@@ -332,8 +350,8 @@ def _inputs(where: str, inputs: Sequence[ControlInput], hold_s: float | None, di
 
 def _actions(part: ActionsPart, discovery: Discovery, aliases: Mapping[str, str]) -> list[str]:
     problems: list[str] = []
-    if not part.actions:
-        problems.append("stage_5.actions: compose at least one action")
+    if not part.actions and not part.uncontrollable:
+        problems.append("stage_5.actions: compose at least one action or explain the gap")
     names: set[str] = set()
     for i, a in enumerate(part.actions):
         where = f"stage_5.actions[{i}]"
@@ -348,12 +366,14 @@ def _actions(part: ActionsPart, discovery: Discovery, aliases: Mapping[str, str]
         if s.name in names:
             problems.append(f"{where}: name {s.name!r} is already an action or skill")
         names.add(s.name)
-        total = 0.0
+        known_duration = 0.0
         for j, step in enumerate(s.steps):
             problems += _inputs(f"{where}.steps[{j}]", step.inputs, step.hold_s, discovery)
-            total += (step.hold_s or 0.0) + step.wait_s
-        if total > s.max_s:
-            problems.append(f"{where}: steps take {total:g} s, more than max_s {s.max_s:g}")
+            known_duration += step.wait_s
+            if step.hold_s is not None:
+                known_duration += step.hold_s
+        if known_duration > s.max_s:
+            problems.append(f"{where}: known step durations take {known_duration:g} s, more than max_s {s.max_s:g}")
     return problems
 
 

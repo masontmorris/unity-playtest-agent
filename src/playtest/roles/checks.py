@@ -32,6 +32,16 @@ _VECTOR_TYPES = frozenset({
     "Vector2", "Vector3", "Vector4", "Vector2Int", "Vector3Int", "Quaternion", "Color", "Color32", "Rect",
     "Bounds",
 })
+# The Editor's reflection collector emits Type.FullName, not C# aliases. Match
+# only known framework types; stripping an arbitrary namespace could misclassify
+# a user-defined type with the same short name.
+_FULL_TYPES: dict[str, ValueKind] = {
+    **{f"System.{name}": "number" for name in (
+        "Int16", "Int32", "Int64", "UInt16", "UInt32", "UInt64", "Byte", "SByte",
+        "Single", "Double", "Decimal")},
+    "System.Boolean": "bool", "System.String": "string", "System.Char": "string",
+    **{f"UnityEngine.{name}": "vector" for name in _VECTOR_TYPES},
+}
 ORDERING = frozenset({Comparator.lt, Comparator.le, Comparator.gt, Comparator.ge})
 CHANGE = frozenset({Comparator.changed, Comparator.unchanged})
 
@@ -40,6 +50,8 @@ def value_kind(type_name: str | None) -> ValueKind:
     """The comparable kind of a declared field type. Unknown types are 'other', not guessed."""
     if not type_name:
         return "other"
+    if type_name in _FULL_TYPES:
+        return _FULL_TYPES[type_name]
     if type_name in _BOOL_TYPES or type_name == "boolean":
         return "bool"
     if type_name in _NUMBER_TYPES or type_name in ("number", "integer"):
