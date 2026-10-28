@@ -1,0 +1,16 @@
+{
+  "run_id": "r-2026-10-26-001",
+  "author": "harness",
+  "turn": null,
+  "refs": [
+    1
+  ],
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "trace_seq": 0,
+  "kind": "stop",
+  "body": {
+    "reason": "finish",
+    "result": null,
+    "error": null
+  }
+}

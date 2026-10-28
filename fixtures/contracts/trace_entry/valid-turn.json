@@ -1,0 +1,22 @@
+{
+  "run_id": "r-2026-10-26-001",
+  "author": "core",
+  "turn": 0,
+  "refs": [
+    1
+  ],
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "trace_seq": 2,
+  "kind": "turn",
+  "body": {
+    "type": "turn",
+    "turn": 12,
+    "set_version": 57,
+    "based_on_seq": 1842,
+    "raw_choice": "c1",
+    "effective_choice": "c1",
+    "executed_action": "c1",
+    "outcome": "executed",
+    "latency_ms": 231.0
+  }
+}

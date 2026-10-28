@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "TraceAuthor": {
+      "enum": [
+        "harness",
+        "core",
+        "bridge",
+        "s1",
+        "frontier",
+        "helper"
+      ],
+      "title": "TraceAuthor",
+      "type": "string"
+    },
+    "TraceKind": {
+      "enum": [
+        "run",
+        "observation",
+        "choice_set",
+        "context",
+        "s1_call",
+        "decision",
+        "execution",
+        "effect",
+        "help",
+        "turn",
+        "stop",
+        "end"
+      ],
+      "title": "TraceKind",
+      "type": "string"
+    }
+  },
+  "$id": "upa/trace_entry.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One immutable, locally validated append in a run trace (build bible 5.7).",
+  "properties": {
+    "author": {
+      "$ref": "#/$defs/TraceAuthor"
+    },
+    "body": {
+      "additionalProperties": true,
+      "title": "Body",
+      "type": "object"
+    },
+    "kind": {
+      "$ref": "#/$defs/TraceKind"
+    },
+    "refs": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Refs",
+      "type": "array"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "trace_seq": {
+      "minimum": 0,
+      "title": "Trace Seq",
+      "type": "integer"
+    },
+    "turn": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "trace_seq",
+    "run_id",
+    "kind",
+    "author",
+    "refs",
+    "wall_utc",
+    "body"
+  ],
+  "title": "TraceEntry",
+  "type": "object"
+}
