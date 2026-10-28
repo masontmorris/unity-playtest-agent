@@ -258,6 +258,47 @@ copied byte for byte plus the 10 new ones, and a reconciliation record documents
 row stays in the first ledger and `retest.py` was not edited. The result is in
 `docs/probes/2026-10-27-fpskit-s1-bench-retest.md`.
 
+## Live loop smoke test
+
+Predeclared on 27 October 2026, before any call. The replays send frozen frames to a model and never
+execute its answer. This test puts `mammoth-1` in the production `TurnLoop` on FPSKit in real time, to
+see what a replay cannot: staleness under real model latency, the input that reaches the game, and the
+observation that follows. It is a miniature of the Day 4 gate in the build bible ("a 10-minute FPSKit
+run: no crashes, 100% adherence, no code-selected actions, every action with expected vs observed
+effect"). It is not a quality benchmark.
+
+- **Real:** `TurnLoop` with its defaults (a 0.5 s freshness window, the execution controller, answer
+  validation that never repairs), real-time clock mode, the bridge, `build_context` with the
+  observation's measured age, `check_adherence`, and the full core choice set (`wait`, `escalate`,
+  `delegate` and `finish` beside the eight controls). Holds are 1.2 s leases, as calibrated. Each
+  episode draws a fresh seeded id map, as the shuffled protocol does.
+- **Stand-ins, named so they are not mistaken for the product:** the facts (no facts builder or
+  monitor exists yet, so the harness writes them from measured results in the replays' wording and adds
+  one line for a stale, failed or invalid turn); the `escalate` and `delegate` labels (no manifest
+  wording exists); the S1 adapter (one blocking call per turn, because the loop's decision source is
+  synchronous); and the checklist objective (no frontier directive exists). No frontier model runs, so
+  an escalation records a pending helper that never resolves, and a help turn's `while_pending` defaults
+  to `wait` as the loop specifies. Text only.
+- **Episodes:** 3, each of the replays' checklist objective, ending when S1 picks `finish` or after 16
+  turns. The game is not reset between episodes.
+- **Scoring:** each decision uses the replays' mechanical rule on the facts S1 saw: an unchecked control
+  is acceptable, and `finish` is acceptable once all eight have a completed hold. Anything else is a
+  miss, named by kind (re-check, premature finish, wait, escalate, delegate). A stale rejection is not a
+  check, so its control stays unchecked. An invalid answer is `unknown`, not a miss.
+- **Reported, not thresholded:** crashes and verified release at stop; adherence rate; for each episode
+  whether it finished with eight completed controls; stale, invalid and help turns; S1 and whole-turn
+  latency; expected (calibrated) and observed displacement for every executed action; misses by kind.
+  A harness error or an unverified release is `inconclusive`. A provider failure stops the run with no
+  retry and is `unknown`, not a miss.
+- **Budget:** at most 48 calls (3 × 16), `mammoth-1` only, reserved bound $0.00016 a call and $0.00768
+  in total. Baseten is free until about 28 October and returns no cost, so billing is unknown, and the
+  balance is unverified. The approval on record is the user's request to "run a small test that's as
+  close as possible to expected use", with this envelope stated before any call.
+- **Freeze:** the plan binds the runner, replay-helper and recorder source hashes and the approval.
+
+Run it with `scripts/unity/run-live-s1.ps1` (it needs `BASETEN_API_KEY` in the session and an approval
+file). The result is in `docs/probes/2026-10-27-fpskit-s1-live.md`.
+
 ## S1 ownership and payload fidelity
 
 Each stored frame contains the original bridge observation, its sequence-bound choice set and
