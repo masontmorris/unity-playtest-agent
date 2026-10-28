@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using Playtest.Bridge.Protocol;
 
@@ -128,6 +129,7 @@ namespace Playtest.Bridge.Actions
                 }
 
                 DateTime start = _utcNow();
+                long startTimestamp = Stopwatch.GetTimestamp();
                 var active = new Active
                 {
                     Request = request,
@@ -144,7 +146,21 @@ namespace Playtest.Bridge.Actions
                     null,
                     null));
 
-                active.Timer = new Timer(OnExpiry, active, TimeSpan.FromSeconds(leaseS), Timeout.InfiniteTimeSpan);
+                // The hold starts when input is applied, not after the running record has been
+                // built and sent. Cold serialization or a slow write must consume the lease,
+                // rather than add another full lease after that work. Use a monotonic elapsed
+                // clock for scheduling; wall timestamps still measure the actual release below.
+                double elapsedS = (Stopwatch.GetTimestamp() - startTimestamp)
+                    / (double)Stopwatch.Frequency;
+                double remainingS = leaseS - elapsedS;
+                if (remainingS <= 0)
+                {
+                    OnExpiry(active);
+                }
+                else
+                {
+                    active.Timer = new Timer(OnExpiry, active, TimeSpan.FromSeconds(remainingS), Timeout.InfiniteTimeSpan);
+                }
                 return true;
             }
         }
