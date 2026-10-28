@@ -216,7 +216,7 @@ def validate_approval(approval: dict[str, Any], arms: list[str]) -> None:
             raise ValueError(f"{arm} exceeds its verified balance or per-arm envelope")
         if dt.datetime.now(dt.timezone.utc) >= _price_deadline(limit, arm):
             raise ValueError(f"{arm} pricing validity has expired; verify the rate again")
-        provider = "liquid" if arm == "liquid-d1.1" else "baseten"
+        provider = {"liquid-d1.1": "liquid", "muse-spark-1.3": "meta"}.get(arm, "baseten")
         provider_caps[provider] += maximum
         if balance is not None:
             provider_balances[provider].append(balance)
