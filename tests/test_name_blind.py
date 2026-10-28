@@ -1,9 +1,9 @@
 """Law 8: the core is name-blind.
 
-No game field, object, control or genre word may appear anywhere in `src/playtest/core/` or in the
-role prompts and validation under `src/playtest/roles/`: identifiers, strings or comments. Game
-knowledge lives only in the preflight-generated manifest. Add a word here when a new test game or
-genre brings one in.
+No game field, object, control or genre word may appear anywhere in `src/playtest/core/`, in the
+role prompts and validation under `src/playtest/roles/`, or in the frontier transport under
+`src/playtest/frontier/`: identifiers, strings or comments. Game knowledge stays in the
+preflight-generated manifest. Add a word here when a new test game or genre brings one in.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 CORE = Path(__file__).resolve().parents[1] / "src" / "playtest" / "core"
-NAME_BLIND = (CORE, CORE.parent / "roles")
+NAME_BLIND = (CORE, CORE.parent / "roles", CORE.parent / "frontier")
 
 BANNED = frozenset(
     """
