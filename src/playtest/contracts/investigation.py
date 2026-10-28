@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -171,6 +172,8 @@ class RunRecord(Strict):
     run_id: str = Field(min_length=1)
     game_project: str
     game_commit: str = UNKNOWN
+    game_worktree: Literal["clean", "modified", "unknown"] = "unknown"
+    game_modified_paths: list[str] = Field(default_factory=list)
     unity_version: str = UNKNOWN
     scene: str = UNKNOWN
     manifest_fingerprint: str = UNKNOWN
@@ -182,3 +185,14 @@ class RunRecord(Strict):
     reset_method: str = UNKNOWN
     bridge_version: str = UNKNOWN
     core_version: str
+
+    @model_validator(mode="after")
+    def _worktree_evidence(self) -> "RunRecord":
+        if self.game_worktree == "modified" and not self.game_modified_paths:
+            raise ValueError("modified worktree requires modified paths")
+        if self.game_worktree != "modified" and self.game_modified_paths:
+            raise ValueError("modified paths require a modified worktree")
+        if any(not path or path.startswith(("/", "\\")) or ":" in path or ".." in PurePosixPath(path).parts
+               for path in self.game_modified_paths):
+            raise ValueError("modified paths must be repository-relative")
+        return self

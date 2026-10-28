@@ -1,0 +1,12 @@
+{
+  "type": "run",
+  "run_id": "r-invalid",
+  "game_project": "Example",
+  "game_worktree": "clean",
+  "game_modified_paths": ["changed.txt"],
+  "clock_mode": "realtime",
+  "models": [],
+  "objective": "Check a synthetic run",
+  "budget": {},
+  "core_version": "0.0.1"
+}

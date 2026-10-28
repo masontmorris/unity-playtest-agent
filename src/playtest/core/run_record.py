@@ -17,6 +17,8 @@ def build_run_record(*, game_project: str | Path, status: Status | None, scene: 
                      input_mode: str | None, models: list[ModelRef], objective: str,
                      budget: Budget, reset_method: str | None) -> RunRecord:
     project = Path(game_project)
+    worktree = "unknown"
+    modified_paths: list[str] = []
     try:
         commit = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
                                 check=True, capture_output=True, text=True, timeout=10).stdout.strip()
@@ -24,8 +26,18 @@ def build_run_record(*, game_project: str | Path, status: Status | None, scene: 
             commit = UNKNOWN
     except (OSError, subprocess.SubprocessError):
         commit = UNKNOWN
+    try:
+        output = subprocess.run(["git", "-C", str(project), "status", "--porcelain", "-z", "--untracked-files=all"],
+                                check=True, capture_output=True, text=True, timeout=10).stdout
+        fields = output.split("\0")
+        modified_paths = [item[3:] for item in fields if item]
+        worktree = "modified" if modified_paths else "clean"
+    except (OSError, subprocess.SubprocessError):
+        worktree = "unknown"
+        modified_paths = []
     return RunRecord(
         run_id=str(uuid.uuid4()), game_project=project.name or UNKNOWN, game_commit=commit,
+        game_worktree=worktree, game_modified_paths=modified_paths,
         unity_version=status.unity_version if status is not None else UNKNOWN,
         scene=scene if scene is not None else UNKNOWN,
         manifest_fingerprint=manifest_fingerprint if manifest_fingerprint is not None else UNKNOWN,

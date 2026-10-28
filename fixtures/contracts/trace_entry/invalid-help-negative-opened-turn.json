@@ -1,0 +1,4 @@
+{
+  "run_id":"r-test","author":"core","turn":0,"refs":[0],"wall_utc":"2026-10-26T18:00:00Z","trace_seq":1,"kind":"help",
+  "body":{"event":"opened","choice_id":"c1","kind":"escalate","opened_turn":-1,"source":"synthetic","result":null,"reason":null}
+}

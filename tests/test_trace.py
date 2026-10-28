@@ -48,3 +48,34 @@ def test_unparseable_and_truncated_final_line_are_reported(tmp_path):
     path.write_text(json.dumps({"trace_seq": 0}) + "\n")
     with pytest.raises(ValueError, match="final line"):
         read_trace(path)
+
+
+def test_non_strict_reader_returns_intact_prefix_and_tail_error(tmp_path):
+    path = tmp_path / "tail.jsonl"
+    with TraceWriter(path, run()) as writer:
+        writer.append("stop", {"reason":"finish","result":None,"error":None}, author="core")
+    path.write_bytes(path.read_bytes() + b'{"broken":')
+    entries, tail_error = read_trace(path, strict=False)
+    assert len(entries) == 3
+    assert tail_error and "final line" in tail_error
+
+
+def test_nonfinal_invalid_line_still_fails_in_non_strict_mode(tmp_path):
+    path = tmp_path / "bad-middle.jsonl"
+    path.write_bytes(b'{"broken":}\n{}\n')
+    with pytest.raises(ValueError, match="line 1"):
+        read_trace(path, strict=False)
+
+
+def test_verify_reports_bad_tail_after_replaying_prefix(tmp_path, monkeypatch, capsys):
+    from playtest.core import trace_cli
+
+    path = tmp_path / "tail-verify.jsonl"
+    with TraceWriter(path, run()) as writer:
+        writer.append("stop", {"reason":"finish","result":None,"error":None}, author="core")
+    path.write_bytes(path.read_bytes() + b'{"bad":')
+    monkeypatch.setattr("sys.argv", ["playtest-trace", "verify", str(path)])
+    assert trace_cli.main() == 1
+    output = capsys.readouterr().out
+    assert "problems=1" in output
+    assert "truncated or unparseable final line" in output

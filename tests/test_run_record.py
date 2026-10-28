@@ -32,3 +32,13 @@ def test_commit_is_measured_from_git_repo(tmp_path):
 
 def test_non_git_directory_is_unknown(tmp_path):
     assert build(tmp_path).game_commit == UNKNOWN
+
+
+def test_modified_worktree_paths_are_measured(tmp_path):
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "--allow-empty", "-m", "initial"], check=True, capture_output=True)
+    (tmp_path / "changed.txt").write_text("changed")
+    rec = build(tmp_path)
+    assert rec.game_worktree == "modified"
+    assert rec.game_modified_paths == ["changed.txt"]

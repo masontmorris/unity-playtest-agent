@@ -5,16 +5,16 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
-from .common import Strict
-from .bridge import Observation
+from .common import ClockMode, Strict
+from .bridge import ExecutionRecord, Observation, StopResult
 from .investigation import RunRecord
-from .loop import ChoiceSet, TurnRecord
+from .loop import ChoiceSet, Decision, TurnRecord
 
 
 class TraceKind(str, Enum):
@@ -39,6 +39,21 @@ class TraceAuthor(str, Enum):
     s1 = "s1"
     frontier = "frontier"
     helper = "helper"
+
+
+class TraceExecutionRequest(Strict):
+    """The bridge request shape recorded inside an execution trace entry."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    action_id: str = Field(min_length=1)
+    choice_id: str
+    action: str = Field(min_length=1)
+    params: dict[str, Any]
+    based_on_seq: int = Field(ge=0)
+    max_age_s: float = Field(gt=0)
+    depends_on: list[str]
+    lease_s: float | None = Field(None, gt=0)
 
 
 class TraceEntry(Strict):
@@ -83,6 +98,41 @@ class TraceEntry(Strict):
                 raise ValueError(f"{self.kind.value} body keys must be exactly {sorted(keys)}")
             if self.kind is TraceKind.execution and self.body["purpose"] not in ("choice", "while_pending"):
                 raise ValueError("execution purpose must be choice or while_pending")
+            if self.kind is TraceKind.execution:
+                TraceExecutionRequest.model_validate(self.body["request"])
+                records = self.body["records"]
+                if not isinstance(records, list) or not records:
+                    raise ValueError("execution records must be a non-empty list")
+                typed_records = [ExecutionRecord.model_validate(item) for item in records]
+                terminal = {"completed", "failed", "cancelled", "timed_out", "rejected"}
+                if typed_records[-1].status.value not in terminal:
+                    raise ValueError("last execution record must have a terminal status")
+            if self.kind is TraceKind.decision:
+                body = self.body
+                if not isinstance(body["valid"], bool) or not isinstance(body["policy_default"], bool):
+                    raise ValueError("decision valid and policy_default must be booleans")
+                ClockMode(body["clock_mode"])
+                decision = Decision.model_validate(body["decision"]) if body["decision"] is not None else None
+                if body["valid"] != (decision is not None):
+                    raise ValueError("decision valid must be true exactly when decision is non-null")
+            if self.kind is TraceKind.s1_call:
+                body = self.body
+                if not isinstance(body["question"], str) or not body["question"].strip():
+                    raise ValueError("s1_call question must be a non-empty string")
+                if body["http_status"] is not None and (isinstance(body["http_status"], bool) or not isinstance(body["http_status"], int)):
+                    raise ValueError("s1_call http_status must be an integer or null")
+                latency = body["latency_ms"]
+                if latency is not None and (isinstance(latency, bool) or not isinstance(latency, (int, float)) or latency < 0):
+                    raise ValueError("s1_call latency_ms must be non-negative or null")
+            if self.kind is TraceKind.stop and self.body["result"] is not None:
+                StopResult.model_validate(self.body["result"])
+            if self.kind is TraceKind.help and (isinstance(self.body["opened_turn"], bool) or not isinstance(self.body["opened_turn"], int) or self.body["opened_turn"] < 0):
+                raise ValueError("help opened_turn must be a non-negative integer")
+            if self.kind is TraceKind.end:
+                for key in ("turns", "redactions"):
+                    value = self.body[key]
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        raise ValueError(f"end {key} must be a non-negative integer")
             if self.kind is TraceKind.help:
                 if self.body["event"] not in ("opened", "repeat", "adopted", "cancelled"):
                     raise ValueError("unknown help event")

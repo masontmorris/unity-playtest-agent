@@ -21,6 +21,7 @@ class TraceWriter:
         self.redactions = 0
         self.turns = 0
         self._closed = False
+        self._seq = 0
         self._file = self.path.open("x", encoding="utf-8", newline="\n")
         try:
             self.append(TraceKind.run, run.model_dump(mode="json"), author=TraceAuthor.harness)
@@ -31,7 +32,7 @@ class TraceWriter:
 
     @property
     def next_seq(self) -> int:
-        return getattr(self, "_seq", 0)
+        return self._seq
 
     def append(self, kind: TraceKind | str, body: Mapping[str, Any], *, author: TraceAuthor | str,
                turn: int | None = None, refs: Sequence[int] = ()) -> int:
@@ -84,7 +85,7 @@ class TraceWriter:
         self.close("inconclusive" if exc is not None else "complete", str(exc) if exc is not None else None)
 
 
-def read_trace(path: str | Path) -> list[TraceEntry]:
+def read_trace(path: str | Path, *, strict: bool = True) -> list[TraceEntry] | tuple[list[TraceEntry], str | None]:
     raw = Path(path).read_bytes()
     lines = raw.splitlines(keepends=True)
     entries: list[TraceEntry] = []
@@ -96,7 +97,9 @@ def read_trace(path: str | Path) -> list[TraceEntry]:
                 raise ValueError("truncated final line (missing newline)")
             entries.append(TraceEntry.model_validate(json.loads(text)))
         except Exception as exc:
+            if final and not strict:
+                return entries, f"truncated or unparseable final line {index}: {exc}"
             if final:
                 raise ValueError(f"truncated or unparseable final line {index}: {exc}") from exc
             raise ValueError(f"invalid trace line {index}: {exc}") from exc
-    return entries
+    return entries if strict else (entries, None)

@@ -20,6 +20,6 @@
       "depends_on": [],
       "lease_s": null
     },
-    "records": []
+    "records": [{"type":"execution","protocol":"upa/0","session":"s1","seq":2,"wall_utc":"2026-10-26T18:00:01Z","action_id":"a1","status":"completed","release_verified":true}]
   }
 }
