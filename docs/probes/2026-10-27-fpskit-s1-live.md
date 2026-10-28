@@ -39,8 +39,9 @@ was no `wait`, `escalate` or `delegate` turn and no invalid answer, with all 12 
 - **The cycle is dominated by the hold.** An executed turn took a median of 1.46 s: a 1.2 s hold plus a
   0.27 s model call. That is 0.68 decisions a second against the 0.7–1.6 in `docs/budget.md`, or about 410
   calls in a 10-minute run. Deciding during the hold, which the loop does not do yet, is what would raise it.
-- **The replay result carried over.** The replays' mechanical rule scored 30/30, with no re-check and no
-  premature `finish`, now with the executed input and the next observation in the loop.
+- **The replay result carried over.** The replays' mechanical rule, which the label review later
+  approved, scored 30/30, with no re-check and no premature `finish`, now with the executed input and
+  the next observation in the loop.
 - **Observation age is small.** Median 1 ms at decision time (maximum 36 ms), because the model call
   follows the observation directly. The age that matters is the one the bridge sees when the action arrives.
 

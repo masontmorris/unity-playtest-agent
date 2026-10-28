@@ -7,7 +7,8 @@ game, against labels a person wrote.
 
 This note predeclares the experiment and records its preparation. A 40-frame corpus and
 assistant-drafted labels now exist. The first replay is recorded in
-`docs/probes/2026-10-27-fpskit-s1-bench.md`; its labels have not yet been reviewed by a person.
+`docs/probes/2026-10-27-fpskit-s1-bench.md`; a person reviewed its labels on 27 October and changed
+none (see Labels).
 
 ## Decision
 
@@ -17,7 +18,8 @@ assistant-drafted labels now exist. The first replay is recorded in
   so the bench measures the payload S1 will actually receive, not a copy of it.
 - Labels carry the labeller, date and rationale. On 27 October the user asked for assistant-drafted
   labels to review later, and approved proceeding with low-cost replay before that review. The
-  draft's authorship and pending review are explicit; results using it are preliminary.
+  draft's authorship is explicit, and results using it were preliminary until the review recorded
+  under Labels.
 - No paid call starts before the call count and cost envelope below are approved (#25).
 
 ## Unit and estimand
@@ -80,9 +82,15 @@ assistant-drafted labels now exist. The first replay is recorded in
   declared precondition. `wait` is acceptable only when no action can produce a new observation (for
   example while an input is still held). `finish` is not acceptable before the objective's checks are
   complete.
-- The user plans to review the draft later. A second pass of at least 10% was originally planned;
-  separate annotations and disagreements are retained, not averaged away. Until human review,
-  agreement and labelling uncertainty remain unknown.
+- **Review, 27 October:** Mason Morris reviewed both drafts at the level of the rule above, not row
+  by row, and ruled on the two holds in the first corpus whose measured effect differed from
+  calibration: the pass 1 `c6` hold (1.367 s) counts as a check, and repeating the pass 4 `c2` hold
+  (4.93 units against 6.02) is a miss. Both rulings match the drafts, so no row changed. The reviewed
+  copies are `benchmarks/fpskit/labels-reviewed.json` and `labels-shuffled-reviewed.json`; the
+  drafts stay as the frozen inputs the runs pin. The reviewer had seen the model results first.
+- A second pass of at least 10% was originally planned and was not done, so agreement between
+  labellers and labelling uncertainty remain unknown. Separate annotations and disagreements, if
+  added, are retained, not averaged away.
 - The draft labels live in `benchmarks/fpskit/labels.json`; the complete recorded frames stay under
   `runs/bench/issue24-fpskit-03/frames.json`. The review sheet's `contexts.json` presents the same
   decision payloads, so a label can be reviewed without re-recording.
