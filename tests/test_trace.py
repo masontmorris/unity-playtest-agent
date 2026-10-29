@@ -46,9 +46,9 @@ def test_investigation_trace_entry_requires_cited_measured_evidence(tmp_path):
             "hypothesis": None, "directive": None, "outcome": "unknown", "evidence_trace_seq": None,
             "reason": "invalid answer"}
     with TraceWriter(path, run()) as writer:
-        writer.append("investigation", body, author="frontier", turn=0)
+        writer.append("investigation", body, author="frontier", turn=None)
         with pytest.raises(ValueError, match="evidence_trace_seq"):
-            writer.append("investigation", {**body, "evidence_trace_seq": 2}, author="frontier", turn=0)
+            writer.append("investigation", {**body, "evidence_trace_seq": 2}, author="frontier", turn=None)
 
 
 def test_unparseable_and_truncated_final_line_are_reported(tmp_path):

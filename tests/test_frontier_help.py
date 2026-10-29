@@ -59,18 +59,19 @@ def test_live_help_port_offline_end_to_end_escalates_then_adopts_hypothesis_and_
     async def main():
         game, client = await connected()
         sink = harness_trace()
-        ready = threading.Event()
+        frontier_release = threading.Event()
         suspicion_fact = "Suspicion fact (test fixture): a reader trend is under review."
 
         def fake_send(body):
             packet = json.loads(body["messages"][2]["content"])
             assert suspicion_fact in [fact["text"] for fact in packet["facts"]]
+            assert frontier_release.wait(3), "the test did not release the fake frontier"
             result = _meta_reply(body)
-            ready.set()
             return result
 
         class S1:
             contexts = []
+            directive_seen = False
             def answer(self, context, choice, while_pending=None):
                 value = {"choice_id": choice, "set_version": context["choice_set_version"]}
                 if while_pending is not None:
@@ -79,17 +80,19 @@ def test_live_help_port_offline_end_to_end_escalates_then_adopts_hypothesis_and_
                                                             http_status=200, latency_ms=1.0),))
             async def decide(self, context):
                 self.contexts.append(context)
+                self.directive_seen = self.directive_seen or any(
+                    "Frontier directive" in line for line in context["facts"])
                 if len(self.contexts) == 1:
                     return self.answer(context, "escalate", {"mode": "continue", "choice_id": "move"})
-                await asyncio.to_thread(ready.wait, 3)
-                for _ in range(100):
-                    if tracker.active is not None:
-                        break
-                    await asyncio.sleep(0.01)
-                assert any("Frontier directive" in line for line in context["facts"])
+                guidance = context.get("guidance", [])
+                frontier_result = next((row.get("result") for row in guidance
+                                        if row.get("source") == "frontier"), None)
+                if not frontier_result:
+                    frontier_release.set()
+                    return self.answer(context, "wait")
+                assert self.directive_seen
                 assert suspicion_fact in context["facts"]
-                assert suspicion_fact in context["facts"]
-                assert context["guidance"][0]["result"]["hypotheses"][0]["confirm_if"] == "The count reaches one."
+                assert frontier_result["hypotheses"][0]["confirm_if"] == "The count reaches one."
                 return self.answer(context, "finish")
 
         tracker = DirectiveTracker(sink)
@@ -105,23 +108,12 @@ def test_live_help_port_offline_end_to_end_escalates_then_adopts_hypothesis_and_
                               approval=_approval(), sink=sink, tracker=tracker,
                               started_utc=datetime.now(timezone.utc), send=fake_send,
                               capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
-        failures = []
-        class ObserveFailure:
-            async def run(self, request):
-                try:
-                    return await helper.run(request)
-                except Exception as exc:
-                    import traceback
-                    failures.append(traceback.format_exc())
-                    raise
         try:
             fake_s1 = S1()
             result = await session(client, build_choices(two_actions()), s1=fake_s1, objective=OBJECTIVE,
-                                   help=ObserveFailure(), facts=StubSuspicionFacts(), sink=sink, wall_limit_s=10.0)
-            assert result.status == "complete", f"{result.error}; failures={failures}; help={sink.of_kind('help')}; invest={sink.of_kind('investigation')}"
+                                   help=helper, facts=StubSuspicionFacts(), sink=sink, wall_limit_s=10.0)
+            assert result.status == "complete", result.error
             assert helper.calls == 1
-            assert helper.ledger.rows[0]["status"] == "finished"
-            assert helper.ledger.rows[0]["cost_usd"] is not None
             assert helper.ledger.rows[0]["status"] == "finished"
             assert helper.ledger.rows[0]["cost_usd"] is not None
             entries = sink.of_kind("investigation")
@@ -176,12 +168,12 @@ def test_invalid_frontier_answer_is_recorded_without_synthesizing_hypothesis_or_
     async def main():
         game, client = await connected()
         sink = harness_trace()
-        ready = threading.Event()
+        frontier_release = threading.Event()
         tracker = DirectiveTracker(sink)
         stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
                                         actions=two_actions().actions, skills=[])
         def invalid_send(_body):
-            ready.set()
+            assert frontier_release.wait(3), "the test did not release the fake frontier"
             return 200, {"model": provider.MODEL, "choices": [{"finish_reason": "stop",
                     "message": {"content": "not-json"}}]}, 1.0, None
         helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
@@ -195,9 +187,11 @@ def test_invalid_frontier_answer_is_recorded_without_synthesizing_hypothesis_or_
                 if len(self.contexts) == 1:
                     return S1Answer(answer={"choice_id": "escalate", "set_version": context["choice_set_version"],
                                             "while_pending": {"mode": "wait"}})
-                await asyncio.to_thread(ready.wait, 3)
-                assert "guidance" in context
-                assert context["guidance"][-1]["result"]["directive"] is None
+                guidance = context.get("guidance", [])
+                if not guidance:
+                    frontier_release.set()
+                    return S1Answer(answer={"choice_id": "wait", "set_version": context["choice_set_version"]})
+                assert guidance[-1]["result"]["directive"] is None
                 return S1Answer(answer={"choice_id": "finish", "set_version": context["choice_set_version"]})
         try:
             result = await session(client, build_choices(two_actions()), s1=S1(), objective=OBJECTIVE,

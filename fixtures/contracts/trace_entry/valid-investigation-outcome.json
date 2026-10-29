@@ -3,7 +3,7 @@
   "run_id": "r1",
   "kind": "investigation",
   "author": "frontier",
-  "turn": 1,
+  "turn": null,
   "refs": [1],
   "wall_utc": "2026-10-29T12:00:00Z",
   "body": {

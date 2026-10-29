@@ -76,6 +76,8 @@ class TraceEntry(Strict):
         if any(isinstance(ref, bool) for ref in self.refs):
             raise ValueError("refs must be integer sequence ids")
         null_turn = self.kind in (TraceKind.run, TraceKind.stop, TraceKind.end)
+        if self.kind is TraceKind.investigation:
+            null_turn = True  # helper results can be appended after their originating turn closes
         if self.kind is TraceKind.help:
             null_turn = self.body.get("event") == "cancelled" and self.turn is None
         if (self.turn is None) != null_turn:
@@ -148,8 +150,8 @@ class TraceEntry(Strict):
                 if self.body["event"] not in ("not_called", "invalid_answer", "hypothesis_directive", "directive", "outcome"):
                     raise ValueError("unknown investigation event")
                 if (isinstance(self.body["request_turn"], bool) or not isinstance(self.body["request_turn"], int)
-                        or self.body["request_turn"] > self.turn):
-                    raise ValueError("investigation request_turn must be a prior or current turn")
+                        or self.body["request_turn"] < 0):
+                    raise ValueError("investigation request_turn must be a non-negative turn number")
                 for name in ("based_on_seq", "outcome_seq"):
                     if (isinstance(self.body[name], bool) or not isinstance(self.body[name], int)
                             or self.body[name] < 0):

@@ -48,7 +48,7 @@ class FrontierHelp:
                 "outcome_seq": seq, "hypothesis": None, "directive": None,
                 "outcome": "unknown", "evidence_trace_seq": obs_trace,
                 "reason": "the approved frontier call cap was reached",
-            }, author="frontier", turn=request.turn, refs=[obs_trace] if obs_trace is not None else [])
+            }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
             return HelpResult(source="frontier", result={"error": "approved frontier call cap reached",
                                                            "hypotheses": [], "directive": None})
         now = dt.datetime.now(dt.timezone.utc)
@@ -111,7 +111,7 @@ class FrontierHelp:
                     "event": "invalid_answer", "request_turn": request.turn, "based_on_seq": seq,
                     "outcome_seq": seq, "hypothesis": None, "directive": None, "outcome": "unknown",
                     "evidence_trace_seq": obs_trace, "reason": details["error"],
-                }, author="frontier", turn=request.turn, refs=[obs_trace] if obs_trace is not None else [])
+                }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
                 return HelpResult(source="frontier", result=details)
             review = frontier.review(answer, self.role_manifest, packet.refs)
             accepted = [item for i, item in enumerate(answer.hypotheses)
@@ -138,7 +138,7 @@ class FrontierHelp:
                 "hypothesis": result_payload["hypotheses"], "directive": result_payload["directive"],
                 "outcome": "open" if directive is not None else "unknown", "evidence_trace_seq": obs_trace,
                 "reason": None if directive is not None else "no accepted directive was returned",
-            }, author="frontier", turn=request.turn, refs=[obs_trace] if obs_trace is not None else [])
+            }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
             if directive is not None:
                 expected = directive.expected
                 kind = self.role_manifest.fields.get(expected.field) if expected else "other"

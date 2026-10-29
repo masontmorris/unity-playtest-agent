@@ -37,8 +37,6 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
   follow the decision and ref it; `adopted` comes first in the turn that adopts the result, before
   its observation; `adopted` and `cancelled` ref the `opened` entry. A cancel at stop has no turn.
 - `turn` (core; refs the observation, choice set, context, decision and executions): the `TurnRecord`.
-- `investigation` (frontier; refs the evidence observation): a hypothesis/directive record or a directive
-  outcome, with the originating turn and observation sequence plus the trace sequence of measured evidence.
 
 Outside a turn (turn null):
 
@@ -46,6 +44,9 @@ Outside a turn (turn null):
 - `stop` (core): `{"reason", "result": <StopResult or null>, "error"}`.
 - `end` (harness): `{"status": "complete" | "stopped" | "inconclusive", "error", "turns",
   "redactions"}`; last. `redactions` counts secret values the writer replaced.
+- `investigation` (frontier; refs the evidence observation): an out-of-turn hypothesis/directive record or
+  directive outcome. Its body carries the originating turn and observation sequences, plus the trace
+  sequence of measured evidence. It is out-of-turn because a helper may finish after later S1 turns.
 
 A replay (#30) re-derives every turn from these entries and fails on any difference:
 

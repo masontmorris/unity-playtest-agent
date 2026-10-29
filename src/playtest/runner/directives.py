@@ -115,7 +115,7 @@ class DirectiveTracker(FactsSource):
             "based_on_seq": item.get("based_on_seq", seq), "outcome_seq": seq,
             "hypothesis": item.get("hypothesis"), "directive": item.get("directive", dict(item)),
             "outcome": outcome, "evidence_trace_seq": evidence, "reason": item.get("reason"),
-        }, author="frontier", turn=turn, refs=refs)
+        }, author="frontier", turn=None, refs=refs)
 
     @staticmethod
     def _fact_line(item: Mapping[str, Any]) -> str:
