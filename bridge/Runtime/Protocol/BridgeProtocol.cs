@@ -574,17 +574,17 @@ namespace Playtest.Bridge.Protocol
                     return false;
                 }
 
-                if (!IsOptionalNumber(obj, "input_start_game_s")
-                    || !IsOptionalNumber(obj, "input_end_game_s")
-                    || !IsOptionalNumber(obj, "input_start_wall_s")
-                    || !IsOptionalNumber(obj, "input_end_wall_s"))
+                if (!IsOptionalFiniteNumber(obj, "input_start_game_s")
+                    || !IsOptionalFiniteNumber(obj, "input_end_game_s")
+                    || !IsOptionalFiniteNumber(obj, "input_start_wall_s")
+                    || !IsOptionalFiniteNumber(obj, "input_end_wall_s"))
                 {
                     error = Invalid("execution times must be null or numbers");
                     return false;
                 }
 
                 JToken duration = obj["applied_duration_s"];
-                if (duration != null && duration.Type != JTokenType.Null && (duration.Type != JTokenType.Float && duration.Type != JTokenType.Integer || (double)duration < 0))
+                if (duration != null && duration.Type != JTokenType.Null && (!IsFiniteNumber(duration) || (double)duration < 0))
                 {
                     error = Invalid("applied_duration_s must be null or a non-negative number");
                     return false;
@@ -599,6 +599,17 @@ namespace Playtest.Bridge.Protocol
 
                 if (!ValidateEffects(obj, "expected_effect", out error) || !ValidateEffects(obj, "observed_effect", out error))
                 {
+                    return false;
+                }
+
+                if (!ValidateAppliedInputs(obj, out error))
+                {
+                    return false;
+                }
+
+                if (rejected && execution.AppliedInputs != null && execution.AppliedInputs.Count > 0)
+                {
+                    error = Invalid("a rejected execution cannot have applied-input receipts");
                     return false;
                 }
             }
@@ -950,6 +961,123 @@ namespace Playtest.Bridge.Protocol
             return true;
         }
 
+        private static readonly string[] ReceiptDevices = { "Keyboard", "Mouse", "Gamepad" };
+
+        /// <summary>
+        /// Checks each applied-input receipt: its identity and declared values, and that every
+        /// measurement is a number (or null) rather than a guess. Cross-field relations between
+        /// receipts and the declaration belong to the consumer that holds the declaration.
+        /// </summary>
+        private static bool ValidateAppliedInputs(JObject obj, out ProtocolError error)
+        {
+            error = null;
+            JToken inputs = obj["applied_inputs"];
+            if (inputs == null)
+            {
+                return true;
+            }
+
+            if (inputs.Type != JTokenType.Array)
+            {
+                error = Invalid("applied_inputs must be an array");
+                return false;
+            }
+
+            int index = 0;
+            int previousStep = -1;
+            foreach (JToken item in inputs.Children())
+            {
+                string label = "applied_inputs[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]";
+                index++;
+                if (item.Type != JTokenType.Object)
+                {
+                    error = Invalid(label + " must be an object");
+                    return false;
+                }
+
+                JToken step = item["step_index"];
+                if (step == null || step.Type != JTokenType.Integer || (long)step < 0)
+                {
+                    error = Invalid(label + ".step_index must be a non-negative integer");
+                    return false;
+                }
+
+                int stepIndex = (int)step;
+                if (stepIndex < previousStep)
+                {
+                    error = Invalid("applied-input step indices must be in execution order");
+                    return false;
+                }
+                previousStep = stepIndex;
+
+                JToken device = item["device"];
+                if (device == null || device.Type != JTokenType.String || Array.IndexOf(ReceiptDevices, (string)device) < 0)
+                {
+                    error = Invalid(label + ".device must be Keyboard, Mouse or Gamepad");
+                    return false;
+                }
+
+                JToken control = item["control"];
+                if (control == null || control.Type != JTokenType.String || ((string)control).Length == 0)
+                {
+                    error = Invalid(label + ".control must be a non-empty string");
+                    return false;
+                }
+
+                foreach (string name in new[]
+                {
+                    "x", "y", "input_start_wall_s", "input_end_wall_s", "applied_duration_s", "applied_delta_x", "applied_delta_y",
+                })
+                {
+                    JToken value = item[name];
+                    if (value != null && value.Type != JTokenType.Null && !IsFiniteNumber(value))
+                    {
+                        error = Invalid(label + "." + name + " must be a number or null");
+                        return false;
+                    }
+                }
+
+                JToken duration = item["applied_duration_s"];
+                if (duration != null && duration.Type != JTokenType.Null && (double)duration < 0)
+                {
+                    error = Invalid(label + ".applied_duration_s must be null or a non-negative number");
+                    return false;
+                }
+
+                JToken x = item["x"];
+                JToken y = item["y"];
+                bool hasX = x != null && x.Type != JTokenType.Null;
+                bool hasY = y != null && y.Type != JTokenType.Null;
+                if (hasX != hasY || (hasX && ((double)x < -1 || (double)x > 1 || (double)y < -1 || (double)y > 1)))
+                {
+                    error = Invalid(label + ".x and .y must both be null or finite numbers in [-1, 1]");
+                    return false;
+                }
+                if (string.Equals((string)item["device"], "Keyboard", StringComparison.Ordinal) && hasX)
+                {
+                    error = Invalid(label + " keyboard x and y must be null");
+                    return false;
+                }
+                JToken start = item["input_start_wall_s"];
+                JToken end = item["input_end_wall_s"];
+                if (start != null && start.Type != JTokenType.Null && end != null && end.Type != JTokenType.Null
+                    && (double)end < (double)start)
+                {
+                    error = Invalid(label + ".input_end_wall_s must not be before input_start_wall_s");
+                    return false;
+                }
+
+                JToken verified = item["release_verified"];
+                if (verified != null && verified.Type != JTokenType.Null && verified.Type != JTokenType.Boolean)
+                {
+                    error = Invalid(label + ".release_verified must be null or a boolean");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         private static bool HasNumber(JObject obj, string name)
         {
             JToken token = obj[name];
@@ -960,6 +1088,23 @@ namespace Playtest.Bridge.Protocol
         {
             JToken token = obj[name];
             return token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Float || token.Type == JTokenType.Integer;
+        }
+
+        private static bool IsOptionalFiniteNumber(JObject obj, string name)
+        {
+            JToken token = obj[name];
+            return token == null || token.Type == JTokenType.Null || IsFiniteNumber(token);
+        }
+
+        private static bool IsFiniteNumber(JToken token)
+        {
+            if (token == null || (token.Type != JTokenType.Float && token.Type != JTokenType.Integer))
+            {
+                return false;
+            }
+
+            double value = (double)token;
+            return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         private static bool IsPositiveFinite(double value)

@@ -88,7 +88,9 @@
         {
           "control_id": "w",
           "x": null,
-          "y": null
+          "y": null,
+          "device": "Keyboard",
+          "control": "w"
         }
       ],
       "hold_s": 0.2,
@@ -120,7 +122,8 @@
       "axis": false,
       "max_hold_s": null,
       "hold_effect": null,
-      "execution_supported": true
+      "execution_supported": true,
+      "execution_evidence": null
     }
   ],
   "skills": [],
@@ -145,7 +148,7 @@
     ],
     "coverage": [
       "field freshness is unknown until calibration field identity is established",
-      "the current bridge cannot execute multi-step skills",
+      "execution support requires release-verified evidence for the exact declared inputs, values, holds and step order",
       "selected readers are not installed or verified in the live observation source",
       "the manifest action catalog is not installed or verified in a live run",
       "reset has not been verified as part of this manifest run",
@@ -180,7 +183,8 @@
         "control": "w",
         "control_type": "Button",
         "id": "w",
-        "resolution": "unity_key_name"
+        "resolution": "unity_key_name",
+        "device": "Keyboard"
       }
     ],
     "unoffered_controls": [],

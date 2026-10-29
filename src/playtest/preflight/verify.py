@@ -134,8 +134,8 @@ def select_action(manifest: PreflightManifest, calibration: CalibrationRecord, n
         raise ValueError("the selected action carries analog parameters that the keyboard bridge does not send")
     if action.axis:
         raise ValueError("the selected action is an axis binding, not a single button")
-    if action.execution_supported is not True:
-        raise ValueError("the selected action is not executable by the current bridge")
+    if action.execution_supported is not True and action.execution_evidence is not None:
+        raise ValueError("stored execution evidence disagrees with the declaration's support flag")
     requested = action.hold_s if action.hold_s is not None else action.tap_hold_s
     if requested is None:
         raise ValueError("the selected action has no tested requested hold")

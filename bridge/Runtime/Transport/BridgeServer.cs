@@ -181,8 +181,10 @@ namespace Playtest.Bridge.Transport
                 lock (_freshnessGate)
                 {
                     _clock?.Reset();
-                    _lease?.Stop("server stop", emitCancelled: true);
                 }
+
+                // Releasing waits for device reads, so it never runs inside the freshness gate.
+                _lease?.Stop("server stop", emitCancelled: true);
             }
 
             try
@@ -743,19 +745,23 @@ namespace Playtest.Bridge.Transport
                 }
             }
 
+            // From here no new act of this session is accepted: HandleAct checks the flag under the
+            // same gate, so an act either registered with the lease before this point, and the stop
+            // below takes it, or is dropped.
             lock (_freshnessGate)
             {
+                session.Stopping = true;
                 session.StopStream();
                 _clock?.Reset();
-                if (_lease != null)
-                {
-                    _lease.Stop("stop:" + reason, emitCancelled: true);
-                }
-                else if (_input != null)
-                {
-                    _input.TryRelease(out _, out _);
-                }
+            }
 
+            // The lease releases the inputs and waits for device reads, which the Unity main thread
+            // performs, and the main thread may be the caller. Neither gate is held meanwhile. The
+            // session stays active until the cancelled record was written to it.
+            bool stoppedRun = _lease != null && _lease.Stop("stop:" + reason, emitCancelled: true);
+
+            lock (_freshnessGate)
+            {
                 lock (_gate)
                 {
                     if (ReferenceEquals(_active, session))
@@ -766,7 +772,7 @@ namespace Playtest.Bridge.Transport
             }
 
             var released = new List<string>();
-            if (_input != null)
+            if (_input != null && stoppedRun)
             {
                 released.AddRange(_input.ReleasedInputs);
             }
@@ -828,7 +834,8 @@ namespace Playtest.Bridge.Transport
         }
 
         private void HandleAct(ClientSession session, string line, long? requestSeq)
-        {            if (!_running)
+        {
+            if (!_running)
             {
                 return;
             }
@@ -855,9 +862,10 @@ namespace Playtest.Bridge.Transport
                 return;
             }
 
+            BridgeLeaseStart start;
             lock (_freshnessGate)
             {
-                if (!_running)
+                if (!_running || session.Stopping)
                 {
                     return;
                 }
@@ -903,10 +911,21 @@ namespace Playtest.Bridge.Transport
                     return;
                 }
 
-                if (!_lease.TryStart(request, action, request.BasedOnSeq, out string startError))
+                // Everything that can fail without touching a device, including the act's params and
+                // the backend's validation of every input, is checked here, so a rejected act never
+                // disturbs a running action. Registering the act does not wait on the main thread.
+                if (!_lease.TryBegin(request, action, request.BasedOnSeq, out start, out string beginError))
                 {
-                    RejectAct(session, request, BridgeRejectReason.InvalidParams, startError, request.BasedOnSeq);
+                    RejectAct(session, request, BridgeRejectReason.InvalidParams, beginError, request.BasedOnSeq);
+                    return;
                 }
+            }
+
+            // Applying the inputs waits for the Unity main thread, which can be stopping this very
+            // session, so it runs outside the freshness gate.
+            if (!start.Execute(out string startError))
+            {
+                RejectAct(session, request, BridgeRejectReason.InvalidParams, startError, request.BasedOnSeq);
             }
         }
 
@@ -1204,6 +1223,9 @@ namespace Playtest.Bridge.Transport
 
             /// <summary>Whether this session's observations carry a frame reference.</summary>
             public bool WithFrame;
+
+            /// <summary>Set once a stop began: no further act of this session is accepted.</summary>
+            public volatile bool Stopping;
 
             public readonly object WriteGate = new object();
 

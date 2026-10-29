@@ -1,0 +1,9 @@
+{
+  "actions": {
+    "too_long": {
+      "backend": "input_system",
+      "inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}],
+      "default_lease_s": 3601
+    }
+  }
+}

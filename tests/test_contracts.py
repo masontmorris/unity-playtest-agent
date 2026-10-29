@@ -73,3 +73,66 @@ def test_inspection_caps_fail_for_their_intended_rule():
         with pytest.raises(ValidationError) as excinfo:
             CONTRACTS["inspection_result"].model_validate(json.loads(path.read_text(encoding="utf-8")))
         assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_action_catalog_invalid_fixtures_fail_for_their_intended_rule():
+    reasons = {
+        "invalid-duplicate-control": "appears twice",
+        "invalid-oversize-inputs": "at most 3 items",
+        "invalid-missing-axis-value": "vector control",
+        "invalid-button-with-values": "button; x and y must be null",
+        "invalid-skill-over-budget": "more than max_s",
+        "invalid-both-inputs-and-steps": "never both",
+        "invalid-lease-too-long": "less than or equal to 3600",
+        "invalid-unsupported-control": "not a supported root control",
+        "invalid-one-dimensional-y": "y must be 0",
+        "invalid-negative-trigger": "trigger; x must be between 0 and 1",
+        "invalid-fractional-dpad": "dpad is digital",
+        "invalid-nine-steps": "at most 8 items",
+        "invalid-action-name": "lower_snake_case",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "action_catalog" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["action_catalog"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_manifest_execution_evidence_fixtures_fail_for_their_intended_rule():
+    reasons = {
+        "invalid-support-without-evidence": "execution support must reflect",
+        "invalid-physical-binding": "physical input must match its calibrated control binding",
+        "invalid-evidence-missing-duration": "no measured applied duration",
+        "invalid-evidence-unverified-release": "release was not verified",
+        "invalid-evidence-changed-control": "control is 'a'",
+        "invalid-evidence-extra-receipt": "expected 1 applied-input receipts",
+        "invalid-evidence-changed-hold": "does not match the declared",
+        "invalid-evidence-terminal-release-false": "did not verify input release",
+        "invalid-evidence-reordered-inputs": "control is 'a'",
+        "invalid-skill-missing-step": "expected 2 applied-input receipts",
+        "invalid-evidence-declaration-changed-hold": "declaration hold is 0.21 s, expected 0.2 s",
+        "invalid-evidence-declaration-missing": "declaration",
+        "invalid-evidence-pointer-delta": "applied delta x 0 px does not match the declared 64 px",
+        "invalid-evidence-chord-window": "inputs were not applied together",
+        "invalid-evidence-skill-wait": "less than the declared 0.1 s wait",
+        "invalid-evidence-skill-final-wait": "final wait",
+        "invalid-evidence-skill-no-measured-total": "no measured total applied duration",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "preflight_manifest" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["preflight_manifest"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_execution_receipt_invalid_fixtures_fail_for_their_intended_rule():
+    reasons = {
+        "invalid-receipt-negative-duration": "greater than or equal to 0",
+        "invalid-receipt-step-order": "execution order",
+        "invalid-rejected-with-receipts": "cannot have receipts",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "execution_record" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["execution_record"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"

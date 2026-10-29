@@ -68,8 +68,8 @@ namespace Playtest.Bridge.Tests
 
             Assert.That(sample.Data.Keys, Is.EquivalentTo(new[]
             {
-                "time_unit", "frame", "real_time_s", "game_time_s", "sample_wall_s", "keyboard_state", "game_objects", "fields",
-            }), "the fields stage carries only the sample rows and its instant");
+                "time_unit", "frame", "real_time_s", "game_time_s", "sample_wall_s", "keyboard_state", "input_state", "game_objects", "fields",
+            }), "the fields stage carries only the sample rows, its instant and the input state");
             Assert.That(sample.Caps.Keys, Is.EquivalentTo(new[] { "game_objects", "fields" }));
             Assert.That(sample.Data["time_unit"], Is.EqualTo("seconds"));
             Assert.That(sample.Data["frame"], Is.TypeOf<int>());

@@ -80,8 +80,14 @@ class ExecutionController:
             raise ValueError(f"choice {choice.id!r} of kind {choice.kind.value!r} carries no input")
         action = choice.action if choice.action is not None else choice.skill
         assert action is not None
-        if lease_s is None:
-            lease_s = self._leases.get(choice.id, self._lease_s)
+        # A skill owns its ordered holds and total bound in the catalog. Each host lease (explicit
+        # for this call, or one keyed to the choice) is data and reaches the bridge unchanged so it
+        # can be validated against the skill's bound; the default action lease is only for actions.
+        bound_lease = lease_s
+        if bound_lease is None:
+            bound_lease = self._leases.get(choice.id)
+        if bound_lease is None and choice.kind is ChoiceKind.action:
+            bound_lease = self._lease_s
         return {
             "action_id": uuid.uuid4().hex,
             "choice_id": choice.id,
@@ -90,7 +96,7 @@ class ExecutionController:
             "based_on_seq": based_on_seq,
             "max_age_s": max_age_s if max_age_s is not None else self._max_age_s,
             "depends_on": list(depends_on if depends_on is not None else self._depends_on),
-            "lease_s": lease_s,
+            "lease_s": bound_lease,
         }
 
     async def send(self, request: dict[str, Any]) -> Execution:
@@ -105,8 +111,9 @@ class ExecutionController:
         max_age_s: float | None = None,
         lease_s: float | None = None,
         depends_on: tuple[str, ...] | None = None,
-    ) -> Execution:
+    ) -> ExecutionRecord:
         request = self.request_for(
             choice, based_on_seq=based_on_seq, max_age_s=max_age_s, lease_s=lease_s, depends_on=depends_on
         )
-        return await self.send(request)
+        execution = await self.send(request)
+        return execution.terminal

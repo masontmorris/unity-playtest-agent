@@ -31,7 +31,7 @@ def evidence():
     caps = {key: cap(len(data[key])) for key in
             ("game_objects", "components", "fields", "bindings", "input_asset_bindings")}
     caps.update({"source_files": cap(1), "source_characters": cap(7)})
-    snapshot = {"protocol": "upa/0", "session": "s", "seq": 1, "game_s": 1.0,
+    snapshot = {"protocol": "upa/1", "session": "s", "seq": 1, "game_s": 1.0,
                 "wall_utc": "2026-01-01T00:00:00Z", "type": "inspection", "stage": "discovery",
                 "in_reply_to": 0, "data": data, "caps": caps, "errors": []}
     actions, unsupported = discover_actions(data)
@@ -46,7 +46,7 @@ def evidence():
               "input_field_segments": [], "trials": [{"control": "w", "valid": True}],
               "action_summaries": [summary], "freshness": {"field": {"classification": "unknown"}},
               "clock": {}, "reset": {}, "runtime_errors": None,
-              "stop": {"protocol": "upa/0", "session": "s", "seq": 2, "game_s": 1.0,
+              "stop": {"protocol": "upa/1", "session": "s", "seq": 2, "game_s": 1.0,
                        "wall_utc": "2026-01-01T00:00:00Z", "type": "stopped", "released": [],
                        "release_verified": True}}
     return snapshot, record
@@ -197,3 +197,37 @@ def test_bridge_review_preserves_unsupported_model_choices():
                                          "uncontrollable": []}, "stage_6": None})
     problems = packet.review_bridge(compound, "actions")
     assert problems == []
+
+
+def test_pointer_and_gamepad_controls_are_offered_with_real_types_and_declared_values():
+    snapshot, record = evidence()
+    snapshot["data"]["bindings"].append(
+        {"id": "mouse", "action_id": "look", "binding_effective_path": "<Mouse>/delta",
+         "binding_name": "", "source_object_id": "entity", "binding_is_composite": False})
+    snapshot["data"]["bindings"].append(
+        {"id": "stick", "action_id": "move", "binding_effective_path": "<Gamepad>/leftStick",
+         "binding_name": "", "source_object_id": "entity", "binding_is_composite": False})
+    snapshot["caps"]["bindings"] = cap(3)
+    actions, unsupported = discover_actions(snapshot["data"])
+    record["actions"] = actions
+    record["action_cap"] = cap(3)
+    record["action_summaries"] = [{
+        "control": action["control"], "bindings": action["bindings"], "resolution": action["resolution"],
+        "device": action["device"], "control_name": action["control_name"],
+        "control_type": action["control_type"], "declared_x": action["x"], "declared_y": action["y"],
+        "holds": [], "lowest_tested_effective_requested_hold_s": None,
+        "shortest_observed_effective_hold_s": None, "minimum_hold_scope": "unknown",
+        "inverted_relative_to_entity_basis": None, "signed_basis_projections": [],
+        "dead_zone": None, "dead_zone_reason": "not measured"} for action in actions]
+    record["trials"] = [{"control": action["control"], "valid": True} for action in actions]
+    packet = make(snapshot, record)
+    data = json.loads(packet.text)
+    by_id = {row["id"]: row for row in data["offered_controls"]}
+    assert by_id["mouse_delta"]["control_type"] == "Delta"
+    assert by_id["mouse_delta"]["declared_x"] == 1.0 and by_id["mouse_delta"]["declared_y"] == 0.0
+    assert by_id["gamepad_leftstick"]["control_type"] == "Stick"
+    assert by_id["gamepad_leftstick"]["device"] == "Gamepad"
+    assert packet.discovery.control_types["mouse_delta"] == "Delta"
+    assert packet.discovery.control_types["gamepad_leftstick"] == "Stick"
+    assert "64" in data["capability_note"] and "relative impulse" in data["capability_note"]
+    assert "absolute pointer" in data["capability_note"]

@@ -258,7 +258,7 @@ namespace Playtest.Bridge.Tests
         }
 
         private static string HelloJson(
-            string protocol = "upa/0",
+            string protocol = ProtocolVersion.Current,
             string type = HelloContract,
             string extraMember = "")
         {
@@ -279,7 +279,7 @@ namespace Playtest.Bridge.Tests
         private static string StatusJson(string backends = "\"input_system\"")
         {
             return "{\n"
-                + "  \"protocol\": \"upa/0\",\n"
+                + "  \"protocol\": \"" + ProtocolVersion.Current + "\",\n"
                 + "  \"session\": \"s-1\",\n"
                 + "  \"seq\": 1,\n"
                 + "  \"wall_utc\": \"2026-10-26T18:00:00Z\",\n"
@@ -298,7 +298,7 @@ namespace Playtest.Bridge.Tests
         private static string ErrorJson(string code = "busy")
         {
             return "{\n"
-                + "  \"protocol\": \"upa/0\",\n"
+                + "  \"protocol\": \"" + ProtocolVersion.Current + "\",\n"
                 + "  \"session\": \"s-1\",\n"
                 + "  \"seq\": 1,\n"
                 + "  \"wall_utc\": \"2026-10-26T18:00:00Z\",\n"

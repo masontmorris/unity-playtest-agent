@@ -89,7 +89,7 @@ class DisplacementProbe:
         text = (f"{choice.id}: net displacement between inspection seq {observed['from_inspection_seq']} "
                 f"and {observed['to_inspection_seq']}: {observed['net_displacement']:.3f} {UNIT}")
         if expected is None:
-            return text + "; no calibrated value for this hold."
+            return text + "; no calibrated effect is recorded for this declaration."
         variance = expected["sample_variance"]
         return (f"{text}; calibrated for a {expected['requested_hold_s']:g}-second hold: "
                 f"{expected['net_displacement']:.3f} (sample variance "

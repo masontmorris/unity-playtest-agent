@@ -22,17 +22,35 @@ def selected_entity(path="object"):
             "entity": {"scene_id": "scene", "scene_path": "scene", "path": path}}
 
 
-def test_discovery_resolves_keyboard_aliases_and_retains_unsupported_bindings():
+def test_discovery_resolves_keyboard_and_pointer_controls_and_skips_composites():
     found, unsupported = discover_actions({"bindings": [binding("<Keyboard>/w", "up"),
         binding("<Keyboard>/shift"), binding("<Keyboard>/1"), binding("<Mouse>/delta"),
         {"id": "composite", "binding_is_composite": True, "binding_effective_path": "2DVector"}]})
-    assert [x["control"] for x in found] == ["digit1", "leftshift", "w"]
+    assert [x["control"] for x in found] == ["digit1", "leftshift", "mouse_delta", "w"]
     assert found[0]["resolution"] == "unity_digit_key"
     assert found[1]["resolution"] == "unity_modifier_left_key"
-    assert unsupported == [{"binding_id": "<Mouse>/delta", "action_id": "id", "path": "<Mouse>/delta",
-                            "part": "", "source_object_id": None, "effect": None, "variance": None,
-                            "inversion": None, "dead_zone": None, "minimum_hold": None,
-                            "reason": "binding is not drivable by the keyboard backend"}]
+    assert found[2]["device"] == "Mouse" and found[2]["control_type"] == "Delta"
+    assert found[2]["x"] == 1.0 and found[2]["y"] == 0.0
+    assert unsupported == []
+
+
+def test_gamepad_controls_and_unsupported_paths_keep_stable_ids_and_reasons():
+    found, unsupported = discover_actions({"bindings": [
+        binding("<Gamepad>/leftStick", "up"), binding("<Gamepad>/rightTrigger"),
+        binding("<Gamepad>/buttonSouth"), binding("<Gamepad>/dpad"),
+        binding("<Mouse>/position"), binding("<Mouse>/scroll"),
+        binding("<Touchscreen>/primaryTouch/position"),
+    ]})
+    by_control = {item["control"]: item for item in found}
+    assert set(by_control) == {"gamepad_leftstick", "gamepad_righttrigger", "gamepad_buttonsouth", "gamepad_dpad"}
+    assert by_control["gamepad_leftstick"]["control_type"] == "Stick"
+    assert by_control["gamepad_leftstick"]["device"] == "Gamepad"
+    assert by_control["gamepad_righttrigger"]["control_type"] == "Axis"
+    assert by_control["gamepad_buttonsouth"]["control_type"] == "Button"
+    reasons = {item["path"]: item["reason"] for item in unsupported}
+    assert "absolute pointer" in reasons["<Mouse>/position"]
+    assert "scroll" in reasons["<Mouse>/scroll"]
+    assert "touch" in reasons["<Touchscreen>/primaryTouch/position"]
 
 
 def test_summary_uses_sample_variance_and_only_reports_tested_effective_hold():
@@ -51,6 +69,7 @@ def test_summary_uses_sample_variance_and_only_reports_tested_effective_hold():
     assert measured["sample_variance"] == 0.5
     assert summary["inverted_relative_to_entity_basis"] is False
     assert summary["dead_zone"] is None
+    assert summary["sensitivity"] is None
 
 
 def test_inversion_and_unobserved_values_are_not_guessed():
@@ -297,7 +316,7 @@ def test_full_calibration_records_action_field_and_clock_evidence(monkeypatch):
     assert result["action_summaries"][0]["lowest_tested_effective_requested_hold_s"] == 0.1
     assert result["clock"]["stepped_mode_supported"] is None
     assert client.paused is False
-    result["stop"] = {"protocol": "upa/0", "session": "s", "seq": 1, "game_s": None,
+    result["stop"] = {"protocol": "upa/1", "session": "s", "seq": 1, "game_s": None,
                       "wall_utc": "2026-10-27T00:00:00Z", "type": "stopped", "released": [],
                       "release_verified": True}
     reset = reset_evidence(reload_trial(before=(0, 0, 3), after=(0, 0, 0), initial=(), changed=(), reloaded=()))
@@ -402,3 +421,44 @@ def test_unverified_stop_makes_measurement_inconclusive(monkeypatch, tmp_path):
     assert result["status"] == "inconclusive"
     assert result["stop"] is None
     assert "did not verify" in result["error"]
+
+
+def test_generic_input_state_reports_held_device_controls_without_a_keyboard_alias():
+    record = SimpleNamespace(input_start_wall_s=1000.0, input_end_wall_s=1000.2)
+    state = {
+        "active": True,
+        "error": None,
+        "update_type": "dynamic",
+        "real_time_s": 10.05,
+        "wall_s": 1000.1,
+        "devices": {
+            "Gamepad": {"controls": {"leftStick": {"x": 1.0, "y": 0.0}, "buttonSouth": True}},
+            "Mouse": {"controls": {"delta": {"x": 0.5, "y": 0.0}}},
+        },
+    }
+    response = SimpleNamespace(data={"real_time_s": 10.1, "sample_wall_s": 1000.1, "input_state": state})
+    assert calibrate._held_during_sample(response, record, "leftStick", "Gamepad") is True
+    assert calibrate._held_during_sample(response, record, "buttonSouth", "Gamepad") is True
+    assert calibrate._held_during_sample(response, record, "rightTrigger", "Gamepad") is False
+    assert calibrate._held_during_sample(response, record, "delta", "Mouse") is True
+
+
+def test_unity_input_state_pressed_and_values_are_read_per_device():
+    state = {"devices": {
+        "Keyboard": {"pressed": ["w"], "values": {}},
+        "Mouse": {"pressed": ["leftButton"], "values": {"delta": [0.0, 0.0]}},
+        "Gamepad": {"pressed": ["buttonSouth"],
+                    "values": {"leftStick": [0.5, 0.0], "rightStick": [0.0, 0.0],
+                               "leftTrigger": 0.0, "rightTrigger": None}},
+    }}
+    for device, control in (("Keyboard", "w"), ("Mouse", "leftButton"),
+                            ("Gamepad", "buttonSouth"), ("Gamepad", "leftStick")):
+        assert calibrate._control_held(state, device, control) is True
+    for device, control in (("Keyboard", "a"), ("Mouse", "rightButton"),
+                            ("Mouse", "delta"), ("Gamepad", "buttonNorth"),
+                            ("Gamepad", "rightStick"), ("Gamepad", "leftTrigger")):
+        assert calibrate._control_held(state, device, control) is False
+    assert calibrate._control_held(state, "Gamepad", "rightTrigger") is None
+    assert calibrate._control_held({"devices": {"Gamepad": None}}, "Gamepad", "buttonSouth") is None
+    assert calibrate._active_value([0.0, None]) is None
+    assert calibrate._active_value([None, 1.0]) is True

@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from .bridge import InspectionCap, StopResult
+from .bridge import InputExecutionEvidence, InspectionCap, StopResult
 from .common import Strict
 
 
@@ -39,6 +39,14 @@ class ActionCalibration(Strict):
     control: str = Field(min_length=1)
     bindings: list[dict[str, Any]]
     resolution: str
+    device: Literal["Keyboard", "Mouse", "Gamepad"] | None = Field(
+        None, description="Physical device measured for this control; null on records from the keyboard-only snapshot")
+    control_name: str | None = Field(None, description="Physical root control name, without a device prefix")
+    control_type: str | None = Field(None, description="Declared Input System control type, e.g. Button, Axis or Stick")
+    declared_x: float | None = Field(None, ge=-1, le=1, allow_inf_nan=False,
+                                     description="Declared normalized value measured for this control")
+    declared_y: float | None = Field(None, ge=-1, le=1, allow_inf_nan=False,
+                                     description="Declared second value measured for this control")
     holds: list[HoldMeasurement]
     lowest_tested_effective_requested_hold_s: float | None = Field(ge=0)
     shortest_observed_effective_hold_s: float | None = Field(ge=0)
@@ -47,6 +55,10 @@ class ActionCalibration(Strict):
     signed_basis_projections: list[float]
     dead_zone: float | None = Field(ge=0)
     dead_zone_reason: str
+    sensitivity: float | None = Field(None, ge=0, allow_inf_nan=False,
+                                      description="Measured response slope, or null when not measured")
+    sensitivity_reason: str = Field(
+        "sensitivity is unknown: one declared value per control was measured, not a response curve")
 
 
 class CalibrationRecord(Strict):
@@ -67,8 +79,13 @@ class CalibrationRecord(Strict):
     later_idle_windows: list[list[dict[str, Any]]] = Field(
         default_factory=list, description="Idle field windows sampled after the key trials; each is its own window")
     input_field_segments: list[dict[str, Any]]
+    field_sampling_gap: str | None = Field(
+        None, description="Why no held-input field window was usable, or null when none was needed")
     trials: list[dict[str, Any]]
     action_summaries: list[ActionCalibration]
+    execution_evidence: list[InputExecutionEvidence] = Field(
+        default_factory=list,
+        description="Release-verified receipts for exact declarations, used only when a declaration matches")
     freshness: dict[str, Any] | None
     clock: dict[str, Any] | None
     reset: dict[str, Any] | None

@@ -1,0 +1,196 @@
+{
+  "$defs": {
+    "ActionDefinition": {
+      "additionalProperties": false,
+      "description": "One action (inputs + default_lease_s) or one skill (steps + max_s), never both.",
+      "properties": {
+        "backend": {
+          "const": "input_system",
+          "title": "Backend",
+          "type": "string"
+        },
+        "default_lease_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared hold and lease for this action; the measured applied duration is reported separately",
+          "title": "Default Lease S"
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/InputBinding"
+              },
+              "maxItems": 3,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Controls held together for one action",
+          "title": "Inputs"
+        },
+        "max_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Upper bound on the whole skill, including waits",
+          "title": "Max S"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ActionStep"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Ordered bounded skill steps",
+          "title": "Steps"
+        }
+      },
+      "required": [
+        "backend"
+      ],
+      "title": "ActionDefinition",
+      "type": "object"
+    },
+    "ActionStep": {
+      "additionalProperties": false,
+      "description": "One ordered skill step: hold its inputs, release and verify them, then wait.",
+      "properties": {
+        "hold_s": {
+          "description": "Declared hold in seconds; a tap must be resolved to a tested positive hold",
+          "exclusiveMinimum": 0,
+          "maximum": 3600.0,
+          "title": "Hold S",
+          "type": "number"
+        },
+        "inputs": {
+          "description": "Controls held together for this step",
+          "items": {
+            "$ref": "#/$defs/InputBinding"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Inputs",
+          "type": "array"
+        },
+        "wait_s": {
+          "description": "Seconds to wait after this step's inputs are released and verified",
+          "maximum": 3600.0,
+          "minimum": 0,
+          "title": "Wait S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "inputs",
+        "hold_s",
+        "wait_s"
+      ],
+      "title": "ActionStep",
+      "type": "object"
+    },
+    "InputBinding": {
+      "additionalProperties": false,
+      "description": "One physical input and its declared normalized value.",
+      "properties": {
+        "control": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Control",
+          "type": "string"
+        },
+        "device": {
+          "enum": [
+            "Keyboard",
+            "Mouse",
+            "Gamepad"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": -1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Normalized value in [-1, 1]; null for a button",
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": -1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Second normalized value; 0 for a one-dimensional axis; null for a button",
+          "title": "Y"
+        }
+      },
+      "required": [
+        "device",
+        "control"
+      ],
+      "title": "InputBinding",
+      "type": "object"
+    }
+  },
+  "$id": "upa/action_catalog.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The exported catalog: modern shape {\"actions\": {name: definition}}.",
+  "properties": {
+    "actions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ActionDefinition"
+      },
+      "description": "Named executable declarations; the key is the act name S1 may select",
+      "title": "Actions",
+      "type": "object"
+    }
+  },
+  "title": "ActionCatalog",
+  "type": "object"
+}

@@ -88,12 +88,16 @@
         {
           "control_id": "w",
           "x": null,
-          "y": null
+          "y": null,
+          "device": "Keyboard",
+          "control": "w"
         },
         {
           "control_id": "a",
           "x": null,
-          "y": null
+          "y": null,
+          "device": "Keyboard",
+          "control": "a"
         }
       ],
       "hold_s": 0.2,
@@ -146,7 +150,8 @@
       "axis": false,
       "max_hold_s": null,
       "hold_effect": null,
-      "execution_supported": false
+      "execution_supported": false,
+      "execution_evidence": null
     }
   ],
   "skills": [
@@ -159,16 +164,21 @@
             {
               "control_id": "w",
               "x": null,
-              "y": null
+              "y": null,
+              "device": "Keyboard",
+              "control": "w"
             },
             {
               "control_id": "a",
               "x": null,
-              "y": null
+              "y": null,
+              "device": "Keyboard",
+              "control": "a"
             }
           ],
           "hold_s": 0.2,
-          "wait_s": 0.0
+          "wait_s": 0.0,
+          "tap_hold_s": null
         }
       ],
       "max_s": 1.0,
@@ -216,7 +226,8 @@
           "dead_zone_reason": "not measured"
         }
       ],
-      "execution_supported": false
+      "execution_supported": false,
+      "execution_evidence": null
     }
   ],
   "progress": [],
@@ -228,15 +239,15 @@
     "unjudgeable": [],
     "coverage": [
       "field freshness is unknown until calibration field identity is established",
-      "the current bridge cannot execute multi-step skills",
+      "execution support requires release-verified evidence for the exact declared inputs, values, holds and step order",
       "selected readers are not installed or verified in the live observation source",
       "the manifest action catalog is not installed or verified in a live run",
       "reset has not been verified as part of this manifest run",
       "reset method candidates are not emitted by the current discovery collector",
       "no screenshot was supplied",
       "some selected action holds have no established effective response",
-      "some selected actions cannot be executed by the current bridge",
-      "selected skills are preserved but cannot be executed by the current bridge"
+      "some selected actions have no matching release-verified execution evidence",
+      "some selected skills have no matching release-verified execution evidence"
     ]
   },
   "selection": {
@@ -265,7 +276,8 @@
         "control": "a",
         "control_type": "Button",
         "id": "a",
-        "resolution": "unity_key_name"
+        "resolution": "unity_key_name",
+        "device": "Keyboard"
       },
       {
         "action": "preflight_key_w",
@@ -281,7 +293,8 @@
         "control": "w",
         "control_type": "Button",
         "id": "w",
-        "resolution": "unity_key_name"
+        "resolution": "unity_key_name",
+        "device": "Keyboard"
       }
     ],
     "unoffered_controls": [],

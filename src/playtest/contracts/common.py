@@ -10,7 +10,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PROTOCOL = "upa/0"
+PROTOCOL = "upa/1"
 
 
 class Strict(BaseModel):

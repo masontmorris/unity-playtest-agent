@@ -34,6 +34,8 @@ playtest-calibration-record = "playtest.preflight.calibration_record:main"
 playtest-preflight-manifest = "playtest.preflight.manifest_cli:main"
 playtest-validate-manifest = "playtest.preflight.validate_cli:main"
 playtest-preflight-cache = "playtest.preflight.cache_cli:main"
+playtest-export-catalog = "playtest.preflight.catalog:main"
+playtest-input-probe = "playtest.preflight.input_probe:main"
 playtest-trace = "playtest.core.trace_cli:main"
 playtest-run = "playtest.runner.cli:main"
 

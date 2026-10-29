@@ -1,0 +1,14 @@
+{
+  "actions": {
+    "too_many": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Keyboard", "control": "w", "x": null, "y": null},
+        {"device": "Keyboard", "control": "a", "x": null, "y": null},
+        {"device": "Keyboard", "control": "s", "x": null, "y": null},
+        {"device": "Keyboard", "control": "d", "x": null, "y": null}
+      ],
+      "default_lease_s": 0.2
+    }
+  }
+}

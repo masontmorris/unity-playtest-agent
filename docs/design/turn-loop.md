@@ -191,33 +191,59 @@ turns fail `check_adherence`, is `inconclusive`.
 
 ## Running a manifest on the bridge
 
-An executable `ManifestAction` has exactly one control, `inputs[0].control_id`. The manifest's
-`selection.offered_controls` row for that control carries the bridge action name the calibration catalog
-gave it (`preflight_key_<key>`), and the request's `lease_s` carries the action's requested hold.
+A session serves the declarations the manifest proves, exactly as declared. `playtest.preflight.catalog.export`
+is the one authority for which declarations can run: it keeps the actions and skills whose
+`execution_supported` is true (exact, release-verified execution evidence) and writes each as the strict
+`ActionDefinition` (`serialize` is the file shape), keyed by the declaration's own name. A chord, a stick,
+trigger or dpad value, a mouse impulse or an ordered skill is one such definition; nothing is reduced to its
+first input, and no second exporter or weaker evidence rule exists.
 
-Two PlayMode hosts exist. `StageSevenPlayModeTests` registers exactly one action (the one it was told to
-verify) and starts `playtest.preflight.verify` with its handshake files, so it cannot host a session of
-many actions or another module. `BenchRecordingPlayModeTests` registers one action per keyboard key under
-those same names with a default lease of 0.4 s, and starts the module named by `UPA_BENCH_MODULE`. The
-runner uses the second. Every request carries the manifest's hold as `lease_s`, so the 0.4 s default never
-applies. `scripts/unity/run-session.ps1` starts it with `UPA_BENCH_MODULE=playtest.runner.cli`; no C#
-changes. The manifest supplies the module's extra inputs through `UPA_RUN_*` variables, because the host's
-command line is fixed.
+**The host.** `scripts/unity/run-session.ps1` runs `playtest-export-catalog` on the manifest into
+`<output>/catalog.json`, pins the file's SHA-256, and sets `UPA_SESSION_CATALOG` and
+`UPA_SESSION_CATALOG_SHA256` (restored when it exits). `BenchRecordingPlayModeTests` hosts the bench client
+modules, and for the session module (`playtest.runner.cli`) it registers exactly that file through
+`BridgeSessionCatalog.Select`: the pinned digest of the file's bytes is checked, the strict
+`BridgeActionCatalog.Parse` reads it, and an empty catalog is an error. This happens before the scene loads.
+A missing path, digest or file, an altered or invalid file, and an empty catalog all throw; a session never
+falls back to the keyboard catalog. Every other module keeps the keyboard bench catalog (one action per key,
+`preflight_key_<key>`, default lease 0.4 s) and the session variables play no part in it. The stage 7 host
+`StageSevenPlayModeTests` still registers the one action it was told to verify and cannot host a session.
 
-`playtest.runner.choices.build_choices` makes one `action` choice per executable action, in the manifest's
-order, with the manifest action's name as its id. The label is the intent, the requested hold and the
-calibrated effect for that hold (`mean_magnitude`, `sample_variance`, `valid_trials`); a missing
-calibration reads as unknown, never zero. The four core choices follow. An action with
-`execution_supported` false, and every skill, is not offered and is listed with the reason; so is an
-action whose control the manifest names no bridge action for. Preconditions are passed through as text
-and nothing evaluates them. A name that collides with a core choice id is an error, not a rename.
+**The client.** `playtest-run` requires `--catalog` and `--catalog-sha256` (the same two variables the host
+reads) and, before any call, any plan or any contact with the bridge, `playtest.runner.catalog.verify_host_catalog`
+re-reads the file, checks the pinned digest, parses it strictly and requires it to equal
+`export(manifest)`: a missing, extra or changed declaration (a chord cut to its first key, a different mouse
+or stick value, hold, wait or bound, a legacy keyboard catalog) is an error. The run summary and `plan.json`
+record the catalog's `catalog_sha256`. The wire has no field for the host's catalog, so this checks the file
+the host was given, not what the running host holds; the Unity host remains unverified here.
+
+**The choices.** `playtest.runner.choices.build_choices` takes the supported declarations from that export
+and offers every one, in the manifest's order (its actions, then its skills), under its own name: an `action`
+choice carries `action: <name>`, a `skill` choice `skill: <name>`, `params: {}`. The request names the
+declaration, so the bridge runs that declaration or rejects the name. An action's `lease_s` is the exported
+`default_lease_s`; a skill carries none, because its steps and `max_s` are its own bound and the loop's default
+action lease never replaces them (the bridge accepts a skill lease only when it is absent or exactly `max_s`).
+The label states the declaration as declared: each input's device, control and value (a mouse impulse as one
+relative impulse of `x * 64`, `y * 64` pixels), the hold, and for a skill each step's holds and waits.
+The four core choices follow. A declaration with `execution_supported` false is not offered and is listed with
+the reason the manifest gives (no exact release-verified execution evidence, or no resolved positive hold).
+The per-key bridge names in `selection.offered_controls` are not consulted. Preconditions are passed through as
+text and nothing evaluates them. A name that collides with a core choice id is an error, not a rename.
+
+**The expected effect.** Calibration measures one control at a time, at one declared value, over tested
+holds. The label and the effect probe's `expected` carry a calibrated displacement only for exactly that: a
+single input, at the value calibration measured, held for a tested hold. A chord, a skill, or a single input
+at another value has `expected: null` and says so (`no calibrated effect is recorded for this combination of
+inputs`, `... at this declared value`, `... for this sequence`). The effect of one key is never reported as
+the effect of a combination, and no outcome number is invented for a compound declaration.
 
 ## The effect probe
 
 `playtest.runner.probe.DisplacementProbe` reads `inspect("transforms")` before the turn's observation and
 right after the terminal record, and reports the calibrated entity's net displacement against the
-calibrated value for that hold. A reading that cannot be taken leaves `observed` `null` with the reason in
-the fact line. The reading before is not between observing and acting, so it adds nothing to the age of
+calibrated value for that declaration, when calibration measured exactly it (see "The expected effect"); a
+declaration with none has `expected: null` and its fact line says no calibrated effect is recorded for it.
+A reading that cannot be taken leaves `observed` `null` with the reason in the fact line. The reading before is not between observing and acting, so it adds nothing to the age of
 the observation an act is bound to; the reading after follows the act.
 
 ## Output
@@ -262,4 +288,9 @@ it (for example when the game worktree changed during the run).
 - **Per-action freshness.** `depends_on` is empty because reader freshness is `null` in the manifest.
 - **A runtime choice builder.** The choice set is static, preconditions are not evaluated, and the
   manifest's readers are not installed in the live observation source, so S1 cannot see them.
-- **Any live run.** The runner has never talked to a real Editor; its script has been parsed, not run.
+- **Any live run.** The runner has never talked to a real Editor; its script has been parsed, not run. The
+  session host's catalog selection (`BridgeSessionCatalog`) and the exported declarations' execution on the real
+  lease and executor run under `dotnet test` against a simulated device, and the client is tested against a
+  protocol peer that serves the exported catalog. The PlayMode host itself (the scene, the Input System
+  devices, the process it starts) has not been run with a session catalog, so a chord, mouse or gamepad
+  declaration has not been executed in Unity through this path.

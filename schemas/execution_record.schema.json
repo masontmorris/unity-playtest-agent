@@ -1,5 +1,148 @@
 {
   "$defs": {
+    "AppliedInput": {
+      "additionalProperties": false,
+      "description": "One physical input the bridge applied, as measured at apply and release time.\n\n`applied_duration_s` is the measured interval from device apply acknowledgement to\nobserved release. It is never copied from configured hold time. A relative pointer\nimpulse may report a null duration when its neutral-reset instant was not measured,\nbut it always reports the actual pixel delta it produced.",
+      "properties": {
+        "applied_delta_x": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Actual mouse pixel delta, not a configured value",
+          "title": "Applied Delta X"
+        },
+        "applied_delta_y": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Actual mouse pixel delta, not a configured value",
+          "title": "Applied Delta Y"
+        },
+        "applied_duration_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Measured apply-to-release seconds",
+          "title": "Applied Duration S"
+        },
+        "control": {
+          "description": "Physical root control, without a device prefix",
+          "minLength": 1,
+          "title": "Control",
+          "type": "string"
+        },
+        "device": {
+          "enum": [
+            "Keyboard",
+            "Mouse",
+            "Gamepad"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "input_end_wall_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Observed release, wall seconds",
+          "title": "Input End Wall S"
+        },
+        "input_start_wall_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Device apply acknowledgement, wall seconds",
+          "title": "Input Start Wall S"
+        },
+        "release_verified": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Device-state read confirmed this input is no longer held",
+          "title": "Release Verified"
+        },
+        "step_index": {
+          "description": "0 for an action; the ordered step index for a skill",
+          "minimum": 0,
+          "title": "Step Index",
+          "type": "integer"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": -1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared normalized value; null for a button",
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": -1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared second value; 0 for a one-dimensional axis; null for a button",
+          "title": "Y"
+        }
+      },
+      "required": [
+        "step_index",
+        "device",
+        "control"
+      ],
+      "title": "AppliedInput",
+      "type": "object"
+    },
     "Effect": {
       "additionalProperties": false,
       "description": "A measured or calibrated effect on one field. Unknown values stay null.",
@@ -102,6 +245,14 @@
       "description": "Measured, never taken from configuration",
       "title": "Applied Duration S"
     },
+    "applied_inputs": {
+      "description": "Per-input receipts for a chord or ordered skill; empty for a stale rejection",
+      "items": {
+        "$ref": "#/$defs/AppliedInput"
+      },
+      "title": "Applied Inputs",
+      "type": "array"
+    },
     "expected_effect": {
       "items": {
         "$ref": "#/$defs/Effect"
@@ -179,7 +330,7 @@
       "type": "array"
     },
     "protocol": {
-      "default": "upa/0",
+      "default": "upa/1",
       "pattern": "^upa/\\d+$",
       "title": "Protocol",
       "type": "string"

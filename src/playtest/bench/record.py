@@ -119,7 +119,7 @@ def calibrated_choices(calibration: dict[str, Any], discovery: dict[str, Any]) -
         label = (f"Request a {HOLD_S:g}-second hold of {action['control']}; calibrated net displacement "
                  f"{mean:.3f} world units (sample variance {variance:.6f}, n={hold['valid_trials']}).")
         choices.append(Choice(id=f"c{i}", kind=ChoiceKind.action, label=label,
-                              action=action["action"], params={"duration_game_s": HOLD_S},
+                              action=action["action"], params={},
                               source=ChoiceSource.manifest))
     choices.extend((Choice(id="wait", kind=ChoiceKind.wait, label="Wait", source=ChoiceSource.core),
                     Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.core)))

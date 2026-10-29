@@ -3,6 +3,11 @@
 The production client, loop, choices, probe, driver and trace writer run for real; only S1 (a scripted port
 or a fake `send`) and the game (a protocol peer) are fakes. No network, no Unity, no key. A wait choice's
 sleep and the token budget's clock and sleep are fakes too, so nothing here really waits.
+
+Two peers stand in for the game. `TransformsGame` runs the fake's own behaviors under the declared names
+(`ALIASES`), enough for the driver's stop, pacing and help rules. `CatalogGame` serves the catalog the real
+exporter wrote for the manifest and runs exactly the declaration a request names: the session's host seam.
+`tests/test_runner_declarations.py` runs chords, mouse and gamepad values and skills through it.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from catalog_game import CatalogGame
 from loop_fakes import TOKEN, FakeHelp, FakeS1, FakeTime, GameThread, Sleeps, TransformsGame, fail, pick
 from runner_manifest import action, hold, manifest
 from s1_fakes import Send, approval, reply
@@ -37,6 +43,8 @@ from playtest.core.run_record import build_run_record
 from playtest.core.trace import TraceWriter, read_trace
 from playtest.core.trace_replay import replay
 from playtest.core.trace_sink import MemorySink
+from playtest.preflight import catalog as exporter
+from playtest.preflight.catalog import export
 from playtest.runner import cli
 from playtest.runner.choices import build_choices
 from playtest.runner.output import secret_values
@@ -50,17 +58,21 @@ OBJECTIVE = "Try each control once, then finish."
 
 @pytest.fixture(autouse=True)
 def no_ambient_credentials(monkeypatch):
-    """No test sees, scans for or can print a credential from the machine's own environment."""
+    """No test sees, scans for or can print a credential from the machine's own environment, or a session catalog."""
     for name in [n for n in os.environ if n.endswith("_API_KEY")]:
         monkeypatch.delenv(name)
+    for name in ("UPA_SESSION_CATALOG", "UPA_SESSION_CATALOG_SHA256"):
+        monkeypatch.delenv(name, raising=False)
+
+
+ALIASES = {"move": "increment", "look": "hold"}   # the fake world's own behavior for each declared name
 
 
 def two_actions():
-    """`move` runs the fake game's `increment`, `look` runs its `hold`; both are held for their manifest lease."""
+    """`move` and `look`, each a proven single-key declaration held for its manifest lease."""
     return manifest(
         action("move", "w", hold_s=0.2, holds=[hold(0.2)]),
-        action("look", "a", hold_s=0.25, holds=[hold(0.25, mean=0.0, effective=False)]),
-        controls={"w": "increment", "a": "hold"})
+        action("look", "a", hold_s=0.25, holds=[hold(0.25, mean=0.0, effective=False)]))
 
 
 def harness_trace(sink: MemorySink | None = None) -> MemorySink:
@@ -108,6 +120,8 @@ def ticking(step: float = 1.0):
 
 
 async def connected(game_class=TransformsGame, **kwargs):
+    if game_class is TransformsGame:
+        kwargs.setdefault("aliases", ALIASES)
     game = game_class(token=TOKEN, **kwargs)
     port = await game.start()
     client = BridgeClient("127.0.0.1", port, TOKEN)
@@ -203,7 +217,7 @@ def test_an_input_without_a_calibrated_value_still_reports_what_was_observed():
         report = await probe.measure(move, terminal(duration=None))
         assert report.expected is None and report.observed["net_displacement"] == 3.0
         assert report.observed["applied_duration_s"] is None
-        assert report.fact.endswith("3.000 world units; no calibrated value for this hold.")
+        assert report.fact.endswith("3.000 world units; no calibrated effect is recorded for this declaration.")
 
     asyncio.run(main())
 
@@ -245,8 +259,9 @@ def test_the_live_probe_measures_a_real_displacement_on_the_protocol_peer():
 
 def test_a_session_runs_manifest_actions_with_their_leases_and_finishes():
     async def main():
-        game, client = await connected()
-        built = build_choices(two_actions())
+        value = two_actions()
+        game, client = await connected(CatalogGame, catalog=export(value), effects={"move": (6.0, 0.0, 0.0)})
+        built = build_choices(value)
         sink = harness_trace()
         try:
             s1 = FakeS1("move", "look", "wait", "finish")
@@ -256,11 +271,14 @@ def test_a_session_runs_manifest_actions_with_their_leases_and_finishes():
             assert (result.status, result.ending, result.error) == ("complete", "finish", None)
             assert result.turns == 4 and result.outcomes == {"executed": 2, "finished": 2}
             assert result.stop is not None and result.stop.release_verified is True and result.adherence == []
-            assert game.applied() == ["increment", "hold"]
+            # The host ran the declarations S1 chose, under their own names.
+            assert game.applied() == ["move", "look"]
             # Each input ran under the lease its manifest action declares, not the bridge's default.
             leases = {e["body"]["request"]["choice_id"]: e["body"]["request"]["lease_s"] for e in sink.of_kind("execution")}
             assert leases == {"move": 0.2, "look": 0.25}
-            assert sink.of_kind("execution")[0]["body"]["request"]["action"] == "increment"
+            # The bridge applies exactly its catalog declaration; declared-value overrides are rejected.
+            assert all(e["body"]["request"]["params"] == {} for e in sink.of_kind("execution"))
+            assert [e["body"]["request"]["action"] for e in sink.of_kind("execution")] == ["move", "look"]
             effects = {e["body"]["choice_id"]: e["body"] for e in sink.of_kind("effect")}
             assert effects["move"]["observed"]["net_displacement"] == pytest.approx(6.0)
             assert effects["move"]["expected"]["net_displacement"] == 6.04
@@ -268,7 +286,6 @@ def test_a_session_runs_manifest_actions_with_their_leases_and_finishes():
             assert any(f.startswith("move: net displacement between inspection seq") for f in s1.contexts[1]["facts"])
             assert s1.contexts[0]["objective"] == OBJECTIVE
             assert [c["id"] for c in s1.contexts[0]["choices"]] == ["move", "look", "wait", "escalate", "delegate", "finish"]
-            assert ("held", "stop") in game.releases() or ("held", "expired") in game.releases()
             end_trace(sink, result)
             assert problems(sink.entries) == []
         finally:
@@ -383,7 +400,7 @@ def test_a_lost_bridge_ends_the_run_inconclusive_with_the_cause_and_still_stops(
 
 def test_an_input_whose_record_never_arrives_is_traced_then_stopped_and_released():
     async def main():
-        game = TransformsGame(token=TOKEN, action_run_s=5.0, action_stall=True)    # accepts, never completes
+        game = TransformsGame(token=TOKEN, action_run_s=5.0, action_stall=True, aliases=ALIASES)    # accepts, never completes
         port = await game.start()
         client = BridgeClient("127.0.0.1", port, TOKEN, timeout_s=0.3)
         await client.connect()
@@ -675,7 +692,7 @@ class Project:
         self.project = tmp_path / "game"
         (self.project / "Temp").mkdir(parents=True)
         (self.project / "Temp" / "playtest-bridge.lock").write_text(json.dumps({
-            "protocol": "upa/0", "pid": 4242, "port": port, "token": TOKEN, "started_utc": "2026-10-28T00:00:00Z"}),
+            "protocol": "upa/1", "pid": 4242, "port": port, "token": TOKEN, "started_utc": "2026-10-28T00:00:00Z"}),
             encoding="utf-8")
         if git:    # a committed project whose `Temp/` is ignored, as a Unity project's is: the worktree is clean
             run = dict(check=True, capture_output=True)
@@ -689,6 +706,10 @@ class Project:
         built = actions if actions is not None else two_actions()
         self.manifest = tmp_path / "manifest.json"
         self.manifest.write_text(built.model_dump_json(), encoding="utf-8")
+        # The session's catalog, written by the same exporter `run-session.ps1` runs, and the digest it pins.
+        self.catalog = tmp_path / "catalog.json"
+        assert exporter.main(["--manifest", str(self.manifest), "--output", str(self.catalog)]) == 0
+        self.catalog_sha = hashlib.sha256(self.catalog.read_bytes()).hexdigest()
         self.entity = tmp_path / "entity.json"
         self.entity.write_text(json.dumps({"status": "identified", "entity_id": entity_id}), encoding="utf-8")
         self.calibration = tmp_path / "calibration.json"
@@ -701,8 +722,8 @@ class Project:
     def args(self, **overrides: Any) -> list[str]:
         values: dict[str, Any] = {
             "project": self.project, "entity": self.entity, "calibration": self.calibration, "output": self.summary,
-            "manifest": self.manifest, "approval": self.approval, "max-calls": 6, "wall-limit-s": 60, "max-age-s": 2.0,
-            "objective": OBJECTIVE}
+            "manifest": self.manifest, "catalog": self.catalog, "catalog-sha256": self.catalog_sha,
+            "approval": self.approval, "max-calls": 6, "wall-limit-s": 60, "max-age-s": 2.0, "objective": OBJECTIVE}
         values.update({key.replace("_", "-"): value for key, value in overrides.items()})
         flags: list[str] = []
         for key, value in values.items():
@@ -718,17 +739,18 @@ def with_fake_send(monkeypatch, send):
 
 def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0001")
-    with GameThread(TransformsGame) as thread:
+    with GameThread(CatalogGame, catalog=export(two_actions()), effects={"move": (6.0, 0.0, 0.0)}) as thread:
         files = Project(tmp_path, thread.port, git=True)
         send = Send(files.out, reply("next_action", "move"), reply("next_action", "look"), reply("next_action", "finish"))
         with_fake_send(monkeypatch, send)
         assert cli.main(files.args(tokens_per_minute=60000)) == 0
-        assert thread.game.applied() == ["increment", "hold"]
+        assert thread.game.applied() == ["move", "look"]            # the host ran the declarations S1 named
     summary = json.loads(files.summary.read_text(encoding="utf-8"))
     assert (summary["status"], summary["ending"], summary["turns"]) == ("complete", "finish", 3)
     assert summary["adherence"] == {"rate": 1.0, "violations": []} and summary["stop"]["release_verified"] is True
     assert summary["s1"]["calls"] == 3 and summary["s1"]["call_cap"] == 6 and summary["manifest"]["not_offered"] == []
     assert summary["manifest"]["offered"] == ["move", "look", "wait", "escalate", "delegate", "finish"]
+    assert summary["manifest"]["catalog_sha256"] == files.catalog_sha     # the run says which catalog the host served
     assert summary["game_worktree_changed"] is False and summary["provider_failures"] == 0
     # The trace is the file writer's: read back strictly and replayed, it has nothing to report.
     path = files.out / "trace.jsonl"
@@ -754,7 +776,7 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
     assert str(tmp_path) not in entries[0].model_dump_json()                       # no absolute path in the record
     assert len(list((files.out / "calls").glob("*.json"))) == 3 and (files.out / "plan.json").is_file()
     plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
-    assert plan["max_calls"] == 6 and plan["offered"][:2] == ["move", "look"]
+    assert plan["max_calls"] == 6 and plan["offered"][:2] == ["move", "look"] and plan["catalog_sha256"] == files.catalog_sha
     # Pacing: the rate is in the plan and the summary, and a short run never waited. The fake replies carry
     # no input token count, so every call was counted as an estimate.
     assert plan["tokens_per_minute"] == summary["settings"]["tokens_per_minute"] == 60000
@@ -766,7 +788,7 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
 
 def test_the_cli_stops_after_consecutive_provider_failures_and_exits_non_zero(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0002")
-    with GameThread(TransformsGame) as thread:
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
         files = Project(tmp_path, thread.port)
         limited = (429, None, 5.0, "HTTP error")
         send = Send(files.out, limited, limited, limited)
@@ -794,12 +816,12 @@ def test_an_interrupt_still_stops_the_loop_and_closes_the_trace_once(tmp_path: P
     def interrupt(body):
         raise Interrupted("stop now")
 
-    with GameThread(TransformsGame) as thread:
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
         files = Project(tmp_path, thread.port)
         with_fake_send(monkeypatch, Send(files.out, reply("next_action", "move"), interrupt))
         with pytest.raises(Interrupted):
             cli.main(files.args())
-        assert thread.game.applied() == ["increment"]
+        assert thread.game.applied() == ["move"]
     entries = read_trace(files.out / "trace.jsonl")
     assert [e.kind for e in entries].count(TraceKind.end) == 1 and [e.kind for e in entries[-2:]] == [TraceKind.stop, TraceKind.end]
     assert entries[-2].body["reason"] == "error" and entries[-2].body["error"] == "interrupted"
@@ -824,7 +846,8 @@ def test_the_token_rate_defaults_to_85000_and_takes_the_environment_then_the_fla
 def test_the_cli_refuses_to_start_without_the_approval_the_cap_or_the_key(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0003")
     files = Project(tmp_path, 1)
-    for overrides in ({"approval": None}, {"max_calls": None}, {"manifest": None}, {"tokens_per_minute": 0}):
+    for overrides in ({"approval": None}, {"max_calls": None}, {"manifest": None}, {"tokens_per_minute": 0},
+                      {"catalog": None}, {"catalog_sha256": None}):
         with pytest.raises(SystemExit) as refused:
             cli.main(files.args(**overrides))
         assert refused.value.code == 2
@@ -854,8 +877,59 @@ def test_the_cli_refuses_inputs_that_do_not_agree_before_any_call(tmp_path: Path
     assert cli.main(files.args()) == 1                 # the manifest, entity and calibration disagree
     small = Project(tmp_path / "b", 1, calls=2)
     assert cli.main(small.args(max_calls=5)) == 1       # the approved envelope is smaller than the cap
-    no_action = Project(tmp_path / "c", 1, actions=manifest(action("look", "a", axis=True, holds=[hold(0.2)]),
-                                                            controls={"a": "hold"}))
+    no_action = Project(tmp_path / "c", 1, actions=manifest(action("look", "a", supported=False, holds=[hold(0.2)])))
     assert cli.main(no_action.args()) == 1              # nothing the bridge can execute
     for case in (files, small, no_action):
         assert not (case.out / "plan.json").exists() and not (case.out / "calls").exists()
+
+
+def test_the_cli_refuses_a_missing_altered_invalid_or_different_catalog_before_any_call(tmp_path: Path, monkeypatch, capsys):
+    """Every way the host's catalog can fail to be the manifest's export ends the run before a plan, a call or a contact."""
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0008")
+    strafe = manifest(action("strafe", ["w", "a"], hold_s=0.2, holds=[]))
+    first_key_only = manifest(action("strafe", "w", hold_s=0.2, holds=[]))
+    other = manifest(action("other", "s", holds=[hold(0.2)]))
+
+    def repin(files: Project, text: str) -> None:
+        files.catalog.write_text(text, encoding="utf-8")
+        files.catalog_sha = hashlib.sha256(files.catalog.read_bytes()).hexdigest()
+
+    def exported_text(value, where: Path) -> str:
+        source, path = where / "m.json", where / "c.json"
+        where.mkdir(parents=True)
+        source.write_text(value.model_dump_json(), encoding="utf-8")
+        assert exporter.main(["--manifest", str(source), "--output", str(path)]) == 0
+        return path.read_text(encoding="utf-8")
+
+    cases = {
+        "missing": (strafe, lambda f: f.catalog.unlink(), "cannot read the session catalog"),
+        "altered": (strafe, lambda f: f.catalog.write_text(f.catalog.read_text(encoding="utf-8") + " ", encoding="utf-8"),
+                    "not the file that was exported"),
+        "invalid": (strafe, lambda f: repin(f, "{ not json"), "not a valid action catalog"),
+        "legacy": (strafe, lambda f: repin(f, json.dumps({"actions": {"preflight_key_w": {
+            "backend": "input_system", "device": "Keyboard", "control": "w", "default_lease_s": 0.4}}})),
+                   "not a valid action catalog"),
+        "another manifest": (strafe, lambda f: repin(f, exported_text(other, tmp_path / "other-export")),
+                             "'strafe' is supported by the manifest but the host does not serve it"),
+        "chord cut to its first key": (strafe, lambda f: repin(f, exported_text(first_key_only, tmp_path / "cut-export")),
+                                       "'strafe' differs from the manifest's declaration"),
+    }
+    for name, (built, change, phrase) in cases.items():
+        files = Project(tmp_path / name.replace(" ", "-"), 1, actions=built)      # port 1: nothing listens
+        change(files)
+        capsys.readouterr()
+        assert cli.main(files.args()) == 1, name
+        assert phrase in capsys.readouterr().err, name
+        assert not (files.out / "plan.json").exists() and not (files.out / "calls").exists(), name
+
+
+def test_the_catalog_and_its_pin_take_the_session_variables_then_the_flags(monkeypatch):
+    required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]
+    args = cli._parser().parse_args(required)
+    assert args.catalog is None and args.catalog_sha256 is None          # no default catalog exists
+    monkeypatch.setenv("UPA_SESSION_CATALOG", "from-env.json")
+    monkeypatch.setenv("UPA_SESSION_CATALOG_SHA256", "a" * 64)
+    args = cli._parser().parse_args(required)
+    assert (args.catalog, args.catalog_sha256) == (Path("from-env.json"), "a" * 64)
+    args = cli._parser().parse_args([*required, "--catalog", "flag.json", "--catalog-sha256", "b" * 64])
+    assert (args.catalog, args.catalog_sha256) == (Path("flag.json"), "b" * 64)

@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -205,3 +206,169 @@ def test_no_readers_or_controls_are_explicit_gaps_not_fabricated_choices():
     assert "no discovered field was offered as a reader" in value.gaps.coverage
     assert "no measured control was offered" in value.gaps.coverage
     assert manifest.validate_evidence(value, packet) == []
+
+
+def execution_evidence(control="w", hold=0.2, release=True, duration=None, device="Keyboard", x=None, y=None,
+                       start=1000.0, action="move", declaration_hold=None):
+    value = hold if duration is None else duration
+    declaration = {"backend": "input_system",
+                   "inputs": [{"device": device, "control": control, "x": x, "y": y}],
+                   "default_lease_s": hold if declaration_hold is None else declaration_hold}
+    return {
+        "action": action, "session": "s-1", "status": "completed", "release_verified": release,
+        "declaration": declaration,
+        "applied_duration_s": value,
+        "input_start_wall_s": start, "input_end_wall_s": start + value,
+        "receipts": [{
+            "step_index": 0, "device": device, "control": control, "x": x, "y": y,
+            "input_start_wall_s": start, "input_end_wall_s": start + value,
+            "applied_duration_s": value, "applied_delta_x": 64.0 if device == "Mouse" else None,
+            "applied_delta_y": 0.0 if device == "Mouse" else None,
+            "release_verified": release,
+        }],
+        "wall_utc": "2026-01-01T00:00:00Z",
+    }
+
+
+def test_execution_support_requires_evidence_for_the_exact_declared_hold():
+    snapshot, calibration = evidence()
+    calibration["execution_evidence"] = [execution_evidence(hold=0.2, duration=0.201)]
+    packet = make(snapshot, calibration)
+    answers = [
+        {"stage_4": {"readers": [{"field_id": "field_00000", "alias": "speed", "why": "read"}],
+                     "unobservable": []}, "stage_5": None, "stage_6": None},
+        {"stage_4": None, "stage_5": {"actions": [{"name": "move", "intent": "move", "hold_s": 0.2,
+         "inputs": [{"control_id": "w", "x": None, "y": None}], "preconditions": []}],
+         "skills": [], "uncontrollable": []}, "stage_6": None},
+        {"stage_4": None, "stage_5": None, "stage_6": {"progress": [], "invariants": [], "unjudgeable": []}},
+    ]
+    replies = iter(answers)
+    result = stages.run(packet, lambda *_: stages.CallResult(json.dumps(next(replies)), None, {}), lambda _: None)
+    value = manifest.assemble(packet, result)
+    assert value.actions[0].execution_supported is True
+    assert value.actions[0].execution_evidence.receipts[0].control == "w"
+
+    changed = calibration["execution_evidence"][0]["receipts"][0]
+    changed["applied_duration_s"] = 0.6
+    packet = make(snapshot, calibration)
+    replies = iter(answers)
+    result = stages.run(packet, lambda *_: stages.CallResult(json.dumps(next(replies)), None, {}), lambda _: None)
+    value = manifest.assemble(packet, result)
+    assert value.actions[0].execution_supported is False and value.actions[0].execution_evidence is None
+
+
+def assembled_action_with_evidence(calibration_evidence):
+    snapshot, calibration = evidence()
+    calibration["execution_evidence"] = calibration_evidence
+    packet = make(snapshot, calibration)
+    answers = [
+        {"stage_4": {"readers": [{"field_id": "field_00000", "alias": "speed", "why": "read"}],
+                     "unobservable": []}, "stage_5": None, "stage_6": None},
+        {"stage_4": None, "stage_5": {"actions": [{"name": "move", "intent": "move", "hold_s": 0.2,
+         "inputs": [{"control_id": "w", "x": None, "y": None}], "preconditions": []}],
+         "skills": [], "uncontrollable": []}, "stage_6": None},
+        {"stage_4": None, "stage_5": None, "stage_6": {"progress": [], "invariants": [], "unjudgeable": []}},
+    ]
+    replies = iter(answers)
+    result = stages.run(packet, lambda *_: stages.CallResult(json.dumps(next(replies)), None, {}), lambda _: None)
+    return manifest.assemble(packet, result)
+
+
+def test_evidence_declaration_must_match_exactly_before_measurement_tolerance():
+    # The receipt duration is a valid measured application of a 0.2 s declaration, but the
+    # recorded declaration says 0.21 s. A measured hold tolerance must not rewrite it.
+    value = assembled_action_with_evidence([execution_evidence(
+        hold=0.2, duration=0.201, declaration_hold=0.21)])
+    assert value.actions[0].execution_supported is False
+    assert value.actions[0].execution_evidence is None
+
+
+def test_evidence_label_need_not_repeat_the_manifest_action_name():
+    # The physical declaration matches even though the calibration harness label differs.
+    value = assembled_action_with_evidence([execution_evidence(
+        hold=0.2, duration=0.201, action="preflight_key_w")])
+    assert value.actions[0].execution_supported is True
+    assert value.actions[0].execution_evidence.action == "preflight_key_w"
+
+
+def test_a_chord_is_not_supported_by_its_individual_key_evidence():
+    snapshot, calibration = evidence()
+    calibration["execution_evidence"] = [execution_evidence(control="w")]
+    packet = make(snapshot, calibration)
+    answers = [
+        {"stage_4": {"readers": [{"field_id": "field_00000", "alias": "speed", "why": "read"}],
+                     "unobservable": []}, "stage_5": None, "stage_6": None},
+        {"stage_4": None, "stage_5": {"actions": [{"name": "chord", "intent": "act", "hold_s": 0.2,
+         "inputs": [{"control_id": "w", "x": None, "y": None}, {"control_id": "a", "x": None, "y": None}],
+         "preconditions": []}], "skills": [], "uncontrollable": []}, "stage_6": None},
+        {"stage_4": None, "stage_5": None, "stage_6": {"progress": [], "invariants": [], "unjudgeable": []}},
+    ]
+    # Add the second offered control and a matching summary so the declaration passes reference checks.
+    snapshot["data"]["bindings"].append(dict(snapshot["data"]["bindings"][0], id="other",
+                                             binding_effective_path="<Keyboard>/a"))
+    snapshot["caps"]["bindings"] = {"limit": 100, "observed": 2, "returned": 2, "truncated": False}
+    from playtest.preflight.calibrate import discover_actions
+    actions, _ = discover_actions(snapshot["data"])
+    calibration["actions"] = actions
+    calibration["action_cap"] = {"limit": 100, "observed": 2, "returned": 2, "truncated": False}
+    original = calibration["action_summaries"][0]
+    calibration["action_summaries"] = [dict(original, control=a["control"], bindings=a["bindings"],
+                                             resolution=a["resolution"], device=a["device"],
+                                             control_name=a["control_name"], control_type=a["control_type"],
+                                             declared_x=a["x"], declared_y=a["y"]) for a in actions]
+    calibration["trials"] = [{"control": a["control"], "valid": True} for a in actions]
+    packet = make(snapshot, calibration)
+    replies = iter(answers)
+    result = stages.run(packet, lambda *_: stages.CallResult(json.dumps(next(replies)), None, {}), lambda _: None)
+    value = manifest.assemble(packet, result)
+    assert [i.control_id for i in value.actions[0].inputs] == ["w", "a"]
+    assert value.actions[0].execution_supported is False
+    assert value.actions[0].execution_evidence is None
+
+
+def test_skill_support_requires_ordered_release_verified_step_receipts():
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "contracts" / "preflight_manifest" / "valid-chord-skill.json"
+    data = json.loads(fixture.read_text(encoding="utf-8"))
+    skill = data["skills"][0]
+    skill["steps"] = [
+        {"inputs": [{"control_id": "w", "device": "Keyboard", "control": "w", "x": None, "y": None}],
+         "hold_s": 0.2, "tap_hold_s": None, "wait_s": 0.1},
+        {"inputs": [{"control_id": "a", "device": "Keyboard", "control": "a", "x": None, "y": None}],
+         "hold_s": 0.2, "tap_hold_s": None, "wait_s": 0.0},
+    ]
+    skill["max_s"] = 1.0
+    skill["calibrations"] = [data["actions"][0]["calibrations"][0], data["actions"][0]["calibrations"][1]]
+    skill["execution_evidence"] = {
+        "action": "sequence", "session": "s-1", "status": "completed", "release_verified": True,
+        "declaration": {"backend": "input_system", "steps": [
+            {"inputs": [{"device": "Keyboard", "control": "w", "x": None, "y": None}],
+             "hold_s": 0.2, "wait_s": 0.1},
+            {"inputs": [{"device": "Keyboard", "control": "a", "x": None, "y": None}],
+             "hold_s": 0.2, "wait_s": 0.0}], "max_s": 1.0},
+        "applied_duration_s": 0.5, "input_start_wall_s": 1000.0, "input_end_wall_s": 1000.5,
+        "receipts": [
+            {"step_index": 0, "device": "Keyboard", "control": "w", "x": None, "y": None,
+             "input_start_wall_s": 1000.0, "input_end_wall_s": 1000.2, "applied_duration_s": 0.2,
+             "applied_delta_x": None, "applied_delta_y": None, "release_verified": True},
+            {"step_index": 1, "device": "Keyboard", "control": "a", "x": None, "y": None,
+             "input_start_wall_s": 1000.3, "input_end_wall_s": 1000.5, "applied_duration_s": 0.2,
+             "applied_delta_x": None, "applied_delta_y": None, "release_verified": True},
+        ],
+        "wall_utc": "2026-01-01T00:00:00Z"}
+    skill["execution_supported"] = True
+    value = PreflightManifest.model_validate(data)
+    assert value.skills[0].execution_supported is True
+
+    changed_wait = copy.deepcopy(data)
+    changed_wait["skills"][0]["execution_evidence"]["declaration"]["steps"][0]["wait_s"] = 0.05
+    with pytest.raises(ValidationError, match="wait is 0.05"):
+        PreflightManifest.model_validate(changed_wait)
+    changed_max = copy.deepcopy(data)
+    changed_max["skills"][0]["execution_evidence"]["declaration"]["max_s"] = 1.5
+    with pytest.raises(ValidationError, match="max_s is 1.5"):
+        PreflightManifest.model_validate(changed_max)
+
+    data["skills"][0]["execution_evidence"]["receipts"] = list(reversed(
+        data["skills"][0]["execution_evidence"]["receipts"]))
+    with pytest.raises(ValidationError, match="step_index"):
+        PreflightManifest.model_validate(data)

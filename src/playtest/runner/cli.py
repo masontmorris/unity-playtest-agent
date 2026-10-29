@@ -1,10 +1,14 @@
 """`playtest-run`: put S1 in the production turn loop on a wired game, driven by a preflight manifest.
 
 It runs under the PlayMode bench host the way `playtest.bench.live` does (`scripts/unity/run-session.ps1`
-starts the host, which starts this module with `--project --entity --calibration --output`). The host
-registers one bridge action per keyboard key, so a manifest action runs under the bridge action its
-control names. The manifest, approval and limits arrive as flags or `UPA_RUN_*` variables, because the
-host's command line is fixed.
+starts the host, which starts this module with `--project --entity --calibration --output`). In a session
+the host registers exactly the catalog the manifest exports (`playtest-export-catalog`), under each
+declaration's own name, so a supported chord, stick or mouse value, or skill runs as declared. That file
+and its pinned SHA-256 arrive as `--catalog` and `--catalog-sha256` (`UPA_SESSION_CATALOG` and
+`UPA_SESSION_CATALOG_SHA256`, the same variables the host reads); they are required, and the run ends before
+any call or contact with the bridge unless the file is exactly the manifest's export (`playtest.runner.catalog`).
+The manifest, approval and limits arrive as flags or `UPA_RUN_*` variables, because the host's command line
+is fixed.
 
 Budget before spend: no paid call starts without an approval file and a call cap, every call reserves
 its row in `<output dir>/calls` before it is sent, and the cap and the approved envelope are checked
@@ -39,6 +43,7 @@ from playtest.core.run_record import build_run_record
 from playtest.core.trace import TraceWriter
 from playtest.preflight import manifest as manifest_checks
 
+from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
 from .output import secret_values
 from .pacing import TOKENS_PER_MINUTE, TokenBudget
@@ -74,6 +79,10 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("project", "entity", "calibration", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=_env("UPA_RUN_MANIFEST", Path, None))
+    parser.add_argument("--catalog", type=Path, default=_env(PATH_VARIABLE, Path, None),
+                        help=f"the catalog file the host serves, exported from the manifest (also {PATH_VARIABLE})")
+    parser.add_argument("--catalog-sha256", default=_env(SHA256_VARIABLE, str, None),
+                        help=f"the SHA-256 the catalog file was pinned to (also {SHA256_VARIABLE})")
     parser.add_argument("--approval", type=Path, default=_env("UPA_RUN_APPROVAL", Path, None),
                         help="the approval file naming the call and cost caps (also UPA_RUN_APPROVAL)")
     parser.add_argument("--max-calls", type=int, default=_env("UPA_RUN_MAX_CALLS", int, None),
@@ -127,6 +136,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-calls (or UPA_RUN_MAX_CALLS) is required and must be at least 1")
     if args.manifest is None:
         parser.error("--manifest (or UPA_RUN_MANIFEST) is required")
+    if args.catalog is None or args.catalog_sha256 is None:
+        parser.error(f"--catalog and --catalog-sha256 (or {PATH_VARIABLE} and {SHA256_VARIABLE}) are required: "
+                     "a session runs only against the catalog the manifest exports, never a default one")
     if args.wall_limit_s <= 0 or args.max_age_s <= 0 or args.max_provider_failures < 1:
         parser.error("the wall limit and maximum age must be positive and the failure limit at least 1")
     if args.tokens_per_minute < 1:
@@ -153,12 +165,13 @@ def main(argv: list[str] | None = None) -> int:
         replay.validate_approval(approval, [ARM])
         _fits(approval, args.max_calls)
         built = build_choices(manifest)
+        host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
         if not any(c.source.value == "manifest" for c in built.choices):
             raise ValueError("the manifest offers no executable action")
         run_dir.mkdir(parents=True, exist_ok=True)
         manifest_sha = digest(manifest_bytes)
         plan = {"version": 1, "kind": "session", "arm": ARM, "approval_sha256": approval_sha,
-                "manifest_sha256": manifest_sha, "max_calls": args.max_calls,
+                "manifest_sha256": manifest_sha, "catalog_sha256": host.sha256, "max_calls": args.max_calls,
                 "wall_limit_s": args.wall_limit_s, "max_age_s": args.max_age_s,
                 "max_provider_failures": args.max_provider_failures, "tokens_per_minute": args.tokens_per_minute,
                 "objective_sha256": digest(objective),
@@ -167,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         replay._write(run_dir / "plan.json", plan, exclusive=True)
         ledger = call_budget.Ledger(run_dir, approval, ARM)
         before = recording._game_worktree(project)
-        summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha))
+        summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256))
         after = recording._game_worktree(project)
         summary["game_worktree_changed"] = None if before is None or after is None else before != after
         if summary["game_worktree_changed"] is True and summary["status"] == "complete":
@@ -190,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
 
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
-               manifest_sha: str) -> dict[str, Any]:
+               manifest_sha: str, catalog_sha: str) -> dict[str, Any]:
     run_dir = args.output.resolve().parent
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
@@ -225,7 +238,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "stop": result.stop.model_dump(mode="json") if result.stop is not None else None,
                 "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
                        "calls": s1.calls_reserved, "call_cap": args.max_calls},
-                "manifest": {"sha256": manifest_sha, "entity_id": manifest.entity_id,
+                "manifest": {"sha256": manifest_sha, "catalog_sha256": catalog_sha, "entity_id": manifest.entity_id,
                              "offered": [c.id for c in built.choices], "not_offered": built.not_offered},
                 "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,
                              "max_provider_failures": args.max_provider_failures,

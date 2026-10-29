@@ -4,10 +4,14 @@ Runs S1 in the production turn loop on a wired Unity game, driven by a preflight
 
 .DESCRIPTION
 Hosts the bridge in the PlayMode bench host (`BenchRecordingPlayModeTests`, the same host as
-`run-live-s1.ps1`) and starts `playtest.runner.cli` against it. The host registers one bridge action per
-keyboard key under the names the manifest's offered controls carry, so every executable manifest action
-runs under its own control and its own hold. The model call needs BASETEN_API_KEY in this session's
-environment; the script checks it by name only and never prints it.
+`run-live-s1.ps1`) and starts `playtest.runner.cli` against it. The script first exports the manifest's
+catalog with `playtest-export-catalog` (written to `<OutputDirectory>/catalog.json`) and pins its SHA-256.
+For this client module the host registers exactly that file, under each declaration's own name, so every
+supported chord, stick or mouse value, and skill runs as declared. The host and the client both read the
+file through UPA_SESSION_CATALOG and UPA_SESSION_CATALOG_SHA256; if it is absent, altered or invalid, or the
+client finds it is not the manifest's export, the run ends before any paid call. A session never falls back
+to the keyboard-only catalog the other bench modules use. The model call needs BASETEN_API_KEY in this
+session's environment; the script checks it by name only and never prints it.
 
 No paid call starts without an approval file and a call cap (-MaxCalls). Every call reserves its row in
 `<OutputDirectory>/calls` before it is sent. The output directory must be new and outside the Unity
@@ -71,6 +75,16 @@ if (-not [string]::Equals($packages.dependencies.'com.playtest.bridge', $expecte
 $python = (& uv run --directory $repoRoot python -c 'import sys; print(sys.executable)')
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($python)) { throw 'Could not locate the repository Python executable.' }
 New-Item -ItemType Directory -Path $output | Out-Null
+# What the host serves is the manifest's own export: the exporter validates the manifest and writes only the
+# declarations with exact release-verified execution evidence. Its digest is pinned for the host and the client.
+$catalogFile = Join-Path $output 'catalog.json'
+Push-Location $repoRoot
+try { & $python -m playtest.preflight.catalog --manifest $manifestFile --output $catalogFile }
+finally { Pop-Location }
+if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($catalogFile)) {
+    throw 'Could not export the manifest catalog, so there is nothing for the host to serve. Fix the manifest and choose a new output directory.'
+}
+$catalogSha = (Get-FileHash -LiteralPath $catalogFile -Algorithm SHA256).Hash.ToLowerInvariant()
 $objectiveFile = $null
 if ($ObjectivePath) { $objectiveFile = [IO.Path]::GetFullPath($ObjectivePath) }
 elseif ($Objective) {
@@ -80,7 +94,8 @@ elseif ($Objective) {
 $invariant = [Globalization.CultureInfo]::InvariantCulture
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
-           'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE')
+           'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
+           'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
@@ -90,6 +105,8 @@ try {
     $env:UPA_BENCH_CALIBRATION = $calibration
     $env:UPA_BENCH_MODULE = 'playtest.runner.cli'
     $env:UPA_BENCH_TIMEOUT_S = [string]($WallLimitSeconds + 180)
+    $env:UPA_SESSION_CATALOG = $catalogFile
+    $env:UPA_SESSION_CATALOG_SHA256 = $catalogSha
     $env:UPA_RUN_MANIFEST = $manifestFile
     $env:UPA_RUN_APPROVAL = $approval
     $env:UPA_RUN_MAX_CALLS = [string]$MaxCalls
@@ -105,6 +122,7 @@ try {
     if ($UnityPath) { $runnerArgs += @('-UnityPath', $UnityPath) }
     & powershell.exe @runnerArgs
     if ($LASTEXITCODE -ne 0) { throw "The session failed (exit $LASTEXITCODE); inspect the retained summary, trace and log." }
+    Write-Host "Served catalog: $catalogFile (sha256 $catalogSha)"
     Write-Host "Saved run summary: $env:UPA_BENCH_OUTPUT"
     Write-Host "Saved trace: $(Join-Path $output 'trace.jsonl')"
 }
