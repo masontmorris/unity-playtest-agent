@@ -48,6 +48,19 @@ def test_the_host_selects_the_catalog_before_the_scene_loads_and_serves_what_it_
     assert f"BridgeSessionCatalog.PathVariable" in HOST and "BridgeSessionCatalog.Sha256Variable" in HOST
 
 
+def test_the_script_turns_the_frontier_and_the_recorder_on_only_when_asked():
+    from playtest.runner import session_video
+
+    assert "$env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }" in SCRIPT
+    assert cli.switch("1") is True and "UPA_RUN_FRONTIER" in Path(cli.__file__).read_text(encoding="utf-8")
+    assert "$env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier)" in SCRIPT
+    launch = SCRIPT.index("& powershell.exe @runnerArgs")
+    start = SCRIPT.index(f"-m {session_video.__name__} ")
+    assert SCRIPT.index("if ($RecordFrames) {") < start < launch       # recording starts before Unity does
+    finish = SCRIPT.index("finally {", launch)
+    assert finish < SCRIPT.index("New-Item -ItemType File -Path $recordStop") # and stops only after Unity exits
+
+
 def test_the_keyboard_bench_catalog_is_still_the_other_modules_own():
     method = HOST[HOST.index("private static BridgeActionCatalog KeyboardBenchCatalog()"):]
     assert '"preflight_key_" + control' in method and "DefaultLeaseS = 0.4" in method

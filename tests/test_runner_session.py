@@ -843,6 +843,20 @@ def test_the_token_rate_defaults_to_85000_and_takes_the_environment_then_the_fla
         cli._parser()
 
 
+def test_the_frontier_switch_takes_the_environment_and_rejects_anything_but_on_or_off(monkeypatch):
+    # The PlayMode host passes only paths on the command line, so a hosted session turns the frontier on this way.
+    required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]
+    monkeypatch.delenv("UPA_RUN_FRONTIER", raising=False)
+    assert cli._parser().parse_args(required).frontier is False
+    assert cli._parser().parse_args([*required, "--frontier"]).frontier is True
+    for raw, expected in (("1", True), ("true", True), ("0", False), ("false", False)):
+        monkeypatch.setenv("UPA_RUN_FRONTIER", raw)
+        assert cli._parser().parse_args(required).frontier is expected
+    monkeypatch.setenv("UPA_RUN_FRONTIER", "yes")
+    with pytest.raises(SystemExit):
+        cli._parser()
+
+
 def test_the_cli_refuses_to_start_without_the_approval_the_cap_or_the_key(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0003")
     files = Project(tmp_path, 1)
