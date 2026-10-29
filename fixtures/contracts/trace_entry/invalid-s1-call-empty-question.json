@@ -1,0 +1,4 @@
+{
+  "run_id":"r-test","author":"s1","turn":0,"refs":[0],"wall_utc":"2026-10-26T18:00:00Z","trace_seq":1,"kind":"s1_call",
+  "body":{"question":" ","provider":"synthetic","model":"synthetic","resolved_model":"synthetic","request_sha256":"0","http_status":null,"latency_ms":0,"problem":null,"response":null,"usage":null}
+}

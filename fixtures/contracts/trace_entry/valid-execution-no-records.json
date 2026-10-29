@@ -1,0 +1,4 @@
+{
+  "run_id":"r-test","author":"bridge","turn":0,"refs":[0],"wall_utc":"2026-10-26T18:00:00Z","trace_seq":1,"kind":"execution",
+  "body":{"purpose":"choice","request":{"action_id":"a1","choice_id":"c1","action":"move","params":{},"based_on_seq":1,"max_age_s":1.0,"depends_on":[],"lease_s":null},"records":[]}
+}

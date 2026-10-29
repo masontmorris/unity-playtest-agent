@@ -121,8 +121,25 @@
       "title": "Game Commit",
       "type": "string"
     },
+    "game_modified_paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Game Modified Paths",
+      "type": "array"
+    },
     "game_project": {
       "title": "Game Project",
+      "type": "string"
+    },
+    "game_worktree": {
+      "default": "unknown",
+      "enum": [
+        "clean",
+        "modified",
+        "unknown"
+      ],
+      "title": "Game Worktree",
       "type": "string"
     },
     "input_mode": {

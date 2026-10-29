@@ -15,10 +15,12 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | Clip in a frontier call | Muse Spark 1.3 | about $0.0013 per 4 s at 640×360, 10 fps | 1,056 extra input tokens |
 | Preflight call, full project | Muse Spark 1.3 (Standard) | $0.037–0.043 for 26k input tokens; $0.011–0.013 for a later stage that reuses the cached prefix | Measured tokens × list price (#70); one schema per chain (#73) |
 | Preflight call, full project | `muse-spark-1.3-contributor` | $0.0028–0.0032 for the same tokens | Fixtures only: Meta may train on the prompts |
+| Preflight call, FPSKit #28 packet | Muse Spark 1.3 (Standard) | $0.24–0.30 cold at 190–235k prompt tokens; $0.036–0.042 cached; about $0.11–0.14 per three-stage chain | Measured, 63 calls (#121). Set `prompt_cache_key`: without it a later stage missed the cache and paid $0.25 |
+| Preflight call, FPSKit #28 packet | `muse-spark-1.3-contributor` | $0.024 cold at 233k tokens; about $0.0009 cached | Measured (#28 ledgers) |
 
 ## Preflight per project
 
-Stages 4–6 are three calls, and each re-sends the whole project. The early probes below sent 26,401 input tokens (26 scripts, 224 fields). A full FPSKit packet with discovery and calibration is far larger: 232,662 prompt tokens per call in #28 and about 243k after #115, mostly calibration evidence. Plan with the measured row for the current packet, not the probe rows.
+Stages 4–6 are three calls, and each re-sends the whole project. The early probes below sent 26,401 input tokens (26 scripts, 224 fields). A full FPSKit packet with discovery and calibration is far larger: 232,662 prompt tokens per call in #28 — discovery now carries every field, component and IL write fact — and about 243k after #115, mostly calibration evidence. Plan with the FPSKit rows in the per-call table and the measured row below, not the probe figures.
 
 | Case | Three stages | Basis |
 |---|---|---|

@@ -1,0 +1,4 @@
+{
+  "run_id":"r-test","author":"harness","turn":null,"refs":[],"wall_utc":"2026-10-26T18:00:00Z","trace_seq":1,"kind":"end",
+  "body":{"status":"complete","error":null,"turns":0,"redactions":-1}
+}

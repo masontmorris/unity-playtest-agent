@@ -41,3 +41,31 @@ def test_action_defaults_and_explicit_skill_bounds_are_bound_without_choice_repa
         assert len(client.sent) == 4  # no repair, retry or substitute after rejection
 
     asyncio.run(run())
+
+
+def test_host_leases_bind_by_choice_and_never_replace_a_skills_own_bound():
+    class Client:
+        def __init__(self):
+            self.sent = []
+
+        async def act(self, **request):
+            self.sent.append(request)
+            return [ExecutionRecord(
+                session="s", seq=len(self.sent), wall_utc=datetime.now(timezone.utc),
+                action_id=request["action_id"], status=ExecStatus.completed)]
+
+    async def run():
+        client = Client()
+        executor = ExecutionController(client, lease_s=0.2, leases={"mapped_action": 0.3, "mapped_skill": 1.5})
+        action = Choice(id="mapped_action", kind=ChoiceKind.action, action="combined", label="Combined",
+                        source=ChoiceSource.manifest)
+        skill = Choice(id="mapped_skill", kind=ChoiceKind.skill, skill="sequence", label="Sequence",
+                       source=ChoiceSource.manifest)
+        unbounded_skill = Choice(id="other_skill", kind=ChoiceKind.skill, skill="other", label="Other",
+                                 source=ChoiceSource.manifest)
+        await executor.execute(action, based_on_seq=1)
+        await executor.execute(skill, based_on_seq=2)
+        await executor.execute(unbounded_skill, based_on_seq=3)
+        assert [request["lease_s"] for request in client.sent] == [0.3, 1.5, None]
+
+    asyncio.run(run())

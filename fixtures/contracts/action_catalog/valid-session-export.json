@@ -1,0 +1,202 @@
+{
+  "actions": {
+    "device_chord": {
+      "backend": "input_system",
+      "default_lease_s": 0.3,
+      "inputs": [
+        {
+          "control": "w",
+          "device": "Keyboard",
+          "x": null,
+          "y": null
+        },
+        {
+          "control": "rightTrigger",
+          "device": "Gamepad",
+          "x": 1.0,
+          "y": 0.0
+        },
+        {
+          "control": "leftButton",
+          "device": "Mouse",
+          "x": null,
+          "y": null
+        }
+      ]
+    },
+    "dpad_value": {
+      "backend": "input_system",
+      "default_lease_s": 0.2,
+      "inputs": [
+        {
+          "control": "dpad",
+          "device": "Gamepad",
+          "x": 0.0,
+          "y": 1.0
+        }
+      ]
+    },
+    "key_chord": {
+      "backend": "input_system",
+      "default_lease_s": 0.2,
+      "inputs": [
+        {
+          "control": "w",
+          "device": "Keyboard",
+          "x": null,
+          "y": null
+        },
+        {
+          "control": "a",
+          "device": "Keyboard",
+          "x": null,
+          "y": null
+        }
+      ]
+    },
+    "key_hold": {
+      "backend": "input_system",
+      "default_lease_s": 0.2,
+      "inputs": [
+        {
+          "control": "w",
+          "device": "Keyboard",
+          "x": null,
+          "y": null
+        }
+      ]
+    },
+    "key_sequence": {
+      "backend": "input_system",
+      "max_s": 1.0,
+      "steps": [
+        {
+          "hold_s": 0.2,
+          "inputs": [
+            {
+              "control": "w",
+              "device": "Keyboard",
+              "x": null,
+              "y": null
+            }
+          ],
+          "wait_s": 0.1
+        },
+        {
+          "hold_s": 0.2,
+          "inputs": [
+            {
+              "control": "a",
+              "device": "Keyboard",
+              "x": null,
+              "y": null
+            },
+            {
+              "control": "space",
+              "device": "Keyboard",
+              "x": null,
+              "y": null
+            }
+          ],
+          "wait_s": 0.0
+        }
+      ]
+    },
+    "mouse_button": {
+      "backend": "input_system",
+      "default_lease_s": 0.1,
+      "inputs": [
+        {
+          "control": "leftButton",
+          "device": "Mouse",
+          "x": null,
+          "y": null
+        }
+      ]
+    },
+    "pad_button": {
+      "backend": "input_system",
+      "default_lease_s": 0.1,
+      "inputs": [
+        {
+          "control": "buttonSouth",
+          "device": "Gamepad",
+          "x": null,
+          "y": null
+        }
+      ]
+    },
+    "pointer_impulse": {
+      "backend": "input_system",
+      "default_lease_s": 0.1,
+      "inputs": [
+        {
+          "control": "delta",
+          "device": "Mouse",
+          "x": 0.5,
+          "y": -0.25
+        }
+      ]
+    },
+    "pointer_sequence": {
+      "backend": "input_system",
+      "max_s": 0.5,
+      "steps": [
+        {
+          "hold_s": 0.05,
+          "inputs": [
+            {
+              "control": "delta",
+              "device": "Mouse",
+              "x": 0.5,
+              "y": -0.25
+            },
+            {
+              "control": "leftButton",
+              "device": "Mouse",
+              "x": null,
+              "y": null
+            }
+          ],
+          "wait_s": 0.1
+        },
+        {
+          "hold_s": 0.2,
+          "inputs": [
+            {
+              "control": "leftStick",
+              "device": "Gamepad",
+              "x": 0.0,
+              "y": 1.0
+            }
+          ],
+          "wait_s": 0.0
+        }
+      ]
+    },
+    "stick_value": {
+      "backend": "input_system",
+      "default_lease_s": 0.5,
+      "inputs": [
+        {
+          "control": "leftStick",
+          "device": "Gamepad",
+          "x": 0.3,
+          "y": 1.0
+        }
+      ]
+    },
+    "trigger_value": {
+      "backend": "input_system",
+      "default_lease_s": 0.3,
+      "inputs": [
+        {
+          "control": "leftTrigger",
+          "device": "Gamepad",
+          "x": 0.5,
+          "y": 0.0
+        }
+      ]
+    }
+  }
+}
