@@ -5,7 +5,7 @@ using Playtest.Bridge.Editor.Preflight;
 
 namespace Playtest.Bridge.Tests
 {
-    public sealed class CalibrationPlanTests
+    public sealed class UnityCalibrationPlanTests
     {
         private string _directory;
 

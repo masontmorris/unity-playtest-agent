@@ -590,6 +590,24 @@ def test_a_quiet_clock_phase_reports_zero_errors_as_measured(monkeypatch):
     assert result["clock"]["reason"] == calibrate.UNKNOWN_STEPPED_REASON
 
 
+@pytest.mark.parametrize("last_read", ["to_resume", "resume"])
+@pytest.mark.parametrize("errors_per_window", [0, 2])
+def test_missing_trailing_clock_reads_leave_the_total_unknown(last_read, errors_per_window):
+    names = calibrate.CLOCK_READS[:calibrate.CLOCK_READS.index(last_read) + 1]
+    reads = {}
+    for index, name in enumerate(names):
+        observed = index * errors_per_window
+        events = [monitor_event(1, observed)] if observed else []
+        reads[name] = {"runtime_errors": monitor(observed, events)}
+
+    errors = calibrate.clock_error_evidence(reads)
+    assert errors["total_count"] is None
+    assert errors["errors_observed"] is (True if errors_per_window else None)
+    assert errors["sample_complete"] is None
+    assert "did not reach:" in errors["gap"] and "running" in errors["gap"]
+    assert errors["windows"][last_read]["count"] == errors_per_window
+
+
 def test_errors_logged_by_the_resume_land_in_the_resume_window_not_the_running_one(monkeypatch):
     client = FakeCalibrationBridge(flood={"resume": 40})
     windows = completed_run(client, monkeypatch)["clock"]["runtime_errors"]["windows"]
@@ -602,10 +620,12 @@ def test_errors_logged_while_the_clock_runs_again_are_counted_in_the_running_win
         if seconds == calibrate.RUNNING_OBSERVATION_S and not client.paused:
             client.log_error("fault while the clock runs", times=7)
     monkeypatch.setattr(calibrate.asyncio, "sleep", sleeping)
-    errors = calibrate.asyncio.run(calibrate.measure_clock(client, "entity", "scene"))["runtime_errors"]
+    clock = calibrate.asyncio.run(calibrate.measure_clock(client, "entity", "scene"))
+    errors = clock["runtime_errors"]
     assert errors["windows"]["running"]["count"] == 7 and errors["windows"]["resume"]["count"] == 0
     assert errors["windows"]["running"]["kinds"][0]["message"] == "fault while the clock runs"
     assert errors["errors_observed"] is True and errors["total_count"] == 7
+    assert "clock windows: running;" in clock["reason"]
 
 
 def test_a_clock_step_that_fails_leaves_the_missing_windows_as_gaps_and_still_resumes(monkeypatch):

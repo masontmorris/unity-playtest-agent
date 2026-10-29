@@ -622,7 +622,7 @@ def clock_error_evidence(reads: dict[str, dict[str, Any]]) -> dict[str, Any]:
     exact = not missing and not unavailable
     return {
         "windows": windows,
-        "total_count": sum(window["count"] for window in measured) if measured and not unavailable else None,
+        "total_count": sum(window["count"] for window in measured) if measured and exact else None,
         "errors_observed": True if any(window["count"] for window in measured) else (False if exact else None),
         "sample_complete": False if incomplete else (True if exact else None),
         "gap": "; ".join(reasons) if reasons else None,
@@ -718,8 +718,9 @@ async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str, *,
     evidence = clock_error_evidence(reads)
     result["runtime_errors"] = evidence
     if evidence["errors_observed"] is True:
-        result["reason"] = ("stepped-mode support is unknown: the game logged runtime errors while the clock was "
-                            "paused or stepped, counted in runtime_errors; " + UNKNOWN_STEPPED_REASON)
+        error_windows = ", ".join(name for name, window in evidence["windows"].items() if window["count"])
+        result["reason"] = ("stepped-mode support is unknown: the game logged runtime errors in clock windows: "
+                            + error_windows + "; see runtime_errors; " + UNKNOWN_STEPPED_REASON)
     elif evidence["gap"] is not None:
         result["reason"] = ("stepped-mode support is unknown: the runtime errors logged while the clock was paused or "
                             "stepped were not fully measured (" + evidence["gap"] + "); " + UNKNOWN_STEPPED_REASON)
