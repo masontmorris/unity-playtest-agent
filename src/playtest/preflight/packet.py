@@ -126,6 +126,38 @@ def field_offered(row: dict[str, Any]) -> bool:
         "unsupported", "error", "special_number", "special_vector")
 
 
+PAUSE_ERROR_SAMPLES = 3
+PAUSE_ERROR_TEXT_CHARS = 160
+
+
+def pause_runtime_errors(evidence: Any) -> dict[str, Any] | None:
+    """What the game logged while the clock was paused or stepped, as measured by calibration.
+
+    Counts come from the monitor's counter and are exact; the messages are a bounded sample and
+    may be incomplete, which is stated. A record without clock error evidence gives None: that is
+    unmeasured, not "no errors". Support for stepped mode is not decided here or anywhere in code.
+    """
+    if not isinstance(evidence, dict) or not isinstance(evidence.get("windows"), dict):
+        return None
+    windows = {name: {"meaning": window.get("meaning"), "count": window.get("count"),
+                      "sample_complete": window.get("complete"), "reason": window.get("reason")}
+               for name, window in evidence["windows"].items() if isinstance(window, dict)}
+    samples = []
+    for name, window in evidence["windows"].items():
+        for kind in window.get("kinds", []) if isinstance(window, dict) else []:
+            if isinstance(kind, dict) and len(samples) < PAUSE_ERROR_SAMPLES:
+                message = kind.get("message")
+                samples.append({"window": name, "type": kind.get("type"),
+                                "message": message[:PAUSE_ERROR_TEXT_CHARS] if isinstance(message, str) else None,
+                                "occurrences_in_sample": kind.get("occurrences_in_sample")})
+    return {"errors_observed": evidence.get("errors_observed"), "total_count": evidence.get("total_count"),
+            "sample_complete": evidence.get("sample_complete"), "gap": evidence.get("gap"),
+            "windows": windows, "sample": samples,
+            "note": ("counts are exact monitor-counter differences between consecutive reads taken around the "
+                     "pause, the 0.2 s paused interval, the step, the resume and a short interval with the clock "
+                     "running again; messages are a bounded sample")}
+
+
 def build(inventory: InspectResult, discovery: InspectResult, calibration: CalibrationRecord,
           *, image: Screenshot | None = None) -> Packet:
     """Build a deterministic packet from compatible stage 1 and stage 3 records.
@@ -233,6 +265,7 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
                           "source_sha256": _digest(calibration.freshness)},
             "clock": {"stepped_mode_supported": clock.get("stepped_mode_supported"),
                       "reason": clock.get("reason"), "error": clock.get("error"),
+                      "pause_runtime_errors": pause_runtime_errors(clock.get("runtime_errors")),
                       "source_sha256": _digest(calibration.clock)},
             "field_sampling_gap": calibration.field_sampling_gap,
             "reset": {"scene_reload": {k: v for k, v in scene_reset.items() if k not in ("fields", "evidence", "trials")},

@@ -6,9 +6,12 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import re
 import statistics
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +32,15 @@ FIELD_INTERVAL_S = 0.1
 FIELD_SAMPLES = 6
 IDLE_SAMPLES = 8
 MAX_KEYBOARD_STATE_AGE_S = 0.1
-MEASUREMENT_BUDGET_S = 300.0
+# The wall-clock budget scales with the plan: the held seconds, the planned trials and a fixed part.
+# It is an allowance for noticing a stuck run, not a target. Measured on FPSKit: a keyboard-only
+# calibration (98 trials) took 0.60-0.68 s per trial on average beyond the requested hold and 1.28 s at
+# most; the calibration of 23 controls (254 trials, 1.18 s per trial overall) took 0.65-0.67 s on average
+# and 1.55 s at most. The two idle windows took 1.2-1.8 s each and the clock steps about 1 s. The per-trial
+# allowance is about twice the largest overhead measured and the fixed one is many times the fixed phases.
+# The record states the budget it used and the time it took, so the allowances can be checked on the next run.
+TRIAL_ALLOWANCE_S = 3.0
+FIXED_ALLOWANCE_S = 60.0
 KEY_PATH = re.compile(r"^<Keyboard>/([a-zA-Z0-9]+)$", re.IGNORECASE)
 MOUSE_PATH = re.compile(r"^<Mouse>/([a-zA-Z0-9]+)$", re.IGNORECASE)
 GAMEPAD_PATH = re.compile(r"^<Gamepad>/([a-zA-Z0-9]+)$", re.IGNORECASE)
@@ -42,6 +53,66 @@ GAMEPAD_BUTTONS = catalog_contract.GAMEPAD_BUTTONS
 # does not claim the other directions, magnitude or dead zone were measured.
 DECLARED_VECTOR_X = 1.0
 DECLARED_VECTOR_Y = 0.0
+# Bounded evidence kept for a window's runtime errors. The counts are exact; these only limit how
+# many messages and how much text the record carries.
+ERROR_SAMPLE_KINDS = 8
+ERROR_TEXT_CHARS = 240
+ERROR_STACK_CHARS = 400
+# The clock phase is read at these points, in order; each window after the first read is named for the
+# read that closes it. The clock is paused through `to_resume`, resumed during `resume`, running in `running`.
+CLOCK_READS = ("pre_pause", "at_pause", "while_paused", "after_step", "to_resume", "resume", "running")
+CLOCK_WINDOWS = CLOCK_READS[1:]
+CLOCK_WINDOW_MEANING = {
+    "at_pause": "from the read before the pause request to the first read that saw the clock paused",
+    "while_paused": "the 0.2 s the clock stayed paused",
+    "after_step": "from the paused read through the 0.2 s game-time step to the read that followed it; paused",
+    "to_resume": "from that read to the read taken just before the resume request; still paused",
+    "resume": "from that read through the resume request to the first read that saw the clock running",
+    "running": "0.2 s of wall time with the clock running again",
+}
+RUNNING_OBSERVATION_S = 0.2
+
+
+def trial_schedule() -> list[float]:
+    """The requested hold of every trial planned for one control, in execution order."""
+    return [hold for hold in HOLD_S for _ in range(FIELD_REPEATS if hold == HOLD_S[-1] else REPEATS)]
+
+
+def measurement_budget(control_count: int) -> dict[str, Any]:
+    """The wall-clock budget for calibrating `control_count` controls, with the numbers behind it.
+
+    It grows with the planned trials and the seconds the planned holds take, so a calibration of
+    many controls is not held to a limit chosen for a few. A control that stops early only leaves
+    budget unused.
+    """
+    holds = trial_schedule()
+    trials = control_count * len(holds)
+    held_s = control_count * sum(holds)
+    return {"planned_controls": control_count, "planned_trials": trials, "planned_hold_s": held_s,
+            "trial_allowance_s": TRIAL_ALLOWANCE_S, "fixed_allowance_s": FIXED_ALLOWANCE_S,
+            "wall_budget_s": FIXED_ALLOWANCE_S + trials * TRIAL_ALLOWANCE_S + held_s,
+            "formula": "fixed_allowance_s + planned_trials * trial_allowance_s + planned_hold_s",
+            "elapsed_s": None, "trials_recorded": None}
+
+
+def write_plan(path: Path, plan: dict[str, Any]) -> None:
+    """Publish the declared budget before the first trial so the Unity host can size its own timeout.
+
+    The file is created whole or not at all, and never over an existing one.
+    """
+    budget = plan["budget"]
+    document = {"schema_version": 1, "planned_controls": budget["planned_controls"],
+                "planned_trials": budget["planned_trials"], "wall_budget_s": budget["wall_budget_s"]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_name(path.name + ".pending")
+    pending.unlink(missing_ok=True)
+    with pending.open("x", encoding="utf-8", newline="\n") as stream:
+        json.dump(document, stream, allow_nan=False)
+        stream.write("\n")
+    if path.exists():
+        pending.unlink()
+        raise FileExistsError(f"the plan file already exists: {path}")
+    os.replace(pending, path)
 
 
 def _keyboard_control(key: str) -> tuple[str, str]:
@@ -440,6 +511,126 @@ def _new_runtime_errors(snapshot: dict[str, Any], previous: int) -> tuple[int, l
     return observed, new
 
 
+def _whole(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _clip(value: Any, limit: int) -> str | None:
+    return value[:limit] if isinstance(value, str) else None
+
+
+def error_window(monitor: Any, previous: int | None) -> dict[str, Any]:
+    """The runtime errors one window saw, from the monitor snapshot that closes it.
+
+    The window is every error after the monitor's counter read `previous`. The counter covers every
+    error the monitor saw, so the window's `count` is exact even when the monitor kept only some of
+    the messages. The retained events are a bounded sample: `complete` is true only when they
+    account for every error counted in the window, and false (never silently true) when some were
+    evicted. A monitor that is off, or whose counters do not hold together, gives no count at all:
+    the window is unknown, not zero.
+    """
+    window: dict[str, Any] = {"available": False, "reason": None, "start_observed": previous,
+                              "end_observed": None, "count": None, "sampled": None, "complete": None,
+                              "monitor_limit": None, "kinds_total": None, "kinds": [], "note": None}
+    if not isinstance(monitor, dict) or monitor.get("active") is not True:
+        window["reason"] = "runtime error monitoring is unavailable"
+        return window
+    window["monitor_limit"] = _whole(monitor.get("limit"))
+    observed, events = _whole(monitor.get("observed")), monitor.get("events")
+    if previous is None:
+        window["reason"] = "the window has no earlier monitor reading to start from"
+        return window
+    if observed is None or observed < previous or not isinstance(events, list):
+        window["reason"] = "runtime error monitoring has invalid coverage"
+        return window
+    window["end_observed"] = observed
+    covered = []
+    for event in events:
+        first = _whole(event.get("first_sequence")) if isinstance(event, dict) else None
+        last = _whole(event.get("last_sequence")) if isinstance(event, dict) else None
+        if first is None or last is None or first < 1 or last < first:
+            window["reason"] = "runtime error monitoring has invalid events"
+            return window
+        if last <= previous:
+            continue
+        run = last - max(first, previous + 1) + 1
+        recorded = _whole(event.get("count"))
+        covered.append((event, first, last, run if recorded is None else min(run, recorded)))
+    count, sampled = observed - previous, sum(item[3] for item in covered)
+    if sampled > count:
+        window["reason"] = "runtime error monitoring has inconsistent counts"
+        return window
+    kinds: dict[tuple[str, str], dict[str, Any]] = {}
+    for event, first, last, occurrences in covered:
+        key = (str(event.get("type")), str(event.get("message")))
+        kind = kinds.setdefault(key, {
+            "type": _clip(event.get("type"), 32), "message": _clip(event.get("message"), ERROR_TEXT_CHARS),
+            "stack": _clip(event.get("stack"), ERROR_STACK_CHARS), "occurrences_in_sample": 0,
+            "first_sequence": first, "last_sequence": last})
+        kind["occurrences_in_sample"] += occurrences
+        kind["first_sequence"], kind["last_sequence"] = min(kind["first_sequence"], first), max(kind["last_sequence"], last)
+    ordered = sorted(kinds.values(), key=lambda kind: kind["first_sequence"])
+    window.update(available=True, count=count, sampled=sampled, complete=sampled == count,
+                  kinds_total=len(ordered), kinds=ordered[:ERROR_SAMPLE_KINDS])
+    if sampled < count:
+        limit = window["monitor_limit"]
+        window["note"] = (f"at least {sampled} of {count} errors have a retained message; the monitor keeps "
+                          f"{'at most ' + str(limit) if limit is not None else 'a bounded number of'} "
+                          "distinct events, so this window's sample is truncated")
+    return window
+
+
+def clock_error_evidence(reads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Each clock step's own error window, from the snapshots read between the steps.
+
+    `reads` maps the names in CLOCK_READS to the entity snapshots taken there. A window is the errors
+    between two consecutive reads, so it is only measured when both were taken: a step that was never
+    reached has no window, and a window the monitor could not measure has no count. Both are gaps,
+    not zeros. The phase's verdict stays inside the clock evidence; it does not change any other
+    measurement.
+    """
+    windows: dict[str, Any] = {}
+    missing = []
+    for before, name in zip(CLOCK_READS, CLOCK_READS[1:]):
+        if name not in reads:
+            missing.append(name)
+            continue
+        opening = reads.get(before)
+        if opening is None:
+            windows[name] = error_window(None, None)
+            windows[name]["reason"] = f"the {before} read that opens this window was not taken"
+            continue
+        monitor = reads[name].get("runtime_errors") if isinstance(reads[name], dict) else None
+        earlier = opening.get("runtime_errors") if isinstance(opening, dict) else None
+        previous = _whole(earlier.get("observed")) if isinstance(earlier, dict) and earlier.get("active") is True else None
+        windows[name] = error_window(monitor, previous)
+    for name, window in windows.items():
+        window["meaning"] = CLOCK_WINDOW_MEANING[name]
+    unavailable = {name: window["reason"] for name, window in windows.items() if not window["available"]}
+    measured = [window for window in windows.values() if window["available"]]
+    incomplete = [window for window in measured if window["complete"] is not True]
+    reasons = []
+    if missing:
+        reasons.append("the clock phase did not reach: " + ", ".join(missing))
+    if unavailable:
+        reasons.append("; ".join(f"{name}: {reason}" for name, reason in unavailable.items()))
+    if incomplete:
+        sampled = sum(window["sampled"] for window in incomplete)
+        counted = sum(window["count"] for window in incomplete)
+        reasons.append(f"in {len(incomplete)} window(s) at least {sampled} of {counted} errors have a retained "
+                       "message, so the sample is truncated there")
+    exact = not missing and not unavailable
+    return {
+        "windows": windows,
+        "total_count": sum(window["count"] for window in measured) if measured and not unavailable else None,
+        "errors_observed": True if any(window["count"] for window in measured) else (False if exact else None),
+        "sample_complete": False if incomplete else (True if exact else None),
+        "gap": "; ".join(reasons) if reasons else None,
+        "basis": ("counts are the monitor's counter differences between consecutive reads and are exact; "
+                  "kinds are a bounded sample of the events the monitor retained"),
+    }
+
+
 async def _observe_paused(client: BridgeClient, paused: bool, *, min_game_s: float | None = None) -> Any:
     deadline = asyncio.get_running_loop().time() + 5.0
     last = None
@@ -451,18 +642,36 @@ async def _observe_paused(client: BridgeClient, paused: bool, *, min_game_s: flo
     raise ValueError(f"clock did not reach the requested paused={paused} state")
 
 
-async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str) -> dict[str, Any]:
-    result: dict[str, Any] = {"stepped_mode_supported": None, "reason":
-        "animation, physics and game-specific timer behavior are not fully measured",
-        "pause": None, "step": None, "resume": None, "error": None}
+UNKNOWN_STEPPED_REASON = "animation, physics and game-specific timer behavior are not fully measured"
+
+
+async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str, *,
+                        start: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Pause, step and resume the clock, recording what the game logged during each step.
+
+    `start` is the entity read that closed the previous phase; passing it leaves no gap between that
+    phase's error window and this one's. Whether stepped mode is supported stays unknown. Errors the
+    game logs while the clock is paused or stepped are evidence about that phase only: they are
+    counted per step and never turn the calibration inconclusive.
+    """
+    result: dict[str, Any] = {"stepped_mode_supported": None, "reason": UNKNOWN_STEPPED_REASON,
+        "pause": None, "step": None, "resume": None, "after_resume": None, "running_after_resume": None,
+        "error": None, "runtime_errors": None}
+    reads: dict[str, dict[str, Any]] = {}
+
+    def note(message: str) -> None:
+        result["error"] = (result["error"] + "; " if result["error"] else "") + message
+
     try:
-        start = await _read_entity(client, entity_id)
+        if start is None:
+            start = await _read_entity(client, entity_id)
+        reads["pre_pause"] = start
         await client.clock("pause")
         paused = await _observe_paused(client, True)
-        paused_before = await _read_entity(client, entity_id)
+        paused_before = reads["at_pause"] = await _read_entity(client, entity_id)
         paused_fields = [await _read_fields(client, scene_id)]
         await asyncio.sleep(0.2)
-        paused_after = await _read_entity(client, entity_id)
+        paused_after = reads["while_paused"] = await _read_entity(client, entity_id)
         paused_fields.append(await _read_fields(client, scene_id))
         p0, p1 = _vector(paused_before["position"]), _vector(paused_after["position"])
         if p0 is None or p1 is None:
@@ -476,7 +685,7 @@ async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str) -> 
         await client.clock("step", step_game_s=requested)
         target = paused_after["game_time_s"] + requested * 0.75
         stepped = await _observe_paused(client, True, min_game_s=target)
-        after_step = await _read_entity(client, entity_id)
+        after_step = reads["after_step"] = await _read_entity(client, entity_id)
         step_fields = await _read_fields(client, scene_id)
         result["step"] = {"requested_game_s": requested, "observation": stepped.model_dump(mode="json"),
                           "after": after_step, "observed_game_s": after_step["game_time_s"] - paused_after["game_time_s"],
@@ -486,15 +695,44 @@ async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str) -> 
     finally:
         try:
             if not client.closed:
+                # The last read with the clock still paused: errors after it belong to the resume. A failed
+                # read must not keep the clock from being resumed.
+                try:
+                    reads["to_resume"] = await _read_entity(client, entity_id)
+                except (BridgeError, ValueError) as exc:
+                    note("read before resume failed: " + str(exc))
                 await client.clock("resume")
                 resumed = await _observe_paused(client, False)
                 result["resume"] = resumed.model_dump(mode="json")
         except (BridgeError, ValueError) as exc:
-            result["error"] = (result["error"] + "; " if result["error"] else "") + "resume failed: " + str(exc)
+            note("resume failed: " + str(exc))
+        else:
+            try:
+                if not client.closed:
+                    result["after_resume"] = reads["resume"] = await _read_entity(client, entity_id)
+                    # A short window with the clock running is the control for everything above it.
+                    await asyncio.sleep(RUNNING_OBSERVATION_S)
+                    result["running_after_resume"] = reads["running"] = await _read_entity(client, entity_id)
+            except (BridgeError, ValueError) as exc:
+                note("read after resume failed: " + str(exc))
+    evidence = clock_error_evidence(reads)
+    result["runtime_errors"] = evidence
+    if evidence["errors_observed"] is True:
+        result["reason"] = ("stepped-mode support is unknown: the game logged runtime errors while the clock was "
+                            "paused or stepped, counted in runtime_errors; " + UNKNOWN_STEPPED_REASON)
+    elif evidence["gap"] is not None:
+        result["reason"] = ("stepped-mode support is unknown: the runtime errors logged while the clock was paused or "
+                            "stepped were not fully measured (" + evidence["gap"] + "); " + UNKNOWN_STEPPED_REASON)
     return result
 
 
-async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, Any]:
+async def measure(client: BridgeClient, selected: dict[str, Any], *,
+                  on_plan: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    """Calibrate the selected entity's controls and return the local record.
+
+    `on_plan` is called with the plan, budget included, once the controls are known and before the
+    first trial, so a host can size its own limits from the same numbers the record keeps.
+    """
     if selected.get("status") != "identified" or not isinstance(selected.get("entity_id"), str):
         raise ValueError("a completed stage 2 entity record is required")
     if not isinstance(selected.get("stop"), dict) or selected["stop"].get("release_verified") is not True:
@@ -531,6 +769,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
     actions, unsupported = discover_actions(discovery)
     cap = {"limit": MAX_ACTIONS, "observed": len(actions), "returned": min(len(actions), MAX_ACTIONS),
            "truncated": len(actions) > MAX_ACTIONS}
+    budget = measurement_budget(cap["returned"])
     result: dict[str, Any] = {"schema_version": 1, "status": "inconclusive", "error": None,
         "entity_id": entity_id, "entity": entity, "coordinate_frame": "Unity world space",
         "units": "Unity world units", "physical_unit": None,
@@ -541,7 +780,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
                  "idle_samples": IDLE_SAMPLES,
                  "max_keyboard_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
                  "max_input_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
-                 "wall_budget_s": MEASUREMENT_BUDGET_S},
+                 "wall_budget_s": budget["wall_budget_s"], "budget": budget},
         "action_cap": cap, "actions": actions[:MAX_ACTIONS], "unsupported_bindings": unsupported,
         "discovery_coverage": discovery["inspection_coverage"], "idle_fields": [],
         "later_idle_windows": [], "input_field_segments": [], "field_sampling_gap": None,
@@ -550,8 +789,11 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
     if cap["truncated"] or not actions:
         result["error"] = "action candidates are incomplete" if cap["truncated"] else "no drivable input controls"
         return result
+    if on_plan is not None:
+        on_plan(result["plan"])
+    started = time.perf_counter()
     try:
-        async with asyncio.timeout(MEASUREMENT_BUDGET_S):
+        async with asyncio.timeout(budget["wall_budget_s"]):
             result["idle_fields"] = await _idle_window(client, scene_id)
             initial_monitor = await _read_entity(client, entity_id)
             seen_errors, initial_errors = _new_runtime_errors(initial_monitor, 0)
@@ -644,6 +886,18 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
                         await asyncio.sleep(0.2)
             from playtest.preflight.freshness import analyze_freshness
             result["later_idle_windows"].append(await _idle_window(client, scene_id))
+            # This read closes the later idle window and opens the clock phase. The window is a kept
+            # measurement, so a game error in it, or a monitor that cannot vouch for it, stops here.
+            boundary = await _read_entity(client, entity_id)
+            seen_errors, late_errors = _new_runtime_errors(boundary, seen_errors)
+            result["runtime_errors"] = boundary["runtime_errors"]
+            if late_errors:
+                raise ValueError("game errors were logged outside a completed action window")
+            # The clock phase has its own windows. What the game logs while paused is evidence about
+            # that phase; a flood there cannot hide, or be mistaken for, an error in any other phase.
+            result["clock"] = await measure_clock(client, entity_id, scene_id, start=boundary)
+            latest = result["clock"].get("running_after_resume") or result["clock"].get("after_resume") or boundary
+            result["runtime_errors"] = latest["runtime_errors"]
             segments = result["input_field_segments"]
             result["freshness"] = analyze_freshness(
                 result["idle_fields"], [segment["samples"] for segment in segments],
@@ -651,12 +905,6 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
                 later_idle_windows=result["later_idle_windows"])
             result["action_summaries"] = [summarize_action(action,
                 [trial for trial in result["trials"] if trial["control"] == action["control"]]) for action in actions]
-            result["clock"] = await measure_clock(client, entity_id, scene_id)
-            final_monitor = await _read_entity(client, entity_id)
-            observed, late_errors = _new_runtime_errors(final_monitor, seen_errors)
-            result["runtime_errors"] = final_monitor["runtime_errors"]
-            if late_errors:
-                raise ValueError("game errors were logged outside a completed action window")
             if not any(trial.get("valid") is True for trial in result["trials"]):
                 result["error"] = "no action produced a valid measurement"
             elif not any(len(segment["samples"]) >= 3 for segment in result["input_field_segments"]):
@@ -672,14 +920,18 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
     except (BridgeError, ValueError) as exc:
         result["error"] = str(exc)
     except TimeoutError:
-        result["error"] = "the calibration exceeded its wall-clock budget"
+        result["error"] = f"the calibration exceeded its wall-clock budget of {budget['wall_budget_s']:.0f} s"
+    finally:
+        budget["elapsed_s"] = time.perf_counter() - started
+        budget["trials_recorded"] = len(result["trials"])
     return result
 
 
-async def _run(project: Path, selected: dict[str, Any]) -> dict[str, Any]:
+async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None = None) -> dict[str, Any]:
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
-        result = await measure(client, selected)
+        publish = None if plan_output is None else (lambda plan: write_plan(plan_output, plan))
+        result = await measure(client, selected, on_plan=publish)
     finally:
         stop = await client.aclose()
     result["stop"] = stop.model_dump(mode="json") if stop is not None else None
@@ -693,15 +945,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--entity", type=Path, required=True, help="a completed stage 2 entity record")
     parser.add_argument("--output", type=Path, required=True, help="new file outside the Unity project")
+    parser.add_argument("--plan-output", type=Path,
+                        help="new file outside the Unity project that receives the wall-clock plan before the first "
+                             "trial, so the hosting Editor can size its own timeout from it")
     args = parser.parse_args(argv)
     project, output = args.project.resolve(), args.output.resolve()
+    plan_output = args.plan_output.resolve() if args.plan_output is not None else None
     if output.is_relative_to(project):
         parser.error("--output must be outside the Unity project")
     if output.exists():
         parser.error("--output already exists")
+    if plan_output is not None and (plan_output.is_relative_to(project) or plan_output.exists()
+                                    or plan_output == output):
+        parser.error("--plan-output must be a new file outside the Unity project, different from --output")
     try:
         selected = json.loads(args.entity.read_text(encoding="utf-8"))
-        result = asyncio.run(_run(project, selected))
+        result = asyncio.run(_run(project, selected, plan_output))
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)

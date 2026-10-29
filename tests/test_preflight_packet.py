@@ -8,6 +8,7 @@ import pytest
 from playtest.contracts.bridge import InspectResult
 from playtest.contracts.calibration import CalibrationRecord
 from playtest.preflight.calibrate import discover_actions
+from playtest.preflight import packet as pack
 from playtest.preflight.packet import Screenshot, build
 from playtest.roles.checks import value_kind
 from playtest.roles.preflight import StageAnswer
@@ -231,3 +232,60 @@ def test_pointer_and_gamepad_controls_are_offered_with_real_types_and_declared_v
     assert packet.discovery.control_types["gamepad_leftstick"] == "Stick"
     assert "64" in data["capability_note"] and "relative impulse" in data["capability_note"]
     assert "absolute pointer" in data["capability_note"]
+
+
+def clock_with_pause_errors():
+    def kind(message, occurrences):
+        return {"type": "Error", "message": message, "stack": "at the game", "occurrences_in_sample": occurrences,
+                "first_sequence": 1, "last_sequence": occurrences}
+    def window(count, complete, kinds, meaning):
+        return {"count": count, "complete": complete, "reason": None, "kinds": kinds, "meaning": meaning}
+    windows = {
+        "at_pause": window(1100, False, [kind("first " + "x" * 400, 200), kind("second", 56), kind("third", 1),
+                                         kind("fourth", 1)], "from the pause request to the first paused read"),
+        "while_paused": window(0, True, [], "the 0.2 s the clock stayed paused"),
+        "after_step": window(438, False, [kind("fifth", 256)], "through the step; paused"),
+        "to_resume": window(0, True, [], "still paused"),
+        "resume": window(0, True, [], "the resume request"),
+        "running": window(0, True, [], "0.2 s with the clock running again"),
+    }
+    return {"stepped_mode_supported": None, "reason": "stepped-mode support is unknown", "error": None,
+            "runtime_errors": {"windows": windows, "total_count": 1538, "errors_observed": True,
+                               "sample_complete": False, "gap": "at least 512 of 1538 errors have a retained message"}}
+
+
+def test_pause_time_errors_reach_the_packet_as_exact_counts_with_a_bounded_sample():
+    snapshot, record = evidence()
+    record["clock"] = clock_with_pause_errors()
+    packet = make(snapshot, record)
+    clock = json.loads(packet.text)["calibration"]["clock"]
+    assert clock["stepped_mode_supported"] is None
+    errors = clock["pause_runtime_errors"]
+    assert errors["errors_observed"] is True and errors["total_count"] == 1538
+    assert errors["sample_complete"] is False and "retained message" in errors["gap"]
+    assert {name: window["count"] for name, window in errors["windows"].items()} == {
+        "at_pause": 1100, "while_paused": 0, "after_step": 438, "to_resume": 0, "resume": 0, "running": 0}
+    assert errors["windows"]["running"]["meaning"] == "0.2 s with the clock running again"
+    assert errors["windows"]["at_pause"]["sample_complete"] is False
+    assert len(errors["sample"]) == pack.PAUSE_ERROR_SAMPLES
+    assert all(len(row["message"]) <= pack.PAUSE_ERROR_TEXT_CHARS for row in errors["sample"])
+    assert errors["sample"][0]["window"] == "at_pause"
+    assert packet.text == make(snapshot, record).text
+
+
+def test_a_record_without_clock_error_evidence_leaves_the_pause_facts_unmeasured():
+    snapshot, record = evidence()
+    clock = json.loads(make(snapshot, record).text)["calibration"]["clock"]
+    assert clock["pause_runtime_errors"] is None
+    record["clock"] = {"stepped_mode_supported": None, "runtime_errors": {"windows": "not a map"}}
+    assert json.loads(make(snapshot, record).text)["calibration"]["clock"]["pause_runtime_errors"] is None
+
+
+def test_a_truncated_pause_sample_is_a_clock_gap_and_not_a_rejected_record():
+    snapshot, record = evidence()
+    record["clock"] = clock_with_pause_errors()
+    assert make(snapshot, record).text
+    inconclusive = copy.deepcopy(record)
+    inconclusive.update(status="inconclusive", error="runtime error monitoring is unavailable or truncated")
+    with pytest.raises(ValueError, match="completed calibration"):
+        make(snapshot, inconclusive)

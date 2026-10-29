@@ -282,7 +282,21 @@ supported physical input bindings, requires them to match the stage 2 record, an
   field also gets a per-control split of the held windows, the controls whose windows showed a
   change, and the scopes where repeated windows disagreed.
 - **Clock:** pause, a 0.2 s step and resume. Whether stepped mode is supported stays `null`,
-  because animation, physics and game timers are not fully measured.
+  because animation, physics and game timers are not fully measured. What the game logs while the
+  clock is paused or stepped is recorded as evidence about that phase only (`clock.runtime_errors`):
+  an exact count for each window between consecutive reads, taken at the pause, over the 0.2 s the
+  clock stays paused, through the step, up to the resume request, through the resume, and over a
+  further 0.2 s with the clock running again (the control for the paused windows), plus a bounded
+  sample of the messages with a short stack. Counts are differences of the error monitor's counter,
+  which counts every error, so they are exact. The monitor keeps the newest 256 distinct events, so a
+  flood can leave a window with fewer retained messages than errors; the record then says that window
+  is truncated and gives both numbers. That is a gap in the clock evidence, not a failed calibration:
+  the record stays `measured_with_gaps`, and the packet passes the counts, the truncation and a few
+  messages to preflight as `calibration.clock.pause_runtime_errors`. Each window is read separately,
+  and the monitor evicts its oldest events rather than refusing new ones, so a flood in one window
+  neither hides an error in a later window nor fills the sample for it. A monitor that is off or
+  inconsistent leaves the affected counts `null`, never zero, and a step that was not reached has no
+  window.
 - **Reset:** three scene-reload trials. Each holds one of the entity's movement keys for 1.2 s
   through the same input backend the bridge uses (release verified), then unloads and reloads the
   scene and compares the entity position and sampled fields before and after. Only trials that moved
@@ -291,8 +305,20 @@ supported physical input bindings, requires them to match the stage 2 record, an
   and stay `null`.
 
 Game exceptions logged during a key's input are recorded as evidence, that trial is marked invalid
-and the key is not pressed again. The script writes `calibration.json` (raw samples), `reset.json`
-and the combined `record.json`. These can contain game field values, so keep them local. The
+and the key is not pressed again; the Unity test tolerates the logged message instead of failing on
+it. A monitor that is off or truncated while the trials or the idle windows are measured still makes
+the whole record `inconclusive`, because those measurements cannot then be vouched for.
+
+**Time limits scale with the plan.** Once the client has discovered the controls it will calibrate it
+computes a wall-clock budget from them (`fixed allowance + planned trials * per-trial allowance +
+planned held seconds`; the allowances come from measured trial durations and are constants in
+`calibrate.py`), writes it next to the record as `calibration.plan.json`, and stops the run if it
+exceeds it. The hosting test reads that file and raises the Test Framework's 180 s test timeout and
+its own wait to the budget plus the stop, the record write and the scene-reload trials. The record
+states the budget it used (`plan.budget`) and the time it took (`plan.budget.elapsed_s`).
+
+The script writes `calibration.json` (raw samples), `calibration.plan.json`, `reset.json` and the
+combined `record.json`. These can contain game field values, so keep them local. The
 calibration is a code-driven probe: every action is a discovered key sent once through the bridge,
 with release verified, and no model is called.
 

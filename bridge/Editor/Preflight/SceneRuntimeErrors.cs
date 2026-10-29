@@ -4,7 +4,17 @@ using UnityEngine;
 
 namespace Playtest.Bridge.Editor.Preflight
 {
-    /// <summary>Bounded, opt-in capture of runtime error logs during an active preflight probe.</summary>
+    /// <summary>
+    /// Bounded, opt-in capture of runtime error logs during an active preflight probe.
+    ///
+    /// <c>observed</c> counts every error, exception and assertion the monitor saw, so a reader can
+    /// take the difference between two snapshots as the exact size of its own window. The events are
+    /// a bounded sample of consecutive-duplicate runs: when more than <c>limit</c> distinct runs have
+    /// arrived the oldest are evicted and <c>truncated</c> turns true. A flood therefore never fills
+    /// the sample for the readers that come after it; each window still finds its newest errors, and
+    /// a window whose events were evicted can tell, because the retained events cover fewer errors
+    /// than the counter says.
+    /// </summary>
     public static class SceneRuntimeErrors
     {
         private const int Limit = 256;
@@ -77,7 +87,7 @@ namespace Playtest.Bridge.Editor.Preflight
                         return;
                     }
                 }
-                if (Events.Count >= Limit) { _truncated = true; return; }
+                if (Events.Count >= Limit) { Events.RemoveAt(0); _truncated = true; }
                 Events.Add(new Dictionary<string, object>
                 {
                     ["type"] = type.ToString(), ["message"] = text, ["stack"] = trace,
