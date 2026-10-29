@@ -40,6 +40,17 @@ def test_validation_failure_does_not_change_file(tmp_path):
         assert path.read_bytes() == before
 
 
+def test_investigation_trace_entry_requires_cited_measured_evidence(tmp_path):
+    path = tmp_path / "investigation.jsonl"
+    body = {"event": "invalid_answer", "request_turn": 0, "based_on_seq": 3, "outcome_seq": 3,
+            "hypothesis": None, "directive": None, "outcome": "unknown", "evidence_trace_seq": None,
+            "reason": "invalid answer"}
+    with TraceWriter(path, run()) as writer:
+        writer.append("investigation", body, author="frontier", turn=0)
+        with pytest.raises(ValueError, match="evidence_trace_seq"):
+            writer.append("investigation", {**body, "evidence_trace_seq": 2}, author="frontier", turn=0)
+
+
 def test_unparseable_and_truncated_final_line_are_reported(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text('{"not": "a trace"}')

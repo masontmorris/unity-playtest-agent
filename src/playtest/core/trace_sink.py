@@ -37,6 +37,8 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
   follow the decision and ref it; `adopted` comes first in the turn that adopts the result, before
   its observation; `adopted` and `cancelled` ref the `opened` entry. A cancel at stop has no turn.
 - `turn` (core; refs the observation, choice set, context, decision and executions): the `TurnRecord`.
+- `investigation` (frontier; refs the evidence observation): a hypothesis/directive record or a directive
+  outcome, with the originating turn and observation sequence plus the trace sequence of measured evidence.
 
 Outside a turn (turn null):
 
@@ -90,6 +92,10 @@ class MemorySink:
 
     def __init__(self) -> None:
         self.entries: list[dict[str, Any]] = []
+
+    def trace_seq_for_observation(self, seq: int) -> int | None:
+        return next((row["trace_seq"] for row in self.entries
+                     if row["kind"] == "observation" and row["body"].get("seq") == seq), None)
 
     def append(
         self,

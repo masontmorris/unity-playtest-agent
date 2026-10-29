@@ -1,0 +1,20 @@
+{
+  "trace_seq": 2,
+  "run_id": "r1",
+  "kind": "investigation",
+  "author": "frontier",
+  "turn": 1,
+  "refs": [],
+  "wall_utc": "2026-10-29T12:00:00Z",
+  "body": {
+    "event": "outcome",
+    "request_turn": 0,
+    "based_on_seq": 1,
+    "outcome_seq": 2,
+    "hypothesis": null,
+    "directive": null,
+    "outcome": "met",
+    "evidence_trace_seq": 1,
+    "reason": "the measured reader value satisfied the setpoint"
+  }
+}

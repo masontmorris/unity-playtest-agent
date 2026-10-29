@@ -16,6 +16,7 @@ Field kinds come from discovery's declared types (preflight) or the manifest (fr
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from playtest.contracts.investigation import Comparator
@@ -93,3 +94,36 @@ def check_problems(where: str, kind: ValueKind, op: Comparator, value: Any,
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def evaluate(value: Any, *, kind: ValueKind, op: Comparator, expected: Any = None,
+             baseline: Any = None, tolerance: float | None = None) -> bool | None:
+    """Evaluate one measured value; return None when evidence cannot score the check."""
+    if value is None or check_problems("check", kind, op, expected, tolerance):
+        return None
+    if op in CHANGE:
+        if baseline is None:
+            return None
+        changed = value != baseline
+        return changed if op is Comparator.changed else not changed
+    if kind == "number" and (not _is_number(value) or not math.isfinite(float(value))):
+        return None
+    if kind == "bool" and not isinstance(value, bool):
+        return None
+    if kind == "string" and not isinstance(value, str):
+        return None
+    if op is Comparator.eq:
+        return (abs(float(value) - float(expected)) <= tolerance
+                if kind == "number" and tolerance is not None else value == expected)
+    if op is Comparator.ne:
+        return (abs(float(value) - float(expected)) > tolerance
+                if kind == "number" and tolerance is not None else value != expected)
+    if op is Comparator.lt:
+        return value < expected
+    if op is Comparator.le:
+        return value <= expected
+    if op is Comparator.gt:
+        return value > expected
+    if op is Comparator.ge:
+        return value >= expected
+    return None
