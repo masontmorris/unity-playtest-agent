@@ -34,4 +34,4 @@ Removed comments and whitespace, tokenized C#, and compared every 40-token windo
 
 ## Conclusion
 
-No distinctive third-party match was found by these checks. Four enumerated reference files produced no tokens or could not be read; the script did not distinguish those cases. The comparison only detects exact 40-token windows after normalization, and searches cannot establish that code was never adapted or taken from an unindexed source. Matching the prototype alone does not establish authorship or rights; the owner should confirm provenance before relicensing.
+No distinctive third-party match was found by these checks. Four enumerated reference files produced no tokens or could not be read; the script did not distinguish those cases. The comparison only detects exact 40-token windows after normalization, and searches cannot establish that code was never adapted or taken from an unindexed source. On 2026-10-29, Mason Morris confirmed that all code in this repository is his to license, including the bridge code with prototype overlap.
