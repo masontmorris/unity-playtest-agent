@@ -28,6 +28,16 @@ jobs:
           uv run playtest-export-schemas
           git diff --exit-code schemas/
 
+  ilscan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: IL scan tool tests (no Unity)
+        run: dotnet test tools/ilscan/tests/Playtest.IlScan.Tests
+
   secrets:
     runs-on: ubuntu-latest
     env:

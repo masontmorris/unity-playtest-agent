@@ -1,16 +1,26 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Text;
 using NUnit.Framework;
-using Playtest.Bridge.Editor.Preflight;
+using static Playtest.IlScan.Fixtures.ScanTargets;
 
-namespace Playtest.Bridge.Tests
+namespace Playtest.IlScan.Tests
 {
+    /// <summary>
+    /// The scanner's tests from the bridge package, run on the targets loaded for inspection only, as the
+    /// tool loads a project's assemblies.
+    /// </summary>
     [TestFixture]
     public sealed class IlWriteScannerTests
     {
+        private InspectionScope _scope;
+
+        [OneTimeSetUp]
+        public void Load() => _scope = new InspectionScope();
+
+        [OneTimeTearDown]
+        public void Unload() => _scope.Dispose();
+
         [Test]
         public void Scan_ReportsDirectInstanceAndStaticWrites()
         {
@@ -98,7 +108,7 @@ namespace Playtest.Bridge.Tests
         [Test]
         public void Scan_RespectsMaxMethodsAndReportsSkippedMethods()
         {
-            IlWriteScanResult capped = IlWriteScanner.Scan(new[] { typeof(CappedTarget) }, 2);
+            IlWriteScanResult capped = IlWriteScanner.Scan(new[] { Inspected(typeof(CappedTarget)) }, 2, _scope.Resolver);
 
             Assert.That(capped.LimitReached, Is.True, Describe(capped));
             Assert.That(capped.IsComplete, Is.False, Describe(capped));
@@ -107,7 +117,7 @@ namespace Playtest.Bridge.Tests
             Assert.That(capped.SkippedMethods, Is.EqualTo(3), Describe(capped));
             Assert.That(capped.Writes.Count, Is.LessThanOrEqualTo(2), Describe(capped));
 
-            IlWriteScanResult whole = IlWriteScanner.Scan(new[] { typeof(CappedTarget) }, 64);
+            IlWriteScanResult whole = IlWriteScanner.Scan(new[] { Inspected(typeof(CappedTarget)) }, 64, _scope.Resolver);
 
             Assert.That(whole.IsComplete, Is.True, Describe(whole));
             Assert.That(whole.LimitReached, Is.False);
@@ -123,14 +133,16 @@ namespace Playtest.Bridge.Tests
         [Test]
         public void Scan_RejectsNonPositiveCap()
         {
-            Assert.Throws<ArgumentOutOfRangeException>(() => IlWriteScanner.Scan(new[] { typeof(NoWriteTarget) }, 0));
-            Assert.Throws<ArgumentOutOfRangeException>(() => IlWriteScanner.Scan(new[] { typeof(NoWriteTarget) }, -1));
+            Type type = Inspected(typeof(NoWriteTarget));
+            Assert.Throws<ArgumentOutOfRangeException>(() => IlWriteScanner.Scan(new[] { type }, 0, _scope.Resolver));
+            Assert.Throws<ArgumentOutOfRangeException>(() => IlWriteScanner.Scan(new[] { type }, -1, _scope.Resolver));
         }
 
         [Test]
-        public void Scan_RejectsNullTypeSequence()
+        public void Scan_RejectsNullTypeSequenceAndResolver()
         {
-            Assert.Throws<ArgumentNullException>(() => IlWriteScanner.Scan(null, 1));
+            Assert.Throws<ArgumentNullException>(() => IlWriteScanner.Scan(null, 1, _scope.Resolver));
+            Assert.Throws<ArgumentNullException>(() => IlWriteScanner.Scan(new[] { Inspected(typeof(NoWriteTarget)) }, 1, null));
         }
 
         [Test]
@@ -161,7 +173,7 @@ namespace Playtest.Bridge.Tests
         [Test]
         public void Scan_ReportsTypeEnumerationFailureWithNullMethod()
         {
-            IlWriteScanResult result = IlWriteScanner.Scan(ThrowingTypes(), 64);
+            IlWriteScanResult result = IlWriteScanner.Scan(ThrowingTypes(), 64, _scope.Resolver);
 
             Assert.That(result.IsComplete, Is.False, Describe(result));
             Assert.That(result.Issues.Count, Is.EqualTo(1), Describe(result));
@@ -174,7 +186,7 @@ namespace Playtest.Bridge.Tests
         [Test]
         public void Scan_ReportsNullTypeEntryWithoutCrashing()
         {
-            IlWriteScanResult result = IlWriteScanner.Scan(new Type[] { null, typeof(NoWriteTarget) }, 64);
+            IlWriteScanResult result = IlWriteScanner.Scan(new Type[] { null, Inspected(typeof(NoWriteTarget)) }, 64, _scope.Resolver);
 
             Assert.That(result.IsComplete, Is.False, Describe(result));
             Assert.That(result.Issues.Count, Is.EqualTo(1), Describe(result));
@@ -197,7 +209,7 @@ namespace Playtest.Bridge.Tests
             {
                 Assert.That(
                     result.Writes[i].Method.DeclaringType,
-                    Is.Not.EqualTo(typeof(BaseWriteTarget)),
+                    Is.Not.EqualTo(Inspected(typeof(BaseWriteTarget))),
                     "a type scan must not include methods from its base type");
             }
         }
@@ -208,12 +220,20 @@ namespace Playtest.Bridge.Tests
             IlWriteScanResult closed = Scan(typeof(GenericHolder<int>));
 
             Assert.That(closed.IsComplete, Is.True, Describe(closed));
-            IlWrite closedWrite = FindWrite(closed, typeof(GenericHolder<int>), "Value", "Set");
+            IlWrite closedWrite = FindWrite(closed, Inspected(typeof(GenericHolder<int>)), "Value", "Set");
             Assert.That(closedWrite, Is.Not.Null, Describe(closed));
             Assert.That(
                 closedWrite.Field.FieldType,
-                Is.EqualTo(typeof(int)),
+                Is.EqualTo(Inspected(typeof(int))),
                 "the field token must be resolved with the constructed type's generic arguments");
+
+            IlWriteScanResult open = Scan(typeof(GenericHolder<>));
+
+            Assert.That(open.IsComplete, Is.True, Describe(open));
+            Assert.That(
+                FindWrite(open, Inspected(typeof(GenericHolder<>)), "Value", "Set"),
+                Is.Not.Null,
+                "a store inside a generic type must name the field its definition declares" + Environment.NewLine + Describe(open));
 
             IlWriteScanResult genericMethod = Scan(typeof(GenericMethodTarget));
 
@@ -229,11 +249,13 @@ namespace Playtest.Bridge.Tests
         public void Scan_ProducesDeterministicWriteOrder()
         {
             IlWriteScanResult first = IlWriteScanner.Scan(
-                new[] { typeof(OperandTarget), typeof(DirectWriteTarget) },
-                64);
+                new[] { Inspected(typeof(OperandTarget)), Inspected(typeof(DirectWriteTarget)) },
+                64,
+                _scope.Resolver);
             IlWriteScanResult second = IlWriteScanner.Scan(
-                new[] { typeof(DirectWriteTarget), typeof(OperandTarget) },
-                64);
+                new[] { Inspected(typeof(DirectWriteTarget)), Inspected(typeof(OperandTarget)) },
+                64,
+                _scope.Resolver);
 
             Assert.That(first.IsComplete, Is.True, Describe(first));
             Assert.That(second.IsComplete, Is.True, Describe(second));
@@ -247,9 +269,11 @@ namespace Playtest.Bridge.Tests
             }
         }
 
-        private static IlWriteScanResult Scan(Type type)
+        private Type Inspected(Type live) => _scope.Type(live);
+
+        private IlWriteScanResult Scan(Type live)
         {
-            return IlWriteScanner.Scan(new[] { type }, 64);
+            return IlWriteScanner.Scan(new[] { Inspected(live) }, 64, _scope.Resolver);
         }
 
         private static IlWrite FindWrite(
@@ -286,13 +310,14 @@ namespace Playtest.Bridge.Tests
             return null;
         }
 
-        private static int CountWrites(IlWriteScanResult result, Type declaringType, string fieldName)
+        private int CountWrites(IlWriteScanResult result, Type declaringType, string fieldName)
         {
+            Type inspected = Inspected(declaringType);
             int count = 0;
             for (int i = 0; i < result.Writes.Count; i++)
             {
                 IlWrite write = result.Writes[i];
-                if (write.Field.Name == fieldName && write.Field.DeclaringType == declaringType)
+                if (write.Field.Name == fieldName && write.Field.DeclaringType == inspected)
                 {
                     count++;
                 }
@@ -331,13 +356,13 @@ namespace Playtest.Bridge.Tests
             return false;
         }
 
-        private static void AssertHasWrite(
+        private void AssertHasWrite(
             IlWriteScanResult result,
             Type declaringType,
             string fieldName,
             string methodName)
         {
-            IlWrite write = FindWrite(result, declaringType, fieldName, methodName);
+            IlWrite write = FindWrite(result, Inspected(declaringType), fieldName, methodName);
             Assert.That(
                 write,
                 Is.Not.Null,
@@ -364,226 +389,10 @@ namespace Playtest.Bridge.Tests
             return text.ToString();
         }
 
-        private static IEnumerable<Type> ThrowingTypes()
+        private IEnumerable<Type> ThrowingTypes()
         {
-            yield return typeof(NoWriteTarget);
+            yield return Inspected(typeof(NoWriteTarget));
             throw new InvalidOperationException("type enumeration failed on purpose");
-        }
-
-#pragma warning disable 0649 // These fields exist to prove the scanner does not invent writes.
-        private sealed class DirectWriteTarget
-        {
-            public int InstanceValue;
-            public static int StaticValue;
-            public int ConstructorValue;
-            public int NeverWritten;
-
-            public DirectWriteTarget()
-            {
-                ConstructorValue = 7;
-            }
-
-            public void SetInstance(int value)
-            {
-                InstanceValue = value;
-            }
-
-            public static void SetStatic(int value)
-            {
-                StaticValue = value;
-            }
-        }
-
-        private sealed class NoWriteTarget
-        {
-            public int NeverWritten;
-            public int Written;
-
-            public void DoNothing()
-            {
-            }
-
-            public void WriteIt()
-            {
-                Written = 1;
-            }
-        }
-#pragma warning restore 0649
-
-        private sealed class ExternalFieldHolder
-        {
-            public int Value;
-        }
-
-        private sealed class ExternalFieldWriter
-        {
-            public void Write(ExternalFieldHolder holder)
-            {
-                holder.Value = 1;
-            }
-        }
-
-        private sealed class StaticConstructorTarget
-        {
-            public static int Initialized = 42;
-        }
-
-        private sealed class OperandTarget
-        {
-            public int Selected;
-            public long LongValue;
-            public double DoubleValue;
-            public float FloatValue;
-            public string TextValue;
-
-            public int Decode(int selector, long big, double real, float small, string text)
-            {
-                switch (selector)
-                {
-                    case 0:
-                        Selected = 1;
-                        break;
-                    case 1:
-                        Selected = 2;
-                        break;
-                    case 2:
-                        Selected = 3;
-                        break;
-                    case 3:
-                        Selected = 4;
-                        break;
-                    case 4:
-                        Selected = 5;
-                        break;
-                    case 5:
-                        Selected = 6;
-                        break;
-                    case 6:
-                        Selected = 7;
-                        break;
-                    case 7:
-                        Selected = 8;
-                        break;
-                    default:
-                        Selected = -1;
-                        break;
-                }
-
-                LongValue = big + 0x0102030405060708L;
-                DoubleValue = real + 1.5d;
-                FloatValue = small + 1.25f;
-                TextValue = text + "!";
-                return Selected;
-            }
-        }
-
-        private sealed class IndirectWriteTarget
-        {
-            public int InstanceValue;
-            public static int StaticValue;
-
-            public ref int GetInstanceRef()
-            {
-                return ref InstanceValue;
-            }
-
-            public static ref int GetSharedRef()
-            {
-                return ref StaticValue;
-            }
-        }
-
-        private sealed class CappedTarget
-        {
-            public int A;
-            public int B;
-            public int C;
-            public int D;
-
-            public void WriteA()
-            {
-                A = 1;
-            }
-
-            public void WriteB()
-            {
-                B = 2;
-            }
-
-            public void WriteC()
-            {
-                C = 3;
-            }
-
-            public void WriteD()
-            {
-                D = 4;
-            }
-        }
-
-        private sealed class MissingBodyTarget
-        {
-            [DllImport("kernel32.dll")]
-            public static extern void NativeCall();
-
-            public void Present()
-            {
-            }
-        }
-
-        private abstract class AbstractTarget
-        {
-            public int ConcreteValue;
-
-            public abstract void AbstractMethod();
-
-            public void WriteConcrete()
-            {
-                ConcreteValue = 1;
-            }
-        }
-
-        private class BaseWriteTarget
-        {
-            public int BaseValue;
-
-            public void WriteBase()
-            {
-                BaseValue = 1;
-            }
-        }
-
-        private sealed class DerivedWriteTarget : BaseWriteTarget
-        {
-            public int DerivedValue;
-
-            public void WriteDerived()
-            {
-                DerivedValue = 1;
-            }
-        }
-
-        private sealed class GenericHolder<T>
-        {
-            public T Value;
-
-            public void Set(T value)
-            {
-                Value = value;
-            }
-        }
-
-        private sealed class GenericBox<T>
-        {
-            public T Value;
-        }
-
-        private sealed class GenericMethodTarget
-        {
-            public void SetBox<T>(GenericBox<T> box, T value)
-            {
-                box.Value = value;
-            }
         }
     }
 }

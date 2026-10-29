@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Unity-free tests for the IL scan tool. CI runs them with `dotnet test`. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>disable</Nullable>
+    <AssemblyName>Playtest.IlScan.Tests</AssemblyName>
+    <RootNamespace>Playtest.IlScan.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="NUnit" Version="3.14.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Playtest.IlScan.csproj" />
+    <ProjectReference Include="../Playtest.IlScan.Fixtures/Playtest.IlScan.Fixtures.csproj" />
+  </ItemGroup>
+
+</Project>

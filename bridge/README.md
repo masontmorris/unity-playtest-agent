@@ -99,9 +99,12 @@ or `Infinity`. Any other type is `unsupported` and carries its type name; it is 
 zero or unchanged.
 
 The source excerpts are unranked authored scripts, including scripts in local or embedded
-packages. The IL scan reports direct field stores and unresolved cases; it does not prove that a
-field is configuration or that a method ran. Review its scope, caps and errors before using an
-absence as evidence. Snapshot sizes over the transport limit fail explicitly. Full dumps can
+packages. The package does not scan IL. `discovery` reports `il_inputs`: the assemblies that
+contain authored scripts, every assembly file the Editor loaded, and whether that selection was
+complete. Preflight runs the IL write scan outside Unity (`tools/ilscan`) and merges its sections
+in place of `il_inputs`. That scan reports direct field stores and unresolved cases; it does not
+prove that a field is configuration or that a method ran. Review its scope, caps and errors
+before using an absence as evidence. Snapshot sizes over the transport limit fail explicitly. Full dumps can
 contain third-party source and must remain local. This stage does not create a manifest
 fingerprint; a later fingerprint must include the recorded caps.
 
@@ -115,8 +118,9 @@ uv run playtest-inspect --project "C:\path\to\game" --stage transforms --output 
 uv run playtest-inspect --project "C:\path\to\game" --stage fields --output runs/preflight/fields-1.json
 ```
 
-The command refuses to overwrite a file. For a repeatable batch capture using the first enabled
-build scene, see `scripts/unity/capture-preflight.ps1`.
+The command refuses to overwrite a file. For `discovery` it also runs the IL write scan, which
+needs the .NET 10 SDK on `PATH`, and saves the merged snapshot. For a repeatable batch capture
+using the first enabled build scene, see `scripts/unity/capture-preflight.ps1`.
 
 ## Actions
 

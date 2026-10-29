@@ -171,6 +171,10 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
         raise ValueError("an inventory inspection without errors is required")
     if discovery.stage != "discovery" or discovery.errors:
         raise ValueError("a discovery inspection without errors is required")
+    if "il_inputs" in discovery.data:
+        # The bridge's own snapshot names the IL scan's inputs, local file paths among them. Only a
+        # snapshot merged with the scan (tools/ilscan) is evidence for the model.
+        raise ValueError("discovery has not been merged with the IL write scan")
     if calibration.status != "measured_with_gaps" and not (
             calibration.status == "inconclusive" and not calibration.actions and calibration.error):
         raise ValueError("completed calibration, or an inconclusive record with no controls and a reason, is required")

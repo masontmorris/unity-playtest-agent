@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Declares fields that the fixture assembly writes, so a scan can be run with or without it. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Playtest.IlScan.Fixtures.Dependency</AssemblyName>
+  </PropertyGroup>
+
+</Project>

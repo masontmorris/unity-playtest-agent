@@ -53,8 +53,10 @@ namespace Playtest.Bridge.Tests
                 Assert.That(result.Stage, Is.EqualTo("discovery"));
                 Assert.That(result.InReplyTo, Is.EqualTo(2));
                 Assert.That(result.Caps.ContainsKey("source_files"), Is.True);
-                Assert.That(result.Caps.ContainsKey("il_methods"), Is.True);
-                Assert.That(result.Data.ContainsKey("il_write_sets"), Is.True);
+                Assert.That(result.Caps.ContainsKey("il_assemblies"), Is.True);
+                // The IL write scan runs outside Unity; the bridge reports what to scan.
+                Assert.That(result.Data.ContainsKey("il_inputs"), Is.True);
+                Assert.That(result.Data.ContainsKey("il_write_sets"), Is.False);
 
                 string output = Environment.GetEnvironmentVariable("UPA_PREFLIGHT_DISCOVERY_OUTPUT");
                 if (!string.IsNullOrEmpty(output))

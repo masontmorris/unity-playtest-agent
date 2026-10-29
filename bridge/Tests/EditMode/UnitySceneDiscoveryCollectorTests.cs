@@ -55,7 +55,7 @@ namespace Playtest.Bridge.Tests
             Dictionary<string, object> number = FieldNamed(first, (string)firstComponent["id"], "Number");
             Assert.That(number["value"], Is.EqualTo(42L));
             Assert.That((string)number["declaring_type"], Is.EqualTo(typeof(SceneDiscoveryProbe).FullName));
-            Assert.That(number["declaration_id"], Is.EqualTo(IlDiscoveryCollector.FieldId(typeof(SceneDiscoveryProbe).GetField("Number"))));
+            Assert.That(number["declaration_id"], Is.EqualTo(ReflectionIds.FieldId(typeof(SceneDiscoveryProbe).GetField("Number"))));
             Assert.That((string)number["id"], Does.Contain("::field:"));
 
             Dictionary<string, object> inherited = FieldNamed(first, (string)firstComponent["id"], "BaseValue");

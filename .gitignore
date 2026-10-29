@@ -18,6 +18,10 @@ runs/
 bridge/Tests/DotNet~/bin/
 bridge/Tests/DotNet~/obj/
 
+# IL scan tool build output
+tools/ilscan/**/bin/
+tools/ilscan/**/obj/
+
 # Unity (if a test project is ever opened from here)
 [Ll]ibrary/
 [Tt]emp/

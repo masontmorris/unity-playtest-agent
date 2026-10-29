@@ -177,6 +177,13 @@ def test_missing_source_coverage_is_not_silent():
         make(snapshot, record)
 
 
+def test_an_unmerged_bridge_snapshot_never_reaches_the_model():
+    snapshot, record = evidence()
+    snapshot["data"]["il_inputs"] = {"assemblies": [], "references": ["C:/local/mscorlib.dll"], "complete": True}
+    with pytest.raises(ValueError, match="IL write scan"):
+        make(snapshot, record)
+
+
 def test_bridge_review_preserves_unsupported_model_choices():
     snapshot, record = evidence()
     packet = make(snapshot, record)

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The IL write scan, outside Unity. It reads compiled assemblies for inspection only, through
+    MetadataLoadContext, and never executes them. The field id derivation is compiled from the bridge
+    package so that discovery rows and write sets name a declaration with the same id.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>Playtest.IlScan</AssemblyName>
+    <RootNamespace>Playtest.IlScan</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.14" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../../../bridge/Editor/Preflight/ReflectionIds.cs" Link="Shared/ReflectionIds.cs" />
+  </ItemGroup>
+
+</Project>
