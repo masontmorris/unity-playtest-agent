@@ -7,7 +7,7 @@
   "author": {
     "name": "Mason Morris"
   },
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "dependencies": {
     "com.unity.inputsystem": "1.4.0",
     "com.unity.nuget.newtonsoft-json": "3.2.2",

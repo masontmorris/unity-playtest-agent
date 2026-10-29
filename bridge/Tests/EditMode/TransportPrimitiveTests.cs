@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 using System.IO;
 using System.Text;
 using NUnit.Framework;

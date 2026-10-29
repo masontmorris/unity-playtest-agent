@@ -211,6 +211,12 @@ or the wiring above:
 dotnet test bridge/Tests/DotNet~ --artifacts-path "$env:TEMP\upa-dotnet-<name>"
 ```
 
+The IL write scan is a separate tool with its own tests (see `tools/ilscan/README.md`):
+
+```powershell
+dotnet test tools/ilscan/tests/Playtest.IlScan.Tests
+```
+
 ## Capture preflight stages 0–1
 
 After wiring this checkout's bridge into the project, run:
@@ -221,8 +227,11 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/capture-preflight.ps1 `
 ```
 
 The script runs an EditMode survey and then a PlayMode inspection of the first enabled build
-scene, using the same version checks, project-lock check and mutex as the test runner. It writes
-`survey.json` and `discovery.json` outside the game and refuses to overwrite them. The files may
+scene, using the same version checks, project-lock check and mutex as the test runner. The
+bridge's snapshot is saved as `discovery-bridge.json`. The IL write scan (`tools/ilscan`, which
+needs the .NET 10 SDK) then runs outside Unity on the assemblies it names, and its sections are
+merged into `discovery.json`. It writes these files and `survey.json` outside the game and
+refuses to overwrite them. The files may
 contain game source; keep them local. Discovery includes every loaded scene, including Unity's
 test-runner scene. Review `caps`, `errors` and IL issues before treating a sample as complete.
 This captures code and live state only; it does not perform control calibration or call a model.

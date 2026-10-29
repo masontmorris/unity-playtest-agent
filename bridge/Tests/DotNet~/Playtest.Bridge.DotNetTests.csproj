@@ -28,7 +28,6 @@
     <Compile Include="../../Runtime/Lock/**/*.cs" Link="Runtime/Lock/%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="../../Runtime/Actions/**/*.cs" Link="Runtime/Actions/%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="../../Runtime/Transport/**/*.cs" Link="Runtime/Transport/%(RecursiveDir)%(Filename)%(Extension)" />
-    <Compile Include="../../Editor/Preflight/IlWriteScanner.cs" Link="Editor/Preflight/IlWriteScanner.cs" />
     <Compile Include="../EditMode/*.cs" Exclude="../EditMode/Unity*.cs" Link="Tests/%(Filename)%(Extension)" />
   </ItemGroup>
 

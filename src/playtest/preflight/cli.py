@@ -1,24 +1,37 @@
-"""Save one Editor inspection response outside the inspected Unity project."""
+"""Save one Editor inspection response outside the inspected Unity project.
+
+A discovery response is completed with the IL write scan, which runs outside the Editor.
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import math
 import sys
 from pathlib import Path
 
+from playtest.contracts.bridge import InspectResult
 from playtest.core.bridge_client import BridgeClient, BridgeError
 from playtest.core.bridge_lock import BridgeLockError
+from playtest.preflight import il
 
 
-async def _inspect(project: Path, stage: str, timeout_s: float) -> str:
+async def _inspect(project: Path, stage: str, timeout_s: float) -> InspectResult:
     client = await BridgeClient.connect_from_project(project, timeout_s=timeout_s)
     try:
-        response = await client.inspect(stage)
-        return response.model_dump_json(indent=2) + "\n"
+        return await client.inspect(stage)
     finally:
         await client.aclose()
+
+
+def _render(stage: str, response: InspectResult) -> str:
+    if stage != "discovery":
+        return response.model_dump_json(indent=2) + "\n"
+    # The scan can run for minutes, so it starts only after the bridge connection is closed.
+    snapshot = json.loads(response.model_dump_json())
+    return json.dumps(il.complete(snapshot), indent=2, ensure_ascii=False) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output already exists; choose a new file")
 
     try:
-        text = asyncio.run(_inspect(project, args.stage, args.timeout))
+        text = _render(args.stage, asyncio.run(_inspect(project, args.stage, args.timeout)))
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(text)

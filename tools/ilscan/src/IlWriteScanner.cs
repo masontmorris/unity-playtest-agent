@@ -4,7 +4,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
 
-namespace Playtest.Bridge.Editor.Preflight
+namespace Playtest.IlScan
 {
     /// <summary>
     /// Reads the IL of methods and constructors declared by the supplied types and records the field
@@ -18,6 +18,11 @@ namespace Playtest.Bridge.Editor.Preflight
     /// evidence that a field is configuration, read-only, or unused. Only
     /// <see cref="IlWriteScanResult.IsComplete"/> says that the direct-write evidence covers every
     /// method body considered by the scan.
+    /// <para>
+    /// This scan ran inside the Unity Editor before it moved here, with field tokens resolved by
+    /// <see cref="Module.ResolveField(int, Type[], Type[])"/>. Assemblies loaded for inspection only
+    /// cannot resolve tokens, so an <see cref="IFieldTokenResolver"/> does it instead.
+    /// </para>
     /// </remarks>
     public static class IlWriteScanner
     {
@@ -46,17 +51,23 @@ namespace Playtest.Bridge.Editor.Preflight
         /// The maximum number of method bodies to inspect. Must be greater than zero. The result
         /// records whether the cap prevented the scan from covering every candidate.
         /// </param>
+        /// <param name="resolver">Resolves the field tokens of store and address instructions.</param>
         /// <returns>
         /// Direct writes plus every reason the scan could not be exhaustive. A cap or any issue makes
         /// <see cref="IlWriteScanResult.IsComplete"/> false.
         /// </returns>
-        /// <exception cref="ArgumentNullException"><paramref name="types"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="types"/> or <paramref name="resolver"/> is null.</exception>
         /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxMethods"/> is zero or negative.</exception>
-        public static IlWriteScanResult Scan(IEnumerable<Type> types, int maxMethods)
+        public static IlWriteScanResult Scan(IEnumerable<Type> types, int maxMethods, IFieldTokenResolver resolver)
         {
             if (types == null)
             {
                 throw new ArgumentNullException(nameof(types));
+            }
+
+            if (resolver == null)
+            {
+                throw new ArgumentNullException(nameof(resolver));
             }
 
             if (maxMethods <= 0)
@@ -86,7 +97,7 @@ namespace Playtest.Bridge.Editor.Preflight
                 }
 
                 scanned++;
-                ScanMethod(candidates[i], writes, issues);
+                ScanMethod(candidates[i], resolver, writes, issues);
             }
 
             bool limitReached = scanned < candidates.Count;
@@ -232,7 +243,11 @@ namespace Playtest.Bridge.Editor.Preflight
             }
         }
 
-        private static void ScanMethod(MethodBase method, List<IlWrite> writes, List<IlWriteScanIssue> issues)
+        private static void ScanMethod(
+            MethodBase method,
+            IFieldTokenResolver resolver,
+            List<IlWrite> writes,
+            List<IlWriteScanIssue> issues)
         {
             MethodBody body;
             try
@@ -393,7 +408,7 @@ namespace Playtest.Bridge.Editor.Preflight
                     int token = ReadInt32(il, operandOffset);
                     FieldInfo field;
                     string error;
-                    if (TryResolveField(method.Module, token, typeArguments, methodArguments, out field, out error))
+                    if (TryResolveField(resolver, method.Module, token, typeArguments, methodArguments, out field, out error))
                     {
                         if (seenFields.Add(FieldKey(field)))
                         {
@@ -418,6 +433,7 @@ namespace Playtest.Bridge.Editor.Preflight
                     FieldInfo field;
                     string error;
                     bool resolved = TryResolveField(
+                        resolver,
                         method.Module,
                         token,
                         typeArguments,
@@ -441,6 +457,7 @@ namespace Playtest.Bridge.Editor.Preflight
         }
 
         private static bool TryResolveField(
+            IFieldTokenResolver resolver,
             Module module,
             int token,
             Type[] typeArguments,
@@ -459,10 +476,10 @@ namespace Playtest.Bridge.Editor.Preflight
 
             try
             {
-                field = module.ResolveField(token, typeArguments, methodArguments);
+                field = resolver.ResolveField(module, token, typeArguments, methodArguments);
                 if (field == null)
                 {
-                    error = "ResolveField returned null";
+                    error = "the resolver returned no field";
                     return false;
                 }
 

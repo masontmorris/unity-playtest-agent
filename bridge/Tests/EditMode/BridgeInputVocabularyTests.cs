@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 using System.Collections.Generic;
 using NUnit.Framework;
 using Playtest.Bridge.Actions;

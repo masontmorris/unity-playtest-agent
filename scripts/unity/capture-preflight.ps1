@@ -25,8 +25,9 @@ if (-not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreC
 }
 
 $survey = Join-Path $output 'survey.json'
+$bridgeDiscovery = Join-Path $output 'discovery-bridge.json'
 $discovery = Join-Path $output 'discovery.json'
-if ([IO.File]::Exists($survey) -or [IO.File]::Exists($discovery)) {
+if ([IO.File]::Exists($survey) -or [IO.File]::Exists($bridgeDiscovery) -or [IO.File]::Exists($discovery)) {
     throw 'Output files already exist; choose a new output directory.'
 }
 New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -40,12 +41,20 @@ try {
     & powershell.exe @common -TestFilter 'Playtest.Bridge.Tests.UnityInspectionSurveyTests'
     if ($LASTEXITCODE -ne 0) { throw "EditMode inspection failed (exit $LASTEXITCODE)." }
     Remove-Item Env:UPA_PREFLIGHT_SURVEY_OUTPUT -ErrorAction SilentlyContinue
-    $env:UPA_PREFLIGHT_DISCOVERY_OUTPUT = $discovery
+    $env:UPA_PREFLIGHT_DISCOVERY_OUTPUT = $bridgeDiscovery
     & powershell.exe @common -TestPlatform PlayMode -TestFilter 'Playtest.Bridge.Tests.InspectionPlayModeTests'
     if ($LASTEXITCODE -ne 0) { throw "PlayMode inspection failed (exit $LASTEXITCODE)." }
-    Write-Host "Saved survey:    $survey"
-    Write-Host "Saved discovery: $discovery"
-    Write-Host 'Review caps and errors before treating either file as complete.'
+    $python = (& uv run --directory $repoRoot python -c 'import sys; print(sys.executable)')
+    if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($python)) { throw 'Could not locate the repository Python executable.' }
+    & $python -m playtest.preflight.il --discovery $bridgeDiscovery --output $discovery
+    if ($LASTEXITCODE -ne 0) {
+        throw ("The IL scan failed (exit $LASTEXITCODE). The bridge snapshot is kept at $bridgeDiscovery; " +
+               'run playtest-merge-il on it after fixing the cause.')
+    }
+    Write-Host "Saved survey:           $survey"
+    Write-Host "Saved bridge discovery: $bridgeDiscovery"
+    Write-Host "Saved discovery:        $discovery"
+    Write-Host 'Review caps and errors before treating the survey or discovery as complete.'
 }
 finally {
     [Environment]::SetEnvironmentVariable('UPA_PREFLIGHT_SURVEY_OUTPUT', $previousSurvey)

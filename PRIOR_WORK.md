@@ -7,3 +7,4 @@ When anything is reused from the pre-hackathon prototype (code, prompts, fixture
 | Item | Path in this repo | Source | Notes |
 |---|---|---|---|
 | Agent delegation policy (worker tiers, briefs, review rules) | `AGENTS.md` | s1-loop `AGENTS.md` at `f63e5ef` (24 Oct 2026) | Development process document, not product code. Copied, then edited on 26 Oct: Antigravity removed, project rules rewritten for this repo, GitHub workflow section added |
+| Camera ordering and render-state handling | `bridge/Runtime/Unity/UnityCapture.cs` | s1-loop `s1_loop/bridge/EditorBroadcast.cs` at `f1068d6` (25 Oct 2026) | Matching token windows indicate apparent prototype reuse; identified retrospectively in `docs/licensing/unity-bridge-provenance.md`. |

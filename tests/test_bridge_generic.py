@@ -69,6 +69,19 @@ def test_bridge_is_generic():
     assert not found, "game-specific words in the generic bridge:\n" + "\n".join(found)
 
 
+def test_il_scan_tool_is_generic():
+    """The IL scan moved out of the package (#118) and keeps the same rule."""
+    tool = BRIDGE.parent / "tools" / "ilscan"
+    roots = (tool / "src", tool / "tests")
+    assert all(root.is_dir() for root in roots), "the IL scan tool layout is missing"
+    found = [v for root in roots for v in violations(root)]
+    for project in sorted(tool.rglob("*.csproj")):
+        hits = words(project.read_text(encoding="utf-8")) & BANNED
+        if hits:
+            found.append(f"{project.relative_to(tool)}: {sorted(hits)}")
+    assert not found, "game-specific words in the IL scan tool:\n" + "\n".join(found)
+
+
 def test_package_manifest_is_generic():
     manifest = BRIDGE / "package.json"
     assert manifest.is_file()

@@ -39,7 +39,7 @@ first:
 - **The candidate is a fact:** `{id, declaring_type_id, method_id, parameter_count, return_type,
   static}`. The method name travels as data, exactly like a field name. The list is capped like the
   other collections, and truncation is reported rather than hidden.
-- **No new scan is needed.** `IlWriteScanner` already enumerates the loaded types' methods in
+- **No new scan is needed.** `IlWriteScanner` (now in `tools/ilscan`, #118) already enumerates the scanned types' methods in
   `CollectMethods`, and `MethodId` already carries the declaring type and parameter types. Emitting
   the callable subset is a small addition to the existing pass, not a second reflection walk.
 

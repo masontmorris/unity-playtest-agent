@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -640,7 +641,7 @@ namespace Playtest.Bridge.Editor.Preflight
                     ["declaring_assembly"] = AssemblyName(field.DeclaringType),
                     ["declaring_type"] = TypeName(field.DeclaringType),
                     ["declaration_id"] = AssemblyName(field.DeclaringType) == null || TypeName(field.DeclaringType) == null
-                        ? null : IlDiscoveryCollector.FieldId(field),
+                        ? null : ReflectionIds.FieldId(field),
                     ["field_type"] = fieldTypeName,
                     ["field_type_assembly"] = fieldAssembly,
                     ["field_type_kind"] = FieldTypeKind(field.FieldType),

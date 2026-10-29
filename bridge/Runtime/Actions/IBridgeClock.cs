@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 using Playtest.Bridge.Protocol;
 
 namespace Playtest.Bridge.Clock
