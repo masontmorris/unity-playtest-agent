@@ -321,3 +321,36 @@ the field outcome; the rest are reported with their calibration counts. The repo
 `different` or `inconclusive`, and the script fails on anything but `verified`. It never writes to
 the game, refuses existing output or handshake files, and uses the same Editor lock, version checks
 and mutex as the bridge tests. A scene reload sample is not full game-state restoration.
+
+## Run a manifest session (the real-time turn loop)
+
+`run-session.ps1` puts S1 in the production turn loop on a wired game, in real time, driven by a
+saved preflight manifest. It hosts the bridge in the same PlayMode bench host as `run-live-s1.ps1` and
+starts `playtest.runner.cli` (`playtest-run`) against it. Before the host starts, the script exports the
+manifest's catalog with `playtest-export-catalog` into `<OutputDirectory>/catalog.json` and pins its SHA-256;
+for this client module the host registers exactly that file, under each declaration's own name, so every
+supported chord, stick, trigger, dpad or mouse value, and skill runs as declared (the other bench modules keep
+their one-action-per-key catalog). The host and the client read the file through `UPA_SESSION_CATALOG` and
+`UPA_SESSION_CATALOG_SHA256`, which the script sets and restores. If the file is absent, altered or invalid,
+the host throws before the scene loads; if it is not exactly the manifest's export, the client ends the run
+before any paid call. There is no fallback to the keyboard catalog. The stage 7 host runs exactly one action
+and one module, so it cannot host a session. See `docs/design/turn-loop.md`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
+  -ProjectPath "C:\path\to\game" -EntityPath "C:\path\outside\game\entity.json" `
+  -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
+  -ApprovalPath "C:\path\outside\game\approval.json" -MaxCalls <n> `
+  -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.5] `
+  [-TokensPerMinute 85000] [-Objective "<text>" | -ObjectivePath "<file>"]
+```
+
+The call cap and the approval file are required: no paid call starts without them, and every call
+reserves its row in `<OutputDirectory>/calls` before it is sent. `BASETEN_API_KEY` is checked by name
+only. The output directory must be new and outside the game, and the game must be wired to this
+checkout. The summary is `run.json` and the trace is `trace.jsonl` beside it; both stay local. The run
+ends when S1 chooses `finish`, the wall limit passes (default 600 s, at most 1500), or three
+consecutive S1 calls give no usable answer (`-MaxProviderFailures`); it then stops and verifies that
+every held input was released. S1's calls are paced to `-TokensPerMinute` (default 85000, 15% under the
+provider's 100,000 limit for `mammoth-1`): the runner waits before a turn when the last minute's tokens
+plus the next call's would pass it, and states the wait to S1 as a measured fact.

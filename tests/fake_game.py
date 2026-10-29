@@ -83,6 +83,7 @@ class FakeGame:
         reject_acts: RejectReason | None = None,
         action_run_s: float | None = None,
         action_stall: bool = False,
+        aliases: dict[str, str] | None = None,
     ) -> None:
         env_token = os.environ.get("UPA_BRIDGE_TOKEN")
         self._token = token if token is not None else (env_token or "")
@@ -101,6 +102,10 @@ class FakeGame:
             raise ValueError("action_run_s must be a non-negative number or None")
         self._action_run_s = action_run_s
         self._action_stall = action_stall
+        # Declared action names that run one of this fake's own behaviors (`shift`, `increment`, `hold`): a
+        # manifest names its declarations, and this world implements each name as one of its three. The
+        # input log records the behavior that ran.
+        self._aliases = dict(aliases or {})
         self._server: asyncio.Server | None = None
         self._session: str | None = None
         self.input_log: list[dict] = []
@@ -444,6 +449,8 @@ class FakeGame:
                     except ValidationError:
                         await fail("invalid", "bad act", req_seq, session)
                         return
+                    if request.action in self._aliases:
+                        request = request.model_copy(update={"action": self._aliases[request.action]})
                     async with self._lock:
                         record = self._apply(request, next_seq(), session)
                     if self._action_run_s is not None and record.status is ExecStatus.completed:

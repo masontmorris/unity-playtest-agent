@@ -1,0 +1,4 @@
+{
+  "run_id":"r-test","author":"core","turn":null,"refs":[],"wall_utc":"2026-10-26T18:00:00Z","trace_seq":1,"kind":"stop",
+  "body":{"reason":"finish","result":{"bad":true},"error":null}
+}
