@@ -47,4 +47,9 @@ The agent is tested on third-party open-source Unity games. Their code is not pa
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE).
+The Unity bridge package in [`bridge/`](bridge/) is licensed under the
+[Apache License 2.0](bridge/LICENSE). The rest of this repository, including
+`tools/ilscan`, is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).
+Other engine bridges will be licensed individually, case by case.
+
+Earlier versions remain available under their original license.

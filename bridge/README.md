@@ -1,5 +1,8 @@
 # Playtest bridge (Unity package)
 
+The Unity bridge package is licensed under the [Apache License 2.0](LICENSE).
+See [NOTICE](NOTICE) for its copyright notice.
+
 Loopback JSONL transport between the playtest core and the Unity Editor. This is the
 `com.playtest.bridge` package; reference it from a test game's `Packages/manifest.json` with a
 `file:` path. It is never copied into the game's `Assets/`.
