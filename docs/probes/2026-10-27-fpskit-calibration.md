@@ -54,7 +54,7 @@ brackets.
   `FirstPersonController.NextAttachment` and `PreviousAttachment`). Those trials are marked invalid,
   the keys were not pressed again, and no effect numbers exist for them. The cause was not
   investigated; with one occurrence each and no reproduction attempt they remain observations and
-  are not promoted to findings.
+  are not promoted to findings. (Reproduced since: see `2026-10-29-fpskit-number-key-exceptions.md`.)
 - **Other bindings.** 15 discovered bindings (11 gamepad, 4 mouse) cannot be driven by the keyboard
   backend. They are recorded as unknown, not tested.
 

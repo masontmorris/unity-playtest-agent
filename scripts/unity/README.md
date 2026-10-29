@@ -357,6 +357,87 @@ the field outcome; the rest are reported with their calibration counts. The repo
 the game, refuses existing output or handshake files, and uses the same Editor lock, version checks
 and mutex as the bridge tests. A scene reload sample is not full game-state restoration.
 
+## Reproduce a runtime error after scene reloads
+
+With this checkout's bridge wired into the project, a plan file you wrote, and no other Editor using it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/repro-runtime-error.ps1 `
+  -ProjectPath "C:\path\to\game" -PlanPath "C:\path\outside\game\repro-plan.json" `
+  -OutputDirectory "C:\path\outside\game\repro-run" [-UnityPath "C:\path\to\Unity.exe"]
+```
+
+This is a code-driven probe, not an S1 turn, and it calls no model. The plan names exactly one keyboard
+control and the logged error that counts as the reproduction; the probe never picks either:
+
+```json
+{
+  "schema_version": 1,
+  "control": "digit1",
+  "hold_s": 0.1,
+  "attempts": 5,
+  "presses": 2,
+  "settle_s": 1.0,
+  "press_interval_s": 1.0,
+  "window_s": 0.5,
+  "predicate": {
+    "type": "Exception",
+    "message_contains": "<text in the logged message>",
+    "stack_contains": "<text in the logged stack>"
+  }
+}
+```
+
+Every key is required and nothing is defaulted. Unknown or repeated keys and out-of-range values are rejected
+before Unity starts. `control` is a lower-case Unity key token matching `^[a-z0-9]+$`; a digit key is
+`digitN`, because the bridge rejects a bare number. `hold_s` is 0.02-2.0 s, `attempts` 1-20, `presses` 1-10,
+and `settle_s`, `press_interval_s` and `window_s` are at least 0.5, 0.2 and 0.1 s (and at most 60 s). An event
+matches the predicate when its `type` (`Exception`, `Error` or `Assert`) is equal and its message and its stack
+contain the two strings, exactly and case-sensitively.
+
+In Play mode on the first enabled scene the Editor hosts a one-entry catalog, `repro_<control>`, whose lease is
+the plan's hold, and starts the Python client (`python -m playtest.preflight.repro`). The client asks for each
+scene reload through numbered files in `handshake/` (`reload-<i>.request.json`, answered by
+`reload-<i>.done.json`). The Editor serves them strictly in order, checks that each names the hosted action,
+control, hold and number, and fails the run on an out-of-order or excess request. What the game logs is evidence,
+not a test failure, and the Test Framework's timeout follows the plan.
+
+- **Each attempt** reloads the scene and opens a new bridge session (a scene change ends the previous one). It
+  reads the runtime-error monitor, waits `settle_s` and reads it again (the idle window, with no input), then
+  makes the presses. A press is one `observe` and one `act` for the hosted action, with the plan's hold as its
+  lease, sent once and never retried or replaced. Its window closes with a monitor read `window_s` after the
+  press returns, and the client waits `press_interval_s` before the next press. Windows are contiguous: each
+  later press's window opens where the previous one closed, so it also covers the wait before that press. Only
+  the first press's window starts at the idle read. The game clock is never paused, stepped or scaled.
+- **Windows** are calibration's error windows: the count is the difference of the monitor's counter at the two
+  reads that bound the window, so it is exact even when the monitor kept only some of the messages (it keeps the
+  newest 256 distinct events). `complete` says whether the retained events account for every counted error. A
+  monitor that is off or inconsistent leaves the window unknown, with a `null` count, never zero. A press window
+  is **matched** when a retained event matches the predicate, **unmatched** when it is complete and none does,
+  and **unknown** (`null`) when it is incomplete and none does. Unknown is not failure.
+- **An attempt is valid** only when its reload completed, its idle window is known and holds no error, and its
+  first press completed with verified release and has a window known well enough to say whether the error
+  appeared. Idle errors keep their events and send no input. Invalid attempts are listed with their reasons,
+  left out of n, and never imputed. A bridge or handshake failure ends the run and keeps the attempts made so far.
+
+The client writes `repro.json` even when the run fails part-way. When it served every planned reload the script
+exits 0 whatever the result, so read `status`: `measured` (every planned attempt valid and no error),
+`measured_with_gaps`, or `inconclusive` (none valid). If the client stopped before the last reload, the Unity test
+fails and the script exits non-zero, but the partial report is still written. The report holds the plan and its SHA-256, `reset: "scene_reload"`, the clock, each attempt's reload
+evidence, windows, press records and stop result, and a `summary`: `attempted`, `valid`, `k` (valid attempts
+whose first press matched, `null` when none was valid), `n` (valid attempts), press counts over the valid
+attempts (`reported`, `valid`, `matched`, `unmatched`, `unknown`), `non_matching_errors` (retained errors in those
+press windows that did not match) and `unretained_errors` (errors the monitor counted but no longer retains,
+which could be of either kind).
+
+The output directory must be new and outside the game. It receives `repro.json`, the copy of the plan the run
+used (`plan.json`), `handshake/`, copies of the Unity log and results, and `provenance.json`: the game's
+`git rev-parse HEAD` and `git status --porcelain` before and after the run, and this checkout's HEAD. Reports can
+contain game messages and stacks, so keep them local under `runs/`. The script refuses to start unless the game is
+wired to this checkout, and it uses the same Editor lock, version checks and mutex as the bridge tests. The
+result, k of n, holds for this reset (a scene reload), control, hold, waits and predicate only. A scene reload is
+not full game-state restoration, save/load and checkpoints are not exercised, and no cause is established.
+
 ## Run a manifest session (the real-time turn loop)
 
 `run-session.ps1` puts S1 in the production turn loop on a wired game, in real time, driven by a
