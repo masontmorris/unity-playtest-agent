@@ -25,6 +25,12 @@ A finished helper's result is adopted once, at the top of a later turn, and show
 source and age. `stop` cancels a pending helper and releases every held input. Nothing here retries,
 and no score, threshold or timer opens help or picks an action.
 
+With a reader port, the readers are read once before each observation (never between it and the act) and
+their values are installed in that observation's `public`. With a watch, each observation and each measured
+effect is read once more: the watch's lines join the facts S1 reads, and every suspicion it raises is
+written to the trace as a `suspicion` entry and stated to S1 as a fact. A suspicion is a fact; it is not
+help, it ranks nothing and it changes no choice.
+
 A scripted source passed to `run_turn` (a callable taking the set and the reading) replaces the S1
 port for that turn: it builds no context and makes no provider call.
 """
@@ -44,6 +50,7 @@ from typing import Any
 
 from playtest.contracts.bridge import Observation, StopResult
 from playtest.contracts.common import ClockMode
+from playtest.contracts.investigation import Suspicion
 from playtest.contracts.loop import (
     Choice,
     ChoiceKind,
@@ -60,19 +67,26 @@ from .context import build_context, canonical
 from .decisions import parse_decision
 from .execution import ExecutionController
 from .facts import RecordFacts
+from .findings import RaisedSuspicion
 from .observations import ObservationStore
 from .ports import (
     EffectProbe,
+    EffectReport,
     Executed,
     FactsSource,
     HelpPort,
     HelpRequest,
     HelpResult,
+    ReaderPort,
+    ReaderSample,
     S1Answer,
     S1Call,
     S1Port,
     TurnReport,
+    Watch,
 )
+from .readers import install
+from .suspicion import suspicion_line
 from .trace_sink import TraceSink
 
 DecisionSource = Callable[[ChoiceSet, Observation | None], Any]
@@ -164,6 +178,8 @@ class TurnLoop:
         help: HelpPort | None = None,
         facts: FactsSource | None = None,
         effects: EffectProbe | None = None,
+        readers: ReaderPort | None = None,
+        watch: Watch | None = None,
         sink: TraceSink | None = None,
         clock: Callable[[], datetime] = _utcnow,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
@@ -183,6 +199,11 @@ class TurnLoop:
         self._help = help
         self._facts: FactsSource = facts if facts is not None else RecordFacts()
         self._effects = effects
+        self._readers = readers
+        self._watch = watch
+        self._suspicions: list[RaisedSuspicion] = []
+        self._unshown: list[RaisedSuspicion] = []  # raised since S1's last context, to be stated in the next one
+        self._observation_entries: dict[int, int] = {}
         self._sink = sink
         self._clock = clock
         self._sleep = sleep
@@ -220,6 +241,16 @@ class TurnLoop:
         return self._halt
 
     @property
+    def suspicions(self) -> list[RaisedSuspicion]:
+        """Every suspicion raised so far with the trace entry it was written as, in the order raised."""
+        return list(self._suspicions)
+
+    @property
+    def observation_entries(self) -> dict[int, int]:
+        """Bridge observation `seq` to the `trace_seq` of its entry, for citing what a model saw."""
+        return dict(self._observation_entries)
+
+    @property
     def helper_count(self) -> int:
         return 1 if self._pending is not None else 0
 
@@ -255,10 +286,15 @@ class TurnLoop:
         self._adopt_finished_help(turn)
         if self._effects is not None:
             await self._effects.before_turn(turn)
+        sample = await self._readers.read() if self._readers is not None else None  # before the observation, never between it and the act
         started = time.perf_counter()
         observation = await self._client.observe_once()
+        if sample is not None:
+            observation = install(observation, sample)
         self._store.add(observation)
         observed = self._emit(TraceKind.observation, observation.model_dump(mode="json"), TraceAuthor.bridge, turn)
+        if observed is not None:
+            self._observation_entries[observation.seq] = observed
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
@@ -266,6 +302,7 @@ class TurnLoop:
         )
         self._set_version += 1
         offered = self._emit(TraceKind.choice_set, choice_set.model_dump(mode="json"), TraceAuthor.core, turn, [observed])
+        noticed = self._notice(observation, sample, turn, observed, stated=not scripted)
 
         payload: dict[str, Any] | None = None
         context: int | None = None
@@ -273,7 +310,7 @@ class TurnLoop:
         if scripted:
             answer = S1Answer(answer=decide(choice_set, observation) if callable(decide) else decide)
         else:
-            facts = list(await self._facts.facts(self._reports, observation))
+            facts = [*await self._facts.facts(self._reports, observation), *noticed]
             now = self._clock()
             payload = build_context(
                 objective=self._objective or "",
@@ -467,13 +504,49 @@ class TurnLoop:
         if not execution.rejected and self._effects is not None:
             effect = await self._effects.measure(choice, execution)
             if effect is not None:
-                self._emit(
+                measured = self._emit(
                     TraceKind.effect,
                     {"choice_id": choice.id, "action": request["action"],
                      "expected": _json_ready(effect.expected), "observed": _json_ready(effect.observed)},
                     TraceAuthor.core, turn, [entry],
                 )
+                self._note_effect(choice, effect, turn, [seq for seq in (entry, measured) if seq is not None])
         return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry
+
+    # --- suspicions -------------------------------------------------------------------------
+
+    def _notice(self, observation: Observation, sample: ReaderSample | None, turn: int, observed: int | None,
+                *, stated: bool) -> list[str]:
+        """What the watch states about this observation, as facts: its lines, then every suspicion not yet stated.
+
+        New suspicions are written to the trace as they are raised. A turn with no S1 context (`stated` false,
+        a scripted turn) records them and leaves the ones still waiting to be stated for the next context.
+        Stating them changes nothing S1 may choose.
+        """
+        if self._watch is None:
+            return []
+        noticed = self._watch.observe(observation, sample, turn=turn, trace_seq=observed)
+        recorded = [self._record_suspicion(suspicion, turn) for suspicion in noticed.suspicions]
+        if not stated:
+            return []
+        lines = list(noticed.lines)
+        lines += [suspicion_line(item.suspicion, item.trace_seq) for item in [*self._unshown, *recorded]]
+        self._unshown.clear()
+        return lines
+
+    def _note_effect(self, choice: Choice, effect: EffectReport, turn: int, cited: list[int]) -> None:
+        """Record what a measured effect makes the watch raise; S1 reads it in the next context, with the effect's own line."""
+        if self._watch is None:
+            return
+        for suspicion in self._watch.effect(choice, effect, turn=turn, trace_seqs=cited):
+            self._unshown.append(self._record_suspicion(suspicion, turn))
+
+    def _record_suspicion(self, suspicion: Suspicion, turn: int) -> RaisedSuspicion:
+        seq = self._emit(TraceKind.suspicion, suspicion.model_dump(mode="json"), TraceAuthor.core, turn,
+                         suspicion.evidence_seq)
+        raised = RaisedSuspicion(seq, suspicion)
+        self._suspicions.append(raised)
+        return raised
 
     # --- help -------------------------------------------------------------------------------
 

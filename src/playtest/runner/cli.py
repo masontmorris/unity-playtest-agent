@@ -29,6 +29,7 @@ import datetime as dt
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from playtest.contracts.manifest import PreflightManifest
 from playtest.core.adherence import adherence_rate
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.run_record import build_run_record
+from playtest.core.suspicion import RANGE_MIN_READINGS, ReaderWatch
 from playtest.core.trace import TraceWriter
 from playtest.preflight import manifest as manifest_checks
 from playtest.frontier import provider as frontier_provider
@@ -52,6 +54,7 @@ from .choices import ManifestChoices, build_choices
 from .output import secret_values
 from .pacing import TOKENS_PER_MINUTE, TokenBudget
 from .probe import DisplacementProbe, make_snapshot
+from .readers import FieldReaders
 from .s1 import ARM, SystemOneS1
 from .session import MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
 
@@ -83,6 +86,9 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("project", "entity", "calibration", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=_env("UPA_RUN_MANIFEST", Path, None))
+    parser.add_argument("--manifest-origin", default=_env("UPA_RUN_MANIFEST_ORIGIN", str, None),
+                        help="free text saying where the manifest came from, recorded in the plan and the summary "
+                             "(for example that it was made on another build and is reused; also UPA_RUN_MANIFEST_ORIGIN)")
     parser.add_argument("--catalog", type=Path, default=_env(PATH_VARIABLE, Path, None),
                         help=f"the catalog file the host serves, exported from the manifest (also {PATH_VARIABLE})")
     parser.add_argument("--catalog-sha256", default=_env(SHA256_VARIABLE, str, None),
@@ -196,7 +202,12 @@ def main(argv: list[str] | None = None) -> int:
                 "manifest_sha256": manifest_sha, "catalog_sha256": host.sha256, "max_calls": args.max_calls,
                 "wall_limit_s": args.wall_limit_s, "max_age_s": args.max_age_s,
                 "max_provider_failures": args.max_provider_failures, "tokens_per_minute": args.tokens_per_minute,
-                "objective_sha256": digest(objective),
+                "objective_sha256": digest(objective), "manifest_origin": args.manifest_origin,
+                "readers": [reader.alias for reader in manifest.readers],
+                "invariants": [rule.name for rule in manifest.invariants],
+                "suspicions": {"min_range_readings": RANGE_MIN_READINGS,
+                               "effect_allowance": "square root of the calibration sample variance plus the stage 7 "
+                                                   "measurement allowance (playtest.preflight.verify.MEASUREMENT_TOLERANCE)"},
                 "offered": [c.id for c in built.choices], "not_offered": built.not_offered,
                 "budget_assumptions": {"balance_override": approval.get("unverified_balance_override")}}
         plan["frontier"] = {"enabled": args.frontier,
@@ -226,6 +237,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if summary["status"] == "complete" else 1
 
 
+def _suspicions(raised: list[Any], min_readings: int) -> dict[str, Any]:
+    """How many suspicions the run raised and of what kind: a count of facts, not a verdict."""
+    return {"total": len(raised), "min_range_readings": min_readings,
+            "by_basis": dict(Counter(item.suspicion.basis.value for item in raised)),
+            "by_subject": dict(Counter(item.suspicion.subject for item in raised))}
+
+
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
                manifest_sha: str, catalog_sha: str) -> dict[str, Any]:
@@ -235,6 +253,10 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         snapshot = make_snapshot(client, manifest.entity_id)
         await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
+        readers = FieldReaders(client, manifest.readers) if manifest.readers else None
+        if readers is not None:
+            await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
+        watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         budget = TokenBudget(args.tokens_per_minute)
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, budget=budget)
         status = client.status
@@ -259,7 +281,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         try:
             result = await run_session(
                 client, built, s1=s1, objective=objective, probe=DisplacementProbe(snapshot, built.expected),
-                sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
+                readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
                 facts=tracker)
             closing = (result.status, result.error)
@@ -275,7 +297,13 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                              "calls": help_port.calls if help_port is not None else 0,
                              "call_cap": args.max_frontier_calls if args.frontier else 0},
                 "manifest": {"sha256": manifest_sha, "catalog_sha256": catalog_sha, "entity_id": manifest.entity_id,
+                             "origin": args.manifest_origin,
                              "offered": [c.id for c in built.choices], "not_offered": built.not_offered},
+                "readers": None if readers is None else {
+                    "declared": readers.aliases,
+                    "installed": readers.installed.summary() if readers.installed is not None else None,
+                    **readers.stats.summary()},
+                "suspicions": _suspicions(result.loop.suspicions, watch.min_readings),
                 "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,
                              "max_provider_failures": args.max_provider_failures,
                              "tokens_per_minute": args.tokens_per_minute},

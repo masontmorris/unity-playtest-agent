@@ -22,9 +22,11 @@ from playtest.core.decisions import parse_decision
 AUTHORS = {
     "run": "harness", "observation": "bridge", "choice_set": "core", "context": "core", "s1_call": "s1",
     "decision": "core", "execution": "bridge", "effect": "core", "help": "core",
-    "investigation": "frontier", "turn": "core",
-    "stop": "core", "end": "harness",
+    "investigation": "frontier", "suspicion": "core", "turn": "core",
+    "stop": "core", "end": "harness", "finding": "core",
 }
+# A finding is written by whoever judges: the core, the frontier, or the harness after the run.
+EXTRA_AUTHORS = {"finding": ("frontier", "helper", "harness")}
 BODY_KEYS = {
     "context": {"sha256", "payload"},
     "s1_call": {"question", "provider", "model", "resolved_model", "request_sha256", "http_status",
@@ -40,9 +42,9 @@ BODY_KEYS = {
 }
 REQUEST_KEYS = {"action_id", "choice_id", "action", "params", "based_on_seq", "max_age_s", "depends_on", "lease_s"}
 TOKENS = {"observation": "O", "choice_set": "S", "context": "C", "s1_call": "1", "decision": "D",
-          "execution": "X", "effect": "E", "turn": "T"}
-# [adopted] observation choice_set context s1_call* decision [opened|repeat] (execution [effect])* turn
-ORDER = re.compile(r"^A?OSC1*DH?(XE?){0,2}T$")
+          "execution": "X", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F"}
+# [adopted] observation choice_set suspicion* context s1_call* decision [opened|repeat] (execution [effect suspicion*])* turn
+ORDER = re.compile(r"^A?OSP*C1*DH?(X(EP*)?){0,2}T$")
 
 
 def problems(entries: list[dict[str, Any]]) -> list[str]:
@@ -52,7 +54,7 @@ def problems(entries: list[dict[str, Any]]) -> list[str]:
             found.append(f"entry {index} has trace_seq {entry['trace_seq']}")
         if any(not 0 <= ref < index for ref in entry["refs"]):
             found.append(f"entry {index} cites a ref that is not earlier")
-        if entry["author"] != AUTHORS[entry["kind"]]:
+        if entry["author"] != AUTHORS[entry["kind"]] and entry["author"] not in EXTRA_AUTHORS.get(entry["kind"], ()):
             found.append(f"entry {index} ({entry['kind']}) is authored by {entry['author']}")
         keys = BODY_KEYS.get(entry["kind"])
         if keys is not None and set(entry["body"]) != keys:

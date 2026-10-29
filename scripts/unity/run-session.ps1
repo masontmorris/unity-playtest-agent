@@ -24,6 +24,11 @@ wall limit is capped at 1500. Every environment variable the script sets is rest
 
 S1's calls are paced to -TokensPerMinute (default 85000, which leaves 15% headroom under the provider's
 100,000): the runner waits before a turn when the last minute's tokens plus the next call's would pass it.
+
+The manifest's readers are installed in the live observation (one Editor field inspection before each
+observation) and the run states what they and the actions' effects measured as facts and suspicions; see
+docs/design/suspicions.md. -ManifestOrigin is free text recorded in the plan and the summary, for a manifest that
+was made on another build and is reused here (say so; a reused manifest is not a fresh preflight).
 #>
 [CmdletBinding()]
 param(
@@ -40,6 +45,7 @@ param(
     [int]$TokensPerMinute = 85000,
     [string]$Objective,
     [string]$ObjectivePath,
+    [string]$ManifestOrigin,
     [string]$UnityPath
 )
 
@@ -95,7 +101,7 @@ $invariant = [Globalization.CultureInfo]::InvariantCulture
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
-           'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256')
+           'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
@@ -115,6 +121,7 @@ try {
     $env:UPA_RUN_MAX_PROVIDER_FAILURES = [string]$MaxProviderFailures
     $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
+    $env:UPA_RUN_MANIFEST_ORIGIN = if ($ManifestOrigin) { $ManifestOrigin } else { '' }
     $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
     $runnerArgs = @('-ExecutionPolicy', 'Bypass', '-File', $runner, '-ProjectPath', $project,
                     '-TestPlatform', 'PlayMode', '-TestFilter', 'Playtest.Bridge.Tests.BenchRecordingPlayModeTests',

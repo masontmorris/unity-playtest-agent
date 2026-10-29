@@ -142,3 +142,33 @@ def test_investigation_trace_uncited_evidence_fails_for_the_intended_rule():
     path = FIXTURES / "trace_entry" / "invalid-investigation-uncited-evidence.json"
     with pytest.raises(ValidationError, match="evidence_trace_seq must be null or an earlier cited trace sequence"):
         CONTRACTS["trace_entry"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_suspicion_invalid_fixtures_fail_for_their_intended_rule():
+    reasons = {
+        "invalid-blank-statement": "a suspicion needs a statement",
+        "invalid-duplicate-evidence": "cites the same entry twice",
+        "invalid-negative-evidence": "non-negative trace sequence numbers",
+        "invalid-unknown-basis": "invariant",       # the enum error lists the closed set of bases
+        "invalid-extra-field": "Extra inputs are not permitted",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "suspicion" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["suspicion"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_suspicion_and_finding_trace_entries_fail_for_their_intended_rule():
+    reasons = {
+        "invalid-suspicion-turn-differs": "suspicion turn must equal the entry's turn",
+        "invalid-suspicion-evidence-not-in-refs": "a suspicion's evidence_seq must be among the entry's refs",
+        "invalid-suspicion-null-turn": "turn is null exactly for run, stop, end, or a stop cancel",
+        "invalid-finding-evidence-not-in-refs": "a finding's evidence_seq must be among the entry's refs",
+        "invalid-finding-candidate-no-evidence": "a finding past 'suspicion' must cite trace sequence numbers",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "trace_entry" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["trace_entry"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"

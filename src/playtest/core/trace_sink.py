@@ -36,6 +36,15 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
   "escalate" | "delegate", "opened_turn", "source", "result", "reason"}`. `opened` and `repeat`
   follow the decision and ref it; `adopted` comes first in the turn that adopts the result, before
   its observation; `adopted` and `cancelled` ref the `opened` entry. A cancel at stop has no turn.
+- `suspicion` (core; refs exactly the entries it rests on): the `Suspicion` record (`playtest.contracts.investigation`),
+  with `evidence_seq` equal to its refs. One raised from an observation (an invariant that does not hold, a reader
+  that left the range its earlier readings showed) follows the `choice_set` and comes before the `context`, so the
+  context can state it with its `trace_seq`. One raised from a measured effect follows that `effect` entry and is
+  stated in the next context. A suspicion is a fact, never help.
+- `finding` (core or frontier; refs the entries it cites): a `Finding` in one state, with `evidence_seq` among its
+  refs. A finding is never edited: a new state is a new entry with the same `finding_id`. It sits in the turn that
+  wrote it, or outside any turn when a helper's answer arrives after later turns (as `investigation` entries do)
+  or the harness writes it after the run.
 - `turn` (core; refs the observation, choice set, context, decision and executions): the `TurnRecord`.
 
 Outside a turn (turn null):
@@ -61,6 +70,7 @@ A replay (#30) re-derives every turn from these entries and fails on any differe
   of the execution the bridge did not reject) and `outcome`.
 - `check_adherence` over all turn records finds nothing.
 - At most one help request is open at a time, and each is adopted or cancelled at most once.
+- Every `suspicion_id` appears once, and a suspicion entry sits after the observation of its turn.
 - A turn whose entries stop before its `turn` entry is reported, not skipped.
 """
 

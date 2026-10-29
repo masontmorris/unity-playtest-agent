@@ -1,0 +1,28 @@
+{
+  "suspicion_id": "s3",
+  "basis": "range_exit",
+  "turn": 41,
+  "based_on_seq": 1842,
+  "game_s": 61.25,
+  "subject": "public.r_timer",
+  "statement": "public.r_timer is -1.5: outside the range -1 to 5 that its 38 earlier readings showed.",
+  "detail": {
+    "field": "public.r_timer",
+    "value": -1.5,
+    "previous": -0.9,
+    "readings": 38,
+    "shape": "number",
+    "min": -1.0,
+    "max": 5.0,
+    "min_seq": 12,
+    "max_seq": 140,
+    "required_readings": 10,
+    "read_game_s": 61.1,
+    "inspection_seq": 1840
+  },
+  "evidence_seq": [
+    12,
+    140,
+    301
+  ]
+}

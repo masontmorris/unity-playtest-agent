@@ -1,7 +1,8 @@
 """The seams the turn loop calls through, and the plain data that crosses them.
 
 A provider answers a context, a helper answers a request, a facts source states measurements, a probe
-reports an effect. None of them chooses what the loop executes (S1 owns the actuator) and none of them
+reports an effect, a reader port reads the game's own values and a watch states what they and the effects
+measured. None of them chooses what the loop executes (S1 owns the actuator) and none of them
 can open help (S1 owns escalation): the loop records what each returned and acts only on the answer S1
 gave. Anything a port did not measure is `None`, never zero, success or failure.
 """
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from playtest.contracts.bridge import Observation
+from playtest.contracts.investigation import Suspicion
 from playtest.contracts.loop import Choice, TurnRecord
 
 from .execution import Execution
@@ -110,6 +112,25 @@ class HelpPort(Protocol):
 
 
 @dataclass(frozen=True)
+class EffectComparison:
+    """One measured number against the calibrated one and the spread the calibration recorded around it.
+
+    The probe fills it only when it measured the effect and the calibration recorded both the expected value
+    and a spread; otherwise the report has none. `allowed` is how far the observed value may be from the
+    expected one before the difference is more than the recorded spread accounts for, and `basis` says how it
+    was derived (stated before any run).
+    """
+
+    metric: str
+    unit: str | None
+    expected: float
+    observed: float
+    spread: float
+    allowed: float
+    basis: str
+
+
+@dataclass(frozen=True)
 class EffectReport:
     """An action's expected and observed effect, plus the fact line S1 reads next turn.
 
@@ -119,6 +140,7 @@ class EffectReport:
     expected: Mapping[str, Any] | None = None
     observed: Mapping[str, Any] | None = None
     fact: str | None = None
+    comparison: EffectComparison | None = None
 
 
 class EffectProbe(Protocol):
@@ -162,4 +184,53 @@ class TurnReport:
 class FactsSource(Protocol):
     async def facts(self, reports: Sequence[TurnReport], observation: Observation) -> Sequence[str]:
         """Measured fact strings for the decision about `observation`. Measurements and counts, never advice."""
+        ...
+
+
+# --- readers and the watch -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReaderSample:
+    """One reading of the installed readers, taken before a turn's observation.
+
+    `values` has every installed alias: the measured value, or `None` when that read failed (`errors` says
+    why, per alias). `problem` is set when no reading could be taken at all; every value is then `None`.
+    A value nobody measured is `None`, never zero, false or an earlier value.
+    """
+
+    values: Mapping[str, Any]
+    errors: Mapping[str, str]
+    inspection_seq: int | None = None
+    game_s: float | None = None
+    problem: str | None = None
+
+
+class ReaderPort(Protocol):
+    async def read(self) -> ReaderSample:
+        """Read every installed reader once. Runs before the turn's observation, never between it and the act."""
+        ...
+
+
+@dataclass(frozen=True)
+class Noticed:
+    """What the watch states about one observation: fact lines for S1, and suspicions not yet recorded.
+
+    The lines are measurements. The loop records each suspicion as a trace entry and states it to S1 as a
+    fact; neither changes what S1 may choose or opens help.
+    """
+
+    lines: tuple[str, ...] = ()
+    suspicions: tuple[Suspicion, ...] = ()
+
+
+class Watch(Protocol):
+    def observe(self, observation: Observation, sample: ReaderSample | None, *, turn: int,
+                trace_seq: int | None) -> Noticed:
+        """Read one observation, once, in turn order. `trace_seq` is the observation's trace entry, if traced."""
+        ...
+
+    def effect(self, choice: Choice, report: EffectReport, *, turn: int,
+               trace_seqs: Sequence[int]) -> Sequence[Suspicion]:
+        """Read one measured effect. `trace_seqs` are the execution and effect entries it rests on."""
         ...

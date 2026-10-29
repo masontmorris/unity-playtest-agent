@@ -1,0 +1,26 @@
+{
+  "run_id": "r-2026-10-26-001",
+  "author": "frontier",
+  "turn": null,
+  "refs": [
+    5
+  ],
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "trace_seq": 9,
+  "kind": "finding",
+  "body": {
+    "finding_id": "f1",
+    "state": "candidate",
+    "title": "Timer fell below its earlier range",
+    "expected": "Timer rests at or above its earlier minimum",
+    "expected_source": "interpretation",
+    "actual": "r_timer kept falling to -1.5 after it had rested near 0",
+    "steps": [
+      "Play on past the first reset of the timer"
+    ],
+    "evidence_seq": [
+      5
+    ],
+    "uncertainty": "One run."
+  }
+}

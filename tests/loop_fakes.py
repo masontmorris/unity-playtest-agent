@@ -169,8 +169,8 @@ class Rig:
 
 
 async def rig(*steps: Any, game: dict[str, Any] | None = None, probe: bool = False,
-              **loop_kwargs: Any) -> Rig:
-    fake = FakeGame(token=TOKEN, **(game or {}))
+              game_class: type[FakeGame] = FakeGame, **loop_kwargs: Any) -> Rig:
+    fake = game_class(token=TOKEN, **(game or {}))
     port = await fake.start()
     client = BridgeClient("127.0.0.1", port, TOKEN)
     await client.connect()
@@ -199,7 +199,22 @@ class TransformsGame(FakeGame):
     measures a displacement the way the live smoke did.
     """
 
+    def field_rows(self) -> list[dict[str, Any]]:
+        """The field rows `inspect("fields")` answers with: the one reader the shared manifest fixture declares,
+        valued at the entity's x so it changes when the entity moves. Tests replace this to script other values."""
+        return [{"id": "field", "scene_id": "scene", "field_type": "System.Single", "value_kind": "number",
+                 "value_state": "present", "value": self._pos[0], "is_null": False, "value_truncated": None,
+                 "read_error": None}]
+
     def _inspection(self, request, seq, session):
+        if request.stage == "fields":
+            rows = self.field_rows()
+            return InspectResult(
+                **self._envelope(seq, session), type="inspection", stage="fields", in_reply_to=request.seq,
+                data={"time_unit": "seconds", "frame": self._frame, "real_time_s": time.monotonic(),
+                      "game_time_s": self._game_s(), "fields": rows},
+                caps={"fields": InspectionCap(limit=64, observed=len(rows), returned=len(rows), truncated=False),
+                      "game_objects": InspectionCap(limit=64, observed=1, returned=1, truncated=False)}, errors=[])
         if request.stage != "transforms":
             return super()._inspection(request, seq, session)
         return InspectResult(

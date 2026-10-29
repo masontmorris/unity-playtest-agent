@@ -1,0 +1,8 @@
+{
+  "suspicion_id": "s1",
+  "basis": "hunch",
+  "turn": 7,
+  "based_on_seq": 410,
+  "subject": "public.r_timer",
+  "statement": "public.r_timer looked odd."
+}

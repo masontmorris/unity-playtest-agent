@@ -100,6 +100,19 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                         issue("help cancelled when no request was open", row)
                     help_open = False
 
+    raised: set[str] = set()
+    observed_at: dict[int | None, int] = {}
+    for row in rows:
+        if row.kind is TraceKind.observation:
+            observed_at.setdefault(row.turn, row.trace_seq)
+        elif row.kind is TraceKind.suspicion:
+            suspicion_id = row.body["suspicion_id"]
+            if suspicion_id in raised:
+                issue(f"suspicion {suspicion_id} was raised more than once", row)
+            raised.add(suspicion_id)
+            if row.turn not in observed_at:
+                issue("a suspicion precedes the observation of its turn", row, row.turn)
+
     for turn_no in sorted(groups):
         group = groups[turn_no]
         kinds = [x.kind for x in group]

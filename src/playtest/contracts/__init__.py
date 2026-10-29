@@ -29,6 +29,7 @@ CONTRACTS: dict[str, type[BaseModel]] = {
     "turn_record": loop.TurnRecord,
     "directive": investigation.Directive,
     "finding": investigation.Finding,
+    "suspicion": investigation.Suspicion,
     "run_record": investigation.RunRecord,
     "trace_entry": trace.TraceEntry,
 }

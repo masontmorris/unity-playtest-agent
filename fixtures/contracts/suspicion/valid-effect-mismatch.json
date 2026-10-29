@@ -1,0 +1,24 @@
+{
+  "suspicion_id": "s2",
+  "basis": "effect_mismatch",
+  "turn": 9,
+  "based_on_seq": 502,
+  "game_s": null,
+  "subject": "move_forward",
+  "statement": "move_forward: measured net displacement 0 world units against a calibrated 2.008 world units; the difference -2.008 world units is more than the 0.0572 world units the calibration's recorded spread allows (sqrt(calibration sample variance) + measurement allowance).",
+  "detail": {
+    "choice_id": "move_forward",
+    "metric": "net displacement",
+    "unit": "world units",
+    "expected": 2.008,
+    "observed": 0.0,
+    "difference": -2.008,
+    "spread": 0.0072,
+    "allowed": 0.0572,
+    "basis": "sqrt(calibration sample variance) + measurement allowance"
+  },
+  "evidence_seq": [
+    44,
+    45
+  ]
+}
