@@ -60,21 +60,27 @@ namespace Playtest.Bridge.Tests
             return true;
         }
 
-        public bool TryApply(BridgeActionDefinition action, out string error)
+        public bool TryApplyInputs(
+            BridgeInputRun run,
+            int stepIndex,
+            IReadOnlyList<BridgeInputBinding> inputs,
+            out BridgeInputAck ack,
+            out string error)
         {
+            ack = null;
             if (!Available || FailApply)
             {
                 error = "fake apply failure";
                 return false;
             }
 
-            Applied.Add(action.Name);
+            Applied.Add(run.ActionName);
             Released.Clear();
             error = null;
             return true;
         }
 
-        public bool TryRelease(out bool releaseVerified, out string error)
+        public bool TryReleaseInputs(BridgeInputRun run, out bool releaseVerified, out string error)
         {
             Releases++;
             Released.Clear();

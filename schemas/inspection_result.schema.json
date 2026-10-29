@@ -94,7 +94,7 @@
       "type": "integer"
     },
     "protocol": {
-      "default": "upa/0",
+      "default": "upa/1",
       "pattern": "^upa/\\d+$",
       "title": "Protocol",
       "type": "string"

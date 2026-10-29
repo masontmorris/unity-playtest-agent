@@ -1,5 +1,5 @@
 {
-  "protocol": "upa/0",
+  "protocol": "upa/1",
   "session": "s-inspect",
   "seq": 2,
   "game_s": null,

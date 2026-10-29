@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using Playtest.Bridge.Actions;
 using Playtest.Bridge.Protocol;
@@ -70,8 +71,22 @@ namespace Playtest.Bridge.Tests
                 ObservationMessage observation = client.ReadObservation();
                 Assert.That(observation.Playing, Is.True, "PlayMode must report the project as playing");
                 client.SendAct("a-held", observation.Seq);
-                ExecutionRecordMessage running = client.ReadExecution();
+
+                // The bridge reports running only after a device read confirmed the key applied,
+                // and that read needs this thread to keep updating, so the record is read on
+                // another thread while this coroutine yields every frame.
+                Task<ExecutionRecordMessage> runningRead = Task.Run(() => client.ReadExecution());
+                DateTime runningDeadline = DateTime.UtcNow.AddSeconds(10);
+                while (!runningRead.IsCompleted && DateTime.UtcNow < runningDeadline)
+                {
+                    yield return null;
+                }
+
+                Assert.That(runningRead.IsCompleted, Is.True, "no running record: the key was never confirmed applied");
+                ExecutionRecordMessage running = runningRead.Result;
                 Assert.That(running.Status, Is.EqualTo(BridgeExecStatus.Running));
+                Assert.That(running.AppliedInputs.Count, Is.EqualTo(1));
+                Assert.That(running.AppliedInputs[0].InputStartWallS, Is.Not.Null, "the receipt carries the device-confirmed start");
                 yield return null;
 
                 Assert.That(

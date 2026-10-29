@@ -5,11 +5,14 @@ calibration from the original run. A hit reconstructs a manifest from this prefl
 inventory, discovery and calibration. It remaps only within-session field IDs to the same
 frozen scene, object, component and field descriptors. Every action, chord, skill, reader,
 progress signal, invariant and model-reported gap is replayed exactly as the model declared it,
-including actions and skills the current bridge cannot execute; execution support, hold effects
-and reader kinds are re-derived from the current packet, so a cached measurement is never
-presented as a fresh one. A failed resolution rejects the entire hit. No provider request is
-made on a hit. Stage 7 is a separate measurement, and a hit does not assert that an action or
-reset was verified in the new session.
+including declarations with no execution evidence; execution support, evidence, hold effects
+and reader kinds are re-derived from the current packet, so neither a cached calibration nor
+cached execution receipts are presented as a fresh proof. A declaration changed in any input,
+value, hold, wait or `max_s` no longer matches old evidence, and the replay returns it as
+unproven. A
+failed resolution rejects the entire hit. No provider request is made on a hit. Stage 7 is a
+separate measurement, and a hit does not assert that an action or reset was verified in the new
+session.
 
 The key hashes the contents of the project's `Assets`, `ProjectSettings`, `Packages`, and
 local package dependencies, including scenes, prefabs, scripts, input assets and settings.
@@ -31,10 +34,10 @@ hashed into the key instead, which also catches compiled code that differs while
 files do not. The source manifest and every ordered reservation and attempt are revalidated
 against the original packet and the required model, and replaying the selection against the
 source's own packet must reproduce the manifest exactly. An incomplete result is never cached:
-an offered analog axis that no executable action drives stops admission and replay. Controls the
-bridge could not offer, chords and skills it cannot execute, and holds with no measured effect
-are recorded gaps instead, re-derived from each run's packet; a new model answer could not close
-them.
+an offered analog axis that no declared action drives stops admission and replay. Controls the
+bridge could not offer, chords and skills with no exact execution evidence, and holds with no
+measured effect are recorded gaps instead, re-derived from each run's packet; a new model answer
+could not close them.
 
 A hit additionally requires a new completed calibration from a different session, and an
 inventory and discovery captured after the source preflight. This preflight's before snapshot

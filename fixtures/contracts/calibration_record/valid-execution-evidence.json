@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "status": "measured_with_gaps",
+  "error": null,
+  "entity_id": "entity",
+  "entity": {
+    "id": "entity"
+  },
+  "coordinate_frame": "Unity world space",
+  "units": "Unity world units",
+  "physical_unit": null,
+  "plan": {},
+  "action_cap": {
+    "limit": 32,
+    "observed": 1,
+    "returned": 1,
+    "truncated": false
+  },
+  "actions": [],
+  "unsupported_bindings": [],
+  "discovery_coverage": {},
+  "idle_fields": [],
+  "input_field_segments": [],
+  "trials": [
+    {
+      "control": "w",
+      "valid": true
+    }
+  ],
+  "action_summaries": [
+    {
+      "control": "w",
+      "bindings": [],
+      "resolution": "unity_key_name",
+      "device": "Keyboard",
+      "control_name": "w",
+      "control_type": "Button",
+      "declared_x": null,
+      "declared_y": null,
+      "holds": [],
+      "lowest_tested_effective_requested_hold_s": null,
+      "shortest_observed_effective_hold_s": null,
+      "minimum_hold_scope": "unknown",
+      "inverted_relative_to_entity_basis": null,
+      "signed_basis_projections": [],
+      "dead_zone": null,
+      "dead_zone_reason": "not measured"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "action": "preflight_key_w",
+      "session": "s-1",
+      "status": "completed",
+      "release_verified": true,
+      "applied_duration_s": 0.201,
+      "input_start_wall_s": 1000.0,
+      "input_end_wall_s": 1000.201,
+      "receipts": [
+        {
+          "step_index": 0,
+          "device": "Keyboard",
+          "control": "w",
+          "x": null,
+          "y": null,
+          "input_start_wall_s": 1000.0,
+          "input_end_wall_s": 1000.201,
+          "applied_duration_s": 0.201,
+          "applied_delta_x": null,
+          "applied_delta_y": null,
+          "release_verified": true
+        }
+      ],
+      "wall_utc": "2026-01-01T00:00:00Z",
+      "declaration": {
+        "backend": "input_system",
+        "inputs": [
+          {
+            "device": "Keyboard",
+            "control": "w",
+            "x": null,
+            "y": null
+          }
+        ],
+        "default_lease_s": 0.2
+      }
+    }
+  ],
+  "freshness": {
+    "field": {
+      "classification": "unknown"
+    }
+  },
+  "clock": {},
+  "reset": {},
+  "runtime_errors": null,
+  "stop": {
+    "protocol": "upa/1",
+    "session": "s-1",
+    "seq": 2,
+    "game_s": 1.0,
+    "wall_utc": "2026-01-01T00:00:01Z",
+    "type": "stopped",
+    "released": [
+      "w"
+    ],
+    "release_verified": true
+  }
+}

@@ -25,17 +25,23 @@ Reuse is deliberately conservative: the calibrated entity, loaded-scene ID and b
 must still match. A different scene load order or hierarchy can therefore require a fresh capture;
 the adapter does not infer identity from names.
 
-The model may declare actions with up to three controls and bounded multi-step skills. These selections
-remain in the manifest even though the current bridge can execute only one keyboard control at a time
-and cannot execute skills. Each declaration records that bridge capability separately; code never
-removes or replaces a selected action. The model's gap lists are reports relative to the offered and
-selected evidence. Separate coverage facts describe harness limitations, offered and unoffered fields
-and controls, and whether selection caps were reached. Reaching a cap does not prove truncation.
+The model may declare actions with up to three simultaneous physical inputs and bounded skills of
+one to eight ordered hold/wait steps. These selections remain in the manifest even when they have no
+execution evidence. `execution_supported` is true only when a completed execution record with
+observed input release, an exactly matching recorded declaration (inputs, values, holds, waits
+and `max_s`) and receipts for that declaration's ordered devices, controls, values, holds, chord
+window and step waits is bound to it. Static backend capability, an individual key's separate
+calibration or a schema shape never sets it. Unproven declarations stay explicitly false for a later
+named preflight probe and are excluded from the exported action catalog. Code never removes or
+replaces a selected action. The model's gap lists are reports relative to the offered and selected
+evidence. Separate coverage facts describe harness limitations, offered and unoffered fields and
+controls, and whether selection caps were reached. Reaching a cap does not prove truncation.
 
 An action's `hold_effect` is the repeated entity-displacement result for a matching tested requested
-hold, or null when no such result exists. It is not a general claim about other effects. For a tap,
-the manifest records the tested *requested* hold rather than treating the shortest observed applied
-duration as a requested minimum.
+hold, or null when no such result exists. It is not a general claim about other effects. A combined
+input, a different value or a different hold has an unknown effect unless its own repeated evidence
+exists. For a tap, the manifest records the tested *requested* hold rather than treating the shortest
+observed applied duration as a requested minimum.
 
 The manifest's Pydantic model is the source of `schemas/preflight_manifest.schema.json`. The exported
 schema describes structural constraints; Python validation also checks cross-field rules, scoreable
@@ -48,8 +54,11 @@ Manifest and ledger files may contain game information and belong under `runs/`,
 The packet hash identifies the particular serialized input. It is **not** the authored-structure
 fingerprint or cache promised for stage 7. Selected readers are not yet installed in the live
 observation source, the action catalog is not written by this command, and the selected actions and
-reset have not been verified in a live run. The manifest explicitly records these limits. No C#
-manifest consumer exists yet; shared-fixture parity remains pending.
+reset are not verified by assembly itself. The manifest explicitly records these limits.
+The C# catalog/execution consumer passes its shared fixtures; the stage 7 host consumes the
+single-keyboard measurement subset. Python remains the authority for complete manifest validation.
+The offline input probe can attach exact execution proof and export the supported subset; it
+does not install readers or establish reset. See [input execution](input-actions.md).
 The discovery collector does not yet emit callable reset-method candidates, so the manifest records
 reset bindings as unknown with a reason; it does not claim that no such game method exists.
 

@@ -12,7 +12,7 @@ Day 2. The bridge transport exists; nothing plays a game yet. This section will 
 
 What exists so far:
 - **Contracts** (`src/playtest/contracts/`): typed models for the bridge protocol, choices, decisions, turn records, directives, findings and run records. JSON Schema is exported to `schemas/`, with shared fixtures in `fixtures/contracts/`.
-- **Bridge v0** (`bridge/`, Unity package): a generic loopback JSONL transport with `upa/0` protocol checks, token auth, a one-Editor project lock, `hello`/`status`, a 20 Hz observation stream, bounded actions with atomic freshness checks and input leases, stop/clock control with verified input release, and offscreen JPEG capture with a startup self-test. It loads by reference in the clean FPSKit fork.
+- **Bridge v0** (`bridge/`, Unity package): a generic loopback JSONL transport with `upa/1` protocol checks, token auth, a one-Editor project lock, `hello`/`status`, a 20 Hz observation stream, bounded actions with atomic freshness checks and input leases, stop/clock control with verified input release, and offscreen JPEG capture with a startup self-test. It loads by reference in the clean FPSKit fork.
 - **S1 decision parsing**: rejects an invalid answer and never repairs it.
 - **Adherence checker**: fails a run if anything other than S1's choice reached the game.
 - **CI**: tests, a name-blind lint over the core, a generic-bridge lint, and a gitleaks secret scan.
@@ -25,6 +25,7 @@ The roadmap is tracked in [issues](https://github.com/masontmorris/unity-playtes
 uv sync                      # Python 3.11+
 uv run pytest
 uv run playtest-export-schemas   # after changing a contract
+uv run playtest-export-catalog --manifest <manifest.json> --output <catalog.json>  # supported declarations only
 uvx pre-commit install       # local secret scan on commit
 ```
 

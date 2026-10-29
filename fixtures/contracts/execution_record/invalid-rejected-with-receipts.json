@@ -1,0 +1,25 @@
+{
+  "protocol": "upa/1",
+  "session": "s-1",
+  "seq": 1904,
+  "game_s": 54.0,
+  "wall_utc": "2026-10-26T18:00:04Z",
+  "type": "execution",
+  "action_id": "a-93",
+  "status": "rejected",
+  "validated_against_seq": 1899,
+  "reject_reason": "stale_age",
+  "release_verified": null,
+  "applied_inputs": [
+    {
+      "step_index": 0,
+      "device": "Keyboard",
+      "control": "w",
+      "x": null,
+      "y": null,
+      "release_verified": true
+    }
+  ],
+  "expected_effect": [],
+  "observed_effect": []
+}

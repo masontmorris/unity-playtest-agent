@@ -1,8 +1,10 @@
 """Adapt Editor discovery and measured calibration for model preflight stages.
 
-Control ids in this packet identify physical keyboard keys, not Unity's logical InputAction
-axes. This is the only input backend the current bridge measures and can drive. Other bindings
-remain visible as coverage gaps; they are not turned into actions by code.
+Control ids in this packet identify physical device controls (keyboard keys, mouse delta/buttons
+and gamepad sticks, triggers, dpad and buttons), not Unity's logical InputAction axes. Each
+offered control carries the one declared value calibration measured. Bindings outside the
+supported root controls remain visible as coverage gaps; they are not turned into actions by
+code.
 """
 
 from __future__ import annotations
@@ -13,8 +15,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
-from playtest.contracts.bridge import InspectResult
-from playtest.contracts.calibration import CalibrationRecord
+from playtest.contracts.bridge import InspectResult, InputExecutionEvidence
+from playtest.contracts.calibration import ActionCalibration, CalibrationRecord
 from playtest.preflight.calibrate import discover_actions
 from playtest.roles import preflight
 
@@ -26,14 +28,22 @@ class Packet:
     field_bindings: dict[str, str]
     measured_taps: frozenset[str]
     image: "Screenshot | None"
+    execution_evidence: tuple[InputExecutionEvidence, ...] = ()
 
     @property
     def action_prompt(self) -> str:
         return (preflight.STAGE_PROMPTS["actions"] + "\n"
-                "Calibration lists tested requested holds and whether repeated trials showed an entity-displacement "
-                "effect. A different hold or a combined input has an unknown effect; never imply it was measured. "
-                "You may choose chords and bounded skills even though the current bridge cannot execute them. "
-                "Describe game limitations separately from bridge or instrumentation limitations.")
+                "Calibration lists one measured declared value and the tested requested holds for each physical "
+                "control; whether repeated trials showed an entity-displacement effect; and never implies that a "
+                "different value, a combined input or a different hold was measured. Mouse delta is one relative "
+                "impulse per apply: x and y are normalized displacement and the runtime applies x * 64, y * 64 "
+                "pixels. A keyboard or device button takes null x and y; a vector control takes both values in "
+                "[-1, 1]; a one-dimensional axis uses x with y = 0. Triggers use x in [0, 1]; dpad components "
+                "must each be -1, 0 or 1. Gamepad values are sent unchanged. Absolute "
+                "pointer, touch, VR and remapping are unsupported. You may choose chords and bounded skills; "
+                "execution support is established later only by release-verified evidence for the exact declared "
+                "inputs, values, holds and step order, not by your declaration. Describe game limitations separately "
+                "from bridge or instrumentation limitations.")
 
     def review_bridge(self, answer: preflight.StageAnswer, stage: preflight.Stage) -> list[str]:
         """Bridge limitations are recorded in the manifest; they do not reject model selections."""
@@ -153,7 +163,8 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
     calibrated = _index(calibration.actions, "control", "calibration controls")
     if current != calibrated or calibration.action_cap.returned != len(calibrated):
         raise ValueError("discovered controls or bindings differ from calibration")
-    summaries = _index([a.model_dump(mode="json") for a in calibration.action_summaries],
+    summaries = _index([ActionCalibration.model_validate(a).model_dump(mode="json")
+                        for a in calibration.action_summaries],
                        "control", "calibration summaries")
     if set(summaries) - set(calibrated):
         raise ValueError("a calibration summary names an undiscovered control")
@@ -178,7 +189,11 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
         declared = row.get("field_type")
         field_types[token] = declared if isinstance(declared, str) else ""
     field_kinds = {token: field_kind(indexed_fields[ident]) for token, ident in bindings.items()}
-    role_discovery = preflight.Discovery(field_types, {key: "Button" for key in offered}, field_kinds)
+    role_discovery = preflight.Discovery(
+        field_types,
+        {key: summaries[key].get("control_type") or "Button" for key in offered},
+        field_kinds,
+    )
     freshness = calibration.freshness or {}
     matched_freshness = []
     for token, ident in bindings.items():
@@ -219,6 +234,7 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
             "clock": {"stepped_mode_supported": clock.get("stepped_mode_supported"),
                       "reason": clock.get("reason"), "error": clock.get("error"),
                       "source_sha256": _digest(calibration.clock)},
+            "field_sampling_gap": calibration.field_sampling_gap,
             "reset": {"scene_reload": {k: v for k, v in scene_reset.items() if k not in ("fields", "evidence", "trials")},
                       "save_load": reset.get("save_load"), "checkpoint": reset.get("checkpoint"),
                       "source_sha256": _digest(calibration.reset)},
@@ -231,14 +247,26 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
             "unsupported_bindings": unsupported,
             "unoffered_controls": [calibrated[k] for k in sorted(set(calibrated) - set(offered))],
         },
-        "offered_controls": [{"id": key, "control_type": "Button", **calibrated[key]}
-                             for key in offered],
+        "offered_controls": [{
+            "id": key, **calibrated[key],
+            "device": summaries[key].get("device") or "Keyboard",
+            "control": summaries[key].get("control_name") or summaries[key].get("control") or key,
+            "control_type": summaries[key].get("control_type") or "Button",
+            "declared_x": summaries[key].get("declared_x"),
+            "declared_y": summaries[key].get("declared_y"),
+        } for key in offered],
         "image": image.descriptor() if image is not None else None,
         "image_unavailable_reason": ("no screenshot was supplied" if image is None else None),
         "capability_note": (
-            "The current bridge can execute one offered physical keyboard key per action, for at most 3600 seconds. "
-            "Chords and skills may be declared but cannot yet be executed. A null hold requests a tap; if no "
-            "tested requested hold exists its duration is unknown. Other bindings are not drivable by this bridge."
+            "Each declared act names its physical device controls, normalized values and its hold or ordered "
+            "steps. Mouse delta is one relative impulse per apply, with x and y multiplied by the fixed 64-pixel "
+            "component bound; it is never repeated every update. Gamepad values go unchanged into device state. "
+            "Keyboard and device buttons take null x and y; vector controls take both values; a one-dimensional "
+            "axis uses x with y = 0. Triggers use x in [0, 1]; dpad components must each be -1, 0 or 1. "
+            "Relative scroll, absolute pointer, touch, VR and remapping are unsupported. "
+            "A null action hold requests a tap; if no tested requested hold exists its duration is unknown. "
+            "Separately measured keys do not prove a chord, a different value or a skill. Execution support and "
+            "effects remain unknown until exact release-verified evidence exists."
         ),
     }
     try:
@@ -248,4 +276,5 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
     measured_taps = frozenset(k for k in offered if
                               summaries[k]["shortest_observed_effective_hold_s"] is not None and
                               0 < summaries[k]["shortest_observed_effective_hold_s"] <= 3600)
-    return Packet(text, role_discovery, bindings, measured_taps, image)
+    return Packet(text, role_discovery, bindings, measured_taps, image,
+                  tuple(calibration.execution_evidence))

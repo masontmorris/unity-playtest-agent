@@ -1,0 +1,11 @@
+{
+  "actions": {
+    "absolute_pointer": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Mouse", "control": "position", "x": 0.5, "y": 0.5}
+      ],
+      "default_lease_s": 0.05
+    }
+  }
+}

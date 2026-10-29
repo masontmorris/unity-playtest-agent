@@ -1,0 +1,61 @@
+{
+  "actions": {
+    "move_forward": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Keyboard", "control": "w", "x": null, "y": null}
+      ],
+      "default_lease_s": 0.4
+    },
+    "strafe_and_fire": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Keyboard", "control": "w", "x": null, "y": null},
+        {"device": "Keyboard", "control": "a", "x": null, "y": null},
+        {"device": "Gamepad", "control": "rightTrigger", "x": 1.0, "y": 0.0}
+      ],
+      "default_lease_s": 0.2
+    },
+    "look_right": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Mouse", "control": "delta", "x": 1.0, "y": 0.0}
+      ],
+      "default_lease_s": 0.05
+    },
+    "stick_forward": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Gamepad", "control": "leftStick", "x": 0.0, "y": 1.0}
+      ],
+      "default_lease_s": 0.5
+    },
+    "gamepad_press": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Gamepad", "control": "buttonSouth", "x": null, "y": null}
+      ],
+      "default_lease_s": 0.1
+    },
+    "dash_and_look": {
+      "backend": "input_system",
+      "steps": [
+        {
+          "inputs": [
+            {"device": "Keyboard", "control": "leftshift", "x": null, "y": null}
+          ],
+          "hold_s": 0.15,
+          "wait_s": 0.0
+        },
+        {
+          "inputs": [
+            {"device": "Mouse", "control": "delta", "x": 0.5, "y": -0.25}
+          ],
+          "hold_s": 0.05,
+          "wait_s": 0.1
+        }
+      ],
+      "max_s": 0.5
+    }
+  }
+}

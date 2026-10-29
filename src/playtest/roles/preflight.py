@@ -171,12 +171,16 @@ _BODY = {
     ),
     "actions": (
         "Stage 5, actions and skills. Compose up to 14 actions from the discovered controls only. An action holds "
-        "one to three controls together: give each axis control x and y in [-1, 1] (y = 0 for a one-dimensional "
-        "axis) and each button null x and y, plus the hold time in seconds (null taps buttons). State the intent "
-        "in a few words; calibration, not you, measures the effect. Add preconditions only where an action makes "
-        "no sense otherwise. Then up to 6 skills: short bounded sequences of steps, such as a recovery or reaching "
-        "a menu, with a total time bound. Under uncontrollable, list what a playtester must do that no control "
-        "supports."
+        "one to three physical inputs together: give each vector control x and y in [-1, 1] (y = 0 for a "
+        "one-dimensional axis) and each keyboard or device button null x and y, plus the hold time in seconds "
+        "(null taps buttons at the measured minimum hold). Mouse delta is one relative impulse per apply: x and y "
+        "are normalized displacement, the runtime applies x * 64, y * 64 pixels, and it is not repeated every "
+        "update. Gamepad values are sent unchanged. Absolute pointer, touch, VR and remapping are unsupported. A "
+        "chord, a different value or a different hold than calibration tested has an unknown effect; never imply "
+        "it was measured. State the intent in a few words; calibration, not you, measures the effect. Add "
+        "preconditions only where an action makes no sense otherwise. Then up to 6 skills: short bounded sequences "
+        "of one to eight ordered steps, each with its inputs, hold and wait, such as a recovery or reaching a menu, "
+        "with a total time bound. Under uncontrollable, list what a playtester must do that no control supports."
     ),
     "progress": (
         "Stage 6, progress, invariants and gaps. Use stage-4 readers only. Progress is a reader that counts toward "

@@ -401,7 +401,7 @@ class BridgeClient:
         assert isinstance(result, Status)
         return result
 
-    async def observe_once(self) -> Observation:
+    async def observe_once(self, *, with_frame: bool = False) -> Observation:
         loop = self._require_open()
         async with self._lock:
             request = ObserveRequest(
@@ -410,6 +410,7 @@ class BridgeClient:
                 game_s=None,
                 wall_utc=_utcnow(),
                 mode="once",
+                with_frame=with_frame,
             )
             error: asyncio.Future = loop.create_future()
             self._register(request.seq, error)

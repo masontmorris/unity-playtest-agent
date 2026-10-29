@@ -52,6 +52,50 @@ namespace Playtest.Bridge.Protocol
         public string Unit { get; set; }
     }
 
+    /// <summary>
+    /// Measured evidence for one input an action or skill step applied. <c>x</c> and <c>y</c> are the
+    /// declared values. The times and the duration come from device-state reads: from the read that
+    /// confirmed the input applied to the read that showed it neutral. A mouse delta is an impulse,
+    /// so its duration stays null and <c>applied_delta_x/y</c> carry the pixels the device read back.
+    /// Anything the bridge could not measure is null, never zero. Every field is written, so a null
+    /// is explicit.
+    /// </summary>
+    public sealed class AppliedInputReceipt
+    {
+        [JsonProperty("step_index", Order = 0)]
+        public int StepIndex { get; set; }
+
+        [JsonProperty("device", Order = 1)]
+        public string Device { get; set; }
+
+        [JsonProperty("control", Order = 2)]
+        public string Control { get; set; }
+
+        [JsonProperty("x", Order = 3, NullValueHandling = NullValueHandling.Include)]
+        public double? X { get; set; }
+
+        [JsonProperty("y", Order = 4, NullValueHandling = NullValueHandling.Include)]
+        public double? Y { get; set; }
+
+        [JsonProperty("input_start_wall_s", Order = 5, NullValueHandling = NullValueHandling.Include)]
+        public double? InputStartWallS { get; set; }
+
+        [JsonProperty("input_end_wall_s", Order = 6, NullValueHandling = NullValueHandling.Include)]
+        public double? InputEndWallS { get; set; }
+
+        [JsonProperty("applied_duration_s", Order = 7, NullValueHandling = NullValueHandling.Include)]
+        public double? AppliedDurationS { get; set; }
+
+        [JsonProperty("applied_delta_x", Order = 8, NullValueHandling = NullValueHandling.Include)]
+        public double? AppliedDeltaX { get; set; }
+
+        [JsonProperty("applied_delta_y", Order = 9, NullValueHandling = NullValueHandling.Include)]
+        public double? AppliedDeltaY { get; set; }
+
+        [JsonProperty("release_verified", Order = 10, NullValueHandling = NullValueHandling.Include)]
+        public bool? ReleaseVerified { get; set; }
+    }
+
     /// <summary>Bridge -> core. The lifecycle and measured timing of one action.</summary>
     public sealed class ExecutionRecordMessage : Envelope
     {
@@ -94,6 +138,10 @@ namespace Playtest.Bridge.Protocol
 
         [JsonProperty("observed_effect", Order = 21)]
         public List<BridgeEffect> ObservedEffect { get; set; } = new List<BridgeEffect>();
+
+        /// <summary>One receipt per input applied, in application order. Empty when nothing was applied.</summary>
+        [JsonProperty("applied_inputs", Order = 22)]
+        public List<AppliedInputReceipt> AppliedInputs { get; set; } = new List<AppliedInputReceipt>();
     }
 
     public static class BridgeExecStatus

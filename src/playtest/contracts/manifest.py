@@ -6,7 +6,14 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from .bridge import InspectionCap
+from .action_catalog import (
+    ActionDefinition,
+    ActionStep,
+    Device,
+    InputBinding,
+    evidence_problems,
+)
+from .bridge import InputExecutionEvidence, InspectionCap
 from .calibration import ActionCalibration
 from .common import Strict
 from .investigation import Comparator
@@ -35,29 +42,91 @@ class ManifestReader(Strict):
 
 
 class ManifestInput(Strict):
-    control_id: str = Field(min_length=1)
+    control_id: str = Field(min_length=1, description="Stable canonical control id offered by preflight")
+    device: Device
+    control: str = Field(min_length=1, description="Physical root control, without a device prefix")
     x: float | None = Field(ge=-1, le=1, allow_inf_nan=False)
     y: float | None = Field(ge=-1, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _declared_value_shape(self) -> "ManifestInput":
+        InputBinding(device=self.device, control=self.control, x=self.x, y=self.y)
+        return self
+
+
+def _binding(input_value: ManifestInput) -> InputBinding:
+    return InputBinding(device=input_value.device, control=input_value.control,
+                        x=input_value.x, y=input_value.y)
+
+
+def _calibrated_bindings(inputs: list[ManifestInput], calibrations: list[ActionCalibration]) -> None:
+    by_id = {item.control: item for item in calibrations}
+    for item in inputs:
+        calibration = by_id[item.control_id]
+        if (item.device != (calibration.device or "Keyboard")
+                or item.control != (calibration.control_name or calibration.control)):
+            raise ValueError("physical input must match its calibrated control binding")
+
+
+def _step_hold(step: "ManifestSkillStep") -> float | None:
+    return step.hold_s if step.hold_s is not None else step.tap_hold_s
+
+
+def _action_hold(action: "ManifestAction") -> float | None:
+    return action.hold_s if action.hold_s is not None else action.tap_hold_s
+
+
+def _action_definition(action: "ManifestAction") -> ActionDefinition | None:
+    """The exact catalog definition this manifest action declares, or null if unresolved."""
+    hold = _action_hold(action)
+    if hold is None:
+        return None
+    return ActionDefinition(backend="input_system",
+                            inputs=[_binding(item) for item in action.inputs],
+                            default_lease_s=hold)
+
+
+def _skill_definition(skill: "ManifestSkill") -> ActionDefinition | None:
+    """The exact catalog definition this manifest skill declares, or null if unresolved."""
+    if any(_step_hold(step) is None for step in skill.steps):
+        return None
+    return ActionDefinition(backend="input_system", steps=[
+        ActionStep(inputs=[_binding(item) for item in step.inputs],
+                   hold_s=_step_hold(step), wait_s=step.wait_s) for step in skill.steps],
+        max_s=skill.max_s)
+
+
+def _support(definition: ActionDefinition | None, evidence: InputExecutionEvidence | None) -> bool:
+    if evidence is None or definition is None:
+        return False
+    return not evidence_problems(evidence, definition)
 
 
 class ManifestAction(Strict):
     name: str = Field(pattern=NAME)
     intent: str = Field(min_length=1)
     inputs: list[ManifestInput] = Field(min_length=1, max_length=3)
-    hold_s: float | None = Field(gt=0, allow_inf_nan=False)
-    tap_hold_s: float | None = Field(gt=0, allow_inf_nan=False, description="Tested requested hold, not observed applied duration")
+    hold_s: float | None = Field(gt=0, le=3600, allow_inf_nan=False)
+    tap_hold_s: float | None = Field(gt=0, le=3600, allow_inf_nan=False, description="Tested requested hold, not observed applied duration")
     preconditions: list[ManifestCheck] = Field(max_length=3)
     calibrations: list[ActionCalibration] = Field(min_length=1, max_length=3)
     axis: bool
     max_hold_s: None = Field(description="No per-action override limit has been measured")
     hold_effect: bool | None = Field(description="Entity-displacement response in repeated trials, or null if not established")
-    execution_supported: bool = Field(description="Whether the current bridge can execute this declaration")
+    execution_evidence: InputExecutionEvidence | None = Field(
+        None, description="Release-verified receipts for this exact declaration, or null when unproven")
+    execution_supported: bool = Field(
+        description="True only when execution_evidence completed with verified release for this exact declaration")
 
     @model_validator(mode="after")
     def _bound_to_calibration(self) -> "ManifestAction":
         ids = [item.control_id for item in self.inputs]
         if len(ids) != len(set(ids)) or [c.control for c in self.calibrations] != ids:
             raise ValueError("action calibrations must match the selected controls in order")
+        _calibrated_bindings(self.inputs, self.calibrations)
+        pairs = [(item.device, item.control) for item in self.inputs]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("an action cannot repeat the same physical input")
         if self.hold_s is None and self.tap_hold_s is not None and (
             len(ids) != 1 or self.tap_hold_s != self.calibrations[0].lowest_tested_effective_requested_hold_s
         ):
@@ -72,27 +141,48 @@ class ManifestAction(Strict):
         expected = matching[0] if len(matching) == 1 else None
         if self.hold_effect != expected:
             raise ValueError("hold effect must reflect the matching calibration trials")
-        supported = (len(ids) == 1 and not self.axis and
-                     (self.hold_s is not None and self.hold_s <= 3600 or
-                      self.hold_s is None and self.tap_hold_s is not None and self.tap_hold_s <= 3600))
+        if requested is not None and requested > 3600:
+            raise ValueError("an action hold cannot exceed 3600 seconds")
+        definition = _action_definition(self)
+        if self.execution_evidence is not None and definition is None:
+            raise ValueError("execution evidence needs a resolved positive hold")
+        supported = _support(definition, self.execution_evidence)
         if self.execution_supported != supported:
-            raise ValueError("execution support must reflect the current bridge capability")
+            detail = "; ".join(evidence_problems(self.execution_evidence, definition)) if (
+                self.execution_evidence is not None and definition is not None) else ""
+            raise ValueError("execution support must reflect exact release-verified execution evidence"
+                             + (f": {detail}" if detail else ""))
         return self
 
 
 class ManifestSkillStep(Strict):
     inputs: list[ManifestInput] = Field(min_length=1, max_length=3)
-    hold_s: float | None = Field(gt=0, allow_inf_nan=False)
-    wait_s: float = Field(ge=0, allow_inf_nan=False)
+    hold_s: float | None = Field(gt=0, le=3600, allow_inf_nan=False)
+    tap_hold_s: float | None = Field(gt=0, le=3600, allow_inf_nan=False,
+                                     description="Tested requested hold for a one-input step, or null")
+    wait_s: float = Field(ge=0, le=3600, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _one_hold(self) -> "ManifestSkillStep":
+        pairs = [(item.device, item.control) for item in self.inputs]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("a skill step cannot repeat the same physical input")
+        if self.hold_s is not None and self.tap_hold_s is not None:
+            raise ValueError("a skill step with an explicit hold does not use a tap hold")
+        if self.tap_hold_s is not None and len(self.inputs) != 1:
+            raise ValueError("a skill step tap hold needs exactly one input")
+        return self
 
 
 class ManifestSkill(Strict):
     name: str = Field(pattern=NAME)
     purpose: str = Field(min_length=1)
     steps: list[ManifestSkillStep] = Field(min_length=1, max_length=8)
-    max_s: float = Field(gt=0, allow_inf_nan=False)
+    max_s: float = Field(gt=0, le=3600, allow_inf_nan=False)
     calibrations: list[ActionCalibration]
-    execution_supported: Literal[False]
+    execution_evidence: InputExecutionEvidence | None = Field(
+        None, description="Release-verified ordered receipts for this exact skill, or null when unproven")
+    execution_supported: bool
 
     @model_validator(mode="after")
     def _controls(self) -> "ManifestSkill":
@@ -101,12 +191,30 @@ class ManifestSkill(Strict):
         if len(supplied) != len(set(supplied)) or set(supplied) != ids:
             raise ValueError("skill calibrations must cover its selected controls")
         for step in self.steps:
+            _calibrated_bindings(step.inputs, self.calibrations)
             controls = [item.control_id for item in step.inputs]
             if len(controls) != len(set(controls)):
                 raise ValueError("a skill step cannot repeat a control")
-        known_duration = sum(step.wait_s + (step.hold_s if step.hold_s is not None else 0) for step in self.steps)
+            if step.tap_hold_s is not None:
+                summary = next((c for c in self.calibrations if c.control == step.inputs[0].control_id), None)
+                if summary is None or summary.lowest_tested_effective_requested_hold_s != step.tap_hold_s:
+                    raise ValueError("a skill step tap hold must be the tested requested hold for its control")
+                matching = [h for h in summary.holds if h.requested_hold_s == step.tap_hold_s]
+                if len(matching) != 1 or matching[0].effective_in_all_repeats is not True:
+                    raise ValueError("a skill step tap hold requires matching effective repeated trials")
+        known_duration = sum(step.wait_s + (_step_hold(step) or 0) for step in self.steps)
         if known_duration > self.max_s:
             raise ValueError("known skill step durations exceed max_s")
+        if any(_step_hold(step) is None for step in self.steps):
+            if self.execution_evidence is not None:
+                raise ValueError("execution evidence needs every skill step hold resolved")
+        definition = _skill_definition(self)
+        supported = _support(definition, self.execution_evidence)
+        if self.execution_supported != supported:
+            detail = "; ".join(evidence_problems(self.execution_evidence, definition)) if (
+                self.execution_evidence is not None and definition is not None) else ""
+            raise ValueError("skill execution support must reflect exact release-verified execution evidence"
+                             + (f": {detail}" if detail else ""))
         return self
 
 
@@ -209,10 +317,16 @@ class PreflightManifest(Strict):
         controls = [c.get("id") for c in self.selection.offered_controls]
         if any(not isinstance(c, str) or not c for c in controls) or len(controls) != len(set(controls)):
             raise ValueError("offered control ids must be unique strings")
-        selected_controls = [item.control_id for action in self.actions for item in action.inputs]
-        selected_controls += [item.control_id for skill in self.skills for step in skill.steps for item in step.inputs]
+        offered_rows = {row["id"]: row for row in self.selection.offered_controls}
+        declared_inputs = [item for action in self.actions for item in action.inputs]
+        declared_inputs += [item for skill in self.skills for step in skill.steps for item in step.inputs]
+        selected_controls = [item.control_id for item in declared_inputs]
         if not set(selected_controls) <= set(controls):
             raise ValueError("selected controls must be offered")
+        for item in declared_inputs:
+            row = offered_rows[item.control_id]
+            if row.get("device") != item.device or row.get("control") != item.control:
+                raise ValueError("selected control descriptors must match the offered physical controls")
         gap_flags = {"unobservable": len(self.gaps.unobservable) == 8,
                      "uncontrollable": len(self.gaps.uncontrollable) == 8,
                      "unjudgeable": len(self.gaps.unjudgeable) == 8}

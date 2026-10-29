@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using NUnit.Framework;
 using Playtest.Bridge.Lock;
+using Playtest.Bridge.Protocol;
 
 namespace Playtest.Bridge.Tests
 {
@@ -58,7 +59,7 @@ namespace Playtest.Bridge.Tests
 
                 BridgeLockInfo read = BridgeLockFile.Read(LockPath);
                 Assert.That(read, Is.Not.Null);
-                Assert.That(read.Protocol, Is.EqualTo("upa/0"));
+                Assert.That(read.Protocol, Is.EqualTo(ProtocolVersion.Current));
                 Assert.That(read.Pid, Is.EqualTo(_selfPid));
                 Assert.That(read.Port, Is.EqualTo(18080));
                 Assert.That(read.Token, Is.EqualTo("token-1"));
@@ -118,7 +119,7 @@ namespace Playtest.Bridge.Tests
         {
             File.WriteAllText(
                 LockPath,
-                "{\"protocol\":\"upa/0\",\"pid\":2147483647,\"port\":18085,\"token\":\"ghost\",\"started_utc\":\"2020-01-01T00:00:00Z\"}",
+                "{\"protocol\":\"" + ProtocolVersion.Current + "\",\"pid\":2147483647,\"port\":18085,\"token\":\"ghost\",\"started_utc\":\"2020-01-01T00:00:00Z\"}",
                 new UTF8Encoding(false));
 
             using (BridgeLockFile held = BridgeLockFile.Acquire(LockPath, _selfPid, 18086, "takeover"))

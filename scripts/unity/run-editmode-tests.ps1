@@ -421,7 +421,7 @@ try {
     # Unity.exe is a GUI-subsystem binary; the call operator returns immediately for those.
     # Start-Process -Wait is what actually blocks until the test run exits, and its ExitCode
     # replaces $LASTEXITCODE (which the call operator never sets here).
-    $unityProcess = Start-Process -FilePath $unityFull -ArgumentList $argumentLine -NoNewWindow -Wait -PassThru
+    $unityProcess = Start-Process -FilePath $unityFull -ArgumentList $argumentLine -WindowStyle Hidden -Wait -PassThru
     $unityExitCode = $unityProcess.ExitCode
     $elapsed = (Get-Date) - $startedAt
     $unityRan = $true

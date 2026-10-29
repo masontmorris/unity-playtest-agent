@@ -1,5 +1,6 @@
 using System;
 using Newtonsoft.Json;
+using Playtest.Bridge.Protocol;
 
 namespace Playtest.Bridge.Lock
 {
@@ -10,7 +11,7 @@ namespace Playtest.Bridge.Lock
     public sealed class BridgeLockInfo
     {
         [JsonProperty("protocol")]
-        public string Protocol { get; set; } = "upa/0";
+        public string Protocol { get; set; } = ProtocolVersion.Current;
 
         [JsonProperty("pid")]
         public int Pid { get; set; }

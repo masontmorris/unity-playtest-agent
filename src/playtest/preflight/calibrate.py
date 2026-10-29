@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from playtest.contracts import action_catalog as catalog_contract
 from playtest.core.bridge_client import BridgeClient, BridgeError
 from playtest.core.bridge_lock import BridgeLockError
 from playtest.preflight.entity import _complete, _norm, _objects, _sub, _vector, candidate_controls
@@ -30,11 +31,71 @@ IDLE_SAMPLES = 8
 MAX_KEYBOARD_STATE_AGE_S = 0.1
 MEASUREMENT_BUDGET_S = 300.0
 KEY_PATH = re.compile(r"^<Keyboard>/([a-zA-Z0-9]+)$", re.IGNORECASE)
+MOUSE_PATH = re.compile(r"^<Mouse>/([a-zA-Z0-9]+)$", re.IGNORECASE)
+GAMEPAD_PATH = re.compile(r"^<Gamepad>/([a-zA-Z0-9]+)$", re.IGNORECASE)
 MODIFIER_KEYS = {"shift": "leftshift", "ctrl": "leftctrl", "alt": "leftalt"}
+MOUSE_CONTROLS = frozenset({catalog_contract.MOUSE_DELTA}) | catalog_contract.MOUSE_BUTTONS
+GAMEPAD_VECTORS = catalog_contract.GAMEPAD_VECTORS
+GAMEPAD_ONE_DIMENSIONAL = catalog_contract.GAMEPAD_ONE_DIMENSIONAL
+GAMEPAD_BUTTONS = catalog_contract.GAMEPAD_BUTTONS
+# The calibration harness declares one reproducible direction per discovered vector control. It
+# does not claim the other directions, magnitude or dead zone were measured.
+DECLARED_VECTOR_X = 1.0
+DECLARED_VECTOR_Y = 0.0
+
+
+def _keyboard_control(key: str) -> tuple[str, str]:
+    """Return the stable physical id and resolution for one keyboard key token."""
+    if len(key) == 1 and key.isdigit():
+        return "digit" + key, "unity_digit_key"
+    if key in MODIFIER_KEYS:
+        return MODIFIER_KEYS[key], "unity_modifier_left_key"
+    return key, "unity_key_name"
+
+
+def _control_descriptor(device: str, name: str) -> dict[str, Any] | None:
+    """Resolve one supported root control to its stable id, type and declared values."""
+    if device == "Keyboard":
+        control, resolution = _keyboard_control(name.lower())
+        return {"control": control, "control_name": control, "device": "Keyboard",
+                "control_type": "Button", "x": None, "y": None, "resolution": resolution}
+    if device == "Mouse":
+        if name not in MOUSE_CONTROLS:
+            return None
+        if name == "delta":
+            return {"control": "mouse_delta", "control_name": "delta", "device": "Mouse",
+                    "control_type": "Delta", "x": DECLARED_VECTOR_X, "y": DECLARED_VECTOR_Y,
+                    "resolution": "mouse_relative_delta"}
+        return {"control": "mouse_" + name.lower(), "control_name": name, "device": "Mouse",
+                "control_type": "Button", "x": None, "y": None, "resolution": "mouse_button"}
+    if name in GAMEPAD_VECTORS:
+        return {"control": "gamepad_" + name.lower(), "control_name": name, "device": "Gamepad",
+                "control_type": "Dpad" if name == "dpad" else "Stick",
+                "x": DECLARED_VECTOR_X, "y": DECLARED_VECTOR_Y, "resolution": "gamepad_root_control"}
+    if name in GAMEPAD_ONE_DIMENSIONAL:
+        return {"control": "gamepad_" + name.lower(), "control_name": name, "device": "Gamepad",
+                "control_type": "Axis", "x": DECLARED_VECTOR_X, "y": 0.0,
+                "resolution": "gamepad_one_dimensional_axis"}
+    if name in GAMEPAD_BUTTONS:
+        return {"control": "gamepad_" + name.lower(), "control_name": name, "device": "Gamepad",
+                "control_type": "Button", "x": None, "y": None, "resolution": "gamepad_button"}
+    return None
+
+
+def _preflight_action_name(device: str, control: str) -> str:
+    if device == "Keyboard":
+        return "preflight_key_" + control
+    return "preflight_" + control
 
 
 def discover_actions(discovery: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Group discovered paths by the actual keyboard control the bridge can request."""
+    """Group discovered paths by the physical device control the bridge can request.
+
+    Keyboard ids stay the original physical key tokens. Mouse and gamepad controls get stable
+    canonical ids (mouse_delta, gamepad_leftstick, ...). A path outside the supported root
+    controls is preserved as an unsupported binding with a reason; it is never remapped to a
+    different device, an absolute pointer, a touch control or VR input.
+    """
     actions: dict[str, dict[str, Any]] = {}
     unsupported = []
     for section in ("bindings", "input_asset_bindings"):
@@ -42,29 +103,35 @@ def discover_actions(discovery: dict[str, Any]) -> tuple[list[dict[str, Any]], l
             if binding.get("binding_is_composite"):
                 continue
             path = binding.get("binding_effective_path")
-            match = KEY_PATH.fullmatch(path) if isinstance(path, str) else None
             descriptor = {"binding_id": binding.get("id"), "action_id": binding.get("action_id"),
                           "path": path, "part": binding.get("binding_name"),
                           "source_object_id": binding.get("source_object_id")}
-            if not match:
+            match = None
+            device = None
+            if isinstance(path, str):
+                for candidate, pattern in (("Keyboard", KEY_PATH), ("Mouse", MOUSE_PATH),
+                                           ("Gamepad", GAMEPAD_PATH)):
+                    found = pattern.fullmatch(path)
+                    if found:
+                        device, match = candidate, found.group(1)
+                        break
+            resolved = _control_descriptor(device, match) if device is not None else None
+            if resolved is None:
+                if isinstance(path, str) and ("<Touchscreen>" in path or "<Pointer>" in path):
+                    reason = "binding is an absolute pointer or touch control, which is unsupported"
+                elif isinstance(path, str) and device == "Mouse" and match in ("position", "scroll"):
+                    reason = ("relative scroll is not tested and remains unsupported" if match == "scroll"
+                              else "absolute pointer position is unsupported")
+                elif isinstance(path, str) and path.lower().startswith("<keyboard>/"):
+                    reason = "keyboard path cannot be resolved to a supported key"
+                else:
+                    reason = "binding is not drivable by a supported input backend"
                 unsupported.append({**descriptor, "effect": None, "variance": None, "inversion": None,
-                                    "dead_zone": None, "minimum_hold": None,
-                                    "reason": "binding is not drivable by the keyboard backend"})
+                                    "dead_zone": None, "minimum_hold": None, "reason": reason})
                 continue
-            key = match.group(1).lower()
-            if len(key) == 1 and key.isdigit():
-                physical, resolution = "digit" + key, "unity_digit_key"
-            elif key in MODIFIER_KEYS:
-                physical, resolution = MODIFIER_KEYS[key], "unity_modifier_left_key"
-            elif key[0].isalpha():
-                physical, resolution = key, "unity_key_name"
-            else:
-                unsupported.append({**descriptor, "effect": None, "variance": None, "inversion": None,
-                                    "dead_zone": None, "minimum_hold": None,
-                                    "reason": "keyboard path cannot be resolved to a supported key"})
-                continue
-            item = actions.setdefault(physical, {"control": physical, "action": "preflight_key_" + physical,
-                                                  "bindings": [], "resolution": resolution})
+            item = actions.setdefault(resolved["control"], {
+                **resolved, "action": _preflight_action_name(resolved["device"], resolved["control"]),
+                "bindings": []})
             item["bindings"].append(descriptor)
     return [actions[key] for key in sorted(actions)], unsupported
 
@@ -113,11 +180,16 @@ def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> di
         elif len(projections) >= REPEATS and all(p < -EFFECT_TOLERANCE for p in projections):
             inversion = True
     return {"control": action["control"], "bindings": action["bindings"], "resolution": action["resolution"],
+            "device": action.get("device"), "control_name": action.get("control_name"),
+            "control_type": action.get("control_type"),
+            "declared_x": action.get("x"), "declared_y": action.get("y"),
             "holds": groups, "lowest_tested_effective_requested_hold_s": minimum,
             "shortest_observed_effective_hold_s": observed_minimum,
             "minimum_hold_scope": "shortest measured applied duration in the first requested group with responses in both repetitions; not a global minimum",
             "inverted_relative_to_entity_basis": inversion, "signed_basis_projections": projections,
-            "dead_zone": None, "dead_zone_reason": "keyboard backend supplies binary input only"}
+            "dead_zone": None, "dead_zone_reason": "dead zone is unknown: the backend sends declared values only",
+            "sensitivity": None,
+            "sensitivity_reason": "sensitivity is unknown: one declared value per control was measured, not a response curve"}
 
 
 def _entity_snapshot(response: Any, entity_id: str) -> dict[str, Any]:
@@ -126,11 +198,118 @@ def _entity_snapshot(response: Any, entity_id: str) -> dict[str, Any]:
     if entity_id not in rows:
         raise ValueError("the selected entity is missing from the transform snapshot")
     row = rows[entity_id]
+    forward = _vector(row.get("world_forward"))
+    basis = row.get("basis_state")
+    yaw = pitch = None
+    if basis == "present" and forward is not None and _norm(forward) > 0:
+        yaw = math.degrees(math.atan2(forward[0], forward[2]))
+        pitch = math.degrees(math.asin(max(-1.0, min(1.0, -forward[1]))))
     return {"frame": data["frame"], "real_time_s": data["real_time_s"], "game_time_s": data["game_time_s"],
             "wall_utc": response.wall_utc.isoformat(), "position": row["position"],
             "world_forward": row.get("world_forward"), "world_right": row.get("world_right"),
-            "basis_state": row.get("basis_state"), "runtime_errors": data.get("runtime_errors"),
-            "coverage": data["inspection_coverage"]}
+            "basis_state": row.get("basis_state"),
+            "yaw_deg": yaw, "pitch_deg": pitch,
+            "basis_convention": ("Unity yaw = atan2(forward.x, forward.z) and pitch = asin(-forward.y) in degrees; "
+                                 "derived from the measured basis, not a game-specific camera convention"),
+            "runtime_errors": data.get("runtime_errors"), "coverage": data["inspection_coverage"]}
+
+
+def _input_state(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Return generic per-device input state, falling back to the keyboard-only snapshot.
+
+    The bridge keeps `keyboard_state` with its `keys` alias for the older harness and may add
+    `input_state` with per-device controls. Missing state is unknown, never "released".
+    """
+    for key in ("input_state", "keyboard_state"):
+        state = data.get(key)
+        if isinstance(state, dict):
+            return state
+    return None
+
+
+def _control_name(value: Any) -> str:
+    return value.rsplit("/", 1)[-1].lower() if isinstance(value, str) else ""
+
+
+def _active_value(value: Any) -> bool | None:
+    """Whether one device control is active, or None when the value was not measured.
+
+    A missing, non-finite or wholly null value is unknown. It is never reported as released:
+    an all-null vector and a NaN axis are unmeasured, not a measured zero.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return abs(number) > 0 if math.isfinite(number) else None
+    if isinstance(value, dict):
+        if isinstance(value.get("active"), bool):
+            return value["active"]
+        if "x" in value or "y" in value:
+            parts = [value.get("x"), value.get("y")]
+            present = [part for part in parts if part is not None]
+            if not present:
+                return None
+            numbers = []
+            for part in present:
+                if isinstance(part, bool) or not isinstance(part, (int, float)) or not math.isfinite(float(part)):
+                    return None
+                numbers.append(float(part))
+            if any(abs(number) > 0 for number in numbers):
+                return True
+            return False if len(present) == len(parts) else None
+        if "value" in value:
+            return _active_value(value["value"])
+        return None
+    if isinstance(value, (list, tuple)) and 1 <= len(value) <= 2:
+        if all(part is None for part in value):
+            return None
+        return _active_value({"x": value[0], "y": value[1] if len(value) > 1 else None})
+    return None
+
+
+def _state_controls(state: dict[str, Any], device: str) -> dict[str, Any]:
+    """Collect a device's control map from the supported generic state shapes."""
+    result: dict[str, Any] = {}
+    containers = [state.get("controls")]
+    devices = state.get("devices")
+    if isinstance(devices, dict):
+        containers.append(devices.get(device))
+    elif isinstance(devices, list):
+        containers.extend(item for item in devices if isinstance(item, dict) and item.get("device") == device)
+    for container in containers:
+        if isinstance(container, dict):
+            if isinstance(container.get("controls"), dict):
+                container = container["controls"]
+            elif isinstance(container.get("values"), dict):
+                container = container["values"]
+            for key, value in container.items():
+                if isinstance(key, str):
+                    result[_control_name(key)] = value
+        elif isinstance(container, list):
+            for row in container:
+                if isinstance(row, dict) and isinstance(row.get("control"), str):
+                    if row.get("device") in (None, device):
+                        result[_control_name(row["control"])] = row
+    return result
+
+
+def _control_held(state: dict[str, Any], device: str, control: str) -> bool | None:
+    for key, value in _state_controls(state, device).items():
+        if key == _control_name(control):
+            return _active_value(value)
+    devices = state.get("devices")
+    device_state = devices.get(device) if isinstance(devices, dict) else None
+    if isinstance(device_state, dict):
+        pressed = device_state.get("pressed")
+        if (catalog_contract.control_type(device, control) == "Button"
+                and isinstance(pressed, list) and all(isinstance(name, str) for name in pressed)):
+            return any(_control_name(name) == _control_name(control) for name in pressed)
+    if device == "Keyboard":
+        keys = state.get("keys")
+        if isinstance(keys, list):
+            return any(_control_name(key) == _control_name(control) for key in keys)
+    return None
 
 
 def _field_snapshot(response: Any, scene_id: str) -> dict[str, Any]:
@@ -147,9 +326,9 @@ def _field_snapshot(response: Any, scene_id: str) -> dict[str, Any]:
             raise ValueError(f"field inspection has unknown {name}")
     if data.get("time_unit") != "seconds" or not isinstance(data.get("fields"), list):
         raise ValueError("field inspection has unknown units or field list")
-    state = data.get("keyboard_state")
+    state = _input_state(data)
     if not isinstance(state, dict):
-        raise ValueError("field inspection has unknown keyboard-state evidence")
+        raise ValueError("field inspection has unknown input-state evidence")
     held = state.get("keys")
     if held is not None and (not isinstance(held, list) or any(not isinstance(key, str) for key in held)):
         raise ValueError("field inspection has invalid keyboard-state evidence")
@@ -157,7 +336,7 @@ def _field_snapshot(response: Any, scene_id: str) -> dict[str, Any]:
     fields = [{k: field.get(k) for k in keys} for field in data["fields"] if field.get("scene_id") == scene_id]
     return {"frame": data.get("frame"), "real_time_s": data["real_time_s"], "game_time_s": data["game_time_s"],
             "wall_utc": response.wall_utc.isoformat(), "sample_wall_s": data.get("sample_wall_s"),
-            "keyboard_state": state, "fields": fields,
+            "input_state": state, "keyboard_state": data.get("keyboard_state"), "fields": fields,
             "coverage": {name: response.caps[name].model_dump(mode="json") for name in ("game_objects", "fields")}}
 
 
@@ -229,12 +408,13 @@ def _within_execution(response: Any, record: Any) -> bool:
     return isinstance(wall, (int, float)) and not isinstance(wall, bool) and math.isfinite(wall) and start <= wall <= end
 
 
-def _held_during_sample(response: Any, record: Any, control: str) -> bool:
-    state = response.data.get("keyboard_state")
+def _held_during_sample(response: Any, record: Any, control: str, device: str = "Keyboard") -> bool:
+    state = _input_state(response.data)
     if not isinstance(state, dict) or state.get("active") is not True or state.get("error") is not None:
         return False
-    keys = state.get("keys")
-    if not isinstance(keys, list) or control not in keys or state.get("update_type") not in ("dynamic", "fixed"):
+    if state.get("update_type") not in ("dynamic", "fixed"):
+        return False
+    if _control_held(state, device, control) is not True:
         return False
     captured_real, sample_real, captured_wall = state.get("real_time_s"), response.data.get("real_time_s"), state.get("wall_s")
     values = (captured_real, sample_real, captured_wall, record.input_start_wall_s, record.input_end_wall_s)
@@ -360,13 +540,15 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
                  "requested_field_interval_s": FIELD_INTERVAL_S, "field_samples": FIELD_SAMPLES,
                  "idle_samples": IDLE_SAMPLES,
                  "max_keyboard_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
+                 "max_input_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
                  "wall_budget_s": MEASUREMENT_BUDGET_S},
         "action_cap": cap, "actions": actions[:MAX_ACTIONS], "unsupported_bindings": unsupported,
         "discovery_coverage": discovery["inspection_coverage"], "idle_fields": [],
-        "later_idle_windows": [], "input_field_segments": [], "trials": [], "action_summaries": [],
+        "later_idle_windows": [], "input_field_segments": [], "field_sampling_gap": None,
+        "trials": [], "action_summaries": [],
         "freshness": None, "clock": None, "reset": None, "runtime_errors": None}
     if cap["truncated"] or not actions:
-        result["error"] = "action candidates are incomplete" if cap["truncated"] else "no drivable keyboard bindings"
+        result["error"] = "action candidates are incomplete" if cap["truncated"] else "no drivable input controls"
         return result
     try:
         async with asyncio.timeout(MEASUREMENT_BUDGET_S):
@@ -445,10 +627,13 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
                                 "real_time_s": response.data.get("real_time_s"),
                                 "sample_wall_s": response.data.get("sample_wall_s"),
                                 "keyboard_state": response.data.get("keyboard_state"),
+                                "input_state": _input_state(response.data),
                                 "within_execution": _within_execution(response, terminal),
-                                "held_during_sample": _held_during_sample(response, terminal, action["control"])} for response in responses]
+                                "held_during_sample": _held_during_sample(
+                                    response, terminal, action["control_name"], action["device"])} for response in responses]
                             samples = [_field_snapshot(response, scene_id) for response in responses
-                                       if _held_during_sample(response, terminal, action["control"])
+                                       if _held_during_sample(response, terminal, action["control_name"],
+                                                              action["device"])
                                        and not game_errors]
                             result["input_field_segments"].append({"control": action["control"],
                                 "action_id": action_id, "requested_hold_s": hold, "repeat": repeat + 1, "samples": samples,
@@ -475,7 +660,13 @@ async def measure(client: BridgeClient, selected: dict[str, Any]) -> dict[str, A
             if not any(trial.get("valid") is True for trial in result["trials"]):
                 result["error"] = "no action produced a valid measurement"
             elif not any(len(segment["samples"]) >= 3 for segment in result["input_field_segments"]):
-                result["error"] = "no held-input window has enough field samples"
+                if any(action.get("device") == "Keyboard" for action in actions):
+                    result["error"] = "no held-input window has enough field samples"
+                else:
+                    result["field_sampling_gap"] = (
+                        "no held-input field window was usable for the offered non-keyboard controls; "
+                        "freshness and held-window evidence remain unknown for those controls")
+                    result["status"] = "measured_with_gaps"
             else:
                 result["status"] = "measured_with_gaps"
     except (BridgeError, ValueError) as exc:

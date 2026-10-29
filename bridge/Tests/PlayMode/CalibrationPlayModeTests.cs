@@ -110,17 +110,21 @@ namespace Playtest.Bridge.Tests
                 SceneRuntimeErrors.Start();
                 observingErrors = true;
                 SceneKeyboardState.Start();
-                LogAssert.ignoreFailingMessages = true;
-
                 var definitions = new List<BridgeActionDefinition>();
-                var added = new HashSet<string>(StringComparer.Ordinal);
                 foreach (Key key in Enum.GetValues(typeof(Key)))
                 {
                     if (key == Key.None) continue;
                     string control = key.ToString().ToLowerInvariant();
                     string name = "preflight_key_" + control;
-                    if (added.Add(name)) definitions.Add(new BridgeActionDefinition { Name = name, Control = control, DefaultLeaseS = 0.4 });
+                    definitions.Add(new BridgeActionDefinition { Name = name, Control = control, DefaultLeaseS = 0.4 });
                 }
+                AddInputProbes(definitions, "Mouse", new[] { "delta", "leftButton", "rightButton", "middleButton" });
+                AddInputProbes(definitions, "Gamepad", new[]
+                {
+                    "leftStick", "rightStick", "dpad", "leftTrigger", "rightTrigger", "buttonSouth", "buttonEast",
+                    "buttonWest", "buttonNorth", "leftShoulder", "rightShoulder", "leftStickPress", "rightStickPress",
+                    "start", "select",
+                });
                 BridgeEditorHost.StartForPreflight(BridgeActionCatalog.FromDefinitions(definitions));
                 Assert.That(BridgeEditorHost.IsRunning, Is.True, BridgeEditorHost.LastError);
                 var start = new System.Diagnostics.ProcessStartInfo
@@ -198,6 +202,24 @@ namespace Playtest.Bridge.Tests
                     }
                     SceneManager.UnloadSceneAsync(loaded);
                 }
+            }
+        }
+
+        private static void AddInputProbes(List<BridgeActionDefinition> definitions, string device, IEnumerable<string> controls)
+        {
+            foreach (string control in controls)
+            {
+                double? x = null;
+                double? y = null;
+                if (device == "Mouse" && control == "delta") { x = 1; y = 0; }
+                else if (device == "Gamepad" && (control == "leftStick" || control == "rightStick" || control == "dpad")) { x = 1; y = 0; }
+                else if (device == "Gamepad" && (control == "leftTrigger" || control == "rightTrigger")) { x = 1; y = 0; }
+                definitions.Add(new BridgeActionDefinition
+                {
+                    Name = "preflight_" + device.ToLowerInvariant() + "_" + control.ToLowerInvariant(),
+                    Inputs = { new BridgeInputBinding(device, control, x, y) },
+                    DefaultLeaseS = 0.4,
+                });
             }
         }
 

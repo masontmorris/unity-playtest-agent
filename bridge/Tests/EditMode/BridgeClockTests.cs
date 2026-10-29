@@ -115,7 +115,7 @@ namespace Playtest.Bridge.Tests
             using (var client = new TestClient(_server))
             {
                 Handshake(client);
-                client.SendRaw("{\"protocol\":\"upa/0\",\"session\":\"s-clock\",\"seq\":1,\"wall_utc\":\"2026-10-26T18:00:00Z\",\"type\":\"clock\",\"op\":\"step\"}");
+                client.SendRaw("{\"protocol\":\"" + ProtocolVersion.Current + "\",\"session\":\"s-clock\",\"seq\":1,\"wall_utc\":\"2026-10-26T18:00:00Z\",\"type\":\"clock\",\"op\":\"step\"}");
                 BridgeErrorMessage error = client.ReadError();
                 Assert.That(error.Code, Is.EqualTo(BridgeErrorCode.Invalid));
 

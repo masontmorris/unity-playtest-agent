@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Playtest.Bridge.Protocol;
 
 namespace Playtest.Bridge.Lock
 {
@@ -64,7 +65,7 @@ namespace Playtest.Bridge.Lock
 
             var info = new BridgeLockInfo
             {
-                Protocol = "upa/0",
+                Protocol = ProtocolVersion.Current,
                 Pid = pid,
                 Port = port,
                 Token = token,
@@ -282,7 +283,7 @@ namespace Playtest.Bridge.Lock
             JToken protocolToken = obj["protocol"];
             string protocol = protocolToken != null && protocolToken.Type == JTokenType.String
                 ? (string)protocolToken
-                : "upa/0";
+                : ProtocolVersion.Current;
 
             return new BridgeLockInfo
             {
@@ -302,7 +303,7 @@ namespace Playtest.Bridge.Lock
 
             var obj = new JObject
             {
-                ["protocol"] = info.Protocol ?? "upa/0",
+                ["protocol"] = info.Protocol ?? ProtocolVersion.Current,
                 ["pid"] = info.Pid,
                 ["port"] = info.Port,
                 ["token"] = info.Token ?? string.Empty,

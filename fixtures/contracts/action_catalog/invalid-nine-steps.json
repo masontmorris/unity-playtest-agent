@@ -1,0 +1,19 @@
+{
+  "actions": {
+    "nine_steps": {
+      "backend": "input_system",
+      "steps": [
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0},
+        {"inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}], "hold_s": 0.1, "wait_s": 0.0}
+      ],
+      "max_s": 1.0
+    }
+  }
+}

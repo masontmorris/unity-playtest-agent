@@ -29,6 +29,7 @@ namespace Playtest.Bridge.Editor.Preflight
             document.Data["game_time_s"] = null;
             document.Data["sample_wall_s"] = null;
             document.Data["keyboard_state"] = SceneKeyboardState.Snapshot();
+            document.Data["input_state"] = SceneInputState.Snapshot();
             SampleInstant(document);
 
             SceneDiscoveryResult discovery =
