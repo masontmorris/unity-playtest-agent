@@ -136,3 +136,9 @@ def test_execution_receipt_invalid_fixtures_fail_for_their_intended_rule():
         with pytest.raises(ValidationError) as excinfo:
             CONTRACTS["execution_record"].model_validate(json.loads(path.read_text(encoding="utf-8")))
         assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_investigation_trace_uncited_evidence_fails_for_the_intended_rule():
+    path = FIXTURES / "trace_entry" / "invalid-investigation-uncited-evidence.json"
+    with pytest.raises(ValidationError, match="evidence_trace_seq must be null or an earlier cited trace sequence"):
+        CONTRACTS["trace_entry"].model_validate(json.loads(path.read_text(encoding="utf-8")))

@@ -32,6 +32,7 @@ from playtest.contracts.loop import ChoiceKind
 from playtest.core.adherence import Violation, check_adherence
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.ports import EffectProbe, HelpPort, S1Port
+from playtest.core.ports import FactsSource
 from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
@@ -73,14 +74,16 @@ async def run_session(
     clock: Callable[[], float] = time.monotonic,
     budget: TokenBudget | None = None,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    facts: FactsSource | None = None,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration."""
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
-    paced = PacingFacts() if budget is not None else None
+    paced = PacingFacts(inner=facts) if budget is not None else None
     loop = TurnLoop(
         client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
-        objective=objective, s1=s1, help=help, facts=paced, effects=probe, sink=sink, sleep=sleep,
+        objective=objective, s1=s1, help=help, facts=paced if paced is not None else facts,
+        effects=probe, sink=sink, sleep=sleep,
     )
     deadline = clock() + wall_limit_s
     failures = total_failures = 0
@@ -124,6 +127,13 @@ async def run_session(
     except Exception as exc:  # noqa: BLE001 - report an unverifiable release as such
         error = f"{error}; " if error else ""
         error += f"stopping failed: {type(exc).__name__}: {exc}"
+    if facts is not None and hasattr(facts, "finish"):
+        latest = loop.store.latest()
+        if latest is not None:
+            facts.finish(turn=max(0, len(loop.turns) - 1), based_on_seq=latest.seq,
+                         evidence_trace_seq=(sink.trace_seq_for_observation(latest.seq)
+                                             if sink is not None and hasattr(sink, "trace_seq_for_observation")
+                                             else None))
     released = stop is not None and stop.release_verified is True
     violations = check_adherence(loop.turns)
     if not released:

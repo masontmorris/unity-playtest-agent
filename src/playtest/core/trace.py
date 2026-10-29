@@ -21,6 +21,7 @@ class TraceWriter:
         self.turns = 0
         self._closed = False
         self._seq = 0
+        self._observation_trace: dict[int, int] = {}
         self._file = self.path.open("x", encoding="utf-8", newline="\n")
         try:
             self.append(TraceKind.run, run.model_dump(mode="json"), author=TraceAuthor.harness)
@@ -66,7 +67,12 @@ class TraceWriter:
         self.redactions += replacements
         if kind is TraceKind.turn:
             self.turns += 1
+        elif kind is TraceKind.observation:
+            self._observation_trace[body["seq"]] = seq
         return seq
+
+    def trace_seq_for_observation(self, seq: int) -> int | None:
+        return self._observation_trace.get(seq)
 
     def close(self, status: str = "complete", error: str | None = None) -> None:
         if self._closed:

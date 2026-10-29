@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import datetime as dt
 import json
 import os
 import sys
@@ -42,6 +43,9 @@ from playtest.core.bridge_client import BridgeClient
 from playtest.core.run_record import build_run_record
 from playtest.core.trace import TraceWriter
 from playtest.preflight import manifest as manifest_checks
+from playtest.frontier import provider as frontier_provider
+from playtest.runner.directives import DirectiveTracker
+from playtest.runner.frontier_help import FrontierHelp
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
@@ -87,6 +91,10 @@ def _parser() -> argparse.ArgumentParser:
                         help="the approval file naming the call and cost caps (also UPA_RUN_APPROVAL)")
     parser.add_argument("--max-calls", type=int, default=_env("UPA_RUN_MAX_CALLS", int, None),
                         help="the most paid calls this run may make (also UPA_RUN_MAX_CALLS)")
+    parser.add_argument("--frontier", action="store_true", help="enable frontier calls after S1 chooses escalate")
+    parser.add_argument("--max-frontier-calls", type=int,
+                        default=_env("UPA_RUN_MAX_FRONTIER_CALLS", int, 0),
+                        help="approved frontier call cap; requires --frontier")
     parser.add_argument("--wall-limit-s", type=float, default=_env("UPA_RUN_WALL_LIMIT_S", float, WALL_LIMIT_S))
     parser.add_argument("--max-age-s", type=float, default=_env("UPA_RUN_MAX_AGE_S", float, MAX_AGE_S),
                         help="the oldest observation the bridge will still run an action against")
@@ -116,12 +124,20 @@ def _objective(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str
     return text.strip()
 
 
-def _fits(approval: dict[str, Any], calls: int) -> None:
+def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0) -> None:
     """The approved envelope must cover the most the run may spend."""
     limit = approval["arms"][ARM]
     bound = replay._decimal(limit["per_call_max_usd"], "per-call bound")
-    if (calls > approval["max_calls"] or calls > limit["max_calls"]
-            or bound * calls > replay._decimal(approval["max_cost_usd"], "overall limit")
+    total_bound = bound * calls
+    if frontier_calls:
+        f_limit = approval["arms"][frontier_provider.MODEL]
+        f_bound = replay._decimal(f_limit["per_call_max_usd"], "frontier per-call bound")
+        total_bound += f_bound * frontier_calls
+        if (frontier_calls > f_limit["max_calls"]
+                or f_bound * frontier_calls > replay._decimal(f_limit["max_cost_usd"], "frontier arm limit")):
+            raise ValueError("the approved frontier call or cost envelope is smaller than its call cap")
+    if (calls + frontier_calls > approval["max_calls"] or calls > limit["max_calls"]
+            or total_bound > replay._decimal(approval["max_cost_usd"], "overall limit")
             or bound * calls > replay._decimal(limit["max_cost_usd"], "arm limit")):
         raise ValueError("the approved call or cost envelope is smaller than the call cap")
 
@@ -134,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
     if args.max_calls is None or args.max_calls < 1:
         parser.error("--max-calls (or UPA_RUN_MAX_CALLS) is required and must be at least 1")
+    if args.frontier and args.max_frontier_calls < 1:
+        parser.error("--frontier requires --max-frontier-calls of at least 1")
+    if not args.frontier and args.max_frontier_calls:
+        parser.error("--max-frontier-calls requires --frontier")
     if args.manifest is None:
         parser.error("--manifest (or UPA_RUN_MANIFEST) is required")
     if args.catalog is None or args.catalog_sha256 is None:
@@ -147,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output must be a new file outside the Unity project")
     if not os.environ.get(replay.ARMS[ARM][1]):
         parser.error(f"{replay.ARMS[ARM][1]} is not set in the environment")
+    if args.frontier and not os.environ.get("META_API_KEY"):
+        parser.error("META_API_KEY is required when --frontier is enabled")
     objective = _objective(parser, args)
 
     run_dir = output.parent
@@ -162,8 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         if entity.get("entity_id") != manifest.entity_id or calibration.get("entity_id") != manifest.entity_id:
             raise ValueError("the manifest, the entity record and the calibration record name different entities")
         approval, approval_sha = replay._load(args.approval)
-        replay.validate_approval(approval, [ARM])
-        _fits(approval, args.max_calls)
+        replay.validate_approval(approval, [ARM, frontier_provider.MODEL] if args.frontier else [ARM])
+        _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0)
         built = build_choices(manifest)
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
         if not any(c.source.value == "manifest" for c in built.choices):
@@ -177,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
                 "objective_sha256": digest(objective),
                 "offered": [c.id for c in built.choices], "not_offered": built.not_offered,
                 "budget_assumptions": {"balance_override": approval.get("unverified_balance_override")}}
+        plan["frontier"] = {"enabled": args.frontier,
+                             "max_calls": args.max_frontier_calls if args.frontier else 0,
+                             "model": frontier_provider.MODEL if args.frontier else None}
         replay._write(run_dir / "plan.json", plan, exclusive=True)
         ledger = call_budget.Ledger(run_dir, approval, ARM)
         before = recording._game_worktree(project)
@@ -218,17 +243,25 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             game_project=project, status=status, scene=scene, manifest_fingerprint=manifest_sha,
             clock_mode=ClockMode.realtime,
             input_mode=status.input_backends[0].value if status is not None and status.input_backends else None,
-            models=[ModelRef(role="s1", provider=s1.provider, model=s1.model, prompt_hash=s1.prompt_sha256)],
+            models=[ModelRef(role="s1", provider=s1.provider, model=s1.model, prompt_hash=s1.prompt_sha256)]
+                   + ([ModelRef(role="frontier", provider="meta", model=frontier_provider.MODEL)]
+                      if args.frontier else []),
             objective=objective,
-            budget=Budget(max_wall_s=args.wall_limit_s, max_usd=float(approval["max_cost_usd"]), max_frontier_calls=0),
+            budget=Budget(max_wall_s=args.wall_limit_s, max_usd=float(approval["max_cost_usd"]),
+                          max_frontier_calls=args.max_frontier_calls if args.frontier else 0),
             reset_method="none")  # this runner never resets the game
         writer = TraceWriter(run_dir / TRACE_FILE, record, secrets=secret_values())
+        tracker = DirectiveTracker(writer)
+        help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
+                                  approval=approval, sink=writer, tracker=tracker,
+                                  started_utc=dt.datetime.now(dt.timezone.utc)) if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(
                 client, built, s1=s1, objective=objective, probe=DisplacementProbe(snapshot, built.expected),
                 sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
-                max_provider_failures=args.max_provider_failures, budget=budget)
+                max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
+                facts=tracker)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {
@@ -238,6 +271,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "stop": result.stop.model_dump(mode="json") if result.stop is not None else None,
                 "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
                        "calls": s1.calls_reserved, "call_cap": args.max_calls},
+                "frontier": {"enabled": args.frontier, "model": frontier_provider.MODEL if args.frontier else None,
+                             "calls": help_port.calls if help_port is not None else 0,
+                             "call_cap": args.max_frontier_calls if args.frontier else 0},
                 "manifest": {"sha256": manifest_sha, "catalog_sha256": catalog_sha, "entity_id": manifest.entity_id,
                              "offered": [c.id for c in built.choices], "not_offered": built.not_offered},
                 "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,

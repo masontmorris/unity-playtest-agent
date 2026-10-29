@@ -27,6 +27,7 @@ class TraceKind(str, Enum):
     execution = "execution"
     effect = "effect"
     help = "help"
+    investigation = "investigation"
     turn = "turn"
     stop = "stop"
     end = "end"
@@ -75,6 +76,8 @@ class TraceEntry(Strict):
         if any(isinstance(ref, bool) for ref in self.refs):
             raise ValueError("refs must be integer sequence ids")
         null_turn = self.kind in (TraceKind.run, TraceKind.stop, TraceKind.end)
+        if self.kind is TraceKind.investigation:
+            null_turn = True  # helper results can be appended after their originating turn closes
         if self.kind is TraceKind.help:
             null_turn = self.body.get("event") == "cancelled" and self.turn is None
         if (self.turn is None) != null_turn:
@@ -91,6 +94,8 @@ class TraceEntry(Strict):
                 TraceKind.execution: {"purpose", "request", "records"},
                 TraceKind.effect: {"choice_id", "action", "expected", "observed"},
                 TraceKind.help: {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
+                TraceKind.investigation: {"event", "request_turn", "based_on_seq", "hypothesis", "directive",
+                                         "outcome", "outcome_seq", "evidence_trace_seq", "reason"},
                 TraceKind.stop: {"reason", "result", "error"},
                 TraceKind.end: {"status", "error", "turns", "redactions"},
             }[self.kind]
@@ -141,6 +146,24 @@ class TraceEntry(Strict):
                     raise ValueError("unknown help event")
                 if self.body["kind"] not in ("escalate", "delegate"):
                     raise ValueError("unknown help kind")
+            if self.kind is TraceKind.investigation:
+                if self.body["event"] not in ("not_called", "invalid_answer", "hypothesis_directive", "directive", "outcome"):
+                    raise ValueError("unknown investigation event")
+                if (isinstance(self.body["request_turn"], bool) or not isinstance(self.body["request_turn"], int)
+                        or self.body["request_turn"] < 0):
+                    raise ValueError("investigation request_turn must be a non-negative turn number")
+                for name in ("based_on_seq", "outcome_seq"):
+                    if (isinstance(self.body[name], bool) or not isinstance(self.body[name], int)
+                            or self.body[name] < 0):
+                        raise ValueError(f"investigation {name} must be a non-negative sequence number")
+                if self.body["outcome"] not in ("open", "met", "not_met", "expired", "invalidated", "unknown"):
+                    raise ValueError("unknown investigation outcome")
+                evidence = self.body["evidence_trace_seq"]
+                if evidence is not None and (isinstance(evidence, bool) or not isinstance(evidence, int)
+                                             or evidence not in self.refs):
+                    raise ValueError("evidence_trace_seq must be null or an earlier cited trace sequence")
+                if self.body["reason"] is not None and not isinstance(self.body["reason"], str):
+                    raise ValueError("investigation reason must be a string or null")
             if self.kind is TraceKind.end and self.body["status"] not in ("complete", "stopped", "inconclusive"):
                 raise ValueError("unknown end status")
         return self

@@ -44,6 +44,9 @@ Outside a turn (turn null):
 - `stop` (core): `{"reason", "result": <StopResult or null>, "error"}`.
 - `end` (harness): `{"status": "complete" | "stopped" | "inconclusive", "error", "turns",
   "redactions"}`; last. `redactions` counts secret values the writer replaced.
+- `investigation` (frontier; refs the evidence observation): an out-of-turn hypothesis/directive record or
+  directive outcome. Its body carries the originating turn and observation sequences, plus the trace
+  sequence of measured evidence. It is out-of-turn because a helper may finish after later S1 turns.
 
 A replay (#30) re-derives every turn from these entries and fails on any difference:
 
@@ -90,6 +93,10 @@ class MemorySink:
 
     def __init__(self) -> None:
         self.entries: list[dict[str, Any]] = []
+
+    def trace_seq_for_observation(self, seq: int) -> int | None:
+        return next((row["trace_seq"] for row in self.entries
+                     if row["kind"] == "observation" and row["body"].get("seq") == seq), None)
 
     def append(
         self,

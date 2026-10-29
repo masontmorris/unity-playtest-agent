@@ -21,7 +21,8 @@ from playtest.core.decisions import parse_decision
 
 AUTHORS = {
     "run": "harness", "observation": "bridge", "choice_set": "core", "context": "core", "s1_call": "s1",
-    "decision": "core", "execution": "bridge", "effect": "core", "help": "core", "turn": "core",
+    "decision": "core", "execution": "bridge", "effect": "core", "help": "core",
+    "investigation": "frontier", "turn": "core",
     "stop": "core", "end": "harness",
 }
 BODY_KEYS = {
@@ -32,6 +33,8 @@ BODY_KEYS = {
     "execution": {"purpose", "request", "records"},
     "effect": {"choice_id", "action", "expected", "observed"},
     "help": {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
+    "investigation": {"event", "request_turn", "based_on_seq", "outcome_seq", "hypothesis", "directive",
+                       "outcome", "evidence_trace_seq", "reason"},
     "stop": {"reason", "result", "error"},
     "end": {"status", "error", "turns", "redactions"},
 }
@@ -89,6 +92,8 @@ def problems(entries: list[dict[str, Any]]) -> list[str]:
 def _token(entry: dict[str, Any]) -> str:
     if entry["kind"] == "help":
         return "A" if entry["body"]["event"] == "adopted" else "H"
+    if entry["kind"] == "investigation":
+        return ""
     return TOKENS[entry["kind"]]
 
 
