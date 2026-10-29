@@ -5,6 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 
+from playtest.contracts.action_catalog import (
+    ActionDefinition,
+    ActionStep,
+    InputBinding,
+    evidence_problems,
+    evidence_receipt_problems,
+)
 from playtest.contracts.manifest import PreflightManifest
 from playtest.preflight.packet import Packet, field_kind, field_offered
 from playtest.preflight import stages
@@ -13,9 +20,24 @@ from playtest.roles import preflight
 from playtest.roles.checks import value_kind
 
 
+ACTION_EXECUTION_GAP = "some selected actions have no matching release-verified execution evidence"
+SKILL_EXECUTION_GAP = "some selected skills have no matching release-verified execution evidence"
+
+
+def refresh_execution_coverage(value: dict) -> None:
+    """Refresh only the coverage facts affected by newly measured execution evidence."""
+    coverage = [item for item in value["gaps"]["coverage"]
+                if item not in (ACTION_EXECUTION_GAP, SKILL_EXECUTION_GAP)]
+    if any(not item["execution_supported"] for item in value["actions"]):
+        coverage.append(ACTION_EXECUTION_GAP)
+    if any(not item["execution_supported"] for item in value["skills"]):
+        coverage.append(SKILL_EXECUTION_GAP)
+    value["gaps"]["coverage"] = coverage
+
+
 def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list[dict]) -> list[str]:
     coverage = ["field freshness is unknown until calibration field identity is established",
-                "the current bridge cannot execute multi-step skills",
+                "execution support requires release-verified evidence for the exact declared inputs, values, holds and step order",
                 "selected readers are not installed or verified in the live observation source",
                 "the manifest action catalog is not installed or verified in a live run",
                 "reset has not been verified as part of this manifest run",
@@ -23,9 +45,11 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
     if data["image"] is None:
         coverage.append("no screenshot was supplied")
     if data["calibration"]["unsupported_bindings"]:
-        coverage.append("some discovered bindings are not supported by the keyboard backend")
+        coverage.append("some discovered bindings are not drivable by a supported input backend")
     if data["calibration"]["unoffered_controls"]:
         coverage.append("some discovered controls lack a valid calibration trial")
+    if data["calibration"].get("field_sampling_gap"):
+        coverage.append(data["calibration"]["field_sampling_gap"])
     if data["unoffered_fields"]:
         coverage.append("some discovered fields could not be read and were not offered as readers")
     if not data["offered_fields"]:
@@ -38,19 +62,69 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
         coverage.append("some selected action holds have no established effective response")
     if any(a["hold_effect"] is False for a in actions):
         coverage.append("some tested holds did not meet the repeated entity-displacement threshold")
-    if any(not a["execution_supported"] for a in actions):
-        coverage.append("some selected actions cannot be executed by the current bridge")
     if skills:
-        coverage.append("selected skills are preserved but cannot be executed by the current bridge")
-    if any(step["hold_s"] is None for skill in skills for step in skill["steps"]):
-        coverage.append("some skill step tap durations are unknown; declared skill bounds are unverified")
+        coverage.append("each selected skill needs its own ordered release-verified execution evidence")
+    if any((step.get("hold_s") is None and step.get("tap_hold_s") is None) for skill in skills for step in skill["steps"]):
+        coverage.append("some skill step hold durations are unresolved; the exact declaration cannot be proven")
     if any(r["descriptor"].get("scene_id") != data["calibration"]["entity"].get("scene_id") for r in readers):
         coverage.append("one or more selected fields are outside the calibrated entity's scene, or their scene is unknown")
     if any(cap["truncated"] is not False or cap["observed"] is None for cap in data["inventory_caps"].values()):
         coverage.append("inventory coverage is incomplete or unknown")
     if any(cap["truncated"] is not False or cap["observed"] is None for cap in data["discovery_caps"].values()):
         coverage.append("some discovery coverage is incomplete or unknown")
-    return coverage
+    result = {"gaps": {"coverage": coverage}, "actions": actions, "skills": skills}
+    refresh_execution_coverage(result)
+    return result["gaps"]["coverage"]
+
+
+def _summaries_for(packet: Packet) -> dict[str, dict]:
+    data = json.loads(packet.text)
+    return {row["control"]: row for row in data["calibration"]["control_summaries"]}
+
+
+def _matching_evidence(evidence, definition: ActionDefinition | None):
+    """Return the first evidence record whose declaration and receipts exactly match.
+
+    The candidate may have failed terminal release; the manifest keeps it with
+    execution_supported false. Declaration equality and receipt structure are checked
+    before terminal status, so status or release cannot substitute for the exact declaration.
+    """
+    if definition is None:
+        return None
+    for item in evidence:
+        if item.status.value != "completed":
+            continue
+        if not evidence_receipt_problems(item, definition):
+            return item
+    return None
+
+
+def _evidence_supported(evidence, definition: ActionDefinition | None) -> bool:
+    if evidence is None or definition is None:
+        return False
+    return not evidence_problems(evidence, definition)
+
+
+def _definition_from_inputs(inputs: list[dict], hold: float | None) -> ActionDefinition | None:
+    if hold is None:
+        return None
+    return ActionDefinition(backend="input_system",
+                            inputs=[InputBinding(device=item["device"], control=item["control"],
+                                                 x=item["x"], y=item["y"]) for item in inputs],
+                            default_lease_s=hold)
+
+
+def _definition_from_steps(steps: list[dict], max_s: float) -> ActionDefinition | None:
+    declared = []
+    for step in steps:
+        hold = step.get("hold_s") if step.get("hold_s") is not None else step.get("tap_hold_s")
+        if hold is None:
+            return None
+        declared.append(ActionStep(
+            inputs=[InputBinding(device=item["device"], control=item["control"], x=item["x"], y=item["y"])
+                    for item in step["inputs"]],
+            hold_s=hold, wait_s=step["wait_s"]))
+    return ActionDefinition(backend="input_system", steps=declared, max_s=max_s)
 
 
 def _selection(data: dict, readers: list[dict], actions: list[dict], skills: list[dict], gaps: dict) -> dict:
@@ -114,6 +188,7 @@ def assemble(packet: Packet, result: RunResult) -> PreflightManifest:
                         "freshness_evidence": next((dict(row, identity_verified=False) for row in
                             data["calibration"]["freshness"]["id_matches_unverified"] if row["field_id"] == reader.field_id), None)})
     actions = []
+    evidence_records = tuple(packet.execution_evidence)
     for action in a5.actions:
         ids = [item.control_id for item in action.inputs]
         measured = [summaries[control] for control in ids]
@@ -126,17 +201,46 @@ def assemble(packet: Packet, result: RunResult) -> PreflightManifest:
         requested = action.hold_s if action.hold_s is not None else tap
         matching = [h["effective_in_all_repeats"] for h in measured[0]["holds"]
                     if requested is not None and h["requested_hold_s"] == requested] if len(ids) == 1 else []
-        axis = any(packet.discovery.control_types[control] in preflight.AXIS_CONTROLS for control in ids)
-        supported = len(ids) == 1 and not axis and requested is not None and requested <= 3600
-        actions.append({**action.model_dump(mode="json"), "calibrations": measured, "tap_hold_s": tap,
+        axis = any((summary.get("control_type") or "Button") in preflight.AXIS_CONTROLS for summary in measured)
+        declared_inputs = [{"control_id": item.control_id,
+                            "device": summary.get("device") or "Keyboard",
+                            "control": summary.get("control_name") or item.control_id,
+                            "x": item.x, "y": item.y}
+                           for item, summary in zip(action.inputs, measured)]
+        definition = _definition_from_inputs(declared_inputs, requested)
+        evidence = _matching_evidence(evidence_records, definition)
+        actions.append({**action.model_dump(mode="json"), "inputs": declared_inputs,
+                        "calibrations": measured, "tap_hold_s": tap,
                         "axis": axis, "max_hold_s": None,
                         "hold_effect": matching[0] if len(matching) == 1 else None,
-                        "execution_supported": supported})
+                        "execution_evidence": evidence.model_dump(mode="json") if evidence is not None else None,
+                        "execution_supported": _evidence_supported(evidence, definition)})
     skills = []
     for skill in a5.skills:
         ids = list(dict.fromkeys(item.control_id for step in skill.steps for item in step.inputs))
-        skills.append({**skill.model_dump(mode="json"), "calibrations": [summaries[k] for k in ids],
-                       "execution_supported": False})
+        measured = [summaries[k] for k in ids]
+        by_control = {row["control"]: row for row in measured}
+        declared_steps = []
+        for step in skill.steps:
+            step_inputs = [{"control_id": item.control_id,
+                            "device": by_control[item.control_id].get("device") or "Keyboard",
+                            "control": by_control[item.control_id].get("control_name") or item.control_id,
+                            "x": item.x, "y": item.y} for item in step.inputs]
+            step_tap = None
+            if step.hold_s is None and len(step_inputs) == 1:
+                summary = by_control[step_inputs[0]["control_id"]]
+                candidate = summary.get("lowest_tested_effective_requested_hold_s")
+                if candidate is not None and candidate > 0:
+                    matched = [h for h in summary["holds"] if h["requested_hold_s"] == candidate]
+                    if len(matched) == 1 and matched[0]["effective_in_all_repeats"] is True:
+                        step_tap = candidate
+            declared_steps.append({**step.model_dump(mode="json"), "inputs": step_inputs,
+                                   "tap_hold_s": step_tap})
+        definition = _definition_from_steps(declared_steps, skill.max_s)
+        evidence = _matching_evidence(evidence_records, definition)
+        skills.append({**skill.model_dump(mode="json"), "steps": declared_steps, "calibrations": measured,
+                       "execution_evidence": evidence.model_dump(mode="json") if evidence is not None else None,
+                       "execution_supported": _evidence_supported(evidence, definition)})
     coverage = _coverage(data, readers, actions, skills)
     model_gaps = {"unobservable": a4.unobservable, "uncontrollable": a5.uncontrollable,
                   "unjudgeable": a6.unjudgeable}
@@ -184,11 +288,15 @@ def validate(manifest: PreflightManifest) -> list[str]:
     discovery = preflight.Discovery(field_types, controls, field_kinds)
     a4 = {"readers": [{"field_id": r.selection_id, "alias": r.alias, "why": r.why} for r in manifest.readers],
           "unobservable": manifest.gaps.unobservable}
-    a5 = {"actions": [{"name": a.name, "intent": a.intent, "inputs": [i.model_dump(mode="json") for i in a.inputs],
+    a5 = {"actions": [{"name": a.name, "intent": a.intent,
+                       "inputs": [{"control_id": i.control_id, "x": i.x, "y": i.y} for i in a.inputs],
                        "hold_s": a.hold_s, "preconditions": [p.model_dump(mode="json") for p in a.preconditions]}
                       for a in manifest.actions],
           "skills": [{"name": s.name, "purpose": s.purpose, "max_s": s.max_s,
-                      "steps": [step.model_dump(mode="json") for step in s.steps]} for s in manifest.skills],
+                      "steps": [{"inputs": [{"control_id": i.control_id, "x": i.x, "y": i.y}
+                                            for i in step.inputs],
+                                 "hold_s": step.hold_s, "wait_s": step.wait_s} for step in s.steps]}
+                     for s in manifest.skills],
           "uncontrollable": manifest.gaps.uncontrollable}
     a6 = {"progress": [p.model_dump(mode="json") for p in manifest.progress],
           "invariants": [i.model_dump(mode="json") for i in manifest.invariants],
@@ -241,6 +349,26 @@ def validate_evidence(manifest: PreflightManifest, packet: Packet) -> list[str]:
     if (manifest.image.model_dump(mode="json") if manifest.image is not None else None) != expected_image:
         problems.append("the screenshot descriptor differs from the packet")
     return problems
+
+
+def _without_proof(value: dict) -> dict:
+    """The model selection and its measured calibration, without later live execution proof.
+
+    Execution evidence is session-scoped. A cache entry or a recorded ledger may keep it, but
+    comparison and replay never treat it as part of the model's answer.
+    """
+    import copy
+
+    result = copy.deepcopy(value)
+    result["gaps"]["coverage"] = [item for item in result["gaps"]["coverage"]
+                                  if item not in (ACTION_EXECUTION_GAP, SKILL_EXECUTION_GAP)]
+    for action in result.get("actions", []):
+        action["execution_evidence"] = None
+        action["execution_supported"] = False
+    for skill in result.get("skills", []):
+        skill["execution_evidence"] = None
+        skill["execution_supported"] = False
+    return result
 
 
 def validate_ledger(manifest: PreflightManifest, packet: Packet, rows: list[dict],
@@ -317,6 +445,6 @@ def validate_ledger(manifest: PreflightManifest, packet: Packet, rows: list[dict
         expected = assemble(packet, stages.RunResult(accepted["readers"], accepted["actions"], accepted["progress"]))
     except ValueError as exc:
         return [f"ledger answers cannot assemble a manifest: {exc}"]
-    if expected.model_dump(mode="json") != manifest.model_dump(mode="json"):
+    if _without_proof(expected.model_dump(mode="json")) != _without_proof(manifest.model_dump(mode="json")):
         return ["the manifest differs from the recorded accepted answers"]
     return []

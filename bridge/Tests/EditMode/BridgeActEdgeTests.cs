@@ -193,7 +193,7 @@ namespace Playtest.Bridge.Tests
         }
 
         [Test]
-        public void Act_ApplyFailure_IsRejectedInvalidParamsWithNoHeldInput()
+        public void Act_ApplyFailureAfterAdmissionIsFailedExecutionWithNoHeldInput()
         {
             using (var client = new TestClient(_server))
             {
@@ -202,13 +202,12 @@ namespace Playtest.Bridge.Tests
                 _input.FailApply = true;
 
                 client.Send(Act("a-apply-fails", observation.Seq));
-                ExecutionRecordMessage rejected = ReadExecution(client);
+                ExecutionRecordMessage failed = ReadExecution(client);
 
-                Assert.That(rejected.Status, Is.EqualTo(BridgeExecStatus.Rejected));
-                Assert.That(rejected.RejectReason, Is.EqualTo(BridgeRejectReason.InvalidParams));
+                Assert.That(failed.Status, Is.EqualTo(BridgeExecStatus.Failed));
+                Assert.That(failed.RejectReason, Is.Null);
                 Assert.That(_input.Applied, Is.Empty, "a failed apply must not leave input held");
 
-                // A stray 'running' record for the failed act would arrive before this one.
                 _input.FailApply = false;
                 _source.Current = ActFakeObservationSource.Snapshot(true, 1);
                 ObservationMessage next = ObserveOnce(client);

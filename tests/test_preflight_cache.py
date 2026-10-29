@@ -274,7 +274,8 @@ def test_replay_keeps_unsupported_and_unmeasured_declarations_exactly():
     run = stages.run(built, lambda *_: stages.CallResult(json.dumps(next(answers)), None, {}), lambda _: None)
     value = manifest.assemble(built, run)
     support = {a.name: (a.execution_supported, a.hold_effect) for a in value.actions}
-    assert support == {"move": (True, True), "nudge": (True, None), "tap": (False, None)}
+    # Calibration has no execution receipts, so no declaration may be called executable.
+    assert support == {"move": (False, True), "nudge": (False, None), "tap": (False, None)}
     assert [s.execution_supported for s in value.skills] == [False]
     replayed, evidence = cache.replay_selections(value, original, original, built)
     assert replayed == value and evidence["model_calls"] == 0
@@ -485,3 +486,39 @@ def test_store_command_checks_original_evidence_and_refuses_overwrite(tmp_path):
     assert cache_cli.main(args) == 0
     assert cache.read_entry(directory, entry["fingerprint"]["sha256"]) == entry
     assert cache_cli.main(args) == 1
+
+
+def test_cached_selection_does_not_inherit_execution_proof():
+    inventory, original, calibration = records()
+    data = calibration.model_dump(mode="json")
+    data["execution_evidence"] = [{
+        "action": "move", "session": "s-1", "status": "completed", "release_verified": True,
+        "declaration": {"backend": "input_system",
+                        "inputs": [{"device": "Keyboard", "control": "w", "x": None, "y": None}],
+                        "default_lease_s": 0.2},
+        "applied_duration_s": 0.201, "input_start_wall_s": 1000.0, "input_end_wall_s": 1000.201,
+        "receipts": [{"step_index": 0, "device": "Keyboard", "control": "w", "x": None, "y": None,
+                      "input_start_wall_s": 1000.0, "input_end_wall_s": 1000.201,
+                      "applied_duration_s": 0.201, "applied_delta_x": None, "applied_delta_y": None,
+                      "release_verified": True}],
+        "wall_utc": "2026-01-01T00:00:00Z"}]
+    with_evidence = CalibrationRecord.model_validate(data)
+    built = packet.build(inventory, original, with_evidence)
+    answers = iter([
+        {"stage_4": {"readers": [{"field_id": "field_00000", "alias": "speed", "why": "read"}],
+                     "unobservable": []}, "stage_5": None, "stage_6": None},
+        {"stage_4": None, "stage_5": {"actions": [{"name": "move", "intent": "move", "hold_s": 0.2,
+         "inputs": [{"control_id": "w", "x": None, "y": None}], "preconditions": []}],
+         "skills": [], "uncontrollable": []}, "stage_6": None},
+        {"stage_4": None, "stage_5": None, "stage_6": {"progress": [], "invariants": [], "unjudgeable": []}},
+    ])
+    run = stages.run(built, lambda *_: stages.CallResult(json.dumps(next(answers)), None, {}), lambda _: None)
+    value = manifest.assemble(built, run)
+    assert value.actions[0].execution_supported is True
+
+    fresh = calibration.model_copy(update={"execution_evidence": []})
+    fresh_packet = packet.build(inventory, original, fresh)
+    replayed, _ = cache.replay_selections(value, original, original, fresh_packet)
+    assert replayed.actions[0].name == "move"
+    assert replayed.actions[0].execution_supported is False
+    assert replayed.actions[0].execution_evidence is None

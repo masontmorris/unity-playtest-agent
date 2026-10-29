@@ -246,8 +246,8 @@ physical body and its displacement matches a directly input-bound responder in t
 directions. The original responsive roots and the comparisons remain in the evidence; matching
 motion does not prove a parent-child relationship.
 The result uses Unity world coordinates and world units; their relationship to physical units is
-unknown unless separately measured. The probe is not calibration, and it does not cover devices
-the current keyboard backend cannot drive. Evidence and logs stay under `runs/` or another local
+unknown unless separately measured. This entity-finder probe uses keyboard movement bindings;
+mouse/gamepad calibration and the named-declaration probe are separate workflows. Evidence and logs stay under `runs/` or another local
 path outside the game; the output file is never overwritten. The script uses the same Editor lock,
 version checks and mutex as the bridge tests. Unity may still update its own cache or package lock.
 Without an explicitly requested measurement, the normal PlayMode suite checks that the preflight
@@ -266,20 +266,21 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/calibrate-preflight.ps1 `
 
 The script refuses to run unless the game is wired to this checkout, the stage 2 record is
 `identified`, and the output directory is outside the game and has no earlier `calibration.json`,
-`reset.json` or `record.json`. In Play mode on the first enabled scene it re-discovers the keyboard
-bindings, requires them to match the stage 2 record, and then measures:
+`reset.json` or `record.json`. In Play mode on the first enabled scene it re-discovers the
+supported physical input bindings, requires them to match the stage 2 record, and then measures:
 
-- **Per key:** net entity displacement after each of five requested holds (0.05–1.2 s), twice each,
-  against an idle baseline: mean, sample variance, the lowest tested hold that responded in both
-  repeats, and inversion relative to the entity's own basis where the binding names a direction.
-  The keyboard backend is binary, so a dead zone is recorded as unknown, not zero.
-- **Per field:** freshness from repeated samples, in two idle windows (one before the key trials and
-  one after) and in held windows taken while Unity's input update reports the key held. The longest
-  hold is repeated four times per key to give more windows. A change is exact inequality between
-  adjacent samples, compared component by component for vectors and quaternions; values the field
-  reader cannot compare (structs, collections, masks, object references) stay `unknown`. Each field
-  also gets a per-key split of the held windows, the keys whose windows showed a change, and the
-  scopes where repeated windows disagreed.
+- **Per control:** net entity displacement after each of five requested holds (0.05–1.2 s), twice
+  each, against an idle baseline: mean, sample variance, the lowest tested hold that responded in
+  both repeats, and inversion relative to the entity's own basis where the binding names a
+  direction. Keyboard keys and gamepad buttons are binary; other controls declare one reproducible
+  value. Dead zone and sensitivity remain unknown, not zero.
+- **Per field:** freshness from repeated samples, in two idle windows (one before the control trials
+  and one after) and in held windows taken while Unity's input update reports the control held. The
+  longest hold is repeated four times per control to give more windows. A change is exact inequality
+  between adjacent samples, compared component by component for vectors and quaternions; values the
+  field reader cannot compare (structs, collections, masks, object references) stay `unknown`. Each
+  field also gets a per-control split of the held windows, the controls whose windows showed a
+  change, and the scopes where repeated windows disagreed.
 - **Clock:** pause, a 0.2 s step and resume. Whether stepped mode is supported stays `null`,
   because animation, physics and game timers are not fully measured.
 - **Reset:** three scene-reload trials. Each holds one of the entity's movement keys for 1.2 s

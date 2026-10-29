@@ -69,11 +69,12 @@
     },
     "params": {
       "additionalProperties": true,
+      "description": "Declared-value overrides are unsupported; a bridge rejects nonempty params before applying input",
       "title": "Params",
       "type": "object"
     },
     "protocol": {
-      "default": "upa/0",
+      "default": "upa/1",
       "pattern": "^upa/\\d+$",
       "title": "Protocol",
       "type": "string"

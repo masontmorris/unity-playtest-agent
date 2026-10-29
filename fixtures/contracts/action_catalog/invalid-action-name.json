@@ -1,0 +1,9 @@
+{
+  "actions": {
+    "Not A Name": {
+      "backend": "input_system",
+      "inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}],
+      "default_lease_s": 0.2
+    }
+  }
+}

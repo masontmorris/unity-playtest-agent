@@ -1,0 +1,20 @@
+{
+  "actions": {
+    "over_budget": {
+      "backend": "input_system",
+      "steps": [
+        {
+          "inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}],
+          "hold_s": 0.6,
+          "wait_s": 0.4
+        },
+        {
+          "inputs": [{"device": "Keyboard", "control": "a", "x": null, "y": null}],
+          "hold_s": 0.6,
+          "wait_s": 0.4
+        }
+      ],
+      "max_s": 1.0
+    }
+  }
+}

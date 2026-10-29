@@ -27,7 +27,7 @@ namespace Playtest.Bridge.Tests
             public string scene_id;
             public string scene_path;
         }
-        [Serializable] private sealed class ManifestInput { public string control_id; }
+        [Serializable] private sealed class ManifestInput { public string control_id; public string device; public string control; }
         [Serializable] private sealed class ManifestAction
         {
             public string name;
@@ -112,8 +112,10 @@ namespace Playtest.Bridge.Tests
             ManifestAction action = matches[0];
             Assert.That(action.inputs, Is.Not.Null);
             Assert.That(action.inputs.Length, Is.EqualTo(1), "stage 7 hosts exactly one button");
-            Assert.That(action.execution_supported, Is.True, "the selected action is not executable by this bridge");
-            string control = action.inputs[0].control_id;
+            // This caller-named preflight measurement may establish evidence for an unproven
+            // declaration. It does not offer that declaration as an S1 choice.
+            Assert.That(action.inputs[0].device, Is.EqualTo("Keyboard"), "stage 7 measures one keyboard button");
+            string control = action.inputs[0].control;
             Assert.That(string.IsNullOrEmpty(control), Is.False, "the selected action names no physical control");
             double lease = action.hold_s > 0 ? action.hold_s : action.tap_hold_s;
             Assert.That(lease, Is.GreaterThan(0).And.LessThanOrEqualTo(3600),

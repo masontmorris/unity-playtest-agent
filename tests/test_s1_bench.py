@@ -354,7 +354,9 @@ def test_calibrated_catalog_rejects_changed_descriptors() -> None:
                            "mean_magnitude": float(i), "sample_variance": 0.0}]})
     calibration = {"action_cap": {"truncated": False}, "actions": actions, "action_summaries": summaries}
     discovery = {"bindings": bindings, "input_asset_bindings": []}
-    assert len(calibrated_choices(calibration, discovery)) == 10
+    offered = calibrated_choices(calibration, discovery)
+    assert len(offered) == 10
+    assert all(choice.params == {} for choice in offered), "protocol 1 executes the named declaration and explicit lease"
     bindings[0]["source_object_id"] = "different"
     with pytest.raises(ValueError, match="no longer resolves"):
         calibrated_choices(calibration, discovery)

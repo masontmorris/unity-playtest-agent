@@ -11,7 +11,7 @@ import pytest
 
 from playtest.contracts.calibration import CalibrationRecord
 from playtest.contracts.manifest import PreflightManifest
-from playtest.preflight import calibrate, verify
+from playtest.preflight import calibrate, execution_verify, verify
 
 
 ENTITY_ID = "scene:Assets/Scenes/Main.unity@1::0"
@@ -41,13 +41,51 @@ def summary(control="w", requested=0.4, effective=True):
 
 def action_dict(name="walk_forward", controls=("w",), requested=0.4, effective=True, axis=False, x=None, y=None):
     summaries = [summary(control, requested, effective) for control in controls]
-    supported = len(controls) == 1 and not axis and requested <= 3600
     return {"name": name, "intent": "move the controlled entity", "inputs": [
-                {"control_id": control, "x": x, "y": y} for control in controls],
+                {"control_id": control, "device": "Keyboard", "control": control, "x": x, "y": y}
+                for control in controls],
             "hold_s": requested, "tap_hold_s": None, "preconditions": [], "calibrations": summaries,
             "axis": axis, "max_hold_s": None,
             "hold_effect": effective if len(controls) == 1 else None,
-            "execution_supported": supported}
+            "execution_evidence": execution_evidence(controls, requested),
+            "execution_supported": True}
+
+
+def execution_evidence(controls=("w",), requested=0.4):
+    return {
+        "action": "walk_forward", "session": "s", "status": "completed", "release_verified": True,
+        "declaration": {"backend": "input_system",
+                        "inputs": [{"device": "Keyboard", "control": control, "x": None, "y": None}
+                                   for control in controls],
+                        "default_lease_s": requested},
+        "applied_duration_s": requested + 0.01, "input_start_wall_s": 1000.0,
+        "input_end_wall_s": 1000.0 + requested + 0.01,
+        "receipts": [{"step_index": 0, "device": "Keyboard", "control": control, "x": None, "y": None,
+                      "input_start_wall_s": 1000.0, "input_end_wall_s": 1000.0 + requested + 0.01,
+                      "applied_duration_s": requested + 0.01, "applied_delta_x": None,
+                      "applied_delta_y": None, "release_verified": True} for control in controls],
+        "wall_utc": "2026-01-01T00:00:00Z"}
+
+
+def mouse_action():
+    value = action_dict(controls=("mouse_delta",))
+    value["inputs"] = [{"control_id": "mouse_delta", "device": "Mouse", "control": "delta",
+                        "x": 1.0, "y": 0.0}]
+    value["calibrations"] = [dict(summary("mouse_delta"), device="Mouse", control_name="delta",
+                                  control_type="Delta", declared_x=1.0, declared_y=0.0)]
+    value["hold_effect"] = True
+    value["execution_evidence"] = {
+        "action": "walk_forward", "session": "s", "status": "completed", "release_verified": True,
+        "declaration": {"backend": "input_system",
+                        "inputs": [{"device": "Mouse", "control": "delta", "x": 1.0, "y": 0.0}],
+                        "default_lease_s": 0.4},
+        "applied_duration_s": None, "input_start_wall_s": 1000.0, "input_end_wall_s": None,
+        "receipts": [{"step_index": 0, "device": "Mouse", "control": "delta", "x": 1.0, "y": 0.0,
+                      "input_start_wall_s": 1000.0, "input_end_wall_s": None,
+                      "applied_duration_s": None, "applied_delta_x": 64.0, "applied_delta_y": 0.0,
+                      "release_verified": True}],
+        "wall_utc": "2026-01-01T00:00:00Z"}
+    return value
 
 
 def manifest_data(action):
@@ -59,7 +97,8 @@ def manifest_data(action):
                  "unobservable": ["no readable field was selected"], "uncontrollable": [], "unjudgeable": [],
                  "coverage": []},
         "selection": {"offered_fields": [], "unselected_field_ids": [], "unoffered_fields": [],
-                      "offered_controls": [{"id": item["control_id"], "control_type": "Button"}
+                      "offered_controls": [{"id": item["control_id"], "device": item["device"],
+                                            "control": item["control"], "control_type": "Button"}
                                            for item in action["inputs"]],
                       "unoffered_controls": [], "unsupported_bindings": [],
                       "reader_cap": 16, "reader_cap_reached": False, "action_cap": 14,
@@ -101,7 +140,7 @@ def calibration_record(action=None, trials=None, *, status="measured_with_gaps",
         "freshness": {"field": {"classification": "unknown"}}, "clock": {},
         "reset": {"scene_reload": {"fields": [RELOAD_STABLE]}},
         "runtime_errors": None,
-        "stop": {"protocol": "upa/0", "session": "s", "seq": 1, "game_s": None,
+        "stop": {"protocol": "upa/1", "session": "s", "seq": 1, "game_s": None,
                  "wall_utc": "2026-01-01T00:00:00Z", "type": "stopped", "released": [],
                  "release_verified": True},
     }
@@ -246,7 +285,7 @@ def test_selection_requires_the_named_action_and_its_matching_measured_hold():
         value = action_dict(axis=True)
         verify.select_action(manifest(value), calibration_record(value), "walk_forward")
     with pytest.raises(ValueError, match="analog parameters"):
-        value = action_dict(x=0.0)
+        value = mouse_action()
         verify.select_action(manifest(value), calibration_record(value), "walk_forward")
     with pytest.raises(ValueError, match="entity details differ"):
         verify.select_action(manifest(), calibration_record(entity=dict(ENTITY, id="other")), "walk_forward")
@@ -268,6 +307,7 @@ def test_selection_rejects_mismatched_or_unmeasured_calibration():
         value = action_dict(requested=0.2)
         value["hold_s"] = 0.4
         value["hold_effect"] = None
+        value["execution_evidence"] = execution_evidence(("w",), 0.4)
         verify.select_action(manifest(value), calibration_record(value), "walk_forward")
 
     with pytest.raises(ValueError, match="not a completed measurement"):
@@ -526,3 +566,28 @@ def test_an_unreported_applied_hold_leaves_the_effect_unknown():
     chosen = selected()
     trial = {"execution": [{"status": "completed"}]}
     assert verify.input_reproduction(chosen, trial)["reproduced"] is None
+
+
+def test_complementary_verifier_reports_stored_evidence_without_sending_input():
+    value = manifest()
+    review = execution_verify.verify_declaration(value, "walk_forward")
+    assert review["status"] == "supported" and review["execution_supported"] is True
+    assert review["evidence"]["receipt_count"] == 1 and review["problems"] == []
+
+    unsupported = action_dict()
+    unsupported["execution_evidence"] = None
+    unsupported["execution_supported"] = False
+    review = execution_verify.verify_declaration(manifest(unsupported), "walk_forward")
+    assert review["status"] == "unsupported" and review["evidence"] is None
+    assert any("no execution evidence" in problem for problem in review["problems"])
+    with pytest.raises(ValueError, match="exactly one manifest action or skill"):
+        execution_verify.verify_declaration(value, "missing")
+
+
+def test_stage7_can_measure_an_unproven_single_button_without_claiming_support():
+    value = action_dict()
+    value["execution_evidence"] = None
+    value["execution_supported"] = False
+    chosen = verify.select_action(manifest(value), calibration_record(value), "walk_forward")
+    assert chosen.action.execution_supported is False
+    assert chosen.action.execution_evidence is None

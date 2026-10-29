@@ -1,0 +1,28 @@
+{
+  "protocol": "upa/1",
+  "session": "s-1",
+  "seq": 1902,
+  "game_s": 52.0,
+  "wall_utc": "2026-10-26T18:00:02Z",
+  "type": "execution",
+  "action_id": "a-91",
+  "status": "completed",
+  "validated_against_seq": 1899,
+  "applied_duration_s": 0.2,
+  "release_verified": true,
+  "applied_inputs": [
+    {
+      "step_index": 1,
+      "device": "Keyboard",
+      "control": "w",
+      "x": null,
+      "y": null,
+      "input_start_wall_s": 1001.0,
+      "input_end_wall_s": 1001.2,
+      "applied_duration_s": -0.2,
+      "release_verified": true
+    }
+  ],
+  "expected_effect": [],
+  "observed_effect": []
+}

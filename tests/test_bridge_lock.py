@@ -22,6 +22,7 @@ from playtest.core.bridge_lock import (
     read_project_lock,
 )
 
+from playtest.contracts.common import PROTOCOL
 from fake_game import FakeGame
 
 TOKEN = "lock-test-token"
@@ -32,7 +33,7 @@ def _write_lock(
     port: int,
     *,
     token: str = TOKEN,
-    protocol: str = "upa/0",
+    protocol: str = PROTOCOL,
     started_utc: str | None = None,
 ) -> Path:
     directory = project / "Temp"
@@ -62,7 +63,7 @@ def test_read_project_lock_round_trips_the_endpoint(tmp_path: Path):
     endpoint = read_project_lock(tmp_path)
 
     assert endpoint.path == path
-    assert endpoint.protocol == "upa/0"
+    assert endpoint.protocol == PROTOCOL
     assert endpoint.pid == 4242
     assert endpoint.port == 38123
     assert endpoint.token == TOKEN
@@ -83,11 +84,11 @@ def test_missing_lock_is_typed(tmp_path: Path):
         "",
         "not json",
         "[]",
-        json.dumps({"protocol": "upa/0"}),
-        json.dumps({"protocol": "upa/0", "pid": 0, "port": 1, "token": "x", "started_utc": "2026-01-01T00:00:00Z"}),
-        json.dumps({"protocol": "upa/0", "pid": 1, "port": 0, "token": "x", "started_utc": "2026-01-01T00:00:00Z"}),
-        json.dumps({"protocol": "upa/0", "pid": 1, "port": 1, "token": "", "started_utc": "2026-01-01T00:00:00Z"}),
-        json.dumps({"protocol": "upa/0", "pid": 1, "port": 1, "token": "x", "started_utc": "not-a-time"}),
+        json.dumps({"protocol": PROTOCOL}),
+        json.dumps({"protocol": PROTOCOL, "pid": 0, "port": 1, "token": "x", "started_utc": "2026-01-01T00:00:00Z"}),
+        json.dumps({"protocol": PROTOCOL, "pid": 1, "port": 0, "token": "x", "started_utc": "2026-01-01T00:00:00Z"}),
+        json.dumps({"protocol": PROTOCOL, "pid": 1, "port": 1, "token": "", "started_utc": "2026-01-01T00:00:00Z"}),
+        json.dumps({"protocol": PROTOCOL, "pid": 1, "port": 1, "token": "x", "started_utc": "not-a-time"}),
     ],
 )
 def test_invalid_lock_is_typed(tmp_path: Path, body: str):

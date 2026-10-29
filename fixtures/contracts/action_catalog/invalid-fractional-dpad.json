@@ -1,0 +1,9 @@
+{
+  "actions": {
+    "press": {
+      "backend": "input_system",
+      "inputs": [{"device": "Gamepad", "control": "dpad", "x": 0.5, "y": 0}],
+      "default_lease_s": 0.2
+    }
+  }
+}

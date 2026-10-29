@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from playtest.contracts import bridge as bridge_contract, calibration as calibration_contract
+from playtest.contracts import action_catalog as action_catalog_contract
 from playtest.contracts.bridge import InspectResult
 from playtest.contracts.calibration import CalibrationRecord
 from playtest.contracts.manifest import PreflightManifest
@@ -237,7 +238,8 @@ def fingerprint(authored: AuthoredSnapshot, inventory: InspectResult, discovery:
             raise ValueError(f"discovery has invalid {section}")
         il[section] = sorted(rows, key=_canonical)
     policy_modules = (preflight, checks, strict, packet, stages, provider, manifest, calibrate,
-                      calibration_record, entity, freshness, bridge_contract, calibration_contract)
+                      calibration_record, entity, freshness, bridge_contract, calibration_contract,
+                      action_catalog_contract)
     policy = {module.__name__: hashlib.sha256(_read_file(Path(module.__file__))).hexdigest()
               for module in policy_modules}
     policy[__name__] = hashlib.sha256(_read_file(Path(__file__))).hexdigest()
@@ -426,12 +428,14 @@ def resolve_controls(manifest_value: PreflightManifest, original: InspectResult,
 
 
 def undriven_axes(value: PreflightManifest) -> list[str]:
-    """Offered analog axes that no executable action drives make a result incomplete.
+    """Offered analog axes that no declared action drives make a selection incomplete.
 
     Controls the bridge could not offer at all are bridge gaps that a new model answer
-    cannot close, so they do not count; an offered axis left undriven could be.
+    cannot close, so they do not count; an offered axis left undriven could be. This is a
+    selection-coverage fact, not a claim that the driving declaration is executable.
     """
-    driven = {item.control_id for action in value.actions if action.execution_supported for item in action.inputs}
+    driven = {item.control_id for action in value.actions for item in action.inputs}
+    driven.update(item.control_id for skill in value.skills for step in skill.steps for item in step.inputs)
     return sorted(row["id"] for row in value.selection.offered_controls
                   if row.get("control_type") in preflight.AXIS_CONTROLS and row["id"] not in driven)
 
@@ -443,8 +447,9 @@ def replay_selections(manifest_value: PreflightManifest, original: InspectResult
     The original cache entry and its ledger must be validated before this function is
     called. Only session-specific field identifiers are remapped. Every declared action,
     chord and skill is replayed as declared, including those the bridge cannot execute;
-    their execution support and hold effects are re-derived from the current packet, so
-    none of the cached calibration is presented as a fresh measurement.
+    their execution support, evidence and hold effects are re-derived from the current
+    packet, so neither the cached calibration nor cached execution receipts are presented
+    as proof in the new session.
     """
     problems = manifest.validate(manifest_value)
     if problems:
@@ -460,11 +465,14 @@ def replay_selections(manifest_value: PreflightManifest, original: InspectResult
         raise ValueError("the resolved readers are not offered uniquely by the current packet")
     readers = [{"field_id": tokens[reader_ids[row.alias]], "alias": row.alias, "why": row.why}
                for row in manifest_value.readers]
-    actions = [{"name": a.name, "intent": a.intent, "inputs": [i.model_dump(mode="json") for i in a.inputs],
+    actions = [{"name": a.name, "intent": a.intent,
+                "inputs": [{"control_id": i.control_id, "x": i.x, "y": i.y} for i in a.inputs],
                 "hold_s": a.hold_s, "preconditions": [p.model_dump(mode="json") for p in a.preconditions]}
                for a in manifest_value.actions]
     skills = [{"name": s.name, "purpose": s.purpose, "max_s": s.max_s,
-               "steps": [step.model_dump(mode="json") for step in s.steps]} for s in manifest_value.skills]
+               "steps": [{"inputs": [{"control_id": i.control_id, "x": i.x, "y": i.y} for i in step.inputs],
+                          "hold_s": step.hold_s, "wait_s": step.wait_s} for step in s.steps]}
+              for s in manifest_value.skills]
     a4 = preflight.StageAnswer.model_validate({"stage_4": {"readers": readers,
         "unobservable": manifest_value.gaps.unobservable}, "stage_5": None, "stage_6": None})
     a5 = preflight.StageAnswer.model_validate({"stage_4": None, "stage_5": {"actions": actions,
@@ -587,7 +595,8 @@ def create_entry(before: AuthoredSnapshot, after: AuthoredSnapshot, inventory: I
     if problems:
         raise ValueError("the source manifest or ledger is invalid: " + "; ".join(problems))
     replayed, _ = replay_selections(value, discovery, discovery, original_packet)
-    if replayed != value:
+    if manifest._without_proof(replayed.model_dump(mode="json")) != manifest._without_proof(
+            value.model_dump(mode="json")):
         raise ValueError("the source selection cannot be reconstructed exactly")
     source = {"before": _snapshot_data(before), "after": _snapshot_data(after),
               "inventory": inventory.model_dump(mode="json"), "discovery": discovery.model_dump(mode="json"),

@@ -56,6 +56,12 @@ class ExecutionController:
             raise ValueError(f"choice {choice.id!r} of kind {choice.kind.value!r} carries no input")
         action = choice.action if choice.action is not None else choice.skill
         assert action is not None
+        # A skill owns its ordered holds and total bound in the catalog. The default
+        # action lease must not replace that bound. An explicit caller lease still
+        # reaches the bridge unchanged for validation against the skill's max_s.
+        bound_lease = lease_s
+        if bound_lease is None and choice.kind is ChoiceKind.action:
+            bound_lease = self._lease_s
         records = await self._client.act(
             action_id=uuid.uuid4().hex,
             choice_id=choice.id,
@@ -64,6 +70,6 @@ class ExecutionController:
             based_on_seq=based_on_seq,
             max_age_s=max_age_s if max_age_s is not None else self._max_age_s,
             depends_on=list(depends_on if depends_on is not None else self._depends_on),
-            lease_s=lease_s if lease_s is not None else self._lease_s,
+            lease_s=bound_lease,
         )
         return records[-1]

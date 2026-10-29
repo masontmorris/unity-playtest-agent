@@ -15,6 +15,7 @@ namespace Playtest.Bridge.Tests
         {
             const double requestedS = 0.8;
             var input = new FakeInputBackend();
+            var scheduler = new RecordingScheduler();
             ExecutionRecordMessage terminal = null;
             using (var completed = new ManualResetEventSlim())
             using (var lease = new BridgeActionLease(input, record =>
@@ -30,7 +31,7 @@ namespace Playtest.Bridge.Tests
                     terminal = record;
                     completed.Set();
                 }
-            }))
+            }, scheduler: scheduler))
             {
                 Assert.That(lease.TryStart(
                     new ActRequestMessage { ActionId = "lease-test", LeaseS = explicitLease ? requestedS : (double?)null },
@@ -40,12 +41,25 @@ namespace Playtest.Bridge.Tests
                 TestContext.WriteLine("requested_s={0:R} applied_s={1:R} overshoot_ms={2:F4}",
                     requestedS, terminal.AppliedDurationS, (terminal.AppliedDurationS - requestedS) * 1000);
                 Assert.That(terminal.Status, Is.EqualTo(BridgeExecStatus.Completed));
-                Assert.That(terminal.AppliedDurationS, Is.InRange(requestedS - 0.02, requestedS + 0.175),
-                    "record emission must not move the requested expiry deadline");
+                Assert.That(terminal.AppliedDurationS, Is.GreaterThanOrEqualTo(requestedS - 0.02));
+                if (scheduler.DelayS.HasValue)
+                    Assert.That(scheduler.DelayS.Value, Is.InRange(0, requestedS - 0.3),
+                        "the scheduled delay must deduct the 350 ms record work, regardless of timer dispatch jitter");
                 Assert.That(terminal.InputEndWallS - terminal.InputStartWallS,
                     Is.EqualTo(terminal.AppliedDurationS.Value).Within(0.000001),
                     "the reported duration must still measure start through release");
                 Assert.That(input.Releases, Is.EqualTo(1));
+            }
+        }
+
+        private sealed class RecordingScheduler : IBridgeScheduler
+        {
+            public double? DelayS;
+
+            public IDisposable Schedule(TimeSpan delay, Action callback)
+            {
+                DelayS = delay.TotalSeconds;
+                return new BridgeThreadingScheduler().Schedule(delay, callback);
             }
         }
 

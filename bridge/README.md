@@ -38,7 +38,7 @@ bridge/
 ## Wire protocol
 
 The contracts are the Python models in `src/playtest/contracts/`; `schemas/` is exported from
-them. The bridge speaks `upa/0`. Every line is one JSON object, UTF-8, `\n` terminated.
+them. The bridge speaks `upa/1`. Every line is one JSON object, UTF-8, `\n` terminated.
 
 1. Core connects to `127.0.0.1:<port>` from the lock file.
 2. Core sends `hello` with the token from the lock file.
@@ -120,34 +120,86 @@ build scene, see `scripts/unity/capture-preflight.ps1`.
 
 ## Actions
 
-`act` executes a named action from a project catalog, not a compiled-in control. The v0 catalog
-is `<project>/Temp/playtest-bridge-actions.json`, written by the test harness for now and by
-preflight later. It is data and is not committed:
+`act` executes one named action or skill from a project catalog, not a compiled-in control. The
+catalog is `<project>/Temp/playtest-bridge-actions.json`, written by the test harness or by
+preflight. It is data and is not committed. An action holds one to three simultaneous inputs for a
+lease; a skill runs one to eight ordered steps, each holding its inputs and then waiting:
 
 ```json
 {
   "actions": {
-    "example_action": {
+    "chord": {
       "backend": "input_system",
-      "device": "Keyboard",
-      "control": "w",
-      "default_lease_s": 0.25
+      "inputs": [
+        { "device": "Keyboard", "control": "w" },
+        { "device": "Gamepad", "control": "leftStick", "x": 0.3, "y": 1.0 }
+      ],
+      "default_lease_s": 0.4
+    },
+    "sequence": {
+      "backend": "input_system",
+      "steps": [
+        { "inputs": [{ "device": "Keyboard", "control": "space" }], "hold_s": 0.05, "wait_s": 0.2 },
+        { "inputs": [{ "device": "Mouse", "control": "delta", "x": 0.5, "y": 0 }], "hold_s": 0.1 }
+      ],
+      "max_s": 1.0
     }
   }
 }
 ```
 
+The original single-key shorthand (`device`, `control`, `default_lease_s`) still loads as one input.
+The catalog is validated before anything runs: unknown members, counts, durations (an action hold
+and `max_s` are at most 3600 s, a skill's declared holds and waits must fit inside `max_s`) and the
+device vocabulary below.
+
+| Device | Controls | Values |
+|---|---|---|
+| Keyboard | any `Key` name | none |
+| Mouse | `leftButton`, `rightButton`, `middleButton`, `forwardButton`, `backButton` | none |
+| Mouse | `delta` | `x`, `y` in [-1, 1]; one relative impulse of x * 64 and y * 64 pixels, applied once |
+| Gamepad | `buttonSouth`/`North`/`East`/`West`, `leftShoulder`, `rightShoulder`, `leftStickPress`, `rightStickPress`, `start`, `select` | none |
+| Gamepad | `leftStick`, `rightStick` | `x`, `y` in [-1, 1], written to the device state unchanged |
+| Gamepad | `leftTrigger`, `rightTrigger` | `x` in [0, 1] and `y` = 0 |
+| Gamepad | `dpad` | `x`, `y` each -1, 0 or 1 |
+
+Everything else is rejected by name: mouse `scroll` (its units differ by platform), `position` and
+any absolute pointer, touch, XR, joysticks, and child control paths such as `dpad/up`. Nothing is
+normalized, clamped, remapped or inferred.
+
 The bridge looks up the action, checks `based_on_seq`, `max_age_s`, the declared `depends_on`
-paths and the play state atomically, then applies it. A new act releases the previous lease and
-reports it `cancelled`; the new lease reports `running` and then `completed` (or `failed` if
-release cannot be verified). Unknown actions, stale observations, changed fields, a non-playing
-project and backend failures are rejected with the contract's reject reasons. `lease_s` is capped
-at 3600 s. In v0 `params` are free-form and ignored; the catalog's `default_lease_s` or the
-request's `lease_s` sets the hold. A `depends_on` on `frame_ref` fails closed until a frame
-exists. The v0 backend is Input System keyboard; the action catalog keeps every game-specific
-binding out of the package. In batch mode it scopes the Input System focus settings so injected
-keys reach the game loop, and restores the previous values on stop; an interactive Editor is left
-alone.
+paths and the play state atomically, then validates the act itself without touching a device:
+non-empty `params` are rejected (`invalid_params`), a skill's `lease_s` must be absent or exactly its
+`max_s`, and every input of every step must be executable. Only after that does a new act release
+the previous run and report it `cancelled`. A rejected act never disturbs a running one. An action's
+`lease_s` is capped at 3600 s; `lease_s` is never reinterpreted as a step hold.
+
+Execution is verified from device state, never assumed. Inputs of one step are queued together, per
+device, as one state. The bridge reports `running` only after a device read, inside an input update
+the game can observe, showed every input applied; that read is the input's start. The hold ends with
+a release, and the input's end is the read that showed it neutral. A step is released and verified
+before the next step is applied and before its wait begins, so steps never overlap and none is
+skipped. Any failed apply or unverified release fails the run, releases everything and stops the
+remaining steps. A newer act, `stop`, a scene change, the skill's `max_s` deadline (`timed_out`) or a
+disconnect cancels the whole sequence and its timers; nothing is resumed or replayed.
+
+Every `execution` record carries `applied_inputs`, one receipt per applied input: `step_index`,
+`device`, `control`, the declared `x` and `y`, `input_start_wall_s`, `input_end_wall_s`,
+`applied_duration_s`, `applied_delta_x/y` and `release_verified`. Durations are measured from the
+two device reads and never copied from the configured hold; a mouse delta has no duration, and its
+receipt carries the pixel delta the device read back, which must equal the declared one or the apply
+fails. Anything unmeasured is an explicit `null`. The record's own `applied_duration_s` runs from
+the first confirmed apply to the last confirmed release.
+
+Device work happens on the Unity main thread. A caller on another thread waits for it holding no
+lock the main thread needs; a caller on the main thread (scene change, host shutdown) runs it inline
+with a manual input update and never waits on itself. A mouse delta and a key press edge are not
+flushed early, so the game sees them in its own input update. Absent devices are created and removed
+by the bridge: the keyboard at start, the mouse and gamepad when an action first declares them. A
+physical device that exists is used as it is. In batch mode the Input System focus settings are
+scoped so injected input reaches the game loop and restored on stop; an interactive Editor is left
+alone. Fields samples carry `keyboard_state` (unchanged) and a generic `input_state` for the
+keyboard, mouse and gamepad.
 
 ## Stop and clock
 
@@ -236,3 +288,21 @@ dotnet test bridge/Tests/DotNet~
 ```
 
 Unity-only tests are excluded from the fast harness by the `Unity*.cs` naming rule.
+
+The fast harness also runs the executor and the lease against a simulated keyboard, mouse and
+gamepad: atomic multi-input apply, device-read verification, a stuck input, step ordering, timer
+cancellation and the main-thread rules. It cannot prove behaviour on a real device; the PlayMode
+`InputDevicesPlayModeTests` do that and need a Play mode run. The shared
+`fixtures/contracts/action_catalog` files are run by `ActionCatalogFixtureTests` once the Python
+contract exports them; until then that test reports inconclusive rather than passing.
+
+## Input probe host
+
+`Tests/PlayMode/InputProbePlayModeTests.cs` hosts the bridge for the offline named-declaration
+input probe (no model calls). With `UPA_INPUT_PROBE_OUTPUT` unset it only checks that an invalid
+catalog is refused. With it set, it loads the first enabled build scene, starts the bridge with the
+catalog in `UPA_INPUT_PROBE_CATALOG` (capture included), runs
+`python -m playtest.preflight.input_probe --project <project> --plan <plan> --output <output>` with
+`UPA_INPUT_PROBE_PLAN`, `UPA_INPUT_PROBE_PYTHON` and `UPA_REPO_ROOT`, and cleans up. The output must
+be a new file outside the project. The harness forwards the plan path and never reads the plan.
+Only one Editor may run a project at a time, so run it alone.

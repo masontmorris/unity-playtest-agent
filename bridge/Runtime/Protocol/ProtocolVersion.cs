@@ -9,7 +9,7 @@ namespace Playtest.Bridge.Protocol
     /// </summary>
     public static class ProtocolVersion
     {
-        public const string Current = "upa/0";
+        public const string Current = "upa/1";
 
         private static readonly Regex Pattern = new Regex(@"^upa/\d+$", RegexOptions.CultureInvariant);
 

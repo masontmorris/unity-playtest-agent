@@ -7,11 +7,13 @@ Editor and is the only path that runs discovery; it never writes to the project.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from .action_catalog import ActionDefinition
 from .common import ClockMode, Envelope, Strict
 
 
@@ -88,7 +90,9 @@ class ActRequest(Envelope):
     action_id: str = Field(min_length=1, description="Unique per request; the execution record echoes it")
     choice_id: str
     action: str = Field(min_length=1, description="Manifest action name")
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Declared-value overrides are unsupported; a bridge rejects nonempty params before applying input")
     based_on_seq: int = Field(ge=0, description="Observation the choice was built from")
     max_age_s: float = Field(gt=0)
     depends_on: list[str] = Field(
@@ -132,6 +136,82 @@ class Effect(Strict):
     unit: str | None = None
 
 
+class AppliedInput(Strict):
+    """One physical input the bridge applied, as measured at apply and release time.
+
+    `applied_duration_s` is the measured interval from device apply acknowledgement to
+    observed release. It is never copied from configured hold time. A relative pointer
+    impulse may report a null duration when its neutral-reset instant was not measured,
+    but it always reports the actual pixel delta it produced.
+    """
+
+    step_index: int = Field(ge=0, description="0 for an action; the ordered step index for a skill")
+    device: Literal["Keyboard", "Mouse", "Gamepad"]
+    control: str = Field(min_length=1, description="Physical root control, without a device prefix")
+    x: float | None = Field(None, ge=-1, le=1, allow_inf_nan=False,
+                            description="Declared normalized value; null for a button")
+    y: float | None = Field(None, ge=-1, le=1, allow_inf_nan=False,
+                            description="Declared second value; 0 for a one-dimensional axis; null for a button")
+    input_start_wall_s: float | None = Field(None, allow_inf_nan=False,
+                                             description="Device apply acknowledgement, wall seconds")
+    input_end_wall_s: float | None = Field(None, allow_inf_nan=False,
+                                           description="Observed release, wall seconds")
+    applied_duration_s: float | None = Field(None, ge=0, allow_inf_nan=False,
+                                             description="Measured apply-to-release seconds")
+    applied_delta_x: float | None = Field(None, allow_inf_nan=False,
+                                          description="Actual mouse pixel delta, not a configured value")
+    applied_delta_y: float | None = Field(None, allow_inf_nan=False,
+                                          description="Actual mouse pixel delta, not a configured value")
+    release_verified: bool | None = Field(
+        None, description="Device-state read confirmed this input is no longer held")
+
+    @model_validator(mode="after")
+    def _value_shape(self) -> "AppliedInput":
+        if (self.x is None) != (self.y is None):
+            raise ValueError("x and y must both be present for a vector input or both null for a button")
+        if self.device == "Keyboard" and self.x is not None:
+            raise ValueError("a keyboard input is a button; x and y must be null")
+        if (self.input_start_wall_s is not None and self.input_end_wall_s is not None
+                and self.input_end_wall_s < self.input_start_wall_s):
+            raise ValueError("input_end_wall_s must not be before input_start_wall_s")
+        return self
+
+
+class InputExecutionEvidence(Strict):
+    """Release-verified receipts for one exact declaration, kept as local evidence.
+
+    The declaration itself is recorded here rather than inferred from receipts or a label:
+    support requires exact inputs, values, holds, waits and `max_s`, before any measured
+    timing allowance. Historical bare evidence without a declaration fails closed. This
+    record proves only that the bridge completed that declaration and applied/released the
+    same physical inputs; it is not a claim about game effects.
+    """
+
+    action: str = Field(min_length=1, description="The action name this execution was requested under")
+    session: str = Field(min_length=1)
+    status: ExecStatus
+    release_verified: bool
+    declaration: ActionDefinition = Field(
+        description="The exact requested declaration this evidence proves; required, never guessed")
+    applied_duration_s: float | None = Field(None, ge=0, allow_inf_nan=False)
+    input_start_wall_s: float | None = Field(None, allow_inf_nan=False)
+    input_end_wall_s: float | None = Field(None, allow_inf_nan=False)
+    receipts: list[AppliedInput] = Field(default_factory=list)
+    wall_utc: datetime | None = None
+
+    @model_validator(mode="after")
+    def _completed_has_receipts(self) -> "InputExecutionEvidence":
+        value = self.status.value if isinstance(self.status, ExecStatus) else self.status
+        if value == "completed" and not self.receipts:
+            raise ValueError("a completed execution evidence record needs applied-input receipts")
+        if value == "rejected" and self.receipts:
+            raise ValueError("a rejected execution applied no input and cannot have receipts")
+        if (self.input_start_wall_s is not None and self.input_end_wall_s is not None
+                and self.input_end_wall_s < self.input_start_wall_s):
+            raise ValueError("input_end_wall_s must not be before input_start_wall_s")
+        return self
+
+
 class ExecutionRecord(Envelope):
     type: Literal["execution"] = "execution"
     action_id: str
@@ -144,6 +224,9 @@ class ExecutionRecord(Envelope):
     input_end_wall_s: float | None = None
     applied_duration_s: float | None = Field(None, ge=0, description="Measured, never taken from configuration")
     release_verified: bool | None = None
+    applied_inputs: list[AppliedInput] = Field(
+        default_factory=list,
+        description="Per-input receipts for a chord or ordered skill; empty for a stale rejection")
     expected_effect: list[Effect] = Field(default_factory=list)
     observed_effect: list[Effect] = Field(default_factory=list)
 
@@ -151,6 +234,15 @@ class ExecutionRecord(Envelope):
     def _reject_has_reason(self) -> "ExecutionRecord":
         if (self.status is ExecStatus.rejected) != (self.reject_reason is not None):
             raise ValueError("reject_reason is required exactly when status is 'rejected'")
+        return self
+
+    @model_validator(mode="after")
+    def _receipt_order(self) -> "ExecutionRecord":
+        if self.status is ExecStatus.rejected and self.applied_inputs:
+            raise ValueError("a rejected execution applied no input and cannot have receipts")
+        indices = [item.step_index for item in self.applied_inputs]
+        if indices != sorted(indices):
+            raise ValueError("applied-input step indices must be in execution order")
         return self
 
 

@@ -1,0 +1,17 @@
+{
+  "actions": {
+    "ambiguous": {
+      "backend": "input_system",
+      "inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}],
+      "default_lease_s": 0.2,
+      "steps": [
+        {
+          "inputs": [{"device": "Keyboard", "control": "w", "x": null, "y": null}],
+          "hold_s": 0.1,
+          "wait_s": 0.0
+        }
+      ],
+      "max_s": 0.2
+    }
+  }
+}

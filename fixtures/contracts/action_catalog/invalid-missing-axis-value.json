@@ -1,0 +1,11 @@
+{
+  "actions": {
+    "missing_stick_value": {
+      "backend": "input_system",
+      "inputs": [
+        {"device": "Gamepad", "control": "leftStick", "x": null, "y": 1.0}
+      ],
+      "default_lease_s": 0.5
+    }
+  }
+}
