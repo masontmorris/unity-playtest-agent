@@ -3,14 +3,15 @@
 `Playtest.IlScan` records which methods directly store which fields in a Unity project's
 compiled script assemblies. Preflight stage 1 uses it as evidence of how a field changes. The
 tool loads assemblies with `MetadataLoadContext`, for inspection only: it never executes them
-and needs no Unity. This used to run inside the Editor. It moved out of the bridge package
-(#118) so that the package can carry its own licence (#119), and so that the same scan can later
-read a player build (#97).
+and needs no Unity. This used to run inside the Editor. It moved out of the Unity bridge
+package (`bridge/`, #118) for two reasons. That package alone is being relicensed (#119). And
+the same scan can later read a player build (#97).
 
-Like the rest of the repository outside `bridge/`, it is under the AGPL-3.0-only licence. It
-compiles one file from the bridge package, `bridge/Editor/Preflight/ReflectionIds.cs`, which
-derives type and field ids. Discovery rows and write sets therefore name each declaration with
-the same id.
+The tool stays under the repository's AGPL-3.0-only licence. #119 changes the licence of the
+Unity bridge package only. It does not change this tool's licence, and other bridges are licensed
+case by case. The tool compiles one file from the Unity bridge package,
+`bridge/Editor/Preflight/ReflectionIds.cs`, which derives type and field ids, so discovery rows
+and write sets name each declaration with the same id.
 
 ## How preflight runs it
 
