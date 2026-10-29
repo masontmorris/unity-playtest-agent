@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -175,7 +176,9 @@ def test_scene_reload_rejects_missing_trials_and_unverified_release():
 
 
 class FakeCalibrationBridge:
-    def __init__(self, reject=False, game_error=False):
+    """A bridge whose error monitor behaves like the Editor's: an exact counter, the newest events."""
+
+    def __init__(self, reject=False, game_error=False, flood=None, monitor_truncated=False):
         self.t = 0.0
         self.position = 0.0
         self.value = 0
@@ -183,9 +186,32 @@ class FakeCalibrationBridge:
         self.closed = False
         self.reject = reject
         self.game_error = game_error
+        self.flood = flood or {}
         self.errors = []
+        self.observed = 0
+        self.monitor_active = True
+        self.monitor_limit = 256
+        self.monitor_truncated = monitor_truncated
         self.held = False
         self.calls = []
+
+    def log_error(self, message, times=1, kinds=1):
+        """Log `times` errors; with `kinds` > 1 neighbours differ, so none of them merge."""
+        for i in range(times):
+            text = message if kinds == 1 else f"{message} {i % kinds}"
+            self.observed += 1
+            if self.errors and self.errors[-1]["message"] == text:
+                self.errors[-1].update(last_sequence=self.observed, count=self.errors[-1]["count"] + 1)
+                continue
+            if len(self.errors) >= self.monitor_limit:
+                self.errors.pop(0)
+                self.monitor_truncated = True
+            self.errors.append({"type": "Error", "message": text, "stack": "at the game", "count": 1,
+                                "first_sequence": self.observed, "last_sequence": self.observed})
+
+    def monitor(self):
+        return {"active": self.monitor_active, "limit": self.monitor_limit, "truncated": self.monitor_truncated,
+                "observed": self.observed, "events": [dict(event) for event in self.errors]}
 
     def cap(self):
         return SimpleNamespace(truncated=False, observed=1, limit=100, returned=1,
@@ -204,8 +230,7 @@ class FakeCalibrationBridge:
             return SimpleNamespace(stage=stage, errors=[], wall_utc=wall, caps={"game_objects": cap},
                 data={"frame": 10, "real_time_s": self.t, "game_time_s": self.t, "time_unit": "seconds",
                       "position_space": "world", "position_unit": "unity_world_unit", "position_order": ["x", "y", "z"],
-                      "runtime_errors": {"active": True, "truncated": False, "observed": len(self.errors),
-                                         "events": list(self.errors)},
+                      "runtime_errors": self.monitor(),
                       "game_objects": [{"id": "entity", "parent_id": None, "position": [0, 0, self.position],
                                         "world_forward": [0, 0, 1], "world_right": [1, 0, 0], "basis_state": "present"}]})
         assert stage == "fields"
@@ -223,9 +248,14 @@ class FakeCalibrationBridge:
                                model_dump=lambda **_: {"paused": self.paused, "game_s": self.t})
 
     async def clock(self, op, **kwargs):
-        if op == "pause": self.paused = True
+        if op == "pause":
+            self.paused = True
+            if "monitor_off" in self.flood:
+                self.monitor_active = False
         if op == "resume": self.paused = False
         if op == "step": self.t += kwargs["step_game_s"]
+        if self.flood.get(op):
+            self.log_error("flood", times=self.flood[op], kinds=2)
 
     def record(self, status, start, end):
         return SimpleNamespace(status=SimpleNamespace(value=status), release_verified=status == "completed",
@@ -238,7 +268,7 @@ class FakeCalibrationBridge:
             return [self.record("rejected", None, None)]
         self.position += 1
         if self.game_error:
-            self.errors.append({"last_sequence": len(self.errors) + 1, "message": "observed error"})
+            self.log_error("observed error")
         return [self.record("completed", 1000 + self.t, 1000 + self.t + 1)]
 
     async def act_with_inspections(self, **kwargs):
@@ -462,3 +492,327 @@ def test_unity_input_state_pressed_and_values_are_read_per_device():
     assert calibrate._control_held({"devices": {"Gamepad": None}}, "Gamepad", "buttonSouth") is None
     assert calibrate._active_value([0.0, None]) is None
     assert calibrate._active_value([None, 1.0]) is True
+
+
+def monitor_event(first, last=None, message="m", count=None):
+    last = first if last is None else last
+    return {"type": "Error", "message": message, "stack": "s", "first_sequence": first, "last_sequence": last,
+            "count": last - first + 1 if count is None else count}
+
+
+def monitor(observed, events, limit=256, truncated=False, active=True):
+    return {"active": active, "limit": limit, "truncated": truncated, "observed": observed, "events": events}
+
+
+def test_error_window_counts_exactly_and_covers_only_its_own_errors():
+    window = calibrate.error_window(monitor(7, [monitor_event(1, 2, "old"), monitor_event(3, 7, "new")]), 2)
+    assert window["available"] is True
+    assert (window["count"], window["sampled"], window["complete"]) == (5, 5, True)
+    assert [kind["message"] for kind in window["kinds"]] == ["new"]
+    # A run that straddles the window start contributes only the errors after it.
+    straddling = calibrate.error_window(monitor(6, [monitor_event(1, 6, "run")]), 3)
+    assert (straddling["count"], straddling["sampled"], straddling["complete"]) == (3, 3, True)
+    assert straddling["kinds"][0]["occurrences_in_sample"] == 3
+    quiet = calibrate.error_window(monitor(4, [monitor_event(1, 4)]), 4)
+    assert (quiet["count"], quiet["sampled"], quiet["complete"], quiet["kinds"]) == (0, 0, True, [])
+
+
+def test_error_window_states_truncation_instead_of_hiding_it():
+    # 1,100 errors were counted but the monitor kept the newest 256 distinct events.
+    events = [monitor_event(845 + i, message=f"m{i % 2}") for i in range(256)]
+    window = calibrate.error_window(monitor(1100, events, truncated=True), 0)
+    assert window["count"] == 1100 and window["sampled"] == 256 and window["complete"] is False
+    assert "at least 256 of 1100" in window["note"] and "at most 256" in window["note"]
+    assert window["kinds_total"] == 2
+    # The same truncated monitor says nothing bad about a later window that its events fully cover.
+    later = calibrate.error_window(monitor(1103, events[3:] + [monitor_event(1101), monitor_event(1102),
+                                                                monitor_event(1103)], truncated=True), 1100)
+    assert (later["count"], later["sampled"], later["complete"]) == (3, 3, True)
+
+
+def test_error_window_sample_is_bounded_and_unmeasured_monitors_are_unknown():
+    many = [monitor_event(i + 1, message="x" * 1000 + str(i)) for i in range(20)]
+    window = calibrate.error_window(monitor(20, many), 0)
+    assert window["kinds_total"] == 20 and len(window["kinds"]) == calibrate.ERROR_SAMPLE_KINDS
+    assert all(len(kind["message"]) == calibrate.ERROR_TEXT_CHARS for kind in window["kinds"])
+    for bad, previous in ((monitor(5, [], active=False), 0), (None, 0), (monitor(3, []), 5),
+                          (monitor(5, [monitor_event(0)]), 0), (monitor(1, [monitor_event(1, 3)]), 0),
+                          (monitor(5, []), None)):
+        unknown = calibrate.error_window(bad, previous)
+        assert unknown["available"] is False and unknown["count"] is None and unknown["complete"] is None
+        assert unknown["reason"]
+
+
+def completed_run(client, monkeypatch, **kwargs):
+    async def no_delay(_):
+        return None
+    monkeypatch.setattr(calibrate.asyncio, "sleep", no_delay)
+    monkeypatch.setattr(calibrate, "HOLD_S", (0.1, 0.6))
+    return calibrate.asyncio.run(calibrate.measure(client, selected_entity(), **kwargs))
+
+
+def test_errors_logged_while_paused_are_clock_evidence_and_not_a_dead_record(monkeypatch):
+    client = FakeCalibrationBridge(flood={"pause": 1100, "step": 438, "resume": 25})
+    result = completed_run(client, monkeypatch)
+    assert result["status"] == "measured_with_gaps" and result["error"] is None
+    assert all(trial["valid"] is True for trial in result["trials"])
+    clock = result["clock"]
+    assert clock["stepped_mode_supported"] is None
+    assert "unknown" in clock["reason"] and "runtime_errors" in clock["reason"]
+    errors = clock["runtime_errors"]
+    windows = errors["windows"]
+    assert list(windows) == list(calibrate.CLOCK_WINDOWS)
+    assert [windows[name]["count"] for name in calibrate.CLOCK_WINDOWS] == [1100, 0, 438, 0, 25, 0]
+    assert errors["total_count"] == 1563 and errors["errors_observed"] is True
+    assert errors["sample_complete"] is False and "truncated" in errors["gap"]
+    assert windows["at_pause"]["complete"] is False and windows["while_paused"]["complete"] is True
+    assert windows["after_step"]["complete"] is False
+    # The window after the flood is complete: the flood did not fill the sample for the readers after it.
+    assert windows["resume"]["complete"] is True and windows["running"]["complete"] is True
+    assert windows["running"]["count"] == 0, "no error while the clock runs again"
+    assert all(window["meaning"] for window in windows.values())
+    assert 0 < len(windows["at_pause"]["kinds"]) <= calibrate.ERROR_SAMPLE_KINDS
+    assert result["runtime_errors"]["observed"] == 1563
+    assert client.paused is False
+    result["stop"] = {"protocol": "upa/1", "session": "s", "seq": 1, "game_s": None,
+                      "wall_utc": "2026-10-27T00:00:00Z", "type": "stopped", "released": [],
+                      "release_verified": True}
+    reset = reset_evidence(reload_trial(before=(0, 0, 3), after=(0, 0, 0), initial=(), changed=(), reloaded=()))
+    assert CalibrationRecord.model_validate(combine(result, reset)).status == "measured_with_gaps"
+
+
+def test_a_quiet_clock_phase_reports_zero_errors_as_measured(monkeypatch):
+    result = completed_run(FakeCalibrationBridge(), monkeypatch)
+    errors = result["clock"]["runtime_errors"]
+    assert result["status"] == "measured_with_gaps"
+    assert errors["total_count"] == 0 and errors["errors_observed"] is False
+    assert errors["sample_complete"] is True and errors["gap"] is None
+    assert result["clock"]["reason"] == calibrate.UNKNOWN_STEPPED_REASON
+
+
+@pytest.mark.parametrize("last_read", ["to_resume", "resume"])
+@pytest.mark.parametrize("errors_per_window", [0, 2])
+def test_missing_trailing_clock_reads_leave_the_total_unknown(last_read, errors_per_window):
+    names = calibrate.CLOCK_READS[:calibrate.CLOCK_READS.index(last_read) + 1]
+    reads = {}
+    for index, name in enumerate(names):
+        observed = index * errors_per_window
+        events = [monitor_event(1, observed)] if observed else []
+        reads[name] = {"runtime_errors": monitor(observed, events)}
+
+    errors = calibrate.clock_error_evidence(reads)
+    assert errors["total_count"] is None
+    assert errors["errors_observed"] is (True if errors_per_window else None)
+    assert errors["sample_complete"] is None
+    assert "did not reach:" in errors["gap"] and "running" in errors["gap"]
+    assert errors["windows"][last_read]["count"] == errors_per_window
+
+
+def test_errors_logged_by_the_resume_land_in_the_resume_window_not_the_running_one(monkeypatch):
+    client = FakeCalibrationBridge(flood={"resume": 40})
+    windows = completed_run(client, monkeypatch)["clock"]["runtime_errors"]["windows"]
+    assert windows["resume"]["count"] == 40 and windows["running"]["count"] == 0
+
+
+def test_errors_logged_while_the_clock_runs_again_are_counted_in_the_running_window(monkeypatch):
+    client = FakeCalibrationBridge()
+    async def sleeping(seconds):
+        if seconds == calibrate.RUNNING_OBSERVATION_S and not client.paused:
+            client.log_error("fault while the clock runs", times=7)
+    monkeypatch.setattr(calibrate.asyncio, "sleep", sleeping)
+    clock = calibrate.asyncio.run(calibrate.measure_clock(client, "entity", "scene"))
+    errors = clock["runtime_errors"]
+    assert errors["windows"]["running"]["count"] == 7 and errors["windows"]["resume"]["count"] == 0
+    assert errors["windows"]["running"]["kinds"][0]["message"] == "fault while the clock runs"
+    assert errors["errors_observed"] is True and errors["total_count"] == 7
+    assert "clock windows: running;" in clock["reason"]
+
+
+def test_a_clock_step_that_fails_leaves_the_missing_windows_as_gaps_and_still_resumes(monkeypatch):
+    async def no_delay(_):
+        return None
+    monkeypatch.setattr(calibrate.asyncio, "sleep", no_delay)
+    client = FakeCalibrationBridge(flood={"pause": 30})
+    original_clock = client.clock
+    async def fail_step(op, **kwargs):
+        if op == "step":
+            raise ValueError("step failed")
+        await original_clock(op, **kwargs)
+    client.clock = fail_step
+    clock = calibrate.asyncio.run(calibrate.measure_clock(client, "entity", "scene"))
+    errors = clock["runtime_errors"]
+    assert client.paused is False and "step failed" in clock["error"]
+    assert errors["windows"]["at_pause"]["count"] == 30 and errors["windows"]["while_paused"]["count"] == 0
+    assert "after_step" not in errors["windows"]
+    assert "did not reach: after_step" in errors["gap"]
+    assert errors["windows"]["to_resume"]["available"] is False
+    assert "after_step read that opens this window was not taken" in errors["windows"]["to_resume"]["reason"]
+    assert errors["windows"]["resume"]["available"] is True and errors["windows"]["running"]["available"] is True
+    assert errors["total_count"] is None and errors["errors_observed"] is True
+    assert errors["sample_complete"] is None
+    assert clock["stepped_mode_supported"] is None
+
+
+def test_a_failed_read_before_the_resume_does_not_keep_the_clock_paused(monkeypatch):
+    async def no_delay(_):
+        return None
+    monkeypatch.setattr(calibrate.asyncio, "sleep", no_delay)
+    client = FakeCalibrationBridge()
+    original = calibrate._read_entity
+    reads = []
+    async def flaky(bridge, entity_id):
+        reads.append(1)
+        if len(reads) == 5:
+            raise ValueError("the read before the resume failed")
+        return await original(bridge, entity_id)
+    monkeypatch.setattr(calibrate, "_read_entity", flaky)
+    clock = calibrate.asyncio.run(calibrate.measure_clock(client, "entity", "scene"))
+    assert client.paused is False
+    assert "read before resume failed" in clock["error"]
+    windows = clock["runtime_errors"]["windows"]
+    assert "to_resume" not in windows and windows["resume"]["available"] is False
+    assert windows["running"]["available"] is True
+
+
+def test_a_monitor_that_goes_dark_in_the_clock_phase_is_a_gap_not_zero(monkeypatch):
+    result = completed_run(FakeCalibrationBridge(flood={"monitor_off": True}), monkeypatch)
+    errors = result["clock"]["runtime_errors"]
+    assert result["status"] == "measured_with_gaps"
+    assert errors["total_count"] is None and errors["errors_observed"] is None
+    assert errors["sample_complete"] is None and "unavailable" in errors["gap"]
+    assert all(window["count"] is None for window in errors["windows"].values())
+    assert result["clock"]["stepped_mode_supported"] is None
+
+
+def test_a_truncated_monitor_in_a_kept_phase_still_makes_the_run_inconclusive(monkeypatch):
+    client = FakeCalibrationBridge(monitor_truncated=True)
+    result = completed_run(client, monkeypatch)
+    assert result["status"] == "inconclusive"
+    assert "unavailable or truncated" in result["error"]
+    assert client.calls == [] and result["trials"] == []
+
+
+def test_an_unavailable_monitor_in_a_kept_phase_still_makes_the_run_inconclusive(monkeypatch):
+    client = FakeCalibrationBridge()
+    client.monitor_active = False
+    result = completed_run(client, monkeypatch)
+    assert result["status"] == "inconclusive" and "unavailable or truncated" in result["error"]
+    assert result["clock"] is None
+
+
+def test_errors_in_the_later_idle_window_are_not_clock_evidence(monkeypatch):
+    client = FakeCalibrationBridge()
+    original = calibrate._idle_window
+    calls = []
+    async def idle(bridge, scene_id):
+        window = await original(bridge, scene_id)
+        calls.append(1)
+        if len(calls) == 2:
+            bridge.log_error("logged with no input running")
+        return window
+    monkeypatch.setattr(calibrate, "_idle_window", idle)
+    result = completed_run(client, monkeypatch)
+    assert result["status"] == "inconclusive"
+    assert "outside a completed action window" in result["error"]
+    assert result["clock"] is None
+
+
+def test_a_flood_in_the_clock_phase_cannot_hide_an_error_in_the_next_window():
+    # After the flood the monitor is truncated, yet a window that begins after it still sees its own error.
+    client = FakeCalibrationBridge()
+    client.log_error("flood", times=600, kinds=2)
+    assert client.monitor_truncated is True
+    before = client.observed
+    client.log_error("a different error")
+    window = calibrate.error_window(client.monitor(), before)
+    assert (window["count"], window["sampled"], window["complete"]) == (1, 1, True)
+    assert window["kinds"][0]["message"] == "a different error"
+
+
+def test_the_budget_scales_with_the_planned_controls_and_trials(monkeypatch):
+    monkeypatch.setattr(calibrate, "HOLD_S", (0.1, 0.6))
+    assert calibrate.trial_schedule() == [0.1] * calibrate.REPEATS + [0.6] * calibrate.FIELD_REPEATS
+    one, two, many = (calibrate.measurement_budget(n) for n in (1, 2, 23))
+    per_control = one["wall_budget_s"] - calibrate.FIXED_ALLOWANCE_S
+    assert per_control == pytest.approx(len(calibrate.trial_schedule()) * calibrate.TRIAL_ALLOWANCE_S
+                                        + sum(calibrate.trial_schedule()))
+    assert two["wall_budget_s"] == pytest.approx(calibrate.FIXED_ALLOWANCE_S + 2 * per_control)
+    assert many["planned_trials"] == 23 * len(calibrate.trial_schedule())
+    assert many["wall_budget_s"] > 20 * per_control
+    assert calibrate.measurement_budget(0)["wall_budget_s"] == calibrate.FIXED_ALLOWANCE_S
+
+
+def test_a_calibration_of_many_controls_is_not_held_to_the_old_fixed_limit():
+    assert calibrate.measurement_budget(23)["wall_budget_s"] > 300.0
+    assert calibrate.measurement_budget(calibrate.MAX_ACTIONS)["wall_budget_s"] > \
+        calibrate.measurement_budget(10)["wall_budget_s"]
+
+
+def test_the_record_states_the_budget_it_used_and_the_time_it_took(monkeypatch):
+    announced = []
+    client = FakeCalibrationBridge()
+    result = completed_run(client, monkeypatch, on_plan=lambda plan: announced.append((len(client.calls), plan)))
+    budget = result["plan"]["budget"]
+    assert result["plan"]["wall_budget_s"] == budget["wall_budget_s"]
+    assert budget["planned_controls"] == 1
+    assert budget["planned_trials"] == len(calibrate.trial_schedule())
+    assert budget["trials_recorded"] == len(result["trials"]) == len(client.calls)
+    assert budget["elapsed_s"] is not None and 0 <= budget["elapsed_s"] < budget["wall_budget_s"]
+    # The plan is announced once, before the first trial, with the same numbers the record keeps.
+    assert [(calls, plan["budget"]["wall_budget_s"]) for calls, plan in announced] == [(0, budget["wall_budget_s"])]
+
+
+def test_exhausting_the_budget_is_reported_with_the_budget_that_applied(monkeypatch):
+    real_sleep = calibrate.asyncio.sleep
+    async def slow(_):
+        await real_sleep(0.01)
+    monkeypatch.setattr(calibrate.asyncio, "sleep", slow)
+    monkeypatch.setattr(calibrate, "HOLD_S", (0.001, 0.002))
+    monkeypatch.setattr(calibrate, "FIXED_ALLOWANCE_S", 0.0)
+    monkeypatch.setattr(calibrate, "TRIAL_ALLOWANCE_S", 0.0)
+    result = calibrate.asyncio.run(calibrate.measure(FakeCalibrationBridge(), selected_entity()))
+    assert result["status"] == "inconclusive"
+    assert "wall-clock budget of 0 s" in result["error"]
+    assert result["plan"]["budget"]["elapsed_s"] > 0
+
+
+def test_the_plan_is_published_whole_before_the_run_and_never_over_an_existing_file(tmp_path, monkeypatch):
+    plan = {"budget": calibrate.measurement_budget(23)}
+    path = tmp_path / "out" / "calibration.plan.json"
+    calibrate.write_plan(path, plan)
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema_version": 1, "planned_controls": 23, "planned_trials": 276,
+        "wall_budget_s": plan["budget"]["wall_budget_s"]}
+    assert [p.name for p in path.parent.iterdir()] == ["calibration.plan.json"]
+    with pytest.raises(FileExistsError):
+        calibrate.write_plan(path, plan)
+    assert [p.name for p in path.parent.iterdir()] == ["calibration.plan.json"]
+
+    async def no_delay(_):
+        return None
+    client = FakeCalibrationBridge()
+    async def connect(*args, **kwargs):
+        return client
+    async def stop():
+        return SimpleNamespace(release_verified=True, model_dump=lambda **_: {"release_verified": True})
+    client.aclose = stop
+    monkeypatch.setattr(calibrate.asyncio, "sleep", no_delay)
+    monkeypatch.setattr(calibrate, "HOLD_S", (0.1, 0.6))
+    monkeypatch.setattr(calibrate.BridgeClient, "connect_from_project", connect)
+    published = tmp_path / "run.plan.json"
+    result = calibrate.asyncio.run(calibrate._run(tmp_path, selected_entity(), published))
+    assert result["status"] == "measured_with_gaps"
+    assert json.loads(published.read_text(encoding="utf-8"))["wall_budget_s"] == result["plan"]["wall_budget_s"]
+
+
+def test_the_command_refuses_a_plan_file_inside_the_project_or_over_the_record(tmp_path):
+    entity = tmp_path / "entity.json"
+    entity.write_text("{}", encoding="utf-8")
+    project = tmp_path / "game"
+    project.mkdir()
+    outside = tmp_path / "out"
+    base = ["--project", str(project), "--entity", str(entity), "--output", str(outside / "calibration.json")]
+    for plan in (project / "plan.json", outside / "calibration.json"):
+        with pytest.raises(SystemExit) as raised:
+            calibrate.main(base + ["--plan-output", str(plan)])
+        assert raised.value.code == 2

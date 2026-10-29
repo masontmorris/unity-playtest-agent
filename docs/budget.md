@@ -20,7 +20,7 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 
 ## Preflight per project
 
-Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input tokens for 26 scripts and 224 fields. The #28 production packet for FPSKit is about 233k tokens: discovery now carries every field, component and IL write fact. Plan with the FPSKit rows in the per-call table, not the figures below.
+Stages 4–6 are three calls, and each re-sends the whole project. The early probes below sent 26,401 input tokens (26 scripts, 224 fields). A full FPSKit packet with discovery and calibration is far larger: 232,662 prompt tokens per call in #28 — discovery now carries every field, component and IL write fact — and about 243k after #115, mostly calibration evidence. Plan with the FPSKit rows in the per-call table and the measured row below, not the probe figures.
 
 | Case | Three stages | Basis |
 |---|---|---|
@@ -30,8 +30,9 @@ Stages 4–6 are three calls, and each re-sends the whole project: 26,401 input 
 | Standard, `minimal`, one schema for the chain (#73) | **$0.063**, 29.4 s | Measured once: stages 5 and 6 reused the 28k prefix. $0.124 if neither transition hits |
 | Standard, `minimal`, all stages in one call (#73) | $0.047 | Projected from two contributor calls; needs no cache |
 | Standard, `minimal`, all stage input cached | $0.029 | Projected; not measured |
+| Standard, `minimal`, unified schema, full FPSKit packet after #115 (about 243k tokens per call) | **$0.394**, 34 s | Measured once (#116): 3 calls, 66% of prompt tokens cached (stages 5 and 6 hit). About $0.92 if no call hits the cache |
 
-With one byte-identical schema for every stage (`roles.preflight.StageAnswer`), every stage transition and retry reused the prefix: 8 of 8 calls across two contributor chains and the first Standard chain (#73). Per-stage schemas lost it again in the same session. Misses still happen, though: the Standard stage-4 exact repeat reported 0. So the planning figure stays at **$0.12** as the bound, and **about $0.06** is the expected cost with the unified schema. The manifest cache (#28) is a design proposal for avoiding a repeat preflight, not implemented or measured.
+With one byte-identical schema for every stage (`roles.preflight.StageAnswer`), every stage transition and retry reused the prefix: 8 of 8 calls across two contributor chains and the first Standard chain (#73). Per-stage schemas lost it again in the same session. Misses still happen, though: the Standard stage-4 exact repeat reported 0. For the probe-sized packet the planning figure stays at **$0.12** as the bound, and **about $0.06** is the expected cost with the unified schema. For a full FPSKit packet after #115, plan **about $0.39** per chain, and about $0.92 as the bound with no cache hit. The manifest cache (#28) is a design proposal for avoiding a repeat preflight, not implemented or measured.
 
 ## A 10-minute real-time run
 

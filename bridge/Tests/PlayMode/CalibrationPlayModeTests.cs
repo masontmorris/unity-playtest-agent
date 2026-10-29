@@ -23,6 +23,16 @@ namespace Playtest.Bridge.Tests
         private const int ResetTrials = 3;
         private const double ResetHoldS = 1.2;
 
+        // The client declares its wall-clock budget once it has discovered the controls it will calibrate;
+        // the host's limits are sized from that declaration, so they grow with the planned controls and
+        // trials. Until the plan arrives the host allows only the time to connect and discover, which has to
+        // fit inside the Test Framework's default 180 s together with the scene load before it.
+        private const double PlanWaitS = 120;
+        // After the budget the client still stops the bridge and writes a record of tens of megabytes.
+        private const double ClientTailS = 120;
+        // One reset trial holds a key, settles, then unloads and loads the scene; each load is bounded at 30 s.
+        private const double ResetTrialAllowanceS = 65;
+
         [Serializable] private sealed class Candidate { public string control; }
         [Serializable] private sealed class EntityReference
         {
@@ -98,6 +108,7 @@ namespace Playtest.Bridge.Tests
             Scene loaded = default(Scene);
             System.Diagnostics.Process process = null;
             bool observingErrors = false;
+            CalibrationLogTolerance tolerance = null;
             try
             {
                 string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
@@ -110,6 +121,9 @@ namespace Playtest.Bridge.Tests
                 SceneRuntimeErrors.Start();
                 observingErrors = true;
                 SceneKeyboardState.Start();
+                // The game may log while it is probed (a key it does not handle, a clock it is paused on).
+                // Every such message is counted by the monitor and judged by the client; it is not a test failure.
+                tolerance = new CalibrationLogTolerance();
                 var definitions = new List<BridgeActionDefinition>();
                 foreach (Key key in Enum.GetValues(typeof(Key)))
                 {
@@ -127,24 +141,46 @@ namespace Playtest.Bridge.Tests
                 });
                 BridgeEditorHost.StartForPreflight(BridgeActionCatalog.FromDefinitions(definitions));
                 Assert.That(BridgeEditorHost.IsRunning, Is.True, BridgeEditorHost.LastError);
+                string planPath = OutsideProject(CalibrationPlan.PathFor(output), project);
+                Assert.That(File.Exists(planPath), Is.False, "the plan file must be new");
                 var start = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = python,
                     Arguments = "-m playtest.preflight.calibrate --project \"" + project + "\" --entity \"" +
-                                entityPath + "\" --output \"" + output + "\"",
+                                entityPath + "\" --output \"" + output + "\" --plan-output \"" + planPath + "\"",
                     WorkingDirectory = repo,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
                 process = System.Diagnostics.Process.Start(start);
                 Assert.That(process, Is.Not.Null);
-                DateTime deadline = DateTime.UtcNow.AddSeconds(420);
-                while (!process.HasExited && DateTime.UtcNow < deadline) yield return null;
-                Assert.That(process.HasExited, Is.True, "the calibration client timed out");
+                DateTime deadline = DateTime.UtcNow.AddSeconds(PlanWaitS);
+                bool planned = false;
+                double budgetS = 0;
+                while (!process.HasExited && DateTime.UtcNow < deadline)
+                {
+                    if (!planned)
+                    {
+                        string planError;
+                        planned = CalibrationPlan.TryRead(planPath, out budgetS, out planError);
+                        Assert.That(planError, Is.Null, planError);
+                        if (planned)
+                        {
+                            // The limits now follow the client's own plan: its budget plus the stop and write
+                            // that follow it, and the scene-reload trials that run after the client.
+                            deadline = DateTime.UtcNow.AddSeconds(budgetS + ClientTailS);
+                            ExtendTestTimeout(budgetS + ClientTailS + ResetTrials * ResetTrialAllowanceS);
+                        }
+                    }
+                    yield return null;
+                }
+                Assert.That(process.HasExited, Is.True, planned
+                    ? "the calibration client outlived its declared budget of " + budgetS.ToString("0", CultureInfo.InvariantCulture) + " s"
+                    : "the calibration client declared no plan within " + PlanWaitS.ToString("0", CultureInfo.InvariantCulture) + " s");
                 Assert.That(process.ExitCode, Is.EqualTo(0), "calibration failed; inspect its local output");
                 Assert.That(File.Exists(output), Is.True);
                 BridgeEditorHost.Stop();
-                LogAssert.ignoreFailingMessages = false;
+                tolerance.Dispose();
                 SceneRuntimeErrors.Stop();
                 SceneKeyboardState.Stop();
                 observingErrors = false;
@@ -192,7 +228,7 @@ namespace Playtest.Bridge.Tests
                 BridgeEditorHost.Stop();
                 if (observingErrors) SceneRuntimeErrors.Stop();
                 SceneKeyboardState.Stop();
-                LogAssert.ignoreFailingMessages = false;
+                if (tolerance != null) tolerance.Dispose();
                 if (loaded.IsValid() && loaded.isLoaded)
                 {
                     for (int i = 0; i < SceneManager.sceneCount; i++)
@@ -203,6 +239,18 @@ namespace Playtest.Bridge.Tests
                     SceneManager.UnloadSceneAsync(loaded);
                 }
             }
+        }
+
+        // Raises, never lowers, the Test Framework's timeout for this test: 180 s by default, which a
+        // calibration of many controls exceeds. The value is measured from the start of the test.
+        private static void ExtendTestTimeout(double remainingS)
+        {
+            NUnit.Framework.Internal.ITestExecutionContext context = NUnit.Framework.TestContext.CurrentTestExecutionContext;
+            Assert.That(context, Is.Not.Null, "the Test Framework exposes no execution context, so the 180 s test timeout cannot follow the plan");
+            double elapsedS = (DateTime.UtcNow - context.StartTime).TotalSeconds;
+            int milliseconds = CalibrationPlan.TestTimeoutMs(Math.Max(0, elapsedS), remainingS);
+            if (milliseconds > context.TestCaseTimeout) context.TestCaseTimeout = milliseconds;
+            Assert.That(context.TestCaseTimeout, Is.GreaterThanOrEqualTo(milliseconds), "the test timeout could not be raised");
         }
 
         private static void AddInputProbes(List<BridgeActionDefinition> definitions, string device, IEnumerable<string> controls)
