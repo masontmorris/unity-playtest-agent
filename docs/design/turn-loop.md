@@ -278,6 +278,16 @@ calls the budget counted, and how many of those were estimates). `plan.json` rec
 The trace's `end` states the session's own status; the summary is written after it and can only downgrade
 it (for example when the game worktree changed during the run).
 
+## Readers and the watch
+
+With a manifest that declares readers, `playtest-run` installs them when the session starts and reads them
+before every observation (`playtest.runner.readers`); the loop puts the values in the observation's
+`public` and the `reader_errors` of the ones it could not read. A watch (`playtest.core.suspicion`) then
+states one line per reader (current, previous, range of the earlier readings) and records a `suspicion`
+entry when an invariant does not hold, a reader leaves its range, or an effect differs from its calibration
+by more than the calibration's recorded spread allows. All of it is facts. See `suspicions.md` for the records,
+the order of the entries and what the next steps can cite.
+
 ## Not done yet
 
 - **Deciding during a hold** (pipelining) and stepped-clock work, including stepped waits (a wait choice's
@@ -286,8 +296,8 @@ it (for example when the game worktree changed during the run).
 - **The frontier and helper implementations.** The port, request and result types exist; nothing answers.
 - **A facts window.** Facts describe the last turn only, and guidance is never windowed or compacted.
 - **Per-action freshness.** `depends_on` is empty because reader freshness is `null` in the manifest.
-- **A runtime choice builder.** The choice set is static, preconditions are not evaluated, and the
-  manifest's readers are not installed in the live observation source, so S1 cannot see them.
+- **A runtime choice builder.** The choice set is static and preconditions are not evaluated. (The
+  manifest's readers are installed in the live observation now; see "Readers and the watch".)
 - **Any live run.** The runner has never talked to a real Editor; its script has been parsed, not run. The
   session host's catalog selection (`BridgeSessionCatalog`) and the exported declarations' execution on the real
   lease and executor run under `dotnet test` against a simulated device, and the client is tested against a

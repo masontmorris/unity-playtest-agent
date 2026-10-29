@@ -1,0 +1,24 @@
+{
+  "run_id": "r-2026-10-26-001",
+  "author": "core",
+  "turn": 3,
+  "refs": [
+    3,
+    4
+  ],
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "trace_seq": 5,
+  "kind": "suspicion",
+  "body": {
+    "suspicion_id": "s1",
+    "basis": "range_exit",
+    "turn": 2,
+    "based_on_seq": 410,
+    "subject": "public.r_timer",
+    "statement": "public.r_timer is -1.5: outside the range -1 to 5 that its 12 earlier readings showed.",
+    "evidence_seq": [
+      3,
+      4
+    ]
+  }
+}

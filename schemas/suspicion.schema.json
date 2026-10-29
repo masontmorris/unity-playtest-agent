@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "SuspicionBasis": {
+      "enum": [
+        "invariant",
+        "effect_mismatch",
+        "range_exit"
+      ],
+      "title": "SuspicionBasis",
+      "type": "string"
+    }
+  },
+  "$id": "upa/suspicion.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A measured fact worth recording (build bible section 9, step 1).\n\nIt is written to the trace and stated to S1 as a fact. It is evidence a later step can cite by `trace_seq`;\nit is not a finding, it never escalates, and nothing acts on it by itself. `statement` carries measured\nvalues only. `detail` holds the same numbers as data; its keys depend on `basis` (see\n`docs/design/suspicions.md`).",
+  "properties": {
+    "based_on_seq": {
+      "description": "Bridge seq of the observation of the turn it was raised in",
+      "minimum": 0,
+      "title": "Based On Seq",
+      "type": "integer"
+    },
+    "basis": {
+      "$ref": "#/$defs/SuspicionBasis"
+    },
+    "detail": {
+      "additionalProperties": true,
+      "title": "Detail",
+      "type": "object"
+    },
+    "evidence_seq": {
+      "description": "trace_seq of the entries it rests on",
+      "items": {
+        "type": "integer"
+      },
+      "title": "Evidence Seq",
+      "type": "array"
+    },
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock of that observation; null when unknown",
+      "title": "Game S"
+    },
+    "statement": {
+      "description": "The fact S1 reads: measured values only, no advice",
+      "minLength": 1,
+      "title": "Statement",
+      "type": "string"
+    },
+    "subject": {
+      "description": "The invariant's name, the choice id, or public.<reader alias>",
+      "minLength": 1,
+      "title": "Subject",
+      "type": "string"
+    },
+    "suspicion_id": {
+      "description": "Unique within the run, in the order raised",
+      "minLength": 1,
+      "title": "Suspicion Id",
+      "type": "string"
+    },
+    "turn": {
+      "minimum": 0,
+      "title": "Turn",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "suspicion_id",
+    "basis",
+    "turn",
+    "based_on_seq",
+    "subject",
+    "statement"
+  ],
+  "title": "Suspicion",
+  "type": "object"
+}

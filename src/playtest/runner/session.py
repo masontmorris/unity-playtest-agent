@@ -31,8 +31,7 @@ from playtest.contracts.bridge import StopResult
 from playtest.contracts.loop import ChoiceKind
 from playtest.core.adherence import Violation, check_adherence
 from playtest.core.bridge_client import BridgeClient
-from playtest.core.ports import EffectProbe, HelpPort, S1Port
-from playtest.core.ports import FactsSource
+from playtest.core.ports import EffectProbe, FactsSource, HelpPort, ReaderPort, S1Port, Watch
 from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
@@ -67,6 +66,8 @@ async def run_session(
     objective: str,
     probe: EffectProbe | None = None,
     help: HelpPort | None = None,
+    readers: ReaderPort | None = None,
+    watch: Watch | None = None,
     sink: TraceSink | None = None,
     max_age_s: float = 0.5,
     wall_limit_s: float = WALL_LIMIT_S,
@@ -76,14 +77,18 @@ async def run_session(
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     facts: FactsSource | None = None,
 ) -> SessionResult:
-    """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration."""
+    """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
+
+    `readers` installs the manifest's readers in every observation and `watch` states what they and the
+    effects measured as facts and suspicions; neither stops the session, opens help or picks anything.
+    """
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
     paced = PacingFacts(inner=facts) if budget is not None else None
     loop = TurnLoop(
         client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
         objective=objective, s1=s1, help=help, facts=paced if paced is not None else facts,
-        effects=probe, sink=sink, sleep=sleep,
+        effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
     )
     deadline = clock() + wall_limit_s
     failures = total_failures = 0

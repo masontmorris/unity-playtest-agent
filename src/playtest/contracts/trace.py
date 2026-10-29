@@ -13,7 +13,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from .common import ClockMode, Strict
 from .bridge import ExecutionRecord, Observation, StopResult
-from .investigation import RunRecord
+from .investigation import Finding, RunRecord, Suspicion
 from .loop import ChoiceSet, Decision, TurnRecord
 
 
@@ -31,6 +31,8 @@ class TraceKind(str, Enum):
     turn = "turn"
     stop = "stop"
     end = "end"
+    suspicion = "suspicion"
+    finding = "finding"
 
 
 class TraceAuthor(str, Enum):
@@ -80,12 +82,22 @@ class TraceEntry(Strict):
             null_turn = True  # helper results can be appended after their originating turn closes
         if self.kind is TraceKind.help:
             null_turn = self.body.get("event") == "cancelled" and self.turn is None
-        if (self.turn is None) != null_turn:
+        # A finding sits in the turn that wrote it, or outside any: a helper's answer can arrive after later turns
+        # (as investigation entries do), and the harness writes findings after the run.
+        if self.kind is not TraceKind.finding and (self.turn is None) != null_turn:
             raise ValueError("turn is null exactly for run, stop, end, or a stop cancel")
         typed = {TraceKind.run: RunRecord, TraceKind.observation: Observation,
-                 TraceKind.choice_set: ChoiceSet, TraceKind.turn: TurnRecord}
+                 TraceKind.choice_set: ChoiceSet, TraceKind.turn: TurnRecord,
+                 TraceKind.suspicion: Suspicion, TraceKind.finding: Finding}
         if self.kind in typed:
-            typed[self.kind].model_validate(self.body)
+            record = typed[self.kind].model_validate(self.body)
+            if self.kind is TraceKind.suspicion:
+                if record.turn != self.turn:
+                    raise ValueError("suspicion turn must equal the entry's turn")
+                if not set(record.evidence_seq) <= set(self.refs):
+                    raise ValueError("a suspicion's evidence_seq must be among the entry's refs")
+            if self.kind is TraceKind.finding and not set(record.evidence_seq) <= set(self.refs):
+                raise ValueError("a finding's evidence_seq must be among the entry's refs")
         else:
             keys = {
                 TraceKind.context: {"sha256", "payload"},

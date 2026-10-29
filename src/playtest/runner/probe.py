@@ -3,23 +3,28 @@
 The reading before an input is taken at the top of the turn, before the turn's observation; the
 reading after it right after the input's terminal record. Neither is ever taken between observing and
 acting, so a reading adds nothing to the age of the observation an act is bound to. The probe reports
-the expected (calibrated) and observed displacement and a fact line stating both; it judges nothing.
+the expected (calibrated) and observed displacement and a fact line stating both, and, when the calibration
+recorded a spread, the allowance around the calibrated value; it judges nothing (the watch compares them).
 A reading that cannot be taken leaves the observed value `None`, never zero.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from playtest.contracts.loop import Choice
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.execution import Execution
-from playtest.core.ports import EffectReport
+from playtest.core.ports import EffectComparison, EffectReport
 from playtest.preflight.calibrate import _entity_snapshot
 from playtest.preflight.entity import _norm, _sub, _vector
+from playtest.preflight.verify import MEASUREMENT_TOLERANCE
 
 from .choices import UNIT
+
+METRIC = "net displacement"
 
 Snapshot = Callable[[], Awaitable[dict[str, Any]]]
 
@@ -73,6 +78,7 @@ class DisplacementProbe:
             expected=dict(expected) if expected is not None else None,
             observed=observed,
             fact=self._fact(choice, expected, observed, problem),
+            comparison=_comparison(expected, observed),
         )
 
     async def _read(self) -> tuple[dict[str, Any] | None, str | None]:
@@ -94,6 +100,29 @@ class DisplacementProbe:
         return (f"{text}; calibrated for a {expected['requested_hold_s']:g}-second hold: "
                 f"{expected['net_displacement']:.3f} (sample variance "
                 f"{f'{variance:.6f}' if variance is not None else 'unknown'}, n={expected['valid_trials']}).")
+
+
+def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None) -> EffectComparison | None:
+    """The observed displacement against the calibrated one, with how far apart they may be before the
+    calibration's recorded spread no longer accounts for it.
+
+    The allowance is the stage 7 formula (`playtest.preflight.verify.effect_tolerance`), fixed before any run: the
+    square root of the calibration's sample variance plus its measurement allowance (two idle reads and the effect
+    threshold). A calibration that recorded no variance (one valid trial) or an effect that was not measured
+    has no comparison: that is unknown, not a match and not a mismatch.
+    """
+    if expected is None or observed is None or observed.get("net_displacement") is None:
+        return None
+    variance, calibrated = expected.get("sample_variance"), expected.get("net_displacement")
+    seen = observed["net_displacement"]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in (variance, calibrated, seen)) or variance < 0:
+        return None
+    spread = math.sqrt(variance)
+    return EffectComparison(
+        metric=METRIC, unit=UNIT, expected=float(calibrated), observed=float(seen),
+        spread=spread, allowed=spread + MEASUREMENT_TOLERANCE,
+        basis=f"the calibration's spread {spread:.4g} plus a measurement allowance of {MEASUREMENT_TOLERANCE:g}")
 
 
 def _gap(start: Any, end: Any) -> float | None:

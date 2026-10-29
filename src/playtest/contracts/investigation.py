@@ -146,6 +146,45 @@ class Finding(Strict):
         return self
 
 
+# --- suspicion ------------------------------------------------------------------
+
+
+class SuspicionBasis(str, Enum):
+    invariant = "invariant"  # a manifest invariant did not hold for the readings
+    effect_mismatch = "effect_mismatch"  # an action's measured effect differs from its calibrated one beyond the recorded spread
+    range_exit = "range_exit"  # a reader left the range its earlier readings in the session showed
+
+
+class Suspicion(Strict):
+    """A measured fact worth recording (build bible section 9, step 1).
+
+    It is written to the trace and stated to S1 as a fact. It is evidence a later step can cite by `trace_seq`;
+    it is not a finding, it never escalates, and nothing acts on it by itself. `statement` carries measured
+    values only. `detail` holds the same numbers as data; its keys depend on `basis` (see
+    `docs/design/suspicions.md`).
+    """
+
+    suspicion_id: str = Field(min_length=1, description="Unique within the run, in the order raised")
+    basis: SuspicionBasis
+    turn: int = Field(ge=0)
+    based_on_seq: int = Field(ge=0, description="Bridge seq of the observation of the turn it was raised in")
+    game_s: float | None = Field(None, ge=0, allow_inf_nan=False, description="Game clock of that observation; null when unknown")
+    subject: str = Field(min_length=1, description="The invariant's name, the choice id, or public.<reader alias>")
+    statement: str = Field(min_length=1, description="The fact S1 reads: measured values only, no advice")
+    detail: dict[str, Any] = Field(default_factory=dict)
+    evidence_seq: list[int] = Field(default_factory=list, description="trace_seq of the entries it rests on")
+
+    @model_validator(mode="after")
+    def _well_formed(self) -> "Suspicion":
+        if not self.statement.strip():
+            raise ValueError("a suspicion needs a statement")
+        if any(isinstance(item, bool) or item < 0 for item in self.evidence_seq):
+            raise ValueError("evidence_seq must be non-negative trace sequence numbers")
+        if len(set(self.evidence_seq)) != len(self.evidence_seq):
+            raise ValueError("evidence_seq cites the same entry twice")
+        return self
+
+
 # --- run record -----------------------------------------------------------------
 
 UNKNOWN = "unknown"

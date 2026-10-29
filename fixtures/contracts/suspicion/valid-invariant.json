@@ -1,0 +1,22 @@
+{
+  "suspicion_id": "s1",
+  "basis": "invariant",
+  "turn": 7,
+  "based_on_seq": 410,
+  "game_s": 12.5,
+  "subject": "r_counter_sane",
+  "statement": "Invariant r_counter_sane does not hold: r_counter is 7, above the maximum 5 (r_counter is 7).",
+  "detail": {
+    "invariant": "r_counter_sane",
+    "rule": "range",
+    "readings": {
+      "r_counter": 7
+    },
+    "baselines": {},
+    "reason": "r_counter is 7, above the maximum 5"
+  },
+  "evidence_seq": [
+    31,
+    37
+  ]
+}
