@@ -5,6 +5,10 @@ tokens and spends over a second holding its input, which lands near the limit; a
 or a help follow-up has no hold and pushes past it. A 429 is a provider failure (the turn is rejected and
 three in a row end the run), so the runner paces itself first.
 
+Each arm's default lives in `TOKENS_PER_MINUTE_BY_ARM`; an arm without an entry uses the shared
+`TOKENS_PER_MINUTE`. An explicit `--tokens-per-minute` or `UPA_RUN_TOKENS_PER_MINUTE` overrides the selected
+arm's default, and `run-session.ps1` passes a rate only when `-TokensPerMinute` is given.
+
 `TokenBudget` remembers what each call used for the last minute. `ready()` is awaited before a turn
 starts, and returns once the tokens in that window plus what the next call is expected to use fit under
 the limit. It only delays: it never skips, replaces or alters a decision, it is not an escalation, it can
@@ -26,9 +30,24 @@ from playtest.contracts.bridge import Observation
 from playtest.core.facts import RecordFacts
 from playtest.core.ports import FactsSource, TurnReport
 
-TOKENS_PER_MINUTE = 85_000  # the provider's 100,000 less 15% headroom
+TOKENS_PER_MINUTE = 85_000  # the shared fallback: Baseten's 100,000 less 15% headroom
+# Per-arm operating settings. This is the one table: the CLI resolves a rate from it, an explicit flag or
+# environment variable overrides it, and run-session.ps1 passes nothing unless -TokensPerMinute is given.
+# d1-ultra: 80% of the minimum completed 60 s window in the 100-call paced probe, rounded down.
+# This is an operating setting, not the unpublished provider limit. See docs/probes/2026-10-30-liquid-d1-ultra-rate.md.
+TOKENS_PER_MINUTE_BY_ARM = {"liquid-d1-ultra": 280_000}
 INITIAL_ESTIMATE = 3000  # what the first call is expected to use, before any call has been counted
 _EPSILON = 1e-9  # a call whose tokens leave the window within this many seconds has left it
+
+
+def default_tokens_per_minute(arm: str) -> int:
+    """The rate an arm is paced at when neither the flag nor the environment gives one."""
+    return TOKENS_PER_MINUTE_BY_ARM.get(arm, TOKENS_PER_MINUTE)
+
+
+def resolve_tokens_per_minute(arm: str, configured: int | None) -> int:
+    """The configured rate when one was given, otherwise the selected arm's default."""
+    return default_tokens_per_minute(arm) if configured is None else configured
 
 
 def _positive(value: Any, name: str) -> float:

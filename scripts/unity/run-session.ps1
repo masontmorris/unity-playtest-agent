@@ -24,8 +24,9 @@ Editor may own a game project, and the bridge test runner serializes them.
 The host stops a client after -WallLimitSeconds plus a margin, and accepts at most 1800 seconds, so the
 wall limit is capped at 1500. Every environment variable the script sets is restored when it exits.
 
-S1's calls are paced to -TokensPerMinute (default 85000, which leaves 15% headroom under the provider's
-100,000): the runner waits before a turn when the last minute's tokens plus the next call's would pass it.
+S1's calls are paced to -TokensPerMinute when you give it; without it the runner uses the selected arm's
+own default from `playtest.runner.pacing`, so the wrapper never substitutes another arm's rate. The runner
+waits before a turn when the last minute's tokens plus the next call's would pass it.
 
 The manifest's readers are installed in the live observation (one Editor field inspection before each
 observation) and the run states what they and the actions' effects measured as facts and suspicions; see
@@ -56,7 +57,8 @@ param(
     [int]$WallLimitSeconds = 600,
     [double]$MaxAgeSeconds = 0.8,
     [int]$MaxProviderFailures = 3,
-    [int]$TokensPerMinute = 85000,
+    # Only explicitly bound values are used; an explicit zero is invalid.
+    [int]$TokensPerMinute = 0,
     [string]$S1Arm = 'liquid-d1-ultra',
     [string]$Objective,
     [string]$ObjectivePath,
@@ -76,6 +78,8 @@ $calibration = [IO.Path]::GetFullPath($CalibrationPath)
 $manifestFile = [IO.Path]::GetFullPath($ManifestPath)
 $approval = [IO.Path]::GetFullPath($ApprovalPath)
 $output = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+# Only an explicitly given rate is exported; otherwise the runner's per-arm default reaches it untouched.
+$tokensPerMinuteGiven = $PSBoundParameters.ContainsKey('TokensPerMinute')
 foreach ($required in @($entity, $calibration, $manifestFile, $approval)) {
     if (-not [IO.File]::Exists($required)) { throw "Missing input file: $required" }
 }
@@ -83,7 +87,7 @@ if ($MaxCalls -lt 1) { throw '-MaxCalls must be at least 1: no paid call starts 
 if ($WallLimitSeconds -lt 30 -or $WallLimitSeconds -gt 1500) { throw '-WallLimitSeconds must be between 30 and 1500.' }
 if ($MaxAgeSeconds -le 0) { throw '-MaxAgeSeconds must be positive.' }
 if ($MaxProviderFailures -lt 1) { throw '-MaxProviderFailures must be at least 1.' }
-if ($TokensPerMinute -lt 1) { throw '-TokensPerMinute must be at least 1.' }
+if ($tokensPerMinuteGiven -and $TokensPerMinute -lt 1) { throw '-TokensPerMinute must be at least 1.' }
 if ($Objective -and $ObjectivePath) { throw 'Give -Objective or -ObjectivePath, not both.' }
 if ($ObjectivePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($ObjectivePath))) { throw "Missing objective file: $ObjectivePath" }
 if ($output.Equals($project, [StringComparison]::OrdinalIgnoreCase) -or
@@ -160,7 +164,7 @@ try {
     $env:UPA_RUN_WALL_LIMIT_S = [string]$WallLimitSeconds
     $env:UPA_RUN_MAX_AGE_S = $MaxAgeSeconds.ToString($invariant)
     $env:UPA_RUN_MAX_PROVIDER_FAILURES = [string]$MaxProviderFailures
-    $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute
+    if ($tokensPerMinuteGiven) { $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute }
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
     $env:UPA_RUN_MANIFEST_ORIGIN = if ($ManifestOrigin) { $ManifestOrigin } else { '' }
     $env:UPA_RUN_S1_ARM = $S1Arm

@@ -188,9 +188,15 @@ that turn's context only, and the trace records it there (the `context` payload)
 
 Pacing only delays when the next turn begins. It never skips, replaces or alters a decision, it is not
 an escalation and can never open help, it is not a stop rule, and nothing retries. `--tokens-per-minute`
-(`UPA_RUN_TOKENS_PER_MINUTE`, `-TokensPerMinute` in `run-session.ps1`) sets the limit; the default is
-85,000, which leaves 15% headroom. The next call is expected to cost what the last did, and a help turn
-makes two calls, so one call's tokens of overshoot are possible; the headroom is what covers it.
+(or `UPA_RUN_TOKENS_PER_MINUTE`, or `-TokensPerMinute` in `run-session.ps1`) sets the limit. When none of
+them gives one, the runner uses the selected arm's entry in `playtest.runner.pacing.TOKENS_PER_MINUTE_BY_ARM`;
+an arm without an entry uses the 85,000 fallback, which leaves 15% headroom under Baseten's 100,000 limit
+for `mammoth-1`. `liquid-d1-ultra` uses 280,000, derived with headroom from the
+[paced probe](../probes/2026-10-30-liquid-d1-ultra-rate.md); its provider limit remains unknown.
+`run-session.ps1` exports `UPA_RUN_TOKENS_PER_MINUTE` only when its parameter
+is given, so an unset parameter does not override the arm's default. The next call is expected to cost what
+the last did, and a help turn makes two calls, so one call's tokens of overshoot are possible; the headroom is
+what covers it.
 
 ## The wait choice
 
@@ -306,7 +312,8 @@ worktree state with git and reads the Unity and bridge versions from the bridge'
 
 The summary adds `settings.tokens_per_minute` and `pacing`: `waited_s` (the total seconds the session
 waited before turns), `longest_wait_s`, `turns_waited`, and `calls_counted` and `calls_estimated` (how many
-calls the budget counted, and how many of those were estimates). `plan.json` records `tokens_per_minute`.
+calls the budget counted, and how many of those were estimates). `plan.json` records the effective
+`tokens_per_minute` the run used: the explicit flag, the environment value or the selected arm's default.
 The trace's `end` states the session's own status; the summary is written after it and can only downgrade
 it (for example when the game worktree changed during the run).
 

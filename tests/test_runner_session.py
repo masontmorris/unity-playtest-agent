@@ -49,7 +49,7 @@ from playtest.preflight.catalog import export
 from playtest.runner import cli
 from playtest.runner.choices import build_choices
 from playtest.runner.output import secret_values
-from playtest.runner.pacing import PacingStats, TokenBudget, wait_fact
+from playtest.runner.pacing import PacingStats, TokenBudget, default_tokens_per_minute, wait_fact
 from playtest.runner.probe import DisplacementProbe, make_snapshot
 from playtest.runner.s1 import ARM as DEFAULT_ARM, SystemOneS1
 from s1_fakes import ARM
@@ -834,16 +834,40 @@ def test_an_interrupt_still_stops_the_loop_and_closes_the_trace_once(tmp_path: P
     assert (summary["status"], summary["error"]) == ("inconclusive", "Interrupted: stop now")
 
 
-def test_the_token_rate_defaults_to_85000_and_takes_the_environment_then_the_flag(monkeypatch):
+def test_the_token_rate_takes_the_environment_then_the_flag_and_otherwise_waits_for_the_arm(monkeypatch):
     required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]
     monkeypatch.delenv("UPA_RUN_TOKENS_PER_MINUTE", raising=False)
-    assert cli._parser().parse_args(required).tokens_per_minute == 85_000
+    assert cli._parser().parse_args(required).tokens_per_minute is None   # the arm is not known until main resolves it
     monkeypatch.setenv("UPA_RUN_TOKENS_PER_MINUTE", "70000")
     assert cli._parser().parse_args(required).tokens_per_minute == 70_000
     assert cli._parser().parse_args([*required, "--tokens-per-minute", "50000"]).tokens_per_minute == 50_000
     monkeypatch.setenv("UPA_RUN_TOKENS_PER_MINUTE", "lots")
     with pytest.raises(SystemExit):
         cli._parser()
+    monkeypatch.delenv("UPA_RUN_TOKENS_PER_MINUTE")
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args([*required, "--tokens-per-minute", "lots"])
+
+
+def test_the_cli_records_the_selected_arms_default_pacing_as_the_effective_rate(tmp_path: Path, monkeypatch):
+    from playtest.runner.pacing import TOKENS_PER_MINUTE_BY_ARM
+
+    monkeypatch.setitem(TOKENS_PER_MINUTE_BY_ARM, "liquid-d1-ultra", 234_567)
+    monkeypatch.setenv("LIQUID_API_KEY", "sk-test-cli-key-0008")
+    monkeypatch.setenv("LIQUID_D1.1_URL", "https://example.invalid/decide")
+    monkeypatch.delenv("UPA_RUN_TOKENS_PER_MINUTE", raising=False)
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
+        files = Project(tmp_path, thread.port)
+        approved = approval(6)
+        approved["arms"]["liquid-d1-ultra"] = approved["arms"][ARM]
+        files.approval.write_text(json.dumps(approved), encoding="utf-8")
+        send = Send(files.out, reply("next_action", "move"), reply("next_action", "finish"))
+        with_fake_send(monkeypatch, send)
+        assert cli.main(files.args(s1_arm="liquid-d1-ultra", tokens_per_minute=None)) == 0
+    summary = json.loads(files.summary.read_text(encoding="utf-8"))
+    plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
+    effective = default_tokens_per_minute("liquid-d1-ultra")
+    assert plan["tokens_per_minute"] == summary["settings"]["tokens_per_minute"] == effective
 
 
 def test_the_age_limit_defaults_to_the_measured_decision_latency_budget(monkeypatch):

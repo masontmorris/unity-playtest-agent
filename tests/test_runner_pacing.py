@@ -11,9 +11,11 @@ from datetime import datetime, timezone
 import pytest
 
 from loop_fakes import FakeTime
+from playtest.bench.replay import ARMS
 from playtest.contracts.bridge import Observation
 from playtest.contracts.common import ClockMode
-from playtest.runner.pacing import INITIAL_ESTIMATE, TOKENS_PER_MINUTE, PacingFacts, TokenBudget, wait_fact
+from playtest.runner.pacing import (INITIAL_ESTIMATE, TOKENS_PER_MINUTE, TOKENS_PER_MINUTE_BY_ARM, PacingFacts,
+                                    TokenBudget, default_tokens_per_minute, resolve_tokens_per_minute, wait_fact)
 
 
 def budget(limit: float = 10_000, **kwargs) -> tuple[TokenBudget, FakeTime]:
@@ -189,6 +191,17 @@ def test_a_budget_and_its_records_refuse_values_that_are_not_finite_positive_num
 
 def test_the_default_leaves_fifteen_percent_under_the_provider_limit():
     assert TOKENS_PER_MINUTE == 100_000 * 85 // 100
+
+
+def test_each_arm_resolves_its_own_default_and_an_explicit_rate_still_wins():
+    assert set(TOKENS_PER_MINUTE_BY_ARM) <= set(ARMS)      # a typo cannot silently create a new arm
+    assert all(isinstance(rate, int) and rate >= 1 for rate in TOKENS_PER_MINUTE_BY_ARM.values())
+    for arm in ARMS:
+        expected = TOKENS_PER_MINUTE_BY_ARM.get(arm, TOKENS_PER_MINUTE)
+        assert default_tokens_per_minute(arm) == expected
+        assert resolve_tokens_per_minute(arm, None) == expected
+        assert resolve_tokens_per_minute(arm, 12_345) == 12_345
+    assert default_tokens_per_minute("no-such-arm") == TOKENS_PER_MINUTE   # no arm means no invented rate
 
 
 # --- the fact S1 reads --------------------------------------------------------------------
