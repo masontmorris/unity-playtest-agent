@@ -10,6 +10,26 @@ from .bridge import InputExecutionEvidence, InspectionCap, StopResult
 from .common import Strict
 
 
+class ViewTurn(Strict):
+    """How far the game view turned: the mean change between the view read just before an input and
+    the read just after it, over the valid trials that measured it both times.
+
+    Yaw is wrapped to [-180, 180) per trial before averaging, so a turn across the +/-180 degree seam
+    is a small change, not a near-full circle. A positive yaw turns right and a positive pitch looks down.
+    The same wrap means a turn of 180 degrees or more in one apply cannot be read from two readings: it
+    shows as a smaller turn, and repeats that differ by a little then differ by a lot. `spread_deg` is how
+    far the trials disagree, so a mean that cannot be trusted says so.
+    """
+
+    trials: int = Field(ge=1, description="Valid trials that read the view before and after the input")
+    yaw_deg: float = Field(ge=-180, le=180, allow_inf_nan=False, description="Mean yaw change")
+    pitch_deg: float = Field(ge=-180, le=180, allow_inf_nan=False, description="Mean pitch change")
+    spread_deg: float = Field(
+        ge=0, allow_inf_nan=False,
+        description="The largest difference between any two of these trials' changes, along yaw or pitch, "
+                    "in degrees; 0 for a single trial, which cannot show whether the turn repeats")
+
+
 class HoldMeasurement(Strict):
     requested_hold_s: float = Field(gt=0, description="Probe setting, not the applied duration")
     valid_trials: int = Field(ge=0)
@@ -23,6 +43,10 @@ class HoldMeasurement(Strict):
     effective_in_all_repeats: bool | None = Field(
         description="True when every valid repeat's net displacement met the plan's effect tolerance. "
                     "False is not proof the input had no effect: motion that returns to its start nets to zero")
+    mean_view_turn: ViewTurn | None = Field(
+        None, description="Mean change of the game view over the valid trials that measured it, or null when no "
+                          "valid trial did. A view that was not read is unknown, not a turn of zero degrees; "
+                          "null on records from before the view was measured")
 
     @model_validator(mode="after")
     def _requires_observations(self) -> "HoldMeasurement":
@@ -32,6 +56,8 @@ class HoldMeasurement(Strict):
             raise ValueError("valid trials require measured means")
         if self.valid_trials < 2 and (self.sample_variance is not None or self.effective_in_all_repeats is not None):
             raise ValueError("variance and repeat effectiveness need at least two trials")
+        if self.mean_view_turn is not None and self.mean_view_turn.trials > self.valid_trials:
+            raise ValueError("a view turn cannot average more trials than were valid")
         return self
 
 

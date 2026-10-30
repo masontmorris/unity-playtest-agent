@@ -470,6 +470,19 @@ namespace Playtest.Bridge.Protocol
                         }
                     }
                 }
+
+                JToken view = obj["view"];
+                if (view != null && view.Type != JTokenType.Null)
+                {
+                    // A view is a pair measured together. A missing angle is never read as zero.
+                    if (view.Type != JTokenType.Object
+                        || !IsFiniteNumberWithin(view["yaw_deg"], ObservationView.MaxYawDeg)
+                        || !IsFiniteNumberWithin(view["pitch_deg"], ObservationView.MaxPitchDeg))
+                    {
+                        error = Invalid("view must be null or an object with yaw_deg in [-180, 180] and pitch_deg in [-90, 90]");
+                        return false;
+                    }
+                }
             }
             else if (message is ActRequestMessage act)
             {
@@ -1106,6 +1119,11 @@ namespace Playtest.Bridge.Protocol
 
             double value = (double)token;
             return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static bool IsFiniteNumberWithin(JToken token, double limit)
+        {
+            return IsFiniteNumber(token) && Math.Abs((double)token) <= limit;
         }
 
         private static bool IsPositiveFinite(double value)

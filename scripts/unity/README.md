@@ -283,6 +283,17 @@ supported physical input bindings, requires them to match the stage 2 record, an
   both repeats, and inversion relative to the entity's own basis where the binding names a
   direction. Keyboard keys and gamepad buttons are binary; other controls declare one reproducible
   value. Dead zone and sensitivity remain unknown, not zero.
+- **Per control, the game view:** how far the view turned in each trial and, per hold, the mean over
+  its valid trials (`mean_view_turn`, with the trial count). The bridge's observation reports the
+  game-view camera's world yaw and pitch; the trial reads it from the observation that bound the
+  action and from one taken after the same settle as the entity's read. Yaw is wrapped to
+  [-180, 180) so a turn across the seam is small (a positive yaw turns right), pitch is a plain
+  difference (a positive pitch looks down), and neither is corrected for a turn the view makes with
+  no input. Each hold's `mean_view_turn` also carries `spread_deg`, how far its trials disagree: two
+  readings cannot show a turn of 180 degrees or more in one apply, which wraps and reads smaller, so
+  repeats of such a turn scatter and the spread says so. A view the bridge did not report, either time,
+  leaves that trial's turn `null`: unknown, never zero. The turn is measured for the same single declared value as the displacement, so mouse
+  delta is measured for x = 1, y = 0 only; the effect of x = -1 or of a y impulse is not measured here.
 - **Per field:** freshness from repeated samples, in two idle windows (one before the control trials
   and one after) and in held windows taken while Unity's input update reports the control held. The
   longest hold is repeated four times per control to give more windows. A change is exact inequality

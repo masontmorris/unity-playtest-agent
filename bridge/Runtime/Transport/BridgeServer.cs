@@ -1150,6 +1150,7 @@ namespace Playtest.Bridge.Transport
                 Ui = snapshot.Ui,
                 FrameRef = session.WithFrame ? snapshot.FrameRef : null,
                 ReaderErrors = snapshot.ReaderErrors,
+                View = snapshot.View,
             };
         }
 

@@ -64,6 +64,19 @@ class ReaderError(Strict):
     error: str
 
 
+class ViewAngles(Strict):
+    """Where the game-view camera points in world space, in degrees: an engine fact, not a game field.
+
+    Both come from the camera's forward vector, so they are measured together. Yaw is the heading,
+    atan2(forward.x, forward.z), and a positive change turns right. Pitch is asin(-forward.y), and a
+    positive change looks down, as Unity's own euler x does. A reading is a direction, not a turn: a
+    turn is the difference of two readings, with yaw wrapped to [-180, 180).
+    """
+
+    yaw_deg: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    pitch_deg: float = Field(ge=-90, le=90, allow_inf_nan=False)
+
+
 class Observation(Envelope):
     """One sample of the game. Missing readers are null plus a reader_errors entry."""
 
@@ -77,6 +90,9 @@ class Observation(Envelope):
     public: dict[str, Any] = Field(default_factory=dict)
     ui: dict[str, Any] | None = None
     frame_ref: str | None = None
+    view: ViewAngles | None = Field(
+        None, description="The game-view camera's world yaw and pitch, or null when the bridge has no such "
+                          "camera. Null is unknown, never a heading of zero")
     reader_errors: list[ReaderError] = Field(default_factory=list)
 
 

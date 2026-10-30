@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "status": "measured_with_gaps",
+  "error": null,
+  "entity_id": "entity",
+  "entity": {
+    "id": "entity"
+  },
+  "coordinate_frame": "Unity world space",
+  "units": "Unity world units",
+  "physical_unit": null,
+  "plan": {},
+  "action_cap": {
+    "limit": 32,
+    "observed": 1,
+    "returned": 1,
+    "truncated": false
+  },
+  "actions": [],
+  "unsupported_bindings": [],
+  "discovery_coverage": {},
+  "idle_fields": [],
+  "input_field_segments": [],
+  "trials": [
+    {
+      "control": "mouse_delta",
+      "requested_hold_s": 0.05,
+      "valid": true
+    }
+  ],
+  "action_summaries": [
+    {
+      "control": "mouse_delta",
+      "bindings": [],
+      "resolution": "mouse_relative_delta",
+      "device": "Mouse",
+      "control_name": "delta",
+      "control_type": "Delta",
+      "declared_x": 1.0,
+      "declared_y": 0.0,
+      "holds": [
+        {
+          "requested_hold_s": 0.05,
+          "valid_trials": 2,
+          "mean_delta": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "mean_magnitude": 0.0,
+          "sample_variance": 0.0,
+          "effective_in_all_repeats": false,
+          "mean_view_turn": {
+            "trials": 3,
+            "yaw_deg": 7.68,
+            "pitch_deg": 0.0,
+            "spread_deg": 0.0
+          }
+        }
+      ],
+      "lowest_tested_effective_requested_hold_s": null,
+      "shortest_observed_effective_hold_s": null,
+      "minimum_hold_scope": "unknown",
+      "inverted_relative_to_entity_basis": null,
+      "signed_basis_projections": [],
+      "dead_zone": null,
+      "dead_zone_reason": "not measured"
+    }
+  ],
+  "execution_evidence": [],
+  "freshness": {
+    "field": {
+      "classification": "unknown"
+    }
+  },
+  "clock": {},
+  "reset": {},
+  "runtime_errors": null,
+  "stop": {
+    "protocol": "upa/1",
+    "session": "s-1",
+    "seq": 2,
+    "game_s": 1.0,
+    "wall_utc": "2026-01-01T00:00:01Z",
+    "type": "stopped",
+    "released": [],
+    "release_verified": true
+  }
+}

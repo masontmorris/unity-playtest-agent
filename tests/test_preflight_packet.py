@@ -75,6 +75,21 @@ def test_real_field_names_and_physical_control_are_offered_deterministically():
     assert data["offered_fields"][0]["same_scene_as_entity"] is True
 
 
+def test_a_measured_view_turn_reaches_the_model_and_an_unmeasured_one_stays_null():
+    snapshot, record = evidence()
+    hold = {"requested_hold_s": 0.05, "valid_trials": 2, "mean_delta": [0, 0, 0], "mean_magnitude": 0,
+            "sample_variance": 0, "effective_in_all_repeats": False}
+    record["action_summaries"][0]["holds"] = [
+        dict(hold, mean_view_turn={"trials": 2, "yaw_deg": 7.68, "pitch_deg": 0.0, "spread_deg": 0.0}),
+        dict(hold, requested_hold_s=0.1),                       # a record from before the view was measured
+        dict(hold, requested_hold_s=0.2, mean_view_turn=None)]  # a hold whose view was never read
+    packet = make(snapshot, record)
+    holds = json.loads(packet.text)["calibration"]["control_summaries"][0]["holds"]
+    assert holds[0]["mean_view_turn"] == {"trials": 2, "yaw_deg": 7.68, "pitch_deg": 0.0, "spread_deg": 0.0}
+    assert holds[1]["mean_view_turn"] is None and holds[2]["mean_view_turn"] is None
+    assert "mean_view_turn" in packet.action_prompt and "null where it was not measured" in packet.action_prompt
+
+
 def test_supplied_image_is_identified_by_hash_and_capture_provenance():
     snapshot, record = evidence()
     inventory = copy.deepcopy(snapshot)

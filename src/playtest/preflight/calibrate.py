@@ -71,6 +71,63 @@ CLOCK_WINDOW_MEANING = {
     "running": "0.2 s of wall time with the clock running again",
 }
 RUNNING_OBSERVATION_S = 0.2
+# What the view measurement is, kept in the record's plan so a reader of it does not have to find this code.
+VIEW_TURN_PLAN = {
+    "source": "the bridge's observation `view`: the game-view camera's world yaw and pitch, in degrees",
+    "before": "the observation that bound the action, taken after the entity was still",
+    "after": "an observation taken after the same 0.08 s settle as the entity's read, once the input had been released",
+    "yaw": "the change wrapped to [-180, 180); positive turns right",
+    "pitch": "the plain change; positive looks down",
+    "baseline": "none: the change is not corrected for any turn the view makes with no input",
+    "unknown": "a trial whose view was not read both times has no view change; it is not a turn of zero",
+    "limit": ("two readings cannot show a turn of 180 degrees or more in one apply: it wraps and reads as a smaller "
+              "one, so such repeats scatter; each hold's spread_deg is how far its trials disagree"),
+}
+
+
+def wrap_degrees(angle: float) -> float:
+    """An angle difference as the equivalent turn in [-180, 180): a heading that passes the seam turns little."""
+    return (angle + 180.0) % 360.0 - 180.0
+
+
+def view_reading(observation: Any) -> dict[str, Any] | None:
+    """The game view an observation reported, with where it came from, or None when it reported none.
+
+    An observation with no view (a bridge that has no game-view camera, a camera at a pole, an older bridge)
+    is unknown. It is never a heading of zero, and nothing is carried over from an earlier reading.
+    """
+    view = getattr(observation, "view", None)
+    yaw, pitch = getattr(view, "yaw_deg", None), getattr(view, "pitch_deg", None)
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in (yaw, pitch)):
+        return None
+    return {"seq": getattr(observation, "seq", None), "frame": getattr(observation, "frame", None),
+            "yaw_deg": float(yaw), "pitch_deg": float(pitch)}
+
+
+def view_turn(before: dict[str, Any] | None, after: dict[str, Any] | None) -> dict[str, float] | None:
+    """How far the view turned between two readings, or None unless both were measured.
+
+    Yaw is wrapped to [-180, 180): from 179 to -179 degrees is a turn of +2, not -358. Pitch is bounded by
+    the poles, so its change needs no wrapping. A positive yaw turns right and a positive pitch looks down.
+    """
+    if before is None or after is None:
+        return None
+    return {"yaw_deg": wrap_degrees(after["yaw_deg"] - before["yaw_deg"]),
+            "pitch_deg": after["pitch_deg"] - before["pitch_deg"]}
+
+
+def summarize_view_turn(turns: list[dict[str, float]]) -> dict[str, Any] | None:
+    """The mean view change of the trials that measured one, with how far they disagree; None for no trial.
+
+    The spread is the largest difference between any two trials along yaw or pitch. A turn of 180 degrees or
+    more in one apply wraps and is read as a smaller one, so repeats of it scatter; the spread keeps that
+    visible beside the mean instead of leaving a number that looks measured and is not.
+    """
+    if not turns:
+        return None
+    yaws, pitches = [turn["yaw_deg"] for turn in turns], [turn["pitch_deg"] for turn in turns]
+    return {"trials": len(turns), "yaw_deg": statistics.mean(yaws), "pitch_deg": statistics.mean(pitches),
+            "spread_deg": max(max(yaws) - min(yaws), max(pitches) - min(pitches))}
 
 
 def trial_schedule() -> list[float]:
@@ -220,6 +277,8 @@ def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> di
         mean = statistics.mean(magnitudes) if magnitudes else None
         variance = statistics.variance(magnitudes) if len(magnitudes) >= 2 else None
         effective = len(magnitudes) >= REPEATS and all(v >= EFFECT_TOLERANCE for v in magnitudes)
+        mean_view_turn = summarize_view_turn([t["view_delta"] for t in selected
+                                              if isinstance(t.get("view_delta"), dict)])
         if minimum is None and effective:
             minimum = hold
             durations = [t.get("execution", [{}])[-1].get("applied_duration_s") for t in selected
@@ -229,7 +288,8 @@ def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> di
                 observed_minimum = min(durations)
         groups.append({"requested_hold_s": hold, "valid_trials": len(magnitudes),
                        "mean_delta": mean_vector, "mean_magnitude": mean,
-                       "sample_variance": variance, "effective_in_all_repeats": effective if len(magnitudes) >= REPEATS else None})
+                       "sample_variance": variance, "effective_in_all_repeats": effective if len(magnitudes) >= REPEATS else None,
+                       "mean_view_turn": mean_view_turn})
 
     parts = {b.get("part", "").lower() for b in action["bindings"]
              if isinstance(b.get("part"), str) and b["part"].lower() in {"up", "down", "left", "right"}}
@@ -781,6 +841,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                  "idle_samples": IDLE_SAMPLES,
                  "max_keyboard_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
                  "max_input_state_age_s": MAX_KEYBOARD_STATE_AGE_S,
+                 "view_turn": VIEW_TURN_PLAN,
                  "wall_budget_s": budget["wall_budget_s"], "budget": budget},
         "action_cap": cap, "actions": actions[:MAX_ACTIONS], "unsupported_bindings": unsupported,
         "discovery_coverage": discovery["inspection_coverage"], "idle_fields": [],
@@ -853,12 +914,16 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                             raise ValueError(f"{action_id} did not complete with verified release")
                         await asyncio.sleep(0.08)
                         after = await _read_entity(client, entity_id)
+                        # The view is read from observations, as the entity is read from transforms: the one
+                        # that bound the action and one taken after the same settle as the entity read.
+                        view_before, view_after = view_reading(observation), view_reading(await client.observe_once())
                         observed, game_errors = _new_runtime_errors(after, seen_errors)
                         seen_errors = observed
                         result["runtime_errors"] = after["runtime_errors"]
                         trial = _trial_measure(before, after, idle_start, records, hold)
                         trial.update(control=action["control"], action_id=action_id, observation_seq=observation.seq,
-                                     game_errors=game_errors, error=None)
+                                     game_errors=game_errors, error=None, view_before=view_before,
+                                     view_after=view_after, view_delta=view_turn(view_before, view_after))
                         if game_errors:
                             trial["valid"] = False
                             trial["error"] = "game errors were logged during or shortly after this input"

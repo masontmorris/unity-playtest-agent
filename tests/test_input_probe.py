@@ -293,6 +293,45 @@ def test_measure_reports_k_n_binds_freshness_and_stops_after_a_rejection():
     assert target["attempts"][1]["executed"] is False
 
 
+class ViewProbeClient(FakeProbeClient):
+    """A client whose game view turns right 7.68 degrees on every act, wrapping at the seam, and says so."""
+
+    def __init__(self, reports_view=True):
+        super().__init__()
+        self.yaw = 175.0
+        self.reports_view = reports_view
+
+    async def observe_once(self, *, with_frame=False):
+        observation = await super().observe_once(with_frame=with_frame)
+        if self.reports_view:
+            observation.view = SimpleNamespace(yaw_deg=self.yaw, pitch_deg=1.5)
+        return observation
+
+    async def act(self, **kwargs):
+        records = await super().act(**kwargs)
+        self.yaw = (self.yaw + 7.68 + 180.0) % 360.0 - 180.0
+        return records
+
+
+def test_probe_records_the_game_view_before_and_after_and_its_turn_across_the_seam():
+    plan = ProbePlan(schema_version=1, actions=[{"name": "move", "repeats": 1}], scene_id="scene", settle_s=0)
+    attempt = asyncio.run(input_probe.measure(
+        ViewProbeClient(), plan, [action_declaration()], entity_id=None, scene_id="scene",
+        readers=[]))[0]["attempts"][0]
+    assert attempt["view"]["before"]["yaw_deg"] == 175.0 and attempt["view"]["after"]["yaw_deg"] == pytest.approx(-177.32)
+    assert attempt["view"]["turn"]["yaw_deg"] == pytest.approx(7.68)
+    assert attempt["view"]["turn"]["pitch_deg"] == pytest.approx(0.0)
+    assert attempt["view"]["before"]["seq"] == attempt["based_on_seq"]
+
+
+def test_probe_without_a_game_view_records_it_as_unknown_not_zero():
+    plan = ProbePlan(schema_version=1, actions=[{"name": "move", "repeats": 1}], scene_id="scene", settle_s=0)
+    attempt = asyncio.run(input_probe.measure(
+        ViewProbeClient(reports_view=False), plan, [action_declaration()], entity_id=None, scene_id="scene",
+        readers=[]))[0]["attempts"][0]
+    assert attempt["view"] == {"before": None, "after": None, "turn": None}
+
+
 def test_pointer_wrong_declared_value_is_rejected():
     declaration = Declaration("look", "action", (InputBinding(
         device="Mouse", control="delta", x=1.0, y=0.0),), hold_s=0.05)

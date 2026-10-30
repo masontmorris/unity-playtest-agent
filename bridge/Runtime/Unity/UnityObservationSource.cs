@@ -27,7 +27,10 @@ namespace Playtest.Bridge.Unity
     ///
     /// Missing facts stay missing: a reader that cannot produce a value records an
     /// <see cref="ObservationReaderError"/> instead of inventing one. Camera facts are published
-    /// under <c>public.camera</c>; the UI tree is only <c>{"canvases": [...]}</c>.
+    /// under <c>public.camera</c>; the UI tree is only <c>{"canvases": [...]}</c>. Where the game
+    /// view points is the observation's own <c>view</c> (yaw and pitch of the camera the frame
+    /// capture draws first, see <see cref="UnityGameView"/>), not a <c>public</c> entry, so what a
+    /// decision-maker is shown under <c>public</c> does not change.
     /// </summary>
     public sealed class UnityObservationSource : IBridgeObservationSource, IDisposable
     {
@@ -38,6 +41,8 @@ namespace Playtest.Bridge.Unity
         private const string SceneReader = "scene";
 
         private const string CameraReader = "camera";
+
+        private const string ViewReader = "view";
 
         private const string UiReader = "ui";
 
@@ -71,9 +76,13 @@ namespace Playtest.Bridge.Unity
 
         private Dictionary<string, object> _camera;
 
+        private ObservationView _view;
+
         private ObservationReaderError _uiError;
 
         private ObservationReaderError _cameraError;
+
+        private ObservationReaderError _viewError;
 
         private double _lastUiRefresh;
 
@@ -225,7 +234,7 @@ namespace Playtest.Bridge.Unity
                 publicFacts["camera"] = _camera;
             }
 
-            var errors = new List<ObservationReaderError>(3);
+            var errors = new List<ObservationReaderError>(4);
             if (sceneError != null)
             {
                 errors.Add(sceneError);
@@ -241,6 +250,11 @@ namespace Playtest.Bridge.Unity
                 errors.Add(_cameraError);
             }
 
+            if (_viewError != null)
+            {
+                errors.Add(_viewError);
+            }
+
             var snapshot = new BridgeObservationSnapshot
             {
                 ClockMode = _clock == null ? ClockModeRealtime : _clock.ClockMode,
@@ -254,6 +268,7 @@ namespace Playtest.Bridge.Unity
                 Ui = _ui,
                 FrameRef = _capture == null ? null : _capture.LatestFrameRef,
                 ReaderErrors = errors,
+                View = _view,
                 CapturedWallUtc = DateTime.UtcNow,
             };
 
@@ -261,9 +276,9 @@ namespace Playtest.Bridge.Unity
         }
 
         /// <summary>
-        /// Rebuilds the UI tree and the camera facts. On failure the UI is empty and the camera
-        /// is absent, each with a reader error; both caches are replaced together so a snapshot
-        /// never mixes a fresh success with a stale failure.
+        /// Rebuilds the UI tree, the camera facts and the game view. On failure the UI is empty and
+        /// the camera and view are absent, each with a reader error; the caches are replaced together
+        /// so a snapshot never mixes a fresh success with a stale failure.
         /// </summary>
         private void RefreshUiAndCamera()
         {
@@ -310,10 +325,33 @@ namespace Playtest.Bridge.Unity
                 cameraError = Describe(CameraReader, ex);
             }
 
+            ObservationView view = null;
+            ObservationReaderError viewError = null;
+            try
+            {
+                string reason;
+                if (!UnityGameView.TryRead(out view, out reason))
+                {
+                    view = null;
+                    viewError = new ObservationReaderError
+                    {
+                        Reader = ViewReader,
+                        Error = reason,
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                view = null;
+                viewError = Describe(ViewReader, ex);
+            }
+
             _ui = ui;
             _camera = camera;
+            _view = view;
             _uiError = uiError;
             _cameraError = cameraError;
+            _viewError = viewError;
         }
 
         private static string ReadScene(out ObservationReaderError error)
@@ -677,7 +715,9 @@ namespace Playtest.Bridge.Unity
                     new ObservationReaderError { Reader = SceneReader, Error = "not sampled" },
                     new ObservationReaderError { Reader = UiReader, Error = "not sampled" },
                     new ObservationReaderError { Reader = CameraReader, Error = "not sampled" },
+                    new ObservationReaderError { Reader = ViewReader, Error = "not sampled" },
                 },
+                View = null,
                 CapturedWallUtc = DateTime.UtcNow,
             };
         }

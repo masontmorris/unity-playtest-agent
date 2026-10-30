@@ -542,6 +542,18 @@
           "description": "Mean of each valid trial's net displacement magnitude, with the same net meaning",
           "title": "Mean Magnitude"
         },
+        "mean_view_turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ViewTurn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mean change of the game view over the valid trials that measured it, or null when no valid trial did. A view that was not read is unknown, not a turn of zero degrees; null on records from before the view was measured"
+        },
         "requested_hold_s": {
           "description": "Probe setting, not the applied duration",
           "exclusiveMinimum": 0,
@@ -1580,6 +1592,46 @@
         "gap_caps_reached"
       ],
       "title": "SelectionCoverage",
+      "type": "object"
+    },
+    "ViewTurn": {
+      "additionalProperties": false,
+      "description": "How far the game view turned: the mean change between the view read just before an input and\nthe read just after it, over the valid trials that measured it both times.\n\nYaw is wrapped to [-180, 180) per trial before averaging, so a turn across the +/-180 degree seam\nis a small change, not a near-full circle. A positive yaw turns right and a positive pitch looks down.\nThe same wrap means a turn of 180 degrees or more in one apply cannot be read from two readings: it\nshows as a smaller turn, and repeats that differ by a little then differ by a lot. `spread_deg` is how\nfar the trials disagree, so a mean that cannot be trusted says so.",
+      "properties": {
+        "pitch_deg": {
+          "description": "Mean pitch change",
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Pitch Deg",
+          "type": "number"
+        },
+        "spread_deg": {
+          "description": "The largest difference between any two of these trials' changes, along yaw or pitch, in degrees; 0 for a single trial, which cannot show whether the turn repeats",
+          "minimum": 0,
+          "title": "Spread Deg",
+          "type": "number"
+        },
+        "trials": {
+          "description": "Valid trials that read the view before and after the input",
+          "minimum": 1,
+          "title": "Trials",
+          "type": "integer"
+        },
+        "yaw_deg": {
+          "description": "Mean yaw change",
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Yaw Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "trials",
+        "yaw_deg",
+        "pitch_deg",
+        "spread_deg"
+      ],
+      "title": "ViewTurn",
       "type": "object"
     }
   },

@@ -434,6 +434,141 @@ def test_clock_failure_attempts_resume_without_claiming_support(monkeypatch):
     assert client.paused is False
 
 
+def seen(yaw, pitch, seq=1):
+    """An observation that reports the game view, as the bridge does."""
+    return SimpleNamespace(seq=seq, frame=seq, view=SimpleNamespace(yaw_deg=yaw, pitch_deg=pitch))
+
+
+@pytest.mark.parametrize("before, after, turn", [
+    (10.0, 17.68, 7.68), (17.68, 10.0, -7.68),
+    (179.0, -179.0, 2.0),      # across the seam turning right: a small turn, not -358
+    (-179.0, 179.0, -2.0),     # and back across it turning left
+    (175.0, -172.32, 12.68),
+    (0.0, 0.0, 0.0),           # a view that did not move is a measured zero, distinct from an unmeasured one
+])
+def test_view_turn_wraps_yaw_across_the_seam(before, after, turn):
+    value = calibrate.view_turn(calibrate.view_reading(seen(before, 3.0)), calibrate.view_reading(seen(after, 5.5)))
+    assert value["yaw_deg"] == pytest.approx(turn)
+    assert value["pitch_deg"] == pytest.approx(2.5)  # pitch is bounded by the poles and is not wrapped
+
+
+def test_a_view_that_was_not_read_is_unknown_never_a_turn_of_zero():
+    reading = calibrate.view_reading(seen(10.0, 0.0))
+    assert calibrate.view_turn(reading, None) is None and calibrate.view_turn(None, reading) is None
+    assert calibrate.view_reading(SimpleNamespace(seq=1, frame=1)) is None              # an older bridge: no view at all
+    assert calibrate.view_reading(SimpleNamespace(seq=1, frame=1, view=None)) is None   # no game-view camera
+    assert calibrate.view_reading(seen(float("nan"), 0.0)) is None
+    assert calibrate.view_reading(seen(10.0, None)) is None                              # a half view is not a view
+    assert calibrate.view_reading(seen(True, 0.0)) is None
+
+
+def test_summary_averages_only_valid_trials_that_measured_the_view():
+    action = {"control": "a", "resolution": "unity_key_name", "bindings": []}
+    def trial(hold, turn, valid=True):
+        return {"requested_hold_s": hold, "valid": valid, "effect_magnitude": 0, "effect_delta": [0, 0, 0],
+                "view_delta": turn, "execution": []}
+    summary = summarize_action(action, [
+        trial(0.05, {"yaw_deg": 7.5, "pitch_deg": 0.5}), trial(0.05, {"yaw_deg": 7.9, "pitch_deg": -0.5}),
+        trial(0.05, {"yaw_deg": 90.0, "pitch_deg": 0.0}, valid=False),   # an invalid trial is never averaged
+        trial(0.1, {"yaw_deg": 3.0, "pitch_deg": 1.0}), trial(0.1, None),   # one reading was not measured
+        trial(0.2, None), trial(0.2, None),                                 # none was measured
+    ])
+    first, second, third = summary["holds"][:3]
+    assert first["mean_view_turn"] == pytest.approx({"trials": 2, "yaw_deg": 7.7, "pitch_deg": 0.0, "spread_deg": 1.0})
+    assert first["valid_trials"] == 2
+    assert second["mean_view_turn"] == {"trials": 1, "yaw_deg": 3.0, "pitch_deg": 1.0, "spread_deg": 0.0}
+    assert second["valid_trials"] == 2
+    assert third["mean_view_turn"] is None and third["valid_trials"] == 2
+    assert all(hold["mean_view_turn"] is None for hold in summary["holds"][3:])
+    assert summarize_action(action, [])["holds"][0]["mean_view_turn"] is None
+    HoldMeasurement.model_validate({"requested_hold_s": 0.05, "valid_trials": 2, "mean_delta": [0, 0, 0],
+                                    "mean_magnitude": 0, "sample_variance": 0, "effective_in_all_repeats": False,
+                                    "mean_view_turn": first["mean_view_turn"]})
+
+
+def test_a_turn_past_half_a_circle_shows_as_scattered_repeats_not_as_a_clean_mean():
+    # Right-stick holds of 1.2 s on FPSKit turned the view more than a full circle: the wrapped change of four
+    # repeats was 37.4, 37.1, 72.3 and 62.5 degrees. The mean looks like a measurement; the spread says it is not.
+    scattered = calibrate.summarize_view_turn([{"yaw_deg": yaw, "pitch_deg": 0.0} for yaw in (37.376, 37.112, 72.284, 62.524)])
+    assert scattered["trials"] == 4 and scattered["yaw_deg"] == pytest.approx(52.324)
+    assert scattered["spread_deg"] == pytest.approx(35.172)
+    # Repeats of a turn that is read correctly agree, and a single trial cannot show a spread.
+    steady = calibrate.summarize_view_turn([{"yaw_deg": 144.215, "pitch_deg": 0.0}, {"yaw_deg": 144.266, "pitch_deg": 0.0}])
+    assert steady["spread_deg"] == pytest.approx(0.051)
+    assert calibrate.summarize_view_turn([{"yaw_deg": 7.68, "pitch_deg": 0.0}])["spread_deg"] == 0.0
+    # The larger of the two axes' ranges, and nothing for a control whose view was never read.
+    assert calibrate.summarize_view_turn([{"yaw_deg": 0.0, "pitch_deg": -12.3}, {"yaw_deg": 0.5, "pitch_deg": -6.2}]
+                                         )["spread_deg"] == pytest.approx(6.1)
+    assert calibrate.summarize_view_turn([]) is None
+
+
+class TurningBridge(FakeCalibrationBridge):
+    """A bridge whose game view turns right by `turn` degrees on every act, wrapping at the +/-180 seam."""
+
+    def __init__(self, turn=7.68, yaw=175.0, pitch=2.0, view=True):
+        super().__init__()
+        self.turn, self.yaw, self.pitch, self.reports_view = turn, yaw, pitch, view
+        self.observed_views = 0
+
+    def spin(self):
+        self.yaw = (self.yaw + self.turn + 180.0) % 360.0 - 180.0
+
+    async def act(self, **kwargs):
+        records = await super().act(**kwargs)
+        self.spin()
+        return records
+
+    async def act_with_inspections(self, **kwargs):
+        result = await super().act_with_inspections(**kwargs)
+        self.spin()
+        return result
+
+    async def observe_once(self):
+        observation = await super().observe_once()
+        self.observed_views += 1
+        observation.frame = self.observed_views
+        observation.view = SimpleNamespace(yaw_deg=self.yaw, pitch_deg=self.pitch) if self.reports_view else None
+        return observation
+
+
+def test_calibration_records_the_view_turn_of_every_trial_across_the_seam(monkeypatch):
+    async def no_delay(_):
+        return None
+    monkeypatch.setattr(calibrate.asyncio, "sleep", no_delay)
+    monkeypatch.setattr(calibrate, "HOLD_S", (0.1, 0.6))
+    client = TurningBridge()
+    result = calibrate.asyncio.run(calibrate.measure(client, selected_entity()))
+    assert result["status"] == "measured_with_gaps"
+    assert result["plan"]["view_turn"]["yaw"].startswith("the change wrapped to [-180, 180)")
+    trials = [t for t in result["trials"] if t["valid"] is True]
+    assert len(trials) == calibrate.REPEATS + calibrate.FIELD_REPEATS
+    for trial in trials:
+        assert trial["view_delta"]["yaw_deg"] == pytest.approx(7.68)   # the view crossed +/-180 within the run
+        assert trial["view_delta"]["pitch_deg"] == pytest.approx(0.0)
+        assert trial["view_before"]["yaw_deg"] != trial["view_after"]["yaw_deg"]
+        assert trial["view_before"]["seq"] == trial["observation_seq"]
+    assert any(t["view_before"]["yaw_deg"] > 0 > t["view_after"]["yaw_deg"] for t in trials)
+    summary = result["action_summaries"][0]
+    assert [hold["mean_view_turn"]["trials"] for hold in summary["holds"][:2]] == [calibrate.REPEATS, calibrate.FIELD_REPEATS]
+    assert all(hold["mean_view_turn"]["yaw_deg"] == pytest.approx(7.68) for hold in summary["holds"][:2])
+    result["stop"] = {"protocol": "upa/1", "session": "s", "seq": 1, "game_s": None,
+                      "wall_utc": "2026-10-27T00:00:00Z", "type": "stopped", "released": [], "release_verified": True}
+    reset = reset_evidence(reload_trial(before=(0, 0, 3), after=(0, 0, 0), initial=(), changed=(), reloaded=()))
+    record = CalibrationRecord.model_validate(combine(result, reset))
+    assert record.action_summaries[0].holds[0].mean_view_turn.yaw_deg == pytest.approx(7.68)
+
+
+def test_calibration_without_a_game_view_leaves_every_turn_unknown(monkeypatch):
+    async def no_delay(_):
+        return None
+    monkeypatch.setattr(calibrate.asyncio, "sleep", no_delay)
+    monkeypatch.setattr(calibrate, "HOLD_S", (0.1, 0.6))
+    result = calibrate.asyncio.run(calibrate.measure(TurningBridge(view=False), selected_entity()))
+    assert result["status"] == "measured_with_gaps"          # the view is extra evidence, not a gate
+    assert all(t["view_delta"] is None and t["view_before"] is None for t in result["trials"])
+    assert all(hold["mean_view_turn"] is None for hold in result["action_summaries"][0]["holds"])
+
+
 def test_unverified_stop_makes_measurement_inconclusive(monkeypatch, tmp_path):
     async def no_delay(_):
         return None

@@ -75,6 +75,37 @@ def test_inspection_caps_fail_for_their_intended_rule():
         assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
 
 
+def test_observation_view_invalid_fixtures_fail_for_their_intended_rule():
+    """A view is measured as a pair: a missing pitch is not a pitch of zero, and a pitch past the pole is not a view."""
+    reasons = {
+        "invalid-view-pitch-out-of-range": "less than or equal to 90",
+        "invalid-view-missing-pitch": "pitch_deg",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "observation" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["observation"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+        assert "view" in str(excinfo.value), f"{stem} failed outside the view"
+
+
+def test_an_unknown_view_is_null_and_never_a_heading_of_zero():
+    unknown = CONTRACTS["observation"].model_validate(json.loads(
+        (FIXTURES / "observation" / "valid-view-unknown.json").read_text(encoding="utf-8")))
+    absent = CONTRACTS["observation"].model_validate(json.loads(
+        (FIXTURES / "observation" / "valid-basic.json").read_text(encoding="utf-8")))
+    seen = CONTRACTS["observation"].model_validate(json.loads(
+        (FIXTURES / "observation" / "valid-view.json").read_text(encoding="utf-8")))
+    assert unknown.view is None and absent.view is None
+    assert (seen.view.yaw_deg, seen.view.pitch_deg) == (-172.32, 12.5)
+
+
+def test_calibration_view_turn_fixture_fails_for_its_intended_rule():
+    path = FIXTURES / "calibration_record" / "invalid-view-turn-more-trials-than-valid.json"
+    with pytest.raises(ValidationError, match="a view turn cannot average more trials than were valid"):
+        CONTRACTS["calibration_record"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
 def test_manifest_rejects_an_effect_claim_for_an_unmeasured_axis_value():
     path = FIXTURES / "preflight_manifest" / "invalid-effect-unmeasured-axis-value.json"
     with pytest.raises(ValidationError, match="hold effect must reflect the matching calibration trials"):
