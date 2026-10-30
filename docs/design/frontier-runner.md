@@ -19,6 +19,38 @@ The tracker records `met`, `not_met`, `expired`, `invalidated` or `unknown` with
 to the observation evidence. Missing readings stay unknown; a deadline with no scoreable reading is
 recorded as expired. A session ending before an active directive can be scored records unknown.
 
+## When a directive's test never ran (#133)
+
+**The deadline.** The frontier gives a relative deadline. The tracker counts it from the observation that
+first states the directive to S1, which is when S1 received it, as `to_directive` documents. It used to count
+from the escalation's own observation. The answer reaches S1 only after the frontier call and the next turn's
+pacing, so on the #132 validation run, 11 of 14 deadlines had already passed when S1 first saw its directive.
+The relative length is kept, and only its start moves. When either game time is unknown, the deadline stays
+as given.
+
+**The window.** When a directive closes, its record carries a `window` (`DirectiveWindow`): what S1's inputs
+did from that first statement up to the outcome.
+- `turns`;
+- inputs sent and completed;
+- inputs rejected, by the bridge's reason;
+- failed, cancelled, timed-out and unrecorded inputs;
+- waits and escalations.
+
+These are counts from the bridge's own terminal records, never a verdict.
+
+**Untested outcomes.** A `not_met` whose window completed no input gets an `error_class`:
+- `no_attempt` when no input was sent;
+- `action_rejected` when every input that reached the bridge was rejected.
+
+Any outcome whose window completed no input says so in its reason. A `met` reached without S1's input is
+labelled the same way, because the setpoint already held.
+
+**Where it shows up.**
+- The fact line S1 reads states the window and the error class.
+- The next frontier request's directive history carries both, because they are fields of the `Directive`
+  contract.
+- The trace's `outcome` entry records them.
+
 Offline coverage uses a fake bridge, fake provider response, fake clip capture and scripted S1. It does
 not make a live model call or launch a Unity Editor.
 
