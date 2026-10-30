@@ -403,6 +403,22 @@ def test_action_selection_prompt_asks_for_a_coarse_turn_in_each_direction_of_eve
     assert "mean_view_turn" not in preflight.STAGE_PROMPTS["progress"]
 
 
+def test_action_prompt_and_schema_say_inputs_with_x_and_y_need_a_hold(discovery):
+    for stage in ("actions", "all"):
+        text = preflight.STAGE_PROMPTS[stage]
+        assert ("An action or skill step with any input that takes x and y (a stick, dpad, trigger, "
+                "one-dimensional axis or mouse delta) needs a hold time") in text
+        assert "even a single mouse-delta impulse: use a hold calibration tested for that control" in text
+        assert "Only an action or step whose inputs are all buttons may give a null hold" in text
+    rendered = preflight.schema(discovery)["$defs"]
+    for model in ("Action", "SkillStep"):
+        assert rendered[model]["properties"]["hold_s"]["description"] == preflight.HOLD_DESCRIPTION
+    assert "Required when any input takes x and y" in preflight.HOLD_DESCRIPTION
+    # The wording matches what review enforces: a null hold on an axis input is rejected.
+    a = answer(stage_5=actions_part([action(inputs=[control_input("c2", 0.0, 1.0)], hold_s=None)]))
+    assert any("an axis input needs a hold time" in p for p in preflight.review(a, "actions", discovery))
+
+
 def test_retry_turn_lists_each_problem_on_its_own_line():
     text = preflight.retry_turn("actions", ["p1", "p2"])
     assert "actions" in text

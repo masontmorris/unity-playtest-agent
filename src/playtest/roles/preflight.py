@@ -52,6 +52,9 @@ MAX_GAPS = 8
 AXIS_CONTROLS = frozenset({"Vector2", "Vector3", "Axis", "Stick", "Dpad", "Delta"})
 ONE_D_CONTROLS = frozenset({"Axis"})
 PARTS: dict[str, str] = {"readers": "stage_4", "actions": "stage_5", "progress": "stage_6"}
+# Review rejects a null hold on any axis input (see `_inputs`), so the schema states it too.
+HOLD_DESCRIPTION = ("Seconds to hold. Required when any input takes x and y; null only when every input is a button, "
+                    "which taps them at the measured minimum hold")
 
 
 # --- answer models -------------------------------------------------------------------------------
@@ -78,7 +81,7 @@ class ControlInput(Strict):
 
 
 class Action(Strict):
-    hold_s: float | None = Field(gt=0, description="Seconds to hold; null taps buttons at the measured minimum hold")
+    hold_s: float | None = Field(gt=0, description=HOLD_DESCRIPTION)
     inputs: list[ControlInput] = Field(min_length=1, max_length=MAX_INPUTS, description="Controls held together")
     intent: str = Field(min_length=1, description="What it is for. Not a measured effect: calibration measures that")
     name: str = Field(pattern=NAME)
@@ -86,7 +89,7 @@ class Action(Strict):
 
 
 class SkillStep(Strict):
-    hold_s: float | None = Field(gt=0)
+    hold_s: float | None = Field(gt=0, description=HOLD_DESCRIPTION)
     inputs: list[ControlInput] = Field(min_length=1, max_length=MAX_INPUTS)
     wait_s: float = Field(ge=0, description="Seconds to wait after this step")
 
@@ -172,8 +175,11 @@ _BODY = {
     "actions": (
         "Stage 5, actions and skills. Compose up to 14 actions from the discovered controls only. An action holds "
         "one to three physical inputs together: give each vector control x and y in [-1, 1] (y = 0 for a "
-        "one-dimensional axis) and each keyboard or device button null x and y, plus the hold time in seconds "
-        "(null taps buttons at the measured minimum hold). Mouse delta is one relative impulse per apply: x and y "
+        "one-dimensional axis) and each keyboard or device button null x and y, plus the hold time in seconds. "
+        "An action or skill step with any input that takes x and y (a stick, dpad, trigger, one-dimensional axis "
+        "or mouse delta) needs a hold time, even a single mouse-delta impulse: use a hold calibration tested for "
+        "that control. Only an action or step whose inputs are all buttons may give a null hold, which taps them "
+        "at the measured minimum hold. Mouse delta is one relative impulse per apply: x and y "
         "are normalized displacement, the runtime applies x * 64, y * 64 pixels, and it is not repeated every "
         "update. Gamepad values are sent unchanged. Absolute pointer, touch, VR and remapping are unsupported. A "
         "chord, a different value or a different hold than calibration tested has an unknown effect; never imply "
