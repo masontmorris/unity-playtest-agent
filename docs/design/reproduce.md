@@ -30,7 +30,8 @@ single-Editor mutex. It refuses to start while the game is open in an Editor, an
 game project. The output folder must be new. It holds `plan.json`, `catalog.json`, the report
 `reproduce.json`, the reload handshake files and `provenance.json` (the game's git state before and after).
 Without `-FindingId` the latest candidate is used. `-ReproCheckPath` supplies a check when the finding has
-none, or overrides it. Either way, the plan records whether the check came from the finding or the operator.
+none, or overrides it. An override never moves the finding (see below). Either way, the plan records whether
+the check came from the finding or the operator.
 
 ## What replays
 
@@ -77,7 +78,12 @@ replayed input's start and its recorded offset.
 The session trace is closed when the session ends and is never rewritten. The report carries the finding's
 next state instead: `reproduced` when k ≥ 1, `repro_attempted` when k = 0 with n ≥ 1, and none when nothing
 was scored. Its `repro` field records n, k, the clock mode (`realtime`), the reset (`scene_reload`) and the
-timing tolerance. The report export (#39) joins it to the finding.
+timing tolerance. The report export (#39, `report.md`) joins it to the finding.
+
+An operator check that overrides the finding's own is a different test, such as the controls in
+`docs/probes/2026-10-29-fpskit-reproduce.md`. Its replay is reported, but its `finding_update` is null and
+`finding_update_reason` says why. Only the finding's own check, or an operator check for a finding that had
+none, can move the finding.
 
 ## Limits
 
