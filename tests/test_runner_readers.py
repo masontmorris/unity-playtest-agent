@@ -113,7 +113,7 @@ def test_the_cli_installs_the_readers_and_the_run_shows_them_changing_and_stated
     # S1's context (the exact payload, as traced) carries the observation's value and the reader's facts.
     contexts = [e.body["payload"] for e in entries if e.kind.value == "context"]
     assert [c["observation"]["public"]["speed"] for c in contexts] == [1.0] * 11 + [9.0, 9.5, 9.5]
-    assert contexts[0]["facts"][1] == "public.speed: now 1; previous unknown; earlier readings: none."
+    assert "public.speed: now 1; previous unknown; earlier readings: none." in contexts[0]["facts"]
     assert "public.speed: now 1; previous 1; earlier range 1 to 1 (10 earlier readings)." in contexts[10]["facts"]
     suspicion_entry = next(e for e in entries if e.kind.value == "suspicion")
     assert suspicion_entry.turn == 11

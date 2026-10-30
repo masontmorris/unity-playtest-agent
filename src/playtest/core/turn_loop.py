@@ -64,6 +64,7 @@ from playtest.contracts.trace import TraceAuthor, TraceKind
 
 from .bridge_client import BridgeClient
 from .context import build_context, canonical
+from .decision_memory import DecisionMemory, json_ready as _json_ready
 from .decisions import parse_decision
 from .execution import ExecutionController
 from .facts import RecordFacts
@@ -118,17 +119,6 @@ def _elapsed_s(since: datetime | None, now: datetime) -> float | None:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _json_ready(value: Any) -> Any:
-    """A JSON-native copy of `value`; anything else is recorded as its `repr`."""
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _json_ready(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready(item) for item in value]
-    return repr(value)
 
 
 @dataclass
@@ -213,6 +203,8 @@ class TurnLoop:
         self._set_version = 0
         self._turns: list[TurnRecord] = []
         self._reports: list[TurnReport] = []
+        self._memory = DecisionMemory()
+        self._memory_previous: Observation | None = None
         self._previous: Observation | None = None
         self._pending: _Pending | None = None
         self._adoptions: list[Any] = []
@@ -298,6 +290,8 @@ class TurnLoop:
         observed = self._emit(TraceKind.observation, observation.model_dump(mode="json"), TraceAuthor.bridge, turn)
         if observed is not None:
             self._observation_entries[observation.seq] = observed
+        self._memory.observe(self._memory_previous, observation, turn=turn, trace_seq=observed)
+        self._memory_previous = observation
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
@@ -326,6 +320,7 @@ class TurnLoop:
                 sample_gap_s=self._gap_s(observation),
                 guidance=self._guidance_view(now),
                 game_view=view.statement if view is not None else None,
+                recent_history=self._memory.snapshot() if self._memory.has_records else None,
             )
             if view is not None:
                 payload["game_view_sha256"] = view.sha256
@@ -358,6 +353,7 @@ class TurnLoop:
 
         sent: list[Executed] = []
         entries: list[int | None] = []
+        effect_entries: list[int | None] = []
         selected: Choice | None = None
         executed_id: str | None = None
         while_pending: WhilePending | None = None
@@ -371,9 +367,11 @@ class TurnLoop:
             selected = choice_set.get(decision.choice_id)
             assert selected is not None
             if selected.kind in _EXECUTABLE_KINDS:
-                executed, entry = await self._send(selected, observation, "choice", decided, turn)
+                executed, entry, effect_entry = await self._send(
+                    selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
                 sent.append(executed)
                 entries.append(entry)
+                effect_entries.append(effect_entry)
                 if executed.execution.rejected:
                     outcome = TurnOutcome.rejected_stale
                 else:
@@ -388,9 +386,12 @@ class TurnLoop:
                 if while_pending.mode == "continue":
                     target = choice_set.get(while_pending.choice_id or "")
                     if target is not None and target.kind in _EXECUTABLE_KINDS:
-                        executed, entry = await self._send(target, observation, "while_pending", decided, turn)
+                        executed, entry, effect_entry = await self._send(
+                            target, observation, "while_pending", decided, turn, observed, raw_choice,
+                            selected.id, help_event)
                         sent.append(executed)
                         entries.append(entry)
+                        effect_entries.append(effect_entry)
                         if not executed.execution.rejected:
                             executed_id = target.id
                 outcome = TurnOutcome.escalated if selected.kind is ChoiceKind.escalate else TurnOutcome.delegated
@@ -412,11 +413,11 @@ class TurnLoop:
             latency_ms=(time.perf_counter() - started) * 1000.0,
         )
         self._turns.append(record)
-        self._emit(
+        turn_entry = self._emit(
             TraceKind.turn, record.model_dump(mode="json"), TraceAuthor.core, turn,
             [observed, offered, context, decided, *entries],
         )
-        self._reports.append(TurnReport(
+        report = TurnReport(
             record=record,
             observation=observation,
             selected=selected,
@@ -425,7 +426,10 @@ class TurnLoop:
             help_event=help_event,
             executed=tuple(sent),
             halt=answer.halt,
-        ))
+        )
+        self._reports.append(report)
+        self._memory.record(report, observation_trace_seq=observed, turn_trace_seq=turn_entry,
+                            execution_trace_seqs=entries, effect_trace_seqs=effect_entries)
         self._previous = observation
         if answer.halt is not None:
             self._halt = answer.halt
@@ -490,18 +494,24 @@ class TurnLoop:
     # --- execution --------------------------------------------------------------------------
 
     async def _send(
-        self, choice: Choice, observation: Observation, purpose: str, decided: int | None, turn: int
-    ) -> tuple[Executed, int | None]:
+        self, choice: Choice, observation: Observation, purpose: str, decided: int | None, turn: int,
+        observed: int | None, raw_choice: str | None, effective_choice: str, help_event: str | None,
+    ) -> tuple[Executed, int | None, int | None]:
         """Send one chosen input, bound to the observation its set was built from, and measure its effect."""
         request = self._executor.request_for(choice, based_on_seq=observation.seq)
         try:
             execution = await self._executor.send(request)
         except BaseException:
             # The request may have reached the bridge; the trace keeps it even though no record came back.
-            self._emit(
+            entry = self._emit(
                 TraceKind.execution, {"purpose": purpose, "request": request, "records": []},
                 TraceAuthor.bridge, turn, [decided],
             )
+            self._memory.interrupted_attempt(
+                turn=turn, observation=observation, observation_trace_seq=observed,
+                raw_choice=raw_choice, effective_choice=effective_choice, help_event=help_event,
+                choice_id=choice.id, purpose=purpose, execution=None, effect=None,
+                trace_seq=entry, effect_trace_seq=None)
             raise
         entry = self._emit(
             TraceKind.execution,
@@ -510,17 +520,26 @@ class TurnLoop:
             TraceAuthor.bridge, turn, [decided],
         )
         effect = None
-        if not execution.rejected and self._effects is not None:
-            effect = await self._effects.measure(choice, execution)
-            if effect is not None:
-                measured = self._emit(
-                    TraceKind.effect,
-                    {"choice_id": choice.id, "action": request["action"],
-                     "expected": _json_ready(effect.expected), "observed": _json_ready(effect.observed)},
-                    TraceAuthor.core, turn, [entry],
-                )
-                self._note_effect(choice, effect, turn, [seq for seq in (entry, measured) if seq is not None])
-        return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry
+        measured = None
+        try:
+            if not execution.rejected and self._effects is not None:
+                effect = await self._effects.measure(choice, execution)
+                if effect is not None:
+                    measured = self._emit(
+                        TraceKind.effect,
+                        {"choice_id": choice.id, "action": request["action"],
+                         "expected": _json_ready(effect.expected), "observed": _json_ready(effect.observed)},
+                        TraceAuthor.core, turn, [entry],
+                    )
+                    self._note_effect(choice, effect, turn, [seq for seq in (entry, measured) if seq is not None])
+        except BaseException:
+            self._memory.interrupted_attempt(
+                turn=turn, observation=observation, observation_trace_seq=observed,
+                raw_choice=raw_choice, effective_choice=effective_choice, help_event=help_event,
+                choice_id=choice.id, purpose=purpose, execution=execution, effect=effect,
+                trace_seq=entry, effect_trace_seq=measured)
+            raise
+        return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry, measured
 
     # --- suspicions -------------------------------------------------------------------------
 
@@ -624,6 +643,11 @@ class TurnLoop:
 
     def _adopt(self, pending: _Pending, result: HelpResult, turn: int) -> None:
         self._pending = None
+        publish = getattr(self._help, "adopt_result", None)
+        if publish is not None:
+            result = publish(pending.turn, result)
+            if not isinstance(result, HelpResult):
+                raise TypeError("help publication must return a HelpResult")
         finished = pending.finished_wall or self._clock()
         shown = _json_ready(result.result)
         self._adoptions.append(result.result)
@@ -657,6 +681,9 @@ class TurnLoop:
 
     def _drop_pending(self, pending: _Pending, reason: str, *, turn: int | None) -> None:
         self._pending = None
+        discard = getattr(self._help, "discard_result", None)
+        if discard is not None:
+            discard(pending.turn)
         self._cancelled_helpers += 1
         self._emit(
             TraceKind.help,
@@ -712,6 +739,8 @@ class TurnLoop:
         if self._stopped:
             return self._stop_result
         self._stopped = True
+        if reason in ("reset", "scene_change"):
+            self._memory.mark_boundary(reason)
         pending = self._pending
         if pending is not None:
             task = pending.task

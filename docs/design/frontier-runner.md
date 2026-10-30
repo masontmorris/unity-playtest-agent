@@ -15,6 +15,11 @@ up. S1's selected `while_pending` choice remains owned by the core loop.
 Accepted hypotheses and directives are written as `investigation` trace entries. Directive scoring
 runs in a runner facts source against the manifest's reader aliases using the shared `roles.checks`
 evaluator. The directive goal, setpoint, deadline and current status are shown to S1 as measured facts.
+The background request stages updates; the loop publishes them through `adopt_result` only at its
+adoption boundary. A completion during observation capture cannot start that turn's scoring window.
+Cancellation/invalidation discards staged state. Same-status hypothesis revisions retain their changed
+text and evidence; only an identical version is compacted as a restatement. Live packets include the
+bounded action/turn history S1 saw, and facts state remaining wall time and call slots.
 The tracker records `met`, `not_met`, `expired`, `invalidated` or `unknown` with a `trace_seq` reference
 to the observation evidence. Missing readings stay unknown; a deadline with no scoreable reading is
 recorded as expired. A session ending before an active directive can be scored records unknown.

@@ -320,7 +320,7 @@ def test_a_tested_not_met_and_an_untried_one_are_told_apart():
     asyncio.run(main())
 
 
-def test_guidance_lists_each_hypothesis_once_and_names_the_directive_by_id(tmp_path: Path):
+def test_guidance_compacts_only_identical_hypotheses_and_names_the_directive_by_id(tmp_path: Path):
     stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
                                     actions=two_actions().actions, skills=[])
     helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
@@ -333,16 +333,17 @@ def test_guidance_lists_each_hypothesis_once_and_names_the_directive_by_id(tmp_p
     first = helper._guidance({"hypotheses": [first_h, other], "directive": {"directive_id": "d-1", "text": "t"},
                               "errors": [], "review": []})
     assert first == {"hypotheses": [first_h, other], "directive_id": "d-1"}  # empty lists add nothing
-    reworded = {**first_h, "statement": "A, reworded."}       # the frontier restates open hypotheses in its own words
-    changed = {**other, "status": "refuted"}
+    reworded = {**first_h, "statement": "A, reworded.", "contradicting_seq": [4]}
+    changed = {**other, "status": "contradicted"}
     new = {**first_h, "id": "hyp-5-0", "statement": "C."}
     second = helper._guidance({"hypotheses": [reworded, changed, new], "directive": None,
                                "errors": ["one problem"], "review": [{"item": "x", "reason": "y"}]})
-    assert second["hypotheses"] == [changed, new]            # a status change and a new id in full
-    assert second["restated_hypotheses"] == ["hyp-1-0"]      # a same-status restatement by id: listed, never hidden
+    assert second["hypotheses"] == [reworded, changed, new]
+    assert "restated_hypotheses" not in second
     assert second["directive_id"] is None
     assert second["errors"] == ["one problem"] and second["review"] == [{"item": "x", "reason": "y"}]
-    third = helper._guidance({"hypotheses": [{**changed, "status": "open"}], "directive": None})
+    third = helper._guidance({"hypotheses": [reworded, {**changed, "status": "open"}], "directive": None})
+    assert third["restated_hypotheses"] == ["hyp-1-0"]
     assert third["hypotheses"] == [{**changed, "status": "open"}]    # reopening is a status change too
 
 
@@ -684,7 +685,8 @@ def test_a_vacuous_or_deadline_less_directive_is_not_adopted_and_the_entry_says_
                               approval=_approval(), sink=sink, tracker=tracker,
                               started_utc=datetime.now(timezone.utc), send=_frontier_asks(expected, deadline_s),
                               capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
-        result = (await helper.run(_escalation_request(0, counter=3))).result   # the counter reads 3 at the request
+        finished = await helper.run(_escalation_request(0, counter=3))  # the counter reads 3 at the request
+        result = helper.adopt_result(0, finished).result
         entry = next(row["body"] for row in sink.of_kind("investigation")
                      if row["body"]["event"] == "hypothesis_directive")
         assert [h["id"] for h in result["hypotheses"]] == ["hyp-0-0"]           # only the directive item is rejected

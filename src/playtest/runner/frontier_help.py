@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as dt
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -14,6 +16,7 @@ from playtest.contracts.investigation import Directive
 from playtest.contracts.loop import ChoiceKind, ChoiceSet, TurnOutcome, TurnRecord
 from playtest.contracts.trace import TraceAuthor
 from playtest.core.findings import FindingLog, suspicions_in
+from playtest.core.ports import HelpResult
 from playtest.core.trace import read_trace
 from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
@@ -21,6 +24,7 @@ from playtest.roles import frontier
 from playtest.roles.checks import field_value
 from playtest.runner.choices import UNIT
 from playtest.runner.directives import DirectiveTracker
+from playtest.runner.frontier_history import recent_records
 from playtest.runner.probe import allowance
 
 
@@ -96,6 +100,15 @@ def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
             for raised in suspicions_in(entries)]
 
 
+@dataclass
+class _StagedResult:
+    result: HelpResult
+    payload: dict[str, Any]
+    directive_row: dict[str, Any] | None
+    based_on_seq: int
+    evidence_trace_seq: int | None
+
+
 class FrontierHelp:
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
@@ -118,6 +131,9 @@ class FrontierHelp:
         self.calls = 0
         self.hypotheses: dict[str, dict[str, Any]] = {}
         self._shown: dict[str, dict[str, Any]] = {}  # each hypothesis as S1's guidance last listed it
+        self._staged: dict[int, _StagedResult] = {}
+        self._adopted: dict[int, tuple[HelpResult, HelpResult]] = {}
+        self._discarded: set[int] = set()  # also prevents a still-running request from staging later
         self.findings: list[dict[str, Any]] = []  # candidate findings written to the trace
         fields = {f"public.{reader.alias}": reader.kind for reader in manifest.readers if reader.kind}
         self.reader_fields = fields
@@ -126,7 +142,6 @@ class FrontierHelp:
         self.effects = dict(effects or {})  # run-stable: it names the effect checks a finding may propose
 
     async def run(self, request: Any) -> Any:
-        from playtest.core.ports import HelpResult
         context = request.context
         as_of, raw_obs = context["as_of"], context["observation"]
         seq = int(as_of["seq"])
@@ -153,7 +168,7 @@ class FrontierHelp:
         )
         choices = ChoiceSet(set_version=context["choice_set_version"], built_from_seq=seq,
                             choices=context["choices"])
-        self.role_manifest = self._manifest_for(choices)
+        role_manifest = self._manifest_for(choices)
         turn = TurnRecord(turn=request.turn, set_version=choices.set_version, based_on_seq=seq,
                           raw_choice=request.choice_id, effective_choice=request.choice_id,
                           executed_action=None, outcome=TurnOutcome.escalated)
@@ -170,7 +185,7 @@ class FrontierHelp:
         packet = build_packet(
             objective=context["objective"], observation=observation, choices=choices,
             escalation=turn, facts=fact_rows, directive=current, directive_history=history,
-            recent=[], hypotheses=old_hypotheses,
+            recent=recent_records(context), hypotheses=old_hypotheses,
             new_hypothesis_ids=ids, age_s=context.get("as_of", {}).get("age_s"),
             clip=clip.descriptor, clip_unavailable_reason=clip.reason,
             findings=[{key: f[key] for key in ("finding_id", "title", "repro_check")} for f in self.findings],
@@ -179,7 +194,7 @@ class FrontierHelp:
         # The live S1 context does not expose the bridge frame number. Do not send the
         # placeholder needed by Observation's local constructor as if it were measured.
         packet.payload["observation"].pop("frame", None)
-        body = provider.build_request(self.role_manifest, packet, clip_path=clip.path)
+        body = provider.build_request(role_manifest, packet, clip_path=clip.path)
         from playtest.core.context import canonical
         reservation = self.ledger.reserve(
             episode=0, turn=request.turn, based_on_seq=seq, request_sha256=digest(canonical(body)),
@@ -191,7 +206,7 @@ class FrontierHelp:
         self.calls += 1
         try:
             status, data, latency, problem = await asyncio.to_thread(self.send, body)
-            result = provider.decode_response(data if status == 200 else None, self.role_manifest, packet)
+            result = provider.decode_response(data if status == 200 else None, role_manifest, packet)
             answer = result.answer
             if status != 200 or answer is None:
                 details = {"error": problem or ("invalid frontier answer" if answer is None else f"HTTP {status}"),
@@ -207,11 +222,9 @@ class FrontierHelp:
                     "evidence_trace_seq": obs_trace, "reason": details["error"],
                 }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
                 return HelpResult(source="frontier", result=details)
-            review = frontier.review(answer, self.role_manifest, packet.refs)
+            review = frontier.review(answer, role_manifest, packet.refs)
             accepted = [item for i, item in enumerate(answer.hypotheses)
                         if not review.rejected(f"hypotheses[{i}]")]
-            for hypothesis in accepted:
-                self.hypotheses[hypothesis.id] = hypothesis.model_dump(mode="json")
             directive = None
             if answer.directive is not None and not review.rejected("directive"):
                 directive = frontier.to_directive(answer.directive, directive_id=f"d-{request.turn}",
@@ -238,29 +251,71 @@ class FrontierHelp:
                 "outcome": "open" if directive is not None else "unknown", "evidence_trace_seq": obs_trace,
                 "reason": reason,
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
+            directive_row = None
             if directive is not None:
                 expected = directive.expected
-                kind = self.role_manifest.fields.get(expected.field) if expected else "other"
+                kind = role_manifest.fields.get(expected.field) if expected else "other"
                 # Only the fallback: the tracker re-takes a changed/unchanged baseline when S1 first sees the directive.
                 baseline = field_value(observation.public, expected.field.removeprefix("public.")) if expected else None
-                self.tracker.adopt({**directive.model_dump(mode="json"),
-                               "hypothesis": result_payload["hypotheses"], "kind": kind, "baseline": baseline,
-                               "scene": observation.scene, "last_frame": observation.frame,
-                               "last_game_s": observation.game_s, "requested_game_s": observation.game_s,
-                               "directive": directive.model_dump(mode="json")},
-                              request_turn=request.turn, based_on_seq=seq, evidence_trace_seq=obs_trace)
+                directive_row = {**directive.model_dump(mode="json"),
+                                 "hypothesis": copy.deepcopy(result_payload["hypotheses"]),
+                                 "kind": kind, "baseline": baseline, "scene": observation.scene,
+                                 "last_frame": observation.frame, "last_game_s": observation.game_s,
+                                 "requested_game_s": observation.game_s,
+                                 "directive": directive.model_dump(mode="json")}
             if answer.candidate_finding is not None and not review.rejected("candidate_finding"):
                 result_payload["candidate_finding"] = self._record_finding(answer.candidate_finding, request.turn)
             reservation.finish(http_status=status, latency_ms=latency, cost_usd=result.cost_usd,
                                resolved_model=result.resolved_model, usage=result.usage,
                                parse_valid=True, answer=answer.model_dump(mode="json"))
-            return HelpResult(source="frontier", result=self._guidance(result_payload))
+            completed = HelpResult(source="frontier", result=copy.deepcopy(result_payload))
+            if request.turn not in self._discarded and request.turn not in self._adopted:
+                self._staged[request.turn] = _StagedResult(
+                    result=completed, payload=copy.deepcopy(result_payload), directive_row=directive_row,
+                    based_on_seq=seq, evidence_trace_seq=obs_trace)
+            return completed
         except asyncio.CancelledError:
             reservation.finish(directive_result="cancelled", cost_usd=None)
             raise
         except Exception:
             reservation.finish(directive_result="failed", cost_usd=None)
             raise
+
+    def adopt_result(self, request_turn: int, result: HelpResult) -> HelpResult:
+        """Publish only the exact finished result the loop is adopting, once.
+
+        The loop must pass the original HelpResult returned by run, before appending guidance and
+        collecting facts. A replacement, discarded result, or failed call passes through unchanged.
+        """
+        adopted = self._adopted.get(request_turn)
+        if adopted is not None:
+            original, published = adopted
+            return published if result is original or result is published else result
+        staged = self._staged.pop(request_turn, None)
+        if (staged is None or result is not staged.result or result.source != "frontier"
+                or result.result != staged.payload):
+            # resolve_helper may replace a result even before the background request finishes.
+            self._discarded.add(request_turn)
+            return result
+        for row in staged.payload["hypotheses"]:
+            latest = copy.deepcopy(row)
+            previous = self.hypotheses.get(row["id"])
+            if previous is not None:
+                # Provider updates contain only new evidence; retain the earlier citations for its next packet.
+                for key in ("supporting_seq", "contradicting_seq"):
+                    latest[key] = list(dict.fromkeys([*previous[key], *row[key]]))
+            self.hypotheses[row["id"]] = latest
+        if staged.directive_row is not None:
+            self.tracker.adopt(staged.directive_row, request_turn=request_turn,
+                               based_on_seq=staged.based_on_seq, evidence_trace_seq=staged.evidence_trace_seq)
+        published = HelpResult(source=result.source, result=self._guidance(staged.payload))
+        self._adopted[request_turn] = (result, published)
+        return published
+
+    def discard_result(self, request_turn: int) -> None:
+        """Forget an unadopted response, including one that finishes after invalidation."""
+        self._staged.pop(request_turn, None)
+        self._discarded.add(request_turn)
 
     def _record_finding(self, proposed: Any, turn: int) -> dict[str, Any]:
         """Write the frontier's candidate finding to the trace, citing trace entries, and say what happened.
@@ -290,8 +345,8 @@ class FrontierHelp:
         An adopted result stays in every later S1 context. The frontier restates every open hypothesis
         in each answer, usually reworded, and full copies of every answer grew the prompt, and with it
         S1's latency, until most actions reached the bridge stale (#132).
-        - A hypothesis is listed in full when its id is new or its status changed. A restatement with the
-          same status is listed by id in `restated_hypotheses`, so no hypothesis is hidden.
+        - A hypothesis is listed in full whenever any field or evidence differs from the last version
+          shown. Only an identical version is listed by id in `restated_hypotheses`.
         - The trace's `investigation` entries keep every version, and the frontier's own requests carry
           the latest.
         - The directive is named by id. The directive tracker states its setpoint, deadline and current or
@@ -302,12 +357,12 @@ class FrontierHelp:
         for row in payload.get("hypotheses") or []:
             key = row.get("id") if isinstance(row, Mapping) else None
             known = self._shown.get(key) if isinstance(key, str) else None
-            if known is not None and known.get("status") == row.get("status"):
+            if known is not None and known == row:
                 restated.append(key)
                 continue
             fresh.append(row)
             if isinstance(key, str):
-                self._shown[key] = row
+                self._shown[key] = copy.deepcopy(row)
         view: dict[str, Any] = {"hypotheses": fresh}
         if restated:
             view["restated_hypotheses"] = restated
