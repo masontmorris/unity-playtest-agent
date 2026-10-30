@@ -8,6 +8,20 @@
       "title": "ClockMode",
       "type": "string"
     },
+    "Comparator": {
+      "enum": [
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "changed",
+        "unchanged"
+      ],
+      "title": "Comparator",
+      "type": "string"
+    },
     "ExpectedSource": {
       "enum": [
         "invariant",
@@ -73,6 +87,45 @@
       ],
       "title": "Repro",
       "type": "object"
+    },
+    "ReproCheck": {
+      "additionalProperties": false,
+      "description": "What a replay must show to reproduce a finding: one reader field, one comparator, one value.\n\nScored with the shared check evaluator against the readers a replay reads. `changed` and `unchanged` take\nno value and compare with the reading when the replay starts.",
+      "properties": {
+        "field": {
+          "description": "Dotted path into the observation, e.g. public.<reader>",
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Comparator"
+        },
+        "tolerance": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only for numeric == or !=",
+          "title": "Tolerance"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "field",
+        "op"
+      ],
+      "title": "ReproCheck",
+      "type": "object"
     }
   },
   "$id": "upa/finding.schema.json",
@@ -131,6 +184,49 @@
         }
       ],
       "default": null
+    },
+    "repro_check": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReproCheck"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "What a replay must show; null when none was given"
+    },
+    "severity": {
+      "anyOf": [
+        {
+          "enum": [
+            "blocker",
+            "major",
+            "minor",
+            "cosmetic",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Severity"
+    },
+    "severity_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Severity Reason"
     },
     "state": {
       "$ref": "#/$defs/FindingState"

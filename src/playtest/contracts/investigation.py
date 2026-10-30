@@ -170,6 +170,31 @@ class Repro(Strict):
         return self
 
 
+class ReproCheck(Strict):
+    """What a replay must show to reproduce a finding: one reader field, one comparator, one value.
+
+    Scored with the shared check evaluator against the readers a replay reads. `changed` and `unchanged` take
+    no value and compare with the reading when the replay starts.
+    """
+
+    field: str = Field(min_length=1, description="Dotted path into the observation, e.g. public.<reader>")
+    op: Comparator
+    value: Any = None
+    tolerance: float | None = Field(None, ge=0, description="Only for numeric == or !=")
+
+    @model_validator(mode="after")
+    def _value_needed(self) -> "ReproCheck":
+        if self.op in (Comparator.changed, Comparator.unchanged):
+            if self.value is not None:
+                raise ValueError(f"'{self.op.value}' takes no value")
+        elif self.value is None:
+            raise ValueError(f"'{self.op.value}' needs a value")
+        return self
+
+
+Severity = Literal["blocker", "major", "minor", "cosmetic", "unknown"]
+
+
 class Finding(Strict):
     finding_id: str = Field(min_length=1)
     state: FindingState
@@ -183,6 +208,9 @@ class Finding(Strict):
     clips: list[str] = Field(default_factory=list)
     repro: Repro | None = None
     uncertainty: str | None = None
+    repro_check: ReproCheck | None = Field(None, description="What a replay must show; null when none was given")
+    severity: Severity | None = None
+    severity_reason: str | None = None
 
     @model_validator(mode="after")
     def _state_evidence(self) -> "Finding":

@@ -54,6 +54,14 @@ labelled the same way, because the setpoint already held.
 Offline coverage uses a fake bridge, fake provider response, fake clip capture and scripted S1. It does
 not make a live model call or launch a Unity Editor.
 
+## Candidate findings (#38)
+
+An accepted `candidate_finding` is written to the trace as a `finding` entry in state `candidate`, with
+its severity and `repro_check`. Its citations are mapped from bridge observation seqs to those
+observations' trace entries. If any cited seq has none, nothing is written and the reason is returned.
+S1's guidance names the finding id and that reason. `reproduce` replays the finding later; see
+`reproduce.md`.
+
 ## S1 ownership and evidence audit
 
 | Branch | Runtime behavior | Evidence |
