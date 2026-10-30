@@ -29,7 +29,7 @@ from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
 from playtest.preflight.verify import MEASUREMENT_TOLERANCE
 from playtest.runner.frontier_help import (FrontierHelp, action_effects, reader_calibration, reader_notes,
-                                           recorded_suspicions)
+                                           recorded_suspicions, _evidence_snapshot, _finding_evidence)
 from playtest.runner.choices import build_choices
 
 
@@ -362,7 +362,8 @@ def test_a_candidate_finding_is_written_citing_trace_entries_or_not_written_at_a
         "repro_check": {"field": "public.counter", "op": "<", "tolerance": None, "value": 1.0},
         "severity": "major", "severity_reason": "It blocks progress.", "steps": ["Move."],
         "title": "The count never rises", "uncertainty": "One sample only."})
-    written = helper._record_finding(proposed, turn=3)
+    snapshot = _evidence_snapshot(sink)
+    written = helper._record_finding(proposed, turn=3, evidence=_finding_evidence(proposed, [], snapshot))
     assert written["finding_id"] == "f-3" and written["reason"] is None
     entry = sink.entries[written["trace_seq"]]
     assert entry["kind"] == "finding" and entry["author"] == "frontier" and entry["refs"] == [observed]
@@ -372,7 +373,8 @@ def test_a_candidate_finding_is_written_citing_trace_entries_or_not_written_at_a
                                 "title": "The count never rises",
                                 "repro_check": {"field": "public.counter", "op": "<", "value": 1.0, "tolerance": None}}]
     # A cited observation the trace never recorded: nothing is written, and the reason names the seq.
-    unmapped = helper._record_finding(proposed.model_copy(update={"evidence_seq": [7, 99]}), turn=4)
+    missing = proposed.model_copy(update={"evidence_seq": [7, 99]})
+    unmapped = helper._record_finding(missing, turn=4, evidence=_finding_evidence(missing, [], snapshot))
     assert unmapped["trace_seq"] is None and "[99]" in unmapped["reason"]
     assert len(sink.of_kind("finding")) == 1 and len(helper.findings) == 1
     assert helper._guidance({"hypotheses": [], "directive": None, "candidate_finding": unmapped})[
@@ -429,7 +431,8 @@ def test_a_candidate_finding_with_an_effect_check_is_written_as_proposed(tmp_pat
         "repro_check": {"field": "effect.move", "op": "<", "tolerance": None, "value": 1.5},
         "severity": "major", "severity_reason": "The control stops working.", "steps": ["Move."],
         "title": "The move no longer carries the entity", "uncertainty": "One sample only."})
-    written = helper._record_finding(proposed, turn=5)
+    written = helper._record_finding(proposed, turn=5,
+                                     evidence=_finding_evidence(proposed, [], _evidence_snapshot(sink)))
     assert written["reason"] is None
     entry = sink.entries[written["trace_seq"]]
     assert entry["body"]["repro_check"] == {"field": "effect.move", "op": "<", "value": 1.5, "tolerance": None}

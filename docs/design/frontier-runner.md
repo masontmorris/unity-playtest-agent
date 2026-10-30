@@ -18,6 +18,9 @@ evaluator. The directive goal, setpoint, deadline and current status are shown t
 The background request stages updates; the loop publishes them through `adopt_result` only at its
 adoption boundary, after checking the fresh observation's epoch. A completion during observation
 capture cannot start that turn's scoring window, and a result from the prior epoch is discarded.
+Candidate findings are staged too: only the exact adopted result can publish one. Its citations are
+frozen at request time and retain validated execution/effect entries for cited history attempts;
+an unavailable or mismatched reference produces an explicit refusal to record the candidate.
 Cancellation/invalidation discards staged state. Same-status hypothesis revisions retain their changed
 text and evidence; only an identical version is compacted as a restatement. Live packets include the
 bounded action/turn history S1 saw, and facts state remaining wall time and call slots.

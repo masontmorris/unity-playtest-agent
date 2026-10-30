@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 
 from playtest.bench import call_budget
 from playtest.bench.record import digest
-from playtest.contracts.bridge import Observation
+from playtest.contracts.bridge import TERMINAL_STATUSES, Observation
 from playtest.contracts.investigation import Directive
 from playtest.contracts.loop import ChoiceKind, ChoiceSet, TurnOutcome, TurnRecord
 from playtest.contracts.trace import TraceAuthor
@@ -100,6 +100,141 @@ def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
             for raised in suspicions_in(entries)]
 
 
+def _evidence_snapshot(sink: Any, recent: list[dict[str, Any]] | None = None,
+                       observation_seq: int | None = None) -> dict[int, dict[str, Any]]:
+    """Copy only request-relevant citation entries before the helper yields to another turn."""
+    of_kind = getattr(sink, "of_kind", None)
+    entries = ([entry for kind in ("observation", "execution", "effect") for entry in of_kind(kind)]
+               if of_kind is not None else read_trace(sink.path))
+    seqs = ({observation_seq, *(row["seq"] for row in recent)} if recent is not None else None)
+    refs = ({value for row in recent if row.get("record_kind") == "action_attempts"
+             for value in (row.get("trace_seq"), row.get("effect_trace_seq")) if type(value) is int}
+            if recent is not None else None)
+    snapshot: dict[int, dict[str, Any]] = {}
+    for entry in entries:
+        if hasattr(entry, "model_dump"):
+            kind, trace_seq, turn, body, entry_refs = (entry.kind.value, entry.trace_seq, entry.turn,
+                                                        entry.body, entry.refs)
+        else:
+            kind, trace_seq, turn, body, entry_refs = (entry["kind"], entry["trace_seq"], entry["turn"],
+                                                        entry["body"], entry["refs"])
+        if kind == "observation":
+            if seqs is not None and body.get("seq") not in seqs:
+                continue
+            # The citation needs the bridge sequence and turn, not a copy of the observation's contents.
+            body = {"seq": body.get("seq")}
+        elif kind in ("execution", "effect"):
+            if refs is not None and trace_seq not in refs:
+                continue
+        else:
+            continue
+        snapshot[trace_seq] = {"kind": kind, "turn": turn, "body": copy.deepcopy(body),
+                               "refs": copy.deepcopy(entry_refs)}
+    return snapshot
+
+
+def _observation_ref(trace: Mapping[int, Mapping[str, Any]], seq: int) -> int | None:
+    matches = [ref for ref, entry in trace.items()
+               if entry["kind"] == "observation" and entry["body"].get("seq") == seq]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _same_measurement(a: Any, b: Any) -> bool:
+    """JSON equality that does not mistake a boolean for a number."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return a.keys() == b.keys() and all(_same_measurement(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same_measurement(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+@dataclass(frozen=True)
+class _FindingEvidence:
+    refs: tuple[int, ...] = ()
+    reason: str | None = None
+
+
+def _finding_evidence(proposed: Any, recent: list[dict[str, Any]],
+                      trace: Mapping[int, Mapping[str, Any]]) -> _FindingEvidence:
+    """Resolve bridge citations and every forwarded attempt at those observations, or refuse them all."""
+    refs: set[int] = set()
+    observations: dict[int, list[int]] = {}
+    for trace_seq, entry in trace.items():
+        if entry["kind"] == "observation":
+            observations.setdefault(entry["body"].get("seq"), []).append(trace_seq)
+    if not proposed.evidence_seq:
+        return _FindingEvidence(reason="not recorded: no observations cited")
+    for seq in sorted(set(proposed.evidence_seq)):
+        matches = observations.get(seq, [])
+        if len(matches) != 1:
+            return _FindingEvidence(reason=f"not recorded: cited observations with no unique trace entry: [{seq}]")
+        obs_ref = matches[0]
+        refs.add(obs_ref)
+        for row in recent:
+            if row.get("record_kind") != "action_attempts" or row.get("seq") != seq:
+                continue
+            # Do not trust a number merely because it happens to identify an existing trace entry.
+            def refusal(detail: str) -> _FindingEvidence:
+                return _FindingEvidence(reason=f"not recorded: history at observation {seq} has {detail}")
+
+            required = {"observation_trace_seq", "trace_seq", "choice_id", "purpose", "effect_trace_seq",
+                        "expected_effect", "observed_effect", "effect_fact"}
+            if not required <= row.keys():
+                return refusal("incomplete provenance")
+            if (not _same_measurement(row.get("observation_trace_seq"), obs_ref)
+                    or trace[obs_ref].get("turn") != row.get("turn")):
+                return refusal("an unavailable or mismatched observation reference")
+            ex_ref = row.get("trace_seq")
+            if isinstance(ex_ref, bool) or not isinstance(ex_ref, int):
+                return refusal("an unavailable execution reference")
+            execution = trace.get(ex_ref)
+            if not execution or execution.get("kind") != "execution" or execution.get("turn") != row.get("turn"):
+                return refusal("an unavailable or mismatched execution reference")
+            body = execution.get("body") or {}
+            request = body.get("request") or {}
+            if (not isinstance(request, Mapping) or not isinstance(request.get("action"), str)
+                    or not request["action"] or not isinstance(request.get("choice_id"), str)
+                    or not request["choice_id"] or request["choice_id"] != row.get("choice_id")
+                    or not _same_measurement(request.get("based_on_seq"), seq)
+                    or body.get("purpose") not in ("choice", "while_pending")
+                    or body.get("purpose") != row.get("purpose")):
+                return refusal("a mismatched execution binding")
+            records = body.get("records")
+            if not isinstance(records, list) or (records and not isinstance(records[-1], Mapping)):
+                return refusal("invalid execution records")
+            last = records[-1] if records else {}
+            terminal = last if last.get("status") in TERMINAL_STATUSES else {}
+            measured = {"terminal_status": terminal.get("status"), "reject_reason": terminal.get("reject_reason"),
+                        "applied_duration_s": terminal.get("applied_duration_s"),
+                        "release_verified": terminal.get("release_verified"),
+                        "bridge_expected_effects": terminal.get("expected_effect") or None,
+                        "bridge_observed_effects": terminal.get("observed_effect") or None}
+            if any(key not in row or not _same_measurement(row[key], value) for key, value in measured.items()):
+                return refusal("execution measurements that differ from the trace")
+            refs.add(ex_ref)
+            effect_ref = row.get("effect_trace_seq")
+            if effect_ref is None:
+                if any(row.get(key) is not None for key in ("expected_effect", "observed_effect", "effect_fact")):
+                    return refusal("effect measurements without an effect reference")
+                continue
+            if isinstance(effect_ref, bool) or not isinstance(effect_ref, int):
+                return refusal("an unavailable effect reference")
+            effect = trace.get(effect_ref)
+            if (not effect or effect.get("kind") != "effect" or effect.get("turn") != row.get("turn")
+                    or ex_ref not in effect.get("refs", [])):
+                return refusal("an unavailable or mismatched effect reference")
+            effect_body = effect.get("body") or {}
+            if (effect_body.get("choice_id") != request.get("choice_id")
+                    or effect_body.get("action") != request.get("action")
+                    or any(key not in row or not _same_measurement(row[key], effect_body.get(trace_key))
+                           for key, trace_key in (("expected_effect", "expected"), ("observed_effect", "observed")))):
+                return refusal("effect binding or measurements that differ from the trace")
+            refs.add(effect_ref)
+    return _FindingEvidence(refs=tuple(sorted(refs)))
+
+
 @dataclass
 class _StagedResult:
     result: HelpResult
@@ -107,6 +242,8 @@ class _StagedResult:
     directive_row: dict[str, Any] | None
     based_on_seq: int
     evidence_trace_seq: int | None
+    candidate: Any | None
+    finding_evidence: _FindingEvidence | None
 
 
 class FrontierHelp:
@@ -142,7 +279,7 @@ class FrontierHelp:
         self.effects = dict(effects or {})  # run-stable: it names the effect checks a finding may propose
 
     async def run(self, request: Any) -> Any:
-        context = request.context
+        context = copy.deepcopy(request.context)
         as_of, raw_obs = context["as_of"], context["observation"]
         seq = int(as_of["seq"])
         if self.calls >= self.max_calls:
@@ -158,6 +295,9 @@ class FrontierHelp:
                                                            "hypotheses": [], "directive": None})
         # The trace as of this request, read before the first await: S1 keeps choosing while the clip is captured.
         suspicions = recorded_suspicions(self.sink)
+        recent = recent_records(context)
+        evidence_snapshot = _evidence_snapshot(self.sink, recent, seq)
+        obs_trace = _observation_ref(evidence_snapshot, seq)
         now = dt.datetime.now(dt.timezone.utc)
         observation = Observation(
             session="runner", seq=seq, game_s=as_of.get("game_s"), wall_utc=now,
@@ -185,7 +325,7 @@ class FrontierHelp:
         packet = build_packet(
             objective=context["objective"], observation=observation, choices=choices,
             escalation=turn, facts=fact_rows, directive=current, directive_history=history,
-            recent=recent_records(context), hypotheses=old_hypotheses,
+            recent=recent, hypotheses=old_hypotheses,
             new_hypothesis_ids=ids, age_s=context.get("as_of", {}).get("age_s"),
             clip=clip.descriptor, clip_unavailable_reason=clip.reason,
             findings=[{key: f[key] for key in ("finding_id", "title", "repro_check")} for f in self.findings],
@@ -214,8 +354,6 @@ class FrontierHelp:
                 reservation.finish(http_status=status, latency_ms=latency, cost_usd=result.cost_usd,
                                          resolved_model=result.resolved_model, usage=result.usage,
                                          answer=None, parse_valid=False, **details)
-                obs_trace = (self.sink.trace_seq_for_observation(seq)
-                             if hasattr(self.sink, "trace_seq_for_observation") else None)
                 self.sink.append("investigation", {
                     "event": "invalid_answer", "request_turn": request.turn, "based_on_seq": seq,
                     "outcome_seq": seq, "hypothesis": None, "directive": None, "outcome": "unknown",
@@ -237,8 +375,6 @@ class FrontierHelp:
                 "errors": list(result.errors),
                 "review": [{"item": p.item, "reason": p.reason} for p in review.problems],
             }
-            obs_trace = (self.sink.trace_seq_for_observation(seq)
-                         if hasattr(self.sink, "trace_seq_for_observation") else None)
             reason = None
             if directive is None:
                 rejected = [p.reason for p in review.problems if p.item == "directive"]
@@ -263,8 +399,10 @@ class FrontierHelp:
                                  "last_frame": observation.frame, "last_game_s": observation.game_s,
                                  "requested_game_s": observation.game_s,
                                  "directive": directive.model_dump(mode="json")}
-            if answer.candidate_finding is not None and not review.rejected("candidate_finding"):
-                result_payload["candidate_finding"] = self._record_finding(answer.candidate_finding, request.turn)
+            candidate = (answer.candidate_finding.model_copy(deep=True)
+                         if answer.candidate_finding is not None and not review.rejected("candidate_finding") else None)
+            finding_evidence = (_finding_evidence(candidate, recent, evidence_snapshot)
+                                if candidate is not None else None)
             reservation.finish(http_status=status, latency_ms=latency, cost_usd=result.cost_usd,
                                resolved_model=result.resolved_model, usage=result.usage,
                                parse_valid=True, answer=answer.model_dump(mode="json"))
@@ -272,7 +410,8 @@ class FrontierHelp:
             if request.turn not in self._discarded and request.turn not in self._adopted:
                 self._staged[request.turn] = _StagedResult(
                     result=completed, payload=copy.deepcopy(result_payload), directive_row=directive_row,
-                    based_on_seq=seq, evidence_trace_seq=obs_trace)
+                    based_on_seq=seq, evidence_trace_seq=obs_trace, candidate=candidate,
+                    finding_evidence=finding_evidence)
             return completed
         except asyncio.CancelledError:
             reservation.finish(directive_result="cancelled", cost_usd=None)
@@ -308,7 +447,11 @@ class FrontierHelp:
         if staged.directive_row is not None:
             self.tracker.adopt(staged.directive_row, request_turn=request_turn,
                                based_on_seq=staged.based_on_seq, evidence_trace_seq=staged.evidence_trace_seq)
-        published = HelpResult(source=result.source, result=self._guidance(staged.payload))
+        payload = copy.deepcopy(staged.payload)
+        if staged.candidate is not None and staged.finding_evidence is not None:
+            payload["candidate_finding"] = self._record_finding(staged.candidate, request_turn,
+                                                                 staged.finding_evidence)
+        published = HelpResult(source=result.source, result=self._guidance(payload))
         self._adopted[request_turn] = (result, published)
         return published
 
@@ -317,22 +460,15 @@ class FrontierHelp:
         self._staged.pop(request_turn, None)
         self._discarded.add(request_turn)
 
-    def _record_finding(self, proposed: Any, turn: int) -> dict[str, Any]:
+    def _record_finding(self, proposed: Any, turn: int, evidence: _FindingEvidence) -> dict[str, Any]:
         """Write the frontier's candidate finding to the trace, citing trace entries, and say what happened.
 
-        The answer cites bridge observation seqs, which review checked against the packet. A trace finding
-        must cite earlier trace entries, so each seq maps to the entry that recorded its observation. If any
-        has none, the finding is not written and the reason is returned: a citation is never dropped or
-        guessed to make it fit.
+        Evidence was resolved against the request-time snapshot; nothing added later can become a citation.
         """
         finding_id = f"f-{turn}"
-        mapper = getattr(self.sink, "trace_seq_for_observation", None)
-        mapped = [mapper(seq) if mapper is not None else None for seq in proposed.evidence_seq]
-        if not mapped or any(seq is None for seq in mapped):
-            missing = [seq for seq, trace_seq in zip(proposed.evidence_seq, mapped) if trace_seq is None]
-            return {"finding_id": finding_id, "trace_seq": None,
-                    "reason": f"not recorded: cited observations with no trace entry: {missing or 'none cited'}"}
-        finding = frontier.to_finding(proposed, finding_id=finding_id, evidence_seq=sorted(set(mapped)))
+        if evidence.reason is not None:
+            return {"finding_id": finding_id, "trace_seq": None, "reason": evidence.reason}
+        finding = frontier.to_finding(proposed, finding_id=finding_id, evidence_seq=list(evidence.refs))
         trace_seq = FindingLog(self.sink, author=TraceAuthor.frontier).record(finding)
         self.findings.append({"finding_id": finding_id, "trace_seq": trace_seq, "request_turn": turn,
                               "title": finding.title,

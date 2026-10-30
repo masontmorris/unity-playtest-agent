@@ -42,6 +42,10 @@ The session's lone cooldown candidate was not reproduced; the stair defect remai
    disabled help and an exhausted cap are distinct. Counts never choose, hide or replace a choice.
 6. Choice labels qualify the displacement criterion and include measured view-turn calibration
    where available. Inputs and measured values are unchanged.
+7. Candidate publication is staged alongside guidance. A discarded, replaced or prior-epoch answer
+   cannot add a candidate to the trace or later frontier packets. Finding provenance is frozen at
+   request time: cited action attempts retain validated execution and effect entries as well as the
+   observation that bound their decision. Missing or mismatched evidence prevents recording, with a reason.
 
 ## Offline validation and limitations
 
