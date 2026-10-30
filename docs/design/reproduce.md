@@ -65,7 +65,8 @@ The baseline rule is what makes a reproduction mean something: from a reset wher
 inputs lead to a state where it is true. An `unchanged` check always holds at the baseline, so it is always
 `unknown` here, and so is a check of a value the game already shows at rest, such as a speed of zero. All six
 candidates the frontier proposed in the #132 and #133 validation runs were `unchanged` checks or equality
-checks against zero (a motion vector, the view bob, the yaw).
+checks against zero (a motion vector, the view bob, the yaw). The frontier's prompt and its `repro_check`
+description now state this rule (#141).
 
 k counts reproduced attempts and n counts reproduced plus not reproduced. Unknown and invalid attempts are
 in neither, and each is listed with its reason. The report also gives the largest deviation between a

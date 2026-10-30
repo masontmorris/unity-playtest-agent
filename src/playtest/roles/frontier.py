@@ -104,7 +104,9 @@ class FindingOut(Strict):
     evidence_seq: list[int]
     expected: str
     expected_source: ExpectedSource
-    repro_check: Setpoint | None = Field(description="What a replay must show to reproduce it")
+    repro_check: Setpoint | None = Field(
+        description="What a replay from a reset must show to reproduce it: false right after the reset, true once "
+                    "the bug shows. null when no field can show it")
     severity: Literal["blocker", "major", "minor", "cosmetic", "unknown"]
     severity_reason: str
     steps: list[str] = Field(max_length=MAX_STEPS)
@@ -145,9 +147,11 @@ SYSTEM = (
     "a hold or axis override for an action. prune_choices: manifest actions or skills to hide during this "
     "directive. Both end when the directive closes. S1 always has wait, escalate and finish; they are not manifest "
     "choices.\n"
-    "- candidate_finding: only when cited evidence already shows behaviour that contradicts an expectation. "
-    "Say where the expectation comes from and what is still uncertain; repro_check is what a replay must show. "
-    "Otherwise null.\n"
+    "- candidate_finding: only when cited evidence already shows behaviour that contradicts an expectation; "
+    "otherwise null. Say where the expectation comes from and what is still uncertain. repro_check is what a "
+    "replay must show. A replay starts from a reset, and a check that already holds right after the reset cannot "
+    "show the bug, so it never counts: an unchanged check always holds then, and so does a value the game shows "
+    "at rest, such as a speed of zero. Choose a check only the bug makes true, or null if no field can show it.\n"
     "Observations are measured; null means unknown, not zero."
 )
 
