@@ -25,6 +25,7 @@ from playtest.contracts.loop import (
 )
 from playtest.core.context import canonical
 from playtest.frontier.packet import Packet, build_packet
+from playtest.roles import frontier
 
 
 def observation(**overrides) -> Observation:
@@ -239,6 +240,33 @@ def test_refs_come_only_from_explicit_sequences_and_open_hypotheses():
     assert packet.refs.hypotheses == frozenset({"h1"})
     assert packet.refs.new_hypothesis_ids == ("h2", "h3")
     assert packet.refs.open_directive is True
+
+
+def test_refs_carry_a_copy_of_the_request_observations_public_readings():
+    public = {"counter": 2, "flag": True}
+    packet = build(observation=observation(public=public))
+    public["counter"] = 9
+    assert packet.refs.public == {"counter": 2, "flag": True}
+    assert packet.refs.public == packet.payload["observation"]["public"]
+
+
+def test_review_judges_a_setpoint_against_the_packets_own_observation():
+    # The same observation the frontier was shown decides whether a reach setpoint already holds (#141).
+    packet = build()  # public: counter 2
+    manifest = frontier.Manifest(fields={"public.counter": "number"}, actions={}, skills=[])
+
+    def reviewed(op, value):
+        expected = {"field": "public.counter", "op": op, "value": value, "tolerance": None}
+        directive = {"deadline_s": 5.0, "expected": expected, "target": None, "tests": None, "text": "try it"}
+        answer = frontier.FrontierAnswer.model_validate({
+            "add_choices": [], "candidate_finding": None, "directive": directive, "hypotheses": [],
+            "prune_choices": []})
+        return frontier.review(answer, manifest, packet.refs)
+
+    assert [p.item for p in reviewed("==", 2.0).problems] == ["directive"]
+    assert [p.item for p in reviewed(">=", 1.0).problems] == ["directive"]
+    assert reviewed(">", 2.0).clean
+    assert reviewed("changed", None).clean
 
 
 def test_canonical_text_is_stable_and_equal_for_equal_records():

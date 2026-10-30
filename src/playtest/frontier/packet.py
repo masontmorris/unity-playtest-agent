@@ -136,6 +136,7 @@ def build_packet(
         hypotheses=frozenset(row["id"] for row in hypothesis_rows if row["status"] == "open"),
         new_hypothesis_ids=tuple(new_ids),
         open_directive=directive is not None and directive.outcome is DirectiveOutcome.open,
+        public=copy.deepcopy(observation.public),  # what `review` judges a reach setpoint against
     )
     packet = Packet(payload=payload, refs=refs)
     try:

@@ -16,7 +16,8 @@ from playtest.core.findings import FindingLog
 from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
 from playtest.roles import frontier
-from playtest.runner.directives import DirectiveTracker, field_value
+from playtest.roles.checks import field_value
+from playtest.runner.directives import DirectiveTracker
 
 
 class FrontierHelp:
@@ -137,16 +138,22 @@ class FrontierHelp:
             }
             obs_trace = (self.sink.trace_seq_for_observation(seq)
                          if hasattr(self.sink, "trace_seq_for_observation") else None)
+            reason = None
+            if directive is None:
+                rejected = [p.reason for p in review.problems if p.item == "directive"]
+                reason = (f"the directive was rejected: {'; '.join(rejected)}" if rejected
+                          else "no accepted directive was returned")
             self.sink.append("investigation", {
                 "event": "hypothesis_directive", "request_turn": request.turn, "based_on_seq": seq,
                 "outcome_seq": seq,
                 "hypothesis": result_payload["hypotheses"], "directive": result_payload["directive"],
                 "outcome": "open" if directive is not None else "unknown", "evidence_trace_seq": obs_trace,
-                "reason": None if directive is not None else "no accepted directive was returned",
+                "reason": reason,
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
             if directive is not None:
                 expected = directive.expected
                 kind = self.role_manifest.fields.get(expected.field) if expected else "other"
+                # Only the fallback: the tracker re-takes a changed/unchanged baseline when S1 first sees the directive.
                 baseline = field_value(observation.public, expected.field.removeprefix("public.")) if expected else None
                 self.tracker.adopt({**directive.model_dump(mode="json"),
                                "hypothesis": result_payload["hypotheses"], "kind": kind, "baseline": baseline,

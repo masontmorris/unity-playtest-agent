@@ -5,7 +5,8 @@ field with a value, so code can score them. The comparator semantics live here s
 validation agrees:
 
 - `changed` / `unchanged` take no value. They compare with a baseline the caller defines: the
-  previous sample for a rule, the value when S1 received the directive for a setpoint.
+  previous sample for a rule, the value when S1 received the directive for a setpoint. (A directive's
+  `unchanged` is scored as a hold over its whole window; `evaluate` only judges one reading.)
 - `<`, `<=`, `>`, `>=` need a number and a numeric field.
 - `==` / `!=` need a value of the field's kind.
 - a tolerance applies only to numeric `==` / `!=`.
@@ -17,6 +18,7 @@ Field kinds come from discovery's declared types (preflight) or the manifest (fr
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from playtest.contracts.investigation import Comparator
@@ -94,6 +96,16 @@ def check_problems(where: str, kind: ValueKind, op: Comparator, value: Any,
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def field_value(public: Mapping[str, Any], path: str) -> Any:
+    """The reading at a dotted `path` in an observation's public values; None when any step is absent."""
+    node: Any = public
+    for part in path.split("."):
+        if not isinstance(node, Mapping) or part not in node:
+            return None
+        node = node[part]
+    return node
 
 
 def evaluate(value: Any, *, kind: ValueKind, op: Comparator, expected: Any = None,

@@ -11,6 +11,20 @@ from playtest.contracts.loop import ChoiceKind, TurnOutcome
 from playtest.core.ports import FactsSource, TurnReport
 from playtest.core.trace_sink import TraceSink
 from playtest.roles import checks
+from playtest.roles.checks import field_value
+
+_REASONS = {
+    "met": "the measured reader value satisfied the setpoint",
+    "not_met": "the deadline passed and the measured reader value did not satisfy the setpoint",
+    "expired": "the deadline passed without a scoreable reader value",
+    "invalidated": "the scene changed or the measured game clock reset",
+    "unknown": "the directive had no scoreable postcondition",
+}
+# `unchanged` is a hold: the first change misses it, and only lasting to the deadline meets it.
+_HOLD_REASONS = {
+    "met": "the value stayed unchanged through the deadline",
+    "not_met": "the value changed before the deadline",
+}
 
 
 def window_counts(reports: Sequence[TurnReport], first_turn: int, first_game_s: float | None = None) -> dict[str, Any]:
@@ -59,13 +73,9 @@ def _window_note(window: Mapping[str, Any]) -> str:
             + f", {window['waits']} waits")
 
 
-def field_value(public: Mapping[str, Any], path: str) -> Any:
-    node: Any = public
-    for part in path.split("."):
-        if not isinstance(node, Mapping) or part not in node:
-            return None
-        node = node[part]
-    return node
+def _op(item: Mapping[str, Any]) -> Comparator | None:
+    expected = item.get("expected")
+    return Comparator(expected["op"]) if isinstance(expected, Mapping) else None
 
 
 class DirectiveTracker(FactsSource):
@@ -74,6 +84,11 @@ class DirectiveTracker(FactsSource):
     A directive's window starts on the first turn whose context states it. When the directive closes, the
     tracker records what S1's inputs did in that window, so a `not_met` whose test never ran says so
     (`error_class` `no_attempt` or `action_rejected`).
+
+    Every operator but `changed` and `unchanged` is met on the first reading that satisfies it. `changed` is
+    met on the first reading that differs from its baseline, and `unchanged` is a hold: every scored reading
+    from the first statement to the deadline must equal the baseline. Both baselines are the value at the
+    observation that first states the directive to S1.
     """
     def __init__(self, sink: TraceSink | None = None) -> None:
         self.sink = sink
@@ -105,19 +120,13 @@ class DirectiveTracker(FactsSource):
                 item["first_turn"] = len(reports)  # this turn's context is the first to state it
                 item["first_game_s"] = observation.game_s
                 self._anchor_deadline(item, observation.game_s)
+                self._anchor_baseline(item, observation)
             item["window"] = window_counts(reports, item["first_turn"], item.get("first_game_s"))
         outcome = self._evaluate(item, observation) if item is not None else None
         if item is not None and outcome is not None:
             observation_trace = (self.sink.trace_seq_for_observation(observation.seq)
                                  if self.sink is not None and hasattr(self.sink, "trace_seq_for_observation") else None)
-            reason = {
-                "met": "the measured reader value satisfied the setpoint",
-                "not_met": "the deadline passed and the measured reader value did not satisfy the setpoint",
-                "expired": "the deadline passed without a scoreable reader value",
-                "invalidated": "the scene changed or the measured game clock reset",
-                "unknown": "the directive had no scoreable postcondition",
-            }[outcome]
-            self._close(outcome, len(reports), observation.seq, observation_trace, reason)
+            self._close(outcome, len(reports), observation.seq, observation_trace, self._reason(item, outcome))
         # Every directive stays in S1's context with its outcome, not only on the turn it closed
         # (build bible law 4). The open one, if any, is the last line.
         lines.extend(self._fact_line(entry) for entry in self.history)
@@ -141,6 +150,33 @@ class DirectiveTracker(FactsSource):
         directive["deadline_game_s"] = anchored
         item["deadline_game_s"] = anchored
 
+    @staticmethod
+    def _anchor_baseline(item: dict[str, Any], observation: Observation) -> None:
+        """Take a changed/unchanged baseline from the observation that first states the directive to S1.
+
+        The frontier is told to compare with the value when S1 receives the directive. Like the deadline, that
+        is this observation and not the escalation's, which is older by the frontier call and the next turn's
+        pacing; a value that moved in between would otherwise count as a change S1 never caused. The escalation's
+        value stays as the fallback for a field this observation cannot read. `baseline_source` records which one
+        scoring uses: "first_statement", "escalation", or null when neither could be read (then nothing scores).
+        """
+        expected = item.get("expected")
+        if _op(item) not in checks.CHANGE:
+            return
+        stated = field_value(observation.public, expected["field"].removeprefix("public."))
+        if stated is not None:
+            item["baseline"], item["baseline_source"] = stated, "first_statement"
+        else:
+            item["baseline_source"] = "escalation" if item.get("baseline") is not None else None
+
+    @staticmethod
+    def _reason(item: Mapping[str, Any], outcome: str) -> str:
+        reasons = {**_REASONS, **_HOLD_REASONS} if _op(item) is Comparator.unchanged else _REASONS
+        reason = reasons[outcome]
+        if item.get("baseline_source") == "escalation" and outcome in ("met", "not_met", "expired"):
+            reason += "; baseline from the escalation, as the field could not be read when S1 first saw the directive"
+        return reason
+
     def finish(self, *, turn: int, based_on_seq: int, evidence_trace_seq: int | None = None) -> None:
         if self.active is not None:
             self._close("unknown", turn, based_on_seq, evidence_trace_seq, "session ended before scoring")
@@ -153,22 +189,35 @@ class DirectiveTracker(FactsSource):
                 or (old_game is not None and observation.game_s is not None and observation.game_s < old_game)):
             return "invalidated"
         item["last_frame"], item["last_game_s"] = observation.frame, observation.game_s
+        deadline = item.get("deadline_game_s")
+        due = deadline is not None and observation.game_s is not None and observation.game_s >= deadline
         expected = item.get("expected")
-        if expected is not None:
-            path = expected["field"].removeprefix("public.")
-            value = field_value(observation.public, path)
-            scored = checks.evaluate(value, kind=item["kind"], op=Comparator(expected["op"]),
-                                     expected=expected.get("value"), baseline=item.get("baseline"),
-                                     tolerance=item.get("tolerance"))
-            if scored is True:
-                return "met"
-            deadline = item.get("deadline_game_s")
-            if deadline is not None and observation.game_s is not None and observation.game_s >= deadline:
-                return "not_met" if scored is False else "expired"
-        elif item.get("deadline_game_s") is not None and observation.game_s is not None \
-                and observation.game_s >= item["deadline_game_s"]:
-            return "unknown"
+        if expected is None:
+            return "unknown" if due else None
+        op = Comparator(expected["op"])
+        value = field_value(observation.public, expected["field"].removeprefix("public."))
+        scored = checks.evaluate(value, kind=item["kind"], op=op, expected=expected.get("value"),
+                                 baseline=item.get("baseline"), tolerance=item.get("tolerance"))
+        if op is Comparator.unchanged:
+            return self._hold(item, scored, due)
+        if scored is True:
+            return "met"
+        if due:
+            return "not_met" if scored is False else "expired"
         return None
+
+    @staticmethod
+    def _hold(item: dict[str, Any], scored: bool | None, due: bool) -> str | None:
+        """Score one reading of an `unchanged` setpoint. The first scored change misses it, and only lasting to
+        the deadline meets it. A reading that cannot be scored is skipped, never counted as held; if none could
+        be scored by the deadline nothing measured the hold, so it expires."""
+        if scored is False:
+            return "not_met"
+        if scored is True:
+            item["held_readings"] = item.get("held_readings", 0) + 1
+        if not due:
+            return None
+        return "met" if item.get("held_readings") else "expired"
 
     def _close(self, status: str, turn: int, seq: int, evidence: int | None, reason: str) -> None:
         assert self.active is not None
@@ -217,6 +266,9 @@ class DirectiveTracker(FactsSource):
         if not isinstance(sp, Mapping):
             return f"Frontier directive {d.get('directive_id')}: {d.get('text')}; status {status}."
         op = sp.get("op")
+        if op == Comparator.unchanged:  # a hold, stated as one: its deadline is when it is met
+            return (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
+                    f"{sp.get('field')} unchanged until game_s {d.get('deadline_game_s')}; status {status}.")
         val = "null" if sp.get("value") is None else repr(sp.get("value"))
         return (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
                 f"{sp.get('field')} {op} {val}; deadline game_s {d.get('deadline_game_s')}; "
