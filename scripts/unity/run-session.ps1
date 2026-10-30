@@ -49,7 +49,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ApprovalPath,
     [Parameter(Mandatory = $true)][int]$MaxCalls,
     [int]$WallLimitSeconds = 600,
-    [double]$MaxAgeSeconds = 0.5,
+    [double]$MaxAgeSeconds = 0.8,
     [int]$MaxProviderFailures = 3,
     [int]$TokensPerMinute = 85000,
     [string]$Objective,

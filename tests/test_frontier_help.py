@@ -178,6 +178,64 @@ def test_directive_tracker_closes_each_terminal_outcome(status, game_s, public, 
     asyncio.run(main())
 
 
+def _directive(directive_id: str, deadline: float) -> dict:
+    spec = {"directive_id": directive_id, "text": f"Reach the setpoint ({directive_id}).",
+            "expected": {"field": "public.counter", "op": ">=", "value": 1}, "deadline_game_s": deadline}
+    return {**spec, "kind": "number", "baseline": 0, "scene": "scene", "last_frame": 0, "last_game_s": 0,
+            "directive": dict(spec)}
+
+
+def _observation(seq: int, game_s: float, counter: int) -> Observation:
+    return Observation(session="test", seq=seq, game_s=game_s, wall_utc=datetime.now(timezone.utc),
+                       clock_mode=ClockMode.realtime, scene="scene", playing=True, paused=False,
+                       time_scale=1, frame=seq, public={"counter": counter})
+
+
+def test_every_directive_and_its_outcome_stays_in_the_facts_after_it_closes():
+    # Before #132 a closed directive's outcome was stated on its closing turn only.
+    async def main():
+        tracker = DirectiveTracker(MemorySink())
+        tracker.adopt(_directive("d-1", 5), request_turn=0, based_on_seq=0)
+        closing = await tracker.facts([], _observation(1, 1.0, 1))
+        later = await tracker.facts([], _observation(2, 2.0, 0))
+        assert closing == later and len(later) == 1
+        assert "d-1" in later[0] and "status met (the measured reader value satisfied the setpoint)" in later[0]
+        tracker.adopt(_directive("d-2", 9), request_turn=2, based_on_seq=2)
+        both = await tracker.facts([], _observation(3, 3.0, 0))
+        assert [("d-1" in line, "d-2" in line) for line in both] == [(True, False), (False, True)]
+        assert both[0] == later[0] and both[1].endswith("status open.")       # the open one is the last line
+        expired = await tracker.facts([], _observation(4, 9.5, 0))
+        assert "d-2" in expired[1] and "status not_met (the deadline passed" in expired[1]
+
+    asyncio.run(main())
+
+
+def test_guidance_lists_each_hypothesis_once_and_names_the_directive_by_id(tmp_path: Path):
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=harness_trace(), tracker=DirectiveTracker(harness_trace()),
+                          started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
+    first_h = {"id": "hyp-1-0", "statement": "A.", "status": "open", "confirm_if": "c", "refute_if": "r",
+               "supporting_seq": [3], "contradicting_seq": []}
+    other = {**first_h, "id": "hyp-1-1", "statement": "B."}
+    first = helper._guidance({"hypotheses": [first_h, other], "directive": {"directive_id": "d-1", "text": "t"},
+                              "errors": [], "review": []})
+    assert first == {"hypotheses": [first_h, other], "directive_id": "d-1"}  # empty lists add nothing
+    reworded = {**first_h, "statement": "A, reworded."}       # the frontier restates open hypotheses in its own words
+    changed = {**other, "status": "refuted"}
+    new = {**first_h, "id": "hyp-5-0", "statement": "C."}
+    second = helper._guidance({"hypotheses": [reworded, changed, new], "directive": None,
+                               "errors": ["one problem"], "review": [{"item": "x", "reason": "y"}]})
+    assert second["hypotheses"] == [changed, new]            # a status change and a new id in full
+    assert second["restated_hypotheses"] == ["hyp-1-0"]      # a same-status restatement by id: listed, never hidden
+    assert second["directive_id"] is None
+    assert second["errors"] == ["one problem"] and second["review"] == [{"item": "x", "reason": "y"}]
+    third = helper._guidance({"hypotheses": [{**changed, "status": "open"}], "directive": None})
+    assert third["hypotheses"] == [{**changed, "status": "open"}]    # reopening is a status change too
+
+
 def test_invalid_frontier_answer_is_recorded_without_synthesizing_hypothesis_or_directive(tmp_path: Path):
     async def main():
         game, client = await connected()

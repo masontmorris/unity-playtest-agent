@@ -843,6 +843,15 @@ def test_the_token_rate_defaults_to_85000_and_takes_the_environment_then_the_fla
         cli._parser()
 
 
+def test_the_age_limit_defaults_to_the_measured_decision_latency_budget(monkeypatch):
+    # 0.5 s sat below S1's measured decision latency and left it unable to act (#132).
+    required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]
+    monkeypatch.delenv("UPA_RUN_MAX_AGE_S", raising=False)
+    assert cli._parser().parse_args(required).max_age_s == 0.8
+    script = (Path(cli.__file__).resolve().parents[3] / "scripts/unity/run-session.ps1").read_text(encoding="utf-8")
+    assert "[double]$MaxAgeSeconds = 0.8," in script
+
+
 def test_the_frontier_switch_takes_the_environment_and_rejects_anything_but_on_or_off(monkeypatch):
     # The PlayMode host passes only paths on the command line, so a hosted session turns the frontier on this way.
     required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]

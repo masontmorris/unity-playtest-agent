@@ -56,13 +56,12 @@ from .pacing import TOKENS_PER_MINUTE, TokenBudget
 from .probe import DisplacementProbe, make_snapshot
 from .readers import FieldReaders
 from .s1 import ARM, SystemOneS1
-from .session import MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
+from .session import MAX_AGE_S, MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
 
 DEFAULT_OBJECTIVE = (
     "Play the game for the time allowed, using only the offered choices. Try the available controls and "
     "observe their effects. Finish when you judge there is nothing more to try."
 )
-MAX_AGE_S = 0.5
 TRACE_FILE = "trace.jsonl"
 
 

@@ -33,6 +33,7 @@ class FrontierHelp:
             raise ValueError("max_calls must be a positive integer")
         self.calls = 0
         self.hypotheses: dict[str, dict[str, Any]] = {}
+        self._shown: dict[str, dict[str, Any]] = {}  # each hypothesis as S1's guidance last listed it
         fields = {f"public.{reader.alias}": reader.kind for reader in manifest.readers if reader.kind}
         self.reader_fields = fields
 
@@ -152,13 +153,47 @@ class FrontierHelp:
             reservation.finish(http_status=status, latency_ms=latency, cost_usd=result.cost_usd,
                                resolved_model=result.resolved_model, usage=result.usage,
                                parse_valid=True, answer=answer.model_dump(mode="json"))
-            return HelpResult(source="frontier", result=result_payload)
+            return HelpResult(source="frontier", result=self._guidance(result_payload))
         except asyncio.CancelledError:
             reservation.finish(directive_result="cancelled", cost_usd=None)
             raise
         except Exception:
             reservation.finish(directive_result="failed", cost_usd=None)
             raise
+
+    def _guidance(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """What S1 keeps from one answer: each hypothesis listed once, and the directive by id.
+
+        An adopted result stays in every later S1 context. The frontier restates every open hypothesis
+        in each answer, usually reworded, and full copies of every answer grew the prompt, and with it
+        S1's latency, until most actions reached the bridge stale (#132).
+        - A hypothesis is listed in full when its id is new or its status changed. A restatement with the
+          same status is listed by id in `restated_hypotheses`, so no hypothesis is hidden.
+        - The trace's `investigation` entries keep every version, and the frontier's own requests carry
+          the latest.
+        - The directive is named by id. The directive tracker states its setpoint, deadline and current or
+          final outcome as facts every turn; a copy frozen at adoption could only go stale.
+        """
+        fresh: list[Any] = []
+        restated: list[str] = []
+        for row in payload.get("hypotheses") or []:
+            key = row.get("id") if isinstance(row, Mapping) else None
+            known = self._shown.get(key) if isinstance(key, str) else None
+            if known is not None and known.get("status") == row.get("status"):
+                restated.append(key)
+                continue
+            fresh.append(row)
+            if isinstance(key, str):
+                self._shown[key] = row
+        view: dict[str, Any] = {"hypotheses": fresh}
+        if restated:
+            view["restated_hypotheses"] = restated
+        directive = payload.get("directive")
+        view["directive_id"] = directive.get("directive_id") if isinstance(directive, Mapping) else None
+        for key in ("errors", "review"):
+            if payload.get(key):
+                view[key] = payload[key]
+        return view
 
     def _manifest_for(self, choices: ChoiceSet) -> frontier.Manifest:
         """Restrict frontier choice names to the executable choices this run actually offers."""
