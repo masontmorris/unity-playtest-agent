@@ -15,6 +15,20 @@ from playtest.contracts.manifest import PreflightManifest
 from playtest.preflight.catalog import export, serialize
 from playtest.runner.choices import build_choices
 
+
+def test_zero_displacement_does_not_hide_a_measured_view_turn():
+    from runner_manifest import action, hold, manifest, vector
+
+    measured = hold(0.2, mean=0.0, effective=False)
+    measured["mean_view_turn"] = {"trials": 2, "yaw_deg": 36.0, "pitch_deg": -2.0, "spread_deg": 0.25}
+    built = build_choices(manifest(action("orient", vector("Gamepad", "rightStick", 1.0, 0.0),
+                                          hold_s=0.2, holds=[measured])))
+    label = next(choice.label for choice in built.choices if choice.id == "orient")
+    assert "net-displacement criterion was not met in every repeat" in label
+    assert "calibrated view turn yaw 36.000 degrees, pitch -2.000 degrees (spread 0.250 degrees, n=2)" in label
+    assert "not effective in every repeat" not in label
+    assert built.expected["orient"]["net_displacement"] == 0.0
+
 from runner_manifest import action, button, fixture, hold, key, manifest, skill, vector
 
 
@@ -77,7 +91,7 @@ def test_unmeasured_calibration_reads_unknown_never_zero():
     assert labels["none"].endswith("; no calibration at this hold.")
     assert labels["empty"].endswith("; calibrated effect unknown (no valid trial at this hold).")
     assert "calibrated net displacement 3.000 world units (sample variance unknown, n=1)." in labels["single"]
-    assert "calibrated net displacement 0.000 world units (sample variance 0.000100, n=2); not effective in every repeat." in labels["flat"]
+    assert "calibrated net displacement 0.000 world units (sample variance 0.000100, n=2); net-displacement criterion was not met in every repeat." in labels["flat"]
     assert built.expected["none"] is None and built.expected["empty"] is None
     assert built.expected["single"]["sample_variance"] is None and built.expected["single"]["valid_trials"] == 1
     assert built.expected["flat"]["net_displacement"] == 0.0 and built.expected["flat"]["effective_in_all_repeats"] is False

@@ -318,7 +318,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 client, built, s1=s1, objective=objective, view=view, probe=DisplacementProbe(snapshot, built.expected),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
-                facts=tracker)
+                facts=tracker, s1_call_cap=args.max_calls)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {

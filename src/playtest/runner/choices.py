@@ -190,7 +190,11 @@ def _action_label(action: ManifestAction, declared: ActionDefinition, hold: floa
     text = (f"{head}; calibrated net displacement {measured.mean_magnitude:.3f} {UNIT} "
             f"(sample variance {variance}, n={measured.valid_trials})")
     if measured.effective_in_all_repeats is False:
-        text += "; not effective in every repeat"
+        text += "; net-displacement criterion was not met in every repeat"
+    if measured.mean_view_turn is not None:
+        view = measured.mean_view_turn
+        text += (f"; calibrated view turn yaw {view.yaw_deg:.3f} degrees, pitch {view.pitch_deg:.3f} degrees "
+                 f"(spread {view.spread_deg:.3f} degrees, n={view.trials})")
     return text + "."
 
 

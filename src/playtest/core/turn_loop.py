@@ -1,6 +1,7 @@
 """Turn loop: S1's answer is validated, bound and executed, never repaired.
 
-Each turn adopts a finished helper's result, observes once, builds the `ChoiceSet` that answer must
+Each turn observes once, checks its epoch boundary, adopts a helper result that was already finished
+at turn entry, builds the `ChoiceSet` that answer must
 name (bound to that observation's `seq`), states the measured facts, builds S1's context (the
 observation's age, `pending_help`, the choices), asks the S1 port, and validates the answer with
 `parse_decision`. The loop then executes only the chosen action, or on a help turn exactly the
@@ -21,8 +22,9 @@ Law 1 branches:
   and starts nothing. `while_pending` runs exactly the choice S1 named; a missing or invalid one
   defaults to `wait` and records `policy_default`, while the valid primary survives.
 
-A finished helper's result is adopted once, at the top of a later turn, and shown to S1 with its
-source and age. `stop` cancels a pending helper and releases every held input. Nothing here retries,
+A finished helper's result is adopted once, after a later turn's observation passes the epoch check
+and before facts and context are built, and shown to S1 with its source and age. A boundary discards
+pending help. `stop` cancels a pending helper and releases every held input. Nothing here retries,
 and no score, threshold or timer opens help or picks an action.
 
 With a reader port, the readers are read once before each observation (never between it and the act) and
@@ -64,6 +66,7 @@ from playtest.contracts.trace import TraceAuthor, TraceKind
 
 from .bridge_client import BridgeClient
 from .context import build_context, canonical
+from .decision_memory import DecisionMemory, json_ready as _json_ready
 from .decisions import parse_decision
 from .execution import ExecutionController
 from .facts import RecordFacts
@@ -120,17 +123,6 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _json_ready(value: Any) -> Any:
-    """A JSON-native copy of `value`; anything else is recorded as its `repr`."""
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _json_ready(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready(item) for item in value]
-    return repr(value)
-
-
 @dataclass
 class _Pending:
     """The one open help request."""
@@ -146,6 +138,7 @@ class _Pending:
     opened_wall: datetime
     entry: int | None = None
     task: "asyncio.Task[HelpResult] | None" = None
+    resolved: HelpResult | None = None
     finished_wall: datetime | None = None
 
 
@@ -213,8 +206,11 @@ class TurnLoop:
         self._set_version = 0
         self._turns: list[TurnRecord] = []
         self._reports: list[TurnReport] = []
+        self._memory = DecisionMemory()
+        self._memory_previous: Observation | None = None
         self._previous: Observation | None = None
         self._pending: _Pending | None = None
+        self._retired_helpers: set[asyncio.Task[HelpResult]] = set()
         self._adoptions: list[Any] = []
         self._guidance: list[_Guidance] = []
         self._cancelled_helpers = 0
@@ -286,7 +282,13 @@ class TurnLoop:
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
         turn = len(self._turns)
-        self._adopt_finished_help(turn)
+        pending = self._pending
+        ready: HelpResult | asyncio.Task[HelpResult] | None = None
+        if pending is not None:
+            if pending.resolved is not None:
+                ready = pending.resolved
+            elif pending.task is not None and pending.task.done():
+                ready = pending.task
         if self._effects is not None:
             await self._effects.before_turn(turn)
         sample = await self._readers.read() if self._readers is not None else None  # before the observation, never between it and the act
@@ -298,6 +300,12 @@ class TurnLoop:
         observed = self._emit(TraceKind.observation, observation.model_dump(mode="json"), TraceAuthor.bridge, turn)
         if observed is not None:
             self._observation_entries[observation.seq] = observed
+        boundary = self._memory.observe(self._memory_previous, observation, turn=turn, trace_seq=observed)
+        self._memory_previous = observation
+        if boundary and self._pending is not None:
+            self._cancel_pending(self._pending, "observation_boundary", turn=turn)
+        elif ready is not None and pending is self._pending:
+            self._adopt_finished_help(pending, ready, turn)
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
@@ -326,6 +334,7 @@ class TurnLoop:
                 sample_gap_s=self._gap_s(observation),
                 guidance=self._guidance_view(now),
                 game_view=view.statement if view is not None else None,
+                recent_history=self._memory.snapshot() if self._memory.has_records else None,
             )
             if view is not None:
                 payload["game_view_sha256"] = view.sha256
@@ -358,6 +367,7 @@ class TurnLoop:
 
         sent: list[Executed] = []
         entries: list[int | None] = []
+        effect_entries: list[int | None] = []
         selected: Choice | None = None
         executed_id: str | None = None
         while_pending: WhilePending | None = None
@@ -371,9 +381,11 @@ class TurnLoop:
             selected = choice_set.get(decision.choice_id)
             assert selected is not None
             if selected.kind in _EXECUTABLE_KINDS:
-                executed, entry = await self._send(selected, observation, "choice", decided, turn)
+                executed, entry, effect_entry = await self._send(
+                    selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
                 sent.append(executed)
                 entries.append(entry)
+                effect_entries.append(effect_entry)
                 if executed.execution.rejected:
                     outcome = TurnOutcome.rejected_stale
                 else:
@@ -388,9 +400,12 @@ class TurnLoop:
                 if while_pending.mode == "continue":
                     target = choice_set.get(while_pending.choice_id or "")
                     if target is not None and target.kind in _EXECUTABLE_KINDS:
-                        executed, entry = await self._send(target, observation, "while_pending", decided, turn)
+                        executed, entry, effect_entry = await self._send(
+                            target, observation, "while_pending", decided, turn, observed, raw_choice,
+                            selected.id, help_event)
                         sent.append(executed)
                         entries.append(entry)
+                        effect_entries.append(effect_entry)
                         if not executed.execution.rejected:
                             executed_id = target.id
                 outcome = TurnOutcome.escalated if selected.kind is ChoiceKind.escalate else TurnOutcome.delegated
@@ -412,11 +427,11 @@ class TurnLoop:
             latency_ms=(time.perf_counter() - started) * 1000.0,
         )
         self._turns.append(record)
-        self._emit(
+        turn_entry = self._emit(
             TraceKind.turn, record.model_dump(mode="json"), TraceAuthor.core, turn,
             [observed, offered, context, decided, *entries],
         )
-        self._reports.append(TurnReport(
+        report = TurnReport(
             record=record,
             observation=observation,
             selected=selected,
@@ -425,7 +440,10 @@ class TurnLoop:
             help_event=help_event,
             executed=tuple(sent),
             halt=answer.halt,
-        ))
+        )
+        self._reports.append(report)
+        self._memory.record(report, observation_trace_seq=observed, turn_trace_seq=turn_entry,
+                            execution_trace_seqs=entries, effect_trace_seqs=effect_entries)
         self._previous = observation
         if answer.halt is not None:
             self._halt = answer.halt
@@ -490,18 +508,24 @@ class TurnLoop:
     # --- execution --------------------------------------------------------------------------
 
     async def _send(
-        self, choice: Choice, observation: Observation, purpose: str, decided: int | None, turn: int
-    ) -> tuple[Executed, int | None]:
+        self, choice: Choice, observation: Observation, purpose: str, decided: int | None, turn: int,
+        observed: int | None, raw_choice: str | None, effective_choice: str, help_event: str | None,
+    ) -> tuple[Executed, int | None, int | None]:
         """Send one chosen input, bound to the observation its set was built from, and measure its effect."""
         request = self._executor.request_for(choice, based_on_seq=observation.seq)
         try:
             execution = await self._executor.send(request)
         except BaseException:
             # The request may have reached the bridge; the trace keeps it even though no record came back.
-            self._emit(
+            entry = self._emit(
                 TraceKind.execution, {"purpose": purpose, "request": request, "records": []},
                 TraceAuthor.bridge, turn, [decided],
             )
+            self._memory.interrupted_attempt(
+                turn=turn, observation=observation, observation_trace_seq=observed,
+                raw_choice=raw_choice, effective_choice=effective_choice, help_event=help_event,
+                choice_id=choice.id, purpose=purpose, execution=None, effect=None,
+                trace_seq=entry, effect_trace_seq=None)
             raise
         entry = self._emit(
             TraceKind.execution,
@@ -510,17 +534,26 @@ class TurnLoop:
             TraceAuthor.bridge, turn, [decided],
         )
         effect = None
-        if not execution.rejected and self._effects is not None:
-            effect = await self._effects.measure(choice, execution)
-            if effect is not None:
-                measured = self._emit(
-                    TraceKind.effect,
-                    {"choice_id": choice.id, "action": request["action"],
-                     "expected": _json_ready(effect.expected), "observed": _json_ready(effect.observed)},
-                    TraceAuthor.core, turn, [entry],
-                )
-                self._note_effect(choice, effect, turn, [seq for seq in (entry, measured) if seq is not None])
-        return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry
+        measured = None
+        try:
+            if not execution.rejected and self._effects is not None:
+                effect = await self._effects.measure(choice, execution)
+                if effect is not None:
+                    measured = self._emit(
+                        TraceKind.effect,
+                        {"choice_id": choice.id, "action": request["action"],
+                         "expected": _json_ready(effect.expected), "observed": _json_ready(effect.observed)},
+                        TraceAuthor.core, turn, [entry],
+                    )
+                    self._note_effect(choice, effect, turn, [seq for seq in (entry, measured) if seq is not None])
+        except BaseException:
+            self._memory.interrupted_attempt(
+                turn=turn, observation=observation, observation_trace_seq=observed,
+                raw_choice=raw_choice, effective_choice=effective_choice, help_event=help_event,
+                choice_id=choice.id, purpose=purpose, execution=execution, effect=effect,
+                trace_seq=entry, effect_trace_seq=measured)
+            raise
+        return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry, measured
 
     # --- suspicions -------------------------------------------------------------------------
 
@@ -601,16 +634,26 @@ class TurnLoop:
                 context=copy.deepcopy(payload) if payload is not None else {},
             )
             pending.task = asyncio.ensure_future(self._help.run(request))
-            pending.task.add_done_callback(lambda _task, p=pending: setattr(p, "finished_wall", self._clock()))
+            def finished(_task: asyncio.Task[HelpResult], p: _Pending = pending) -> None:
+                if p.resolved is None:
+                    p.finished_wall = self._clock()
+
+            pending.task.add_done_callback(finished)
         self._pending = pending
         return "opened"
 
-    def _adopt_finished_help(self, turn: int) -> None:
-        """Adopt a finished helper's result, once, before this turn observes."""
-        pending = self._pending
-        if pending is None or pending.task is None or not pending.task.done():
+    def _adopt_finished_help(self, pending: _Pending, ready: HelpResult | asyncio.Task[HelpResult],
+                             turn: int) -> None:
+        """Adopt the result that was ready at entry, after the observation epoch check."""
+        if self._pending is not pending:
             return
-        task = pending.task
+        if isinstance(ready, HelpResult):
+            if pending.resolved is ready:
+                self._adopt(pending, ready, turn)
+            return
+        task = ready
+        if pending.task is not task or pending.resolved is not None or not task.done():
+            return
         if task.cancelled():
             self._drop_pending(pending, "cancelled", turn=turn)
             return
@@ -624,6 +667,11 @@ class TurnLoop:
 
     def _adopt(self, pending: _Pending, result: HelpResult, turn: int) -> None:
         self._pending = None
+        publish = getattr(self._help, "adopt_result", None)
+        if publish is not None:
+            result = publish(pending.turn, result)
+            if not isinstance(result, HelpResult):
+                raise TypeError("help publication must return a HelpResult")
         finished = pending.finished_wall or self._clock()
         shown = _json_ready(result.result)
         self._adoptions.append(result.result)
@@ -645,18 +693,25 @@ class TurnLoop:
         )
 
     def resolve_helper(self, result: Any, *, source: str | None = None) -> bool:
-        """Adopt the pending request's result from outside, exactly once. It is shown to S1 from the next turn."""
+        """Stage one external result for adoption after a later observation's epoch check."""
         pending = self._pending
-        if pending is None:
+        if pending is None or pending.resolved is not None:
             return False
-        if pending.task is not None and not pending.task.done():
-            pending.task.cancel()
+        discard = getattr(self._help, "discard_result", None)
+        if discard is not None:
+            discard(pending.turn)
+        if pending.task is not None:
+            self._retire_helper(pending.task)
+            pending.task = None
         pending.finished_wall = self._clock()
-        self._adopt(pending, HelpResult(source=source, result=result), len(self._turns))
+        pending.resolved = HelpResult(source=source, result=result)
         return True
 
     def _drop_pending(self, pending: _Pending, reason: str, *, turn: int | None) -> None:
         self._pending = None
+        discard = getattr(self._help, "discard_result", None)
+        if discard is not None:
+            discard(pending.turn)
         self._cancelled_helpers += 1
         self._emit(
             TraceKind.help,
@@ -664,6 +719,31 @@ class TurnLoop:
              "opened_turn": pending.turn, "source": None, "result": None, "reason": reason},
             TraceAuthor.core, turn, [pending.entry],
         )
+
+    def _cancel_pending(self, pending: _Pending, reason: str, *, turn: int | None) -> None:
+        """Invalidate first, then cancel and consume even a cancellation-resistant task's result."""
+        self._drop_pending(pending, reason, turn=turn)
+        task = pending.task
+        if task is not None:
+            self._retire_helper(task)
+
+    def _retire_helper(self, task: asyncio.Task[HelpResult]) -> None:
+        """Cancel a replaced task and consume its eventual result or exception."""
+        if task.done():
+            if not task.cancelled():
+                task.exception()
+            return
+        # Do not hold up the turn if the helper suppresses cancellation. Its discard hook has
+        # already invalidated any staged or late result; retain the task until it finishes.
+        self._retired_helpers.add(task)
+
+        def consume(done: asyncio.Task[HelpResult]) -> None:
+            self._retired_helpers.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(consume)
+        task.cancel()
 
     def _pending_view(self, observation: Observation, now: datetime) -> dict[str, Any] | None:
         """The open request as S1 reads it: what was asked, how long ago in game and wall seconds, and what it waits on."""
@@ -712,6 +792,8 @@ class TurnLoop:
         if self._stopped:
             return self._stop_result
         self._stopped = True
+        if reason in ("reset", "scene_change"):
+            self._memory.mark_boundary(reason)
         pending = self._pending
         if pending is not None:
             task = pending.task

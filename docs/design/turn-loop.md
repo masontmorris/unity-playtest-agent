@@ -81,6 +81,17 @@ tests never really wait.
 - `facts` for the last turn: its outcome; a bridge rejection with its reason; each accepted input's
   status, measured applied duration and release verification (`unknown` when the bridge did not say); and
   the probe's expected-versus-observed line.
+- `recent_history` keeps two independent chronological windows: the last eight completed turns and
+  the last eight execution attempts, including rejected attempts and `while_pending` continuations.
+  Waits advance the first window without erasing physical attempts from the second. Each window states
+  total and omitted counts. Rows retain choice identities, status, measured effects, and separate bridge
+  observation and trace references. Missing evidence stays null. Scene/session changes, regressing
+  frame/game clocks, and explicit reset/scene stops start a new epoch with discarded counts.
+  Full observations and image bytes are not duplicated in this memory. Direct builder calls that omit
+  history retain their original payload bytes.
+- Live-session facts include remaining wall time and S1/frontier call slots. A missing counter is null;
+  disabled help and an exhausted call cap are explicit. Slots do not promise money or provider availability.
+  These facts never remove a choice, open help, select an action, or make S1 finish.
 - `pending_help` is always present. `null` when no request is open. Open, it carries the choice and its
   label, S1's reason if it gave one, the turn and `seq` it opened on, its age in game seconds and in wall
   seconds, what it waits on (`waiting_on`, the choice's role) and whether a helper is attached.
@@ -94,9 +105,19 @@ tests never really wait.
 2. While help is pending S1's ordinary selections execute exactly as chosen, and an explicit wait sends
    no input.
 3. At most one request is open. A repeat is recorded (`help` `repeat`) and creates no new call.
-4. A finished result is adopted once, at the top of a later turn, and shown with its source and age; S1
-   decides what to do with it.
-5. Stop cancels the helper and releases inputs.
+4. The loop remembers which result was ready when a turn began, then checks the fresh observation's
+   epoch before adopting it and collecting facts. A scene/session change or regressing clock/frame
+   discards the prior epoch's request, including completed, externally resolved or late results.
+   The adopted result carries its source and age; S1 decides what to do with it. The frontier stages
+   updates while its task runs, and the synchronous `adopt_result` hook publishes them at adoption.
+   A result that finishes during observation capture waits until a later eligible turn.
+5. Stop cancels the helper and releases inputs. The optional `discard_result` hook clears unadopted
+   state and prevents late completion from publishing after cancellation or invalidation.
+
+Live frontier packets forward the same bounded `recent_history` S1 saw, including window omissions,
+prior failures and effect measurements. Packet `seq` citations remain bridge observation IDs;
+`trace_seq`/`effect_trace_seq` remain trace references. Action rows are anchored to their decision
+observations and retain the effect measurements' own references; these are not interchangeable clocks.
 
 With no helper attached, an escalation still opens a request. It stays pending, visible in `pending_help`
 with `helper_attached: false`, until stop. A helper that raises is adopted as `{"error": <class name>}`.
@@ -132,9 +153,10 @@ Below the decision latency, a stale rejection buys no fresher decision; the next
 S1 cannot act at all (#132). The limit should follow the measured latency down if S1 gets faster.
 
 A frontier answer stays in S1's guidance for the rest of the run, and the frontier restates every open
-hypothesis in each answer, usually reworded. So the frontier helper lists a hypothesis in full only when its
-id is new or its status changed. A same-status restatement is listed by id in `restated_hypotheses`. The
-trace keeps every version, and the frontier's own requests carry the latest. The helper names its directive
+hypothesis in each answer, usually reworded. The frontier helper now lists a hypothesis in full whenever
+any content or evidence changes, including when its status is unchanged. Only an identical version is
+listed by id in `restated_hypotheses`. Earlier support and contradiction citations remain available to
+later frontier requests; S1's adopted guidance and the trace retain the revisions. The helper names its directive
 by id. The directive tracker states every directive's setpoint,
 deadline and current or final outcome as facts on every turn. Before this, the facts showed an outcome
 only on the turn it closed, and guidance kept a copy frozen at `open`.

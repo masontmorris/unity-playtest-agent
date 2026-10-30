@@ -37,6 +37,7 @@ from playtest.core.turn_loop import TurnLoop
 
 from .choices import ManifestChoices
 from .pacing import PacingFacts, PacingStats, TokenBudget
+from .resources import SessionFacts
 
 MAX_PROVIDER_FAILURES = 3
 WALL_LIMIT_S = 600.0
@@ -84,6 +85,7 @@ async def run_session(
     budget: TokenBudget | None = None,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     facts: FactsSource | None = None,
+    s1_call_cap: int | None = None,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
 
@@ -92,13 +94,16 @@ async def run_session(
     """
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
-    paced = PacingFacts(inner=facts) if budget is not None else None
+    started = clock()
+    resources = SessionFacts(started=started, wall_limit_s=wall_limit_s, clock=clock,
+                             s1=s1, s1_call_cap=s1_call_cap, help=help, inner=facts)
+    paced = PacingFacts(inner=resources) if budget is not None else None
     loop = TurnLoop(
         client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
-        objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else facts,
+        objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
     )
-    deadline = clock() + wall_limit_s
+    deadline = started + wall_limit_s
     failures = total_failures = 0
     waited_s = longest_s = 0.0
     turns_waited = 0

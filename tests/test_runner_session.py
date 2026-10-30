@@ -298,10 +298,16 @@ def test_a_session_runs_manifest_actions_with_their_leases_and_finishes():
 
 def test_the_wall_clock_limit_ends_a_run_normally():
     async def main():
+        clock = FakeTime()
+
+        def choose_wait(context):
+            clock.now += 2.0  # elapsed work, independent of how often the harness reads its clock
+            return pick("wait")
+
         game, client = await connected()
         try:
-            result = await session(client, build_choices(two_actions()), s1=FakeS1(*["wait"] * 50),
-                                       objective=OBJECTIVE, wall_limit_s=3.0, clock=ticking())
+            result = await session(client, build_choices(two_actions()), s1=FakeS1(*[choose_wait] * 50),
+                                       objective=OBJECTIVE, wall_limit_s=3.0, clock=clock.clock)
             assert (result.status, result.ending) == ("complete", "wall_limit") and result.turns == 2
         finally:
             await closed(game, client)

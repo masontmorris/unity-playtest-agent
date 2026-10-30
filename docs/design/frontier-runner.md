@@ -15,6 +15,15 @@ up. S1's selected `while_pending` choice remains owned by the core loop.
 Accepted hypotheses and directives are written as `investigation` trace entries. Directive scoring
 runs in a runner facts source against the manifest's reader aliases using the shared `roles.checks`
 evaluator. The directive goal, setpoint, deadline and current status are shown to S1 as measured facts.
+The background request stages updates; the loop publishes them through `adopt_result` only at its
+adoption boundary, after checking the fresh observation's epoch. A completion during observation
+capture cannot start that turn's scoring window, and a result from the prior epoch is discarded.
+Candidate findings are staged too: only the exact adopted result can publish one. Its citations are
+frozen at request time and retain validated execution/effect entries for cited history attempts;
+an unavailable or mismatched reference produces an explicit refusal to record the candidate.
+Cancellation/invalidation discards staged state. Same-status hypothesis revisions retain their changed
+text and evidence; only an identical version is compacted as a restatement. Live packets include the
+bounded action/turn history S1 saw, and facts state remaining wall time and call slots.
 The tracker records `met`, `not_met`, `expired`, `invalidated` or `unknown` with a `trace_seq` reference
 to the observation evidence. Missing readings stay unknown; a deadline with no scoreable reading is
 recorded as expired. A session ending before an active directive can be scored records unknown.
@@ -189,7 +198,7 @@ reserved; it is never shown to the frontier as "no suspicions".
 | Finish | Ends normally, then stops and releases inputs. | finish choice branch after `:328`; `tests/test_runner_session.py`. |
 | Escalate or delegate | Only the selected help choice calls `_help_request`; runner calls the frontier only for the attached `escalate` helper. | `core/turn_loop.py:336-337`; `runner/frontier_help.py:42`. |
 | Pending help | Executes exactly S1's valid `while_pending` continuation; otherwise waits under the existing default. | `core/turn_loop.py:343`; `tests/test_turn_loop.py`. |
-| Helper adoption | A completed helper result is adopted once at the next turn start and included in S1 guidance. | `core/turn_loop.py:255`, `_adopt_finished_help` at `:526`; end-to-end test in `tests/test_frontier_help.py`. |
+| Helper adoption | A result ready at turn entry is adopted once after the fresh observation's epoch check; prior-epoch help is discarded. | `core/turn_loop.py` (`run_turn`, `_adopt_finished_help`); end-to-end tests in `tests/test_loop_help_publication.py`. |
 | Directive scoring | Reads the current observation and shared comparator result to write a fact and trace outcome; it cannot call the help port or choose input. | `runner/directives.py:45-71`; all terminal outcomes covered in `tests/test_frontier_help.py`. |
 
 The request uses the exact context S1 received and the explicit request turn and observation sequence. Investigation rows cite the corresponding observation's trace entry. The fake end-to-end trace passes the trace-entry validator, adherence checker and trace replay checks. No live trace was collected, as requested.

@@ -92,7 +92,7 @@ The call blocks the next S1 turn; the game keeps running in real time. Encoding 
 | `choice_set_version`, `choices` | the exact `ChoiceSet` S1 answered |
 | `directive`, `directive_history` | the adapter's adopted live directive and superseded history |
 | `facts` | `Facts.evidence()`: the game-derived prose S1 saw, with explicit `seqs` recorded at fact construction |
-| `recent` | one row per episode turn with explicit `seq`, `game_s`, `wall_utc`, `public`, `reader_errors`, the selected raw/effective/executed values and the execution record |
+| `recent` | Episode callers supply their measured recent records. Live sessions forward S1's two bounded turn/action-attempt windows, including omissions, failures and measured effects. Explicit `seq` is the originating bridge observation; `trace_seq` and effect measurement references remain distinct. |
 | `hypotheses`, `new_hypothesis_ids` | empty; the investigation store is deferred (#35) |
 | `clip` / `clip_unavailable_reason` | the media result, or the explicit reason there is no clip |
 

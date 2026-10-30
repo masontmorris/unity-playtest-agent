@@ -119,6 +119,13 @@ class HelpResult:
 
 
 class HelpPort(Protocol):
+    """Async work, with optional synchronous publication at the loop's adoption boundary.
+
+    Ports that stage state can implement ``adopt_result(request_turn, result) -> HelpResult``
+    and ``discard_result(request_turn)``. The loop invokes these at adoption or invalidation;
+    completion during another turn does not publish state into that turn's context.
+    """
+
     async def run(self, request: HelpRequest) -> HelpResult:
         """Answer one request. The loop runs it as a task and cancels it on reset, scene change or stop."""
         ...

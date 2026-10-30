@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
 import pytest
 
@@ -132,3 +133,19 @@ def test_canonical_is_stable_for_equal_payloads():
     two = build_context(objective="Explore.", observation=observation(), choices=choices())
     assert canonical(one) == canonical(two)
     assert canonical(dict(reversed(list(one.items())))) == canonical(one)
+
+
+def test_recent_history_is_optional_and_independently_copied():
+    kwargs = {"objective": "Explore.", "observation": observation(), "choices": choices()}
+    plain = build_context(**kwargs)
+    assert "recent_history" not in plain
+    assert canonical(plain) == canonical(build_context(**kwargs, recent_history=None))
+    assert sha256(canonical(plain).encode("utf-8")).hexdigest() == "b88c8e7b32fb34401b3d4e4ca20a06d7aac5e3fb306e63511f0fa3b109ef6c5d"
+
+    supplied = {"turns": {"items": [{"outcome": {"value": "original"}}]}}
+    payload = build_context(**kwargs, recent_history=supplied)
+    supplied["turns"]["items"][0]["outcome"]["value"] = "caller change"
+    assert payload["recent_history"]["turns"]["items"][0]["outcome"]["value"] == "original"
+    payload["recent_history"]["turns"]["items"].clear()
+    assert supplied["turns"]["items"]
+    assert build_context(**kwargs, recent_history={})["recent_history"] == {}
