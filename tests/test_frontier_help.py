@@ -858,10 +858,111 @@ def test_the_frontier_sees_what_the_manifest_says_each_field_reads():
                                descriptor={"declaring_type": "Game.Score", "name": "m_Count"}),
                SimpleNamespace(alias="flag", kind="bool", field_id="f:flag")]   # a reader with no notes gets none
     notes = reader_notes(readers)
+    # The adapter records the two facts it has; saying what the note is belongs to the message that sends it.
     assert notes == {"public.counter": {"source": "Game.Score.m_Count", "preflight_note": "Counts collected items"}}
     manifest = frontier.Manifest(fields={"public.counter": "number", "public.flag": "bool"}, actions={}, skills=[],
                                  field_notes=notes)
     rows = {row["path"]: row for row in json.loads(provider.manifest_message(manifest))["fields"]}
-    assert (rows["public.counter"]["source"], rows["public.counter"]["preflight_note"]) == (
-        "Game.Score.m_Count", "Counts collected items")
+    assert rows["public.counter"] == {
+        "path": "public.counter", "kind": "number", "source": "Game.Score.m_Count",
+        "preflight_note": "Counts collected items", "preflight_note_origin": "preflight_model_inference",
+        "preflight_note_verification": "unverified"}
     assert rows["public.flag"] == {"path": "public.flag", "kind": "bool"}
+
+
+@pytest.mark.parametrize("descriptor, why, expected", [
+    ({"declaring_type": "Owner.A", "name": "m_A"}, "Reason R", {"source": "Owner.A.m_A", "preflight_note": "Reason R"}),
+    ({"declaring_type": "Owner.A", "name": "m_A"}, None, {"source": "Owner.A.m_A"}),
+    ({"declaring_type": "Owner.A"}, "Reason R", {"preflight_note": "Reason R"}),      # half an identity is not one
+    ({"name": "m_A"}, "Reason R", {"preflight_note": "Reason R"}),
+    ({"declaring_type": "", "name": "m_A"}, "Reason R", {"preflight_note": "Reason R"}),
+    ({"declaring_type": "Owner.A", "name": 7}, "Reason R", {"preflight_note": "Reason R"}),
+    ({}, "Reason R", {"preflight_note": "Reason R"}),
+    (None, "Reason R", {"preflight_note": "Reason R"}),
+    ("not a mapping", "Reason R", {"preflight_note": "Reason R"}),
+    ({"declaring_type": "Owner.A", "name": "m_A"}, "", {"source": "Owner.A.m_A"}),
+    ({"declaring_type": "Owner.A", "name": "m_A"}, " \n ", {"source": "Owner.A.m_A"}),
+    ({"declaring_type": "Owner.A", "name": "m_A"}, 5, {"source": "Owner.A.m_A"}),
+    (None, None, None),
+], ids=["both", "identity_only", "no_name", "no_type", "empty_type", "name_not_text", "empty_descriptor",
+        "no_descriptor", "descriptor_not_a_mapping", "empty_note", "blank_note", "note_not_text", "nothing"])
+def test_a_reader_note_holds_only_what_the_manifest_recorded(descriptor, why, expected):
+    reader = SimpleNamespace(alias="alpha", kind="number", field_id="f:alpha", why=why, descriptor=descriptor)
+    assert reader_notes([reader]) == ({"public.alpha": expected} if expected else {})
+
+
+def test_a_readers_note_is_kept_exactly_as_the_preflight_model_wrote_it():
+    # Nothing trims, rewords, judges or drops a note, so a note is never lost to what it happens to say.
+    texts = ["Counts down to the next event", "  Elapsed time since the last event \n", "Fraction used \u2014 \"0 to 1\"",
+             "Set while the effect is active", "Reason R"]
+    readers = [SimpleNamespace(alias=f"r{i}", kind="number", field_id=f"f:{i}", why=text) for i, text in enumerate(texts)]
+    assert {path: note["preflight_note"] for path, note in reader_notes(readers).items()} == {
+        f"public.r{i}": text for i, text in enumerate(texts)}
+
+
+def test_the_request_sent_labels_a_readers_note_an_unverified_inference_beside_its_measured_and_reflected_facts(
+        tmp_path: Path):
+    note = "Reason R: tracks quantity Q \u2014 a ratio, \"0 to 1\" "          # opaque; exact text must reach the model
+    full = [SimpleNamespace(alias="alpha", kind="number", field_id="f:alpha", why=note,
+                            descriptor={"declaring_type": "Owner.A", "name": "m_Alpha", "field_type": "System.Single"}),
+            SimpleNamespace(alias="beta", kind="number", field_id="f:beta",             # reflected, with no note
+                            descriptor={"declaring_type": "Owner.B", "name": "m_Beta"}),
+            SimpleNamespace(alias="gamma", kind="bool", field_id="f:gamma", why="Reason G"),   # a note, nothing reflected
+            SimpleNamespace(alias="delta", kind="number", field_id="f:delta"),                # nothing recorded
+            SimpleNamespace(alias="epsilon", kind="number", field_id="f:epsilon", why="  ",   # a blank note and half an
+                            descriptor={"declaring_type": "Owner.E"})]                        # identity are nothing
+    bare = [SimpleNamespace(alias=r.alias, kind=r.kind, field_id=r.field_id) for r in full]  # the same fields, no notes
+    calibration = {"freshness": {"f:alpha": {"classification": "idle"}, "f:beta": {"classification": "unknown"}}}
+
+    nothing = json.dumps({"add_choices": [], "candidate_finding": None, "directive": None, "hypotheses": [],
+                          "prune_choices": []})
+
+    async def send_to(readers, calibration_record, name):
+        sent = []
+
+        def send(body):
+            sent.append(body)
+            return 200, {"model": provider.MODEL, "choices": [{"finish_reason": "stop", "message": {"content": nothing}}],
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5,
+                                   "prompt_tokens_details": {"cached_tokens": 0}}}, 1.0, None
+
+        stub = SimpleNamespace(readers=readers, actions=two_actions().actions, skills=[])
+        sink = MemorySink()
+        helper = FrontierHelp(project=tmp_path, status=None, manifest=stub, directory=tmp_path / name,
+                              approval=_approval(), sink=sink, tracker=DirectiveTracker(sink),
+                              started_utc=datetime.now(timezone.utc), send=send,
+                              capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1,
+                              calibration=calibration_record)
+        result = await helper.run(_escalation_request(1, counter=3))
+        return sent[0], helper, result, sink
+
+    async def main():
+        body, helper, result, sink = await send_to(full, calibration, "noted")
+        rows = {row["path"]: row for row in json.loads(body["messages"][1]["content"])["fields"]}
+        label = {"preflight_note_origin": "preflight_model_inference", "preflight_note_verification": "unverified"}
+        assert rows["public.alpha"] == {
+            "path": "public.alpha", "kind": "number",
+            "calibration": provider.CALIBRATION_LABELS["idle"],       # measured by preflight calibration
+            "source": "Owner.A.m_Alpha",                              # reflected from the game
+            "preflight_note": note, **label}                          # a model's words, as written, and labelled so
+        assert rows["public.beta"] == {"path": "public.beta", "kind": "number", "source": "Owner.B.m_Beta"}
+        assert rows["public.gamma"] == {"path": "public.gamma", "kind": "bool", "preflight_note": "Reason G", **label}
+        assert rows["public.delta"] == {"path": "public.delta", "kind": "number"}
+        assert rows["public.epsilon"] == {"path": "public.epsilon", "kind": "number"}
+
+        # The notes change what the frontier is told about a field, and nothing it may answer or choose: the same
+        # system prompt, the same packet (so the same choices), the same closed answer schema, and the same result.
+        plain, _, plain_result, plain_sink = await send_to(bare, None, "bare")
+        assert body["messages"][1] != plain["messages"][1]
+        assert body["messages"][0] == plain["messages"][0]
+        assert body["messages"][2] == plain["messages"][2]
+        assert body["response_format"] == plain["response_format"]
+        assert {k: v for k, v in body.items() if k != "messages"} == {k: v for k, v in plain.items() if k != "messages"}
+        packet = json.loads(body["messages"][2]["content"])
+        offered = _escalation_request(1, counter=3).context["choices"]
+        assert [c["id"] for c in packet["choices"]] == [c["id"] for c in offered]
+        assert result.result == plain_result.result                    # the same answer is reviewed the same way
+        assert [e["body"] for e in sink.of_kind("investigation")] == [e["body"] for e in plain_sink.of_kind("investigation")]
+        assert helper.calls == 1
+
+    asyncio.run(main())

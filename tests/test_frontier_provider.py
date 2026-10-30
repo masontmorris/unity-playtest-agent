@@ -267,11 +267,103 @@ def test_a_directive_that_names_an_effect_field_is_reported_on_the_directive():
     assert "'effect.move' is not a manifest field" in result.review.problems[0].reason
 
 
-def test_the_manifest_note_says_a_preflight_note_is_what_the_field_is_meant_to_be_not_a_measurement():
-    note = json.loads(provider.manifest_message(manifest()))["notes"]
-    assert ("its preflight_note is what the preflight model wrote when it chose the field: "
-            "what the field is meant to be, not a measurement.") in note
-    assert "a description, not a measurement" not in note
+# --- what a field row says, and where each statement came from ------------------------------------------------------
+
+NOTE = "Reason R: tracks quantity Q \u2014 a ratio, \"0 to 1\""        # opaque, with characters a serializer could mangle
+
+
+def noted(fields=None, **parts) -> frontier.Manifest:
+    """A manifest over opaque fields whose rows differ only in what was recorded about them."""
+    fields = fields or {"public.alpha": "number", "public.beta": "number", "public.gamma": "number", "public.delta": "bool"}
+    return frontier.Manifest(fields=fields, actions=manifest().actions, skills=manifest().skills, **parts)
+
+
+def field_rows(manifest_: frontier.Manifest) -> dict[str, dict]:
+    return {row["path"]: row for row in json.loads(provider.manifest_message(manifest_))["fields"]}
+
+
+def test_a_field_row_keeps_what_was_measured_reflected_and_inferred_under_separate_keys():
+    rows = field_rows(noted(
+        calibration={"public.alpha": "input", "public.beta": "no_change_observed"},
+        field_notes={"public.alpha": {"source": "Owner.m_Alpha", "preflight_note": NOTE},
+                     "public.beta": {"source": "Owner.m_Beta"},
+                     "public.gamma": {"preflight_note": "Reason G"}}))
+    assert rows["public.alpha"] == {
+        "path": "public.alpha", "kind": "number",
+        "calibration": provider.CALIBRATION_LABELS["input"],                  # measured on this build
+        "source": "Owner.m_Alpha",                                            # reflected from the game
+        "preflight_note": NOTE,                                               # the preflight model's words, as written
+        "preflight_note_origin": "preflight_model_inference",
+        "preflight_note_verification": "unverified"}
+    # What was not recorded is not there, so it is unknown: no note means no provenance either, and no source or
+    # class is filled in from a note.
+    assert rows["public.beta"] == {"path": "public.beta", "kind": "number",
+                                   "calibration": provider.CALIBRATION_LABELS["no_change_observed"],
+                                   "source": "Owner.m_Beta"}
+    assert rows["public.gamma"] == {"path": "public.gamma", "kind": "number", "preflight_note": "Reason G",
+                                    "preflight_note_origin": "preflight_model_inference",
+                                    "preflight_note_verification": "unverified"}
+    assert rows["public.delta"] == {"path": "public.delta", "kind": "bool"}
+
+
+@pytest.mark.parametrize("text", [
+    "Counts down to the next event", "Elapsed time since the last event", "Fraction of capacity in use",
+    "Set while the effect is active", "Reason R", "a", "x" * 400,
+], ids=["countdown", "elapsed", "fraction", "flag", "opaque", "one_character", "long"])
+def test_a_note_is_sent_as_recorded_and_labelled_the_same_whatever_it_says(text):
+    # Nothing here reads the note: no wording is dropped, softened or trusted more because of what it says.
+    row = field_rows(noted(field_notes={"public.alpha": {"preflight_note": text}}))["public.alpha"]
+    assert row == {"path": "public.alpha", "kind": "number", "preflight_note": text,
+                   "preflight_note_origin": "preflight_model_inference", "preflight_note_verification": "unverified"}
+
+
+@pytest.mark.parametrize("blank", ["", "  ", "\n", None, 5, ["Reason"]], ids=["empty", "spaces", "newline", "none", "number", "list"])
+def test_a_note_that_is_not_text_is_left_out_with_no_provenance_made_up_for_it(blank):
+    assert field_rows(noted(field_notes={"public.alpha": {"preflight_note": blank, "source": blank}}))["public.alpha"] == {
+        "path": "public.alpha", "kind": "number"}
+
+
+def test_the_manifest_notes_name_every_key_a_field_row_can_carry():
+    full = noted(calibration={"public.alpha": "idle"},
+                 field_notes={"public.alpha": {"source": "Owner.m_Alpha", "preflight_note": NOTE}})
+    value = json.loads(provider.manifest_message(full))
+    carried = {key for row in value["fields"] for key in row} - {"path", "kind"}
+    assert carried == {"calibration", "source", "preflight_note", "preflight_note_origin", "preflight_note_verification"}
+    assert all(key in value["notes"] for key in carried)                      # the model is told what each one is
+    assert "meant to be" not in value["notes"]                                # a note is not a statement of intent
+
+
+def test_the_prompt_names_the_row_keys_it_reasons_about():
+    row = field_rows(noted(calibration={"public.alpha": "idle"},
+                           field_notes={"public.alpha": {"source": "Owner.m_Alpha", "preflight_note": NOTE}}))["public.alpha"]
+    for key in ("calibration", "source", "preflight_note"):
+        assert key in row and key in frontier.SYSTEM
+
+
+def test_notes_are_laid_out_the_same_whatever_order_they_were_recorded_in():
+    def flipped(mapping):
+        return dict(reversed(list(mapping.items())))
+
+    calibration = {"public.alpha": "input", "public.beta": "idle"}
+    notes = {"public.alpha": {"source": "Owner.m_Alpha", "preflight_note": NOTE},
+             "public.beta": {"preflight_note": "Reason B", "source": "Owner.m_Beta"}}
+    forward = noted(calibration=calibration, field_notes=notes)
+    backward = noted(fields=flipped(forward.fields), calibration=flipped(calibration),
+                     field_notes={path: flipped(note) for path, note in flipped(notes).items()})
+    assert provider.manifest_message(forward) == provider.manifest_message(backward)
+
+
+def test_notes_change_what_the_frontier_is_told_about_a_field_and_nothing_it_may_answer_or_choose():
+    plain = noted()
+    labelled = noted(calibration={"public.alpha": "input"},
+                     field_notes={"public.alpha": {"source": "Owner.m_Alpha", "preflight_note": NOTE}})
+    before, after = provider.build_request(plain, sample()), provider.build_request(labelled, sample())
+    assert before["messages"][1] != after["messages"][1]
+    assert before["messages"][0] == after["messages"][0]                      # the system prompt
+    assert before["messages"][2] == after["messages"][2]                      # the packet, with the choices S1 had
+    assert before["response_format"] == after["response_format"]              # the closed answer schema
+    assert canonical(frontier.schema(plain)) == canonical(frontier.schema(labelled))
+    assert {key: before[key] for key in before if key != "messages"} == {key: after[key] for key in after if key != "messages"}
 
 
 def test_schema_and_manifest_message_are_stable_while_the_packet_changes():

@@ -173,11 +173,18 @@ SYSTEM = (
     "again.\n"
     "- A field's calibration, in the manifest, says how it changed when preflight sampled it on this same build "
     "before play. Calibration says whether a field changed on this build, not whether the change is right. A "
-    "field's preflight_note says what it is meant to be; when its readings in the facts contradict the note (a "
-    "countdown, fraction or flag that runs past the bounds the description gives it, or keeps moving after the "
-    "event it describes has ended), that contradicts an expectation even if calibration saw it change and even "
-    "if S1 escalated about something else: propose a candidate_finding with expected_source interpretation and "
-    "cite the observation seq.\n"
+    "field's source names the game field it reads: that identifies the field and does not say how it should "
+    "behave. A field's preflight_note and the alias in its path are the preflight model's inference about the "
+    "field, and the manifest marks the note unverified. However obvious they look, what they suggest is a "
+    "possible interpretation, not a confirmed expectation of the game. A reading in the facts that departs from "
+    "what a note or name suggests (a countdown, fraction or flag that runs past the bounds the note gives it, or "
+    "keeps moving after the event it describes has ended) is a hypothesis, not yet a contradicted expectation: "
+    "the game may depart from the note, or the note may be wrong, so use confirm_if and refute_if to say what "
+    "would tell the two apart. Neither calibration having seen the field change nor S1 having escalated about "
+    "something else excuses such a reading; weigh it. If you propose a candidate_finding from it, give "
+    "expected_source interpretation (a note or name is never an invariant or a developer_assertion) and cite the "
+    "observation seq. Say in uncertainty that the expectation rests on a note or name nothing has verified, and "
+    "give severity unknown unless something besides that note or name supports a severity.\n"
     "Observations are measured; null means unknown, not zero."
 )
 
@@ -214,8 +221,9 @@ class Manifest:
     # Observation path -> when preflight calibration saw the field change on this build ("input", "idle", "both"
     # or "no_change_observed"); a field calibration could not classify is absent. Shown to the model, never scored.
     calibration: Mapping[str, str] = field(default_factory=dict, compare=False)
-    # Observation path -> what the manifest says about the field: "source" (the game field it reads) and
-    # "preflight_note" (the preflight model's own description when it chose the field). Shown, never scored.
+    # Observation path -> what the manifest says about the field: "source" (the game field it reads, as the game
+    # reflected it) and "preflight_note" (the preflight model's own reason for choosing the field: an inference
+    # nothing has verified, which the manifest message labels as one). Shown, never scored.
     field_notes: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)
     # Action name -> its calibrated net displacement. Each is a repro_check field, `effect.<action>`; a directive
     # setpoint may not name one.
