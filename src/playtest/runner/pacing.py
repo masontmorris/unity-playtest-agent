@@ -61,6 +61,7 @@ class TokenBudget:
         self._sleep = sleep
         self._window: deque[tuple[float, int | float]] = deque()
         self._last: int | float | None = None
+        self._next_extra = 0
         self._recorded = 0
         self._estimated = 0
 
@@ -86,8 +87,8 @@ class TokenBudget:
 
     @property
     def expected(self) -> int | float:
-        """Tokens the next call is expected to use: the last counted call's, or the initial estimate before any."""
-        return self._last if self._last is not None else self._initial
+        """Last call plus any image reserve, or the initial estimate before any call."""
+        return self._last + self._next_extra if self._last is not None else self._initial
 
     def record(self, tokens: int | float, *, estimated: bool = False) -> None:
         """Count one call's tokens now. An estimate counts like a measurement and is only marked."""
@@ -99,6 +100,12 @@ class TokenBudget:
         self._last = tokens
         self._recorded += 1
         self._estimated += 1 if estimated else 0
+
+    def reserve_next_image(self, tokens: int) -> None:
+        """Reserve image tokens if the last counted call had no image but the next one may."""
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            raise ValueError("image reserve must be a non-negative integer")
+        self._next_extra = tokens
 
     async def ready(self) -> float:
         """Wait until the next call fits under the limit. Returns the seconds waited: exactly 0.0 when it already fit."""

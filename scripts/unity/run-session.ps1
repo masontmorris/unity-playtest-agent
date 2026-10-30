@@ -36,6 +36,9 @@ was made on another build and is reused here (say so; a reused manifest is not a
 META_API_KEY in this session's environment (checked by name only), and the approval file must carry the frontier arm.
 Without -Frontier the runner has no frontier helper, exactly as before.
 
+-S1GameView sends a fresh bridge frame to S1 when the selected arm has a verified image transport.
+The default d1-ultra is not verified for images; choose a supported arm explicitly.
+
 -RecordFrames records the whole session's play view. A separate process copies every frame the bridge writes into
 its rolling capture window, then encodes them into <OutputDirectory>/recording/session.mp4 after Unity exits, with
 recording.json beside it. It never talks to the bridge or the runner, and nothing in the session reads what it
@@ -61,6 +64,7 @@ param(
     [switch]$Frontier,
     [int]$MaxFrontierCalls = 0,
     [switch]$RecordFrames,
+    [switch]$S1GameView,
     [string]$UnityPath
 )
 
@@ -95,6 +99,9 @@ $s1Credentials = @{
 }
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."
+}
+if ($S1GameView -and $S1Arm -notin @('mammoth-1', 'elephant-1', 'liquid-d1.1')) {
+    throw "-S1GameView: S1 arm '$S1Arm' has no verified image transport."
 }
 foreach ($variable in $s1Credentials[$S1Arm]) {
     if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($variable))) { throw "$variable is not set in this session." }
@@ -131,7 +138,7 @@ $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENC
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
-           'UPA_RUN_MAX_FRONTIER_CALLS')
+           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 $recorder = $null
@@ -154,6 +161,7 @@ try {
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
     $env:UPA_RUN_MANIFEST_ORIGIN = if ($ManifestOrigin) { $ManifestOrigin } else { '' }
     $env:UPA_RUN_S1_ARM = $S1Arm
+    $env:UPA_RUN_S1_GAME_VIEW = if ($S1GameView) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }
     $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'

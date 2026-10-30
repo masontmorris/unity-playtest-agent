@@ -20,6 +20,7 @@ it gave them, else an estimate from the request body, reported as an estimate.
 from __future__ import annotations
 
 import asyncio
+import base64
 import math
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -38,11 +39,16 @@ FOLLOW_UP = "while_pending"
 FOLLOW_UP_INSTRUCTIONS = (
     "Help has been requested and is pending. Choose exactly one id from the listed choices to say what "
     "happens to the game's input while it is pending. A wait choice sends no input; any other listed "
-    "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero."
+    "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
+    "When an image is present, it is the current game view."
 )
 PROMPTS = {PRIMARY: INSTRUCTIONS, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
+# Day 1 exercised these exact model/transport combinations. d1-ultra was text-only in its probe;
+# sharing Liquid's endpoint does not establish that this model accepts images.
+IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images"}
+IMAGE_TOKENS = {"messages": 1000, "images": 1400}  # Day 1 1280x720 measurements
 CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
 
 
@@ -66,6 +72,24 @@ def _tokens(usage: Any) -> int | None:
     return used + (_count(usage.get("output_tokens")) or 0)
 
 
+def _without_image(value: Any, image: bytes | None) -> Any:
+    """Do not retain an echoed data URL or encoded image in a provider response trace."""
+    if image is None:
+        return value
+    encoded = base64.b64encode(image).decode("ascii")
+
+    def clean(item: Any) -> Any:
+        if isinstance(item, str):
+            return item.replace("data:image/jpeg;base64," + encoded, "[image redacted]").replace(encoded, "[image redacted]")
+        if isinstance(item, list):
+            return [clean(part) for part in item]
+        if isinstance(item, dict):
+            return {clean(key): clean(part) for key, part in item.items()}
+        return item
+
+    return clean(value)
+
+
 class _Reply:
     """One call's outcome: its `s1_call` record, the choice it named, and why there is none."""
 
@@ -87,11 +111,16 @@ class SystemOneS1:
         clock_mode: ClockMode = ClockMode.realtime,
         episode: int = 1,
         budget: TokenMeter | None = None,
+        game_view: bool = False,
     ) -> None:
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
         if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
             raise ValueError("the call cap must be a positive integer")
+        if game_view and arm not in IMAGE_TRANSPORT:
+            raise ValueError(f"S1 arm {arm!r} has no verified image transport")
+        self._game_view = game_view
+        self._view_sent = self._view_omitted = self._view_stale = 0
         self._ledger = ledger
         self._max_calls = max_calls
         self._send = send
@@ -119,12 +148,23 @@ class SystemOneS1:
     def calls_reserved(self) -> int:
         return self._reserved
 
-    async def decide(self, context: Mapping[str, Any]) -> S1Answer:
+    @property
+    def view_counts(self) -> dict[str, int | bool]:
+        """Count calls attempted with or without a view; stale is a subset of omitted."""
+        return {"enabled": self._game_view, "sent": self._view_sent,
+                "omitted": self._view_omitted, "stale": self._view_stale}
+
+    async def decide(self, context: Mapping[str, Any], *, image: bytes | None = None) -> S1Answer:
+        if image is not None and (not self._game_view or digest(image) != context.get("game_view_sha256")
+                                  or context.get("game_view_status") != "sent"):
+            raise ValueError("image does not match the measured view")
+        if self._game_view and ((image is None) != (context.get("game_view_status") != "sent")):
+            raise ValueError("image presence does not match the measured view")
         turn, self._turn = self._turn, self._turn + 1
         choices = context["choices"]
         kinds = {item["id"]: item["kind"] for item in choices}
         first = await self._call(PRIMARY, context["instructions"], {item["id"]: item["label"] for item in choices},
-                                 context, turn)
+                                 context, turn, image)
         calls = [first.call]
         if first.choice is None:
             return S1Answer(answer=None, calls=tuple(calls), failure=first.failure, halt=first.halt)
@@ -135,7 +175,7 @@ class SystemOneS1:
         if kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
             criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
             if criteria:
-                second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn)
+                second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn, image)
                 calls.append(second.call)
                 halt = second.halt
                 if second.choice is not None:
@@ -144,12 +184,21 @@ class SystemOneS1:
         return S1Answer(answer=answer, calls=tuple(calls), halt=halt)
 
     async def _call(self, question: str, instructions: str, criteria: dict[str, str],
-                    context: Mapping[str, Any], turn: int) -> _Reply:
+                    context: Mapping[str, Any], turn: int, image: bytes | None) -> _Reply:
         model = self.model
         body = {"model": model,
                 "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
                 "state": context}
         try:
+            estimate_text = canonical(body)  # excludes base64; image tokens are counted separately
+            if image is not None:
+                url = "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
+                if IMAGE_TRANSPORT[self._arm] == "messages":
+                    body["state"] = {"messages": [{"role": "user", "content": [
+                        {"type": "text", "text": canonical(context)},
+                        {"type": "image_url", "image_url": {"url": url}}]}]}
+                else:
+                    body["images"] = [url]
             request_text = canonical(body)
             request_sha = digest(request_text)
         except ValueError:
@@ -164,34 +213,40 @@ class SystemOneS1:
         except call_budget.BudgetStop as exc:
             return self._refused(question, request_sha, f"{exc}; no call was made", halt=str(exc))
         self._reserved += 1
+        if self._game_view:
+            if image is not None:
+                self._view_sent += 1
+            else:
+                self._view_omitted += 1
+                self._view_stale += int(context.get("game_view_status") == "stale")
         try:
             status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, body)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
             note = f"adapter error: {type(exc).__name__}"
-            self._count_tokens(None, request_text)  # the request may have reached the provider
+            self._count_tokens(None, estimate_text, image is not None)  # the request may have reached the provider
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
                                resolved_model=None, usage=None, cost_usd=None)
             return _Reply(self._record(question, request_sha, None, None, None, note, None), failure=note)
         choice, distribution, answer_problem = replay.parse_answer(
             self._as_next_action(data if status == 200 else None, question), set(criteria))
-        usage = (data or {}).get("usage")
-        self._count_tokens(usage, request_text)
+        usage = _without_image((data or {}).get("usage"), image)
+        self._count_tokens(usage, estimate_text, image is not None)
         raw_cost = usage.get("cost") if isinstance(usage, dict) else None
         cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0 else None)
-        note = problem or answer_problem
-        resolved = (data or {}).get("model")
+        note = _without_image(problem or answer_problem, image)
+        resolved = _without_image((data or {}).get("model"), image)
         row = reservation.finish(http_status=status, choice=choice, distribution=distribution, problem=note,
                                  latency_ms=latency_ms, resolved_model=resolved, usage=usage, cost_usd=cost)
         call = self._record(question, request_sha, status, latency_ms, resolved, note,
-                            data if isinstance(data, dict) else None, usage)
+                            _without_image(data, image) if isinstance(data, dict) else None, usage)
         failure = None
         if choice is None:
             failure = (note or "no usable answer") + (f" (HTTP {status})" if status not in (None, 200) else "")
         halt = "a provider-reported cost exceeded the per-call bound" if row["cost_bound_exceeded"] else None
         return _Reply(call, choice, distribution, failure, halt)
 
-    def _count_tokens(self, usage: Any, request_text: str) -> None:
+    def _count_tokens(self, usage: Any, request_text: str, has_image: bool) -> None:
         """Report what a sent call used: the provider's own count, else an estimate marked as one."""
         if self._budget is None:
             return
@@ -199,7 +254,11 @@ class SystemOneS1:
         if used is not None:
             self._budget.record(used)
         else:
-            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN), estimated=True)
+            image_tokens = IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]] if has_image else 0
+            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN) + image_tokens, estimated=True)
+        reserve = getattr(self._budget, "reserve_next_image", None)
+        if reserve is not None and self._game_view:
+            reserve(0 if has_image else IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]])
 
     @staticmethod
     def _as_next_action(data: dict[str, Any] | None, question: str) -> dict[str, Any] | None:

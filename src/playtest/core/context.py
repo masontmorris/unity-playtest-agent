@@ -27,7 +27,7 @@ from playtest.contracts.loop import ChoiceSet
 INSTRUCTIONS = (
     "This is one decision turn. Choose exactly one id from choices. Facts are measured; null means "
     "unknown, never zero. Only the listed choices exist. On an escalate or delegate turn, also say "
-    "what to do while help is pending."
+    "what to do while help is pending. When an image is present, it is the current game view."
 )
 
 

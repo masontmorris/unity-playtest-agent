@@ -318,3 +318,79 @@ def test_no_credential_reaches_a_record(tmp_path: Path, monkeypatch):
     got = decide(port, context())
     text = json.dumps([call.body() for call in got.calls]) + json.dumps(ledger.arm_rows())
     assert "sk-test-secret-value-1234" not in text and "Authorization" not in text
+
+@pytest.mark.parametrize("arm,transport,extra", [("mammoth-1", "messages", 1000),
+                                                  ("elephant-1", "messages", 1000),
+                                                  ("liquid-d1.1", "images", 1400)])
+def test_game_view_uses_proven_transport_and_counts_image_tokens(tmp_path, arm, transport, extra):
+    import base64
+    from playtest.runner.pacing import INITIAL_ESTIMATE, TokenBudget
+
+    raw = b"sample image bytes"
+    ctx = context()
+    ctx.update(game_view="the attached view", game_view_sha256=digest(raw), game_view_status="sent")
+    limits = approval()
+    limits["arms"] = {arm: limits["arms"][ARM]}
+    ledger = call_budget.Ledger(tmp_path, limits, arm)
+    send = Send(tmp_path, reply("next_action", "h"), reply("while_pending", "w"))
+    budget = TokenBudget(100000, initial_estimate=INITIAL_ESTIMATE + extra)
+    port = SystemOneS1(ledger, max_calls=10, send=send, arm=arm, budget=budget, game_view=True)
+    assert budget.expected == INITIAL_ESTIMATE + extra
+    got = asyncio.run(port.decide(ctx, image=raw))
+    assert got.answer["choice_id"] == "h" and got.answer["while_pending"] == {"mode": "wait"}
+    url = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+    for body in send.bodies:
+        if transport == "messages":
+            parts = body["state"]["messages"][0]["content"]
+            assert json.loads(parts[0]["text"]) == ctx and parts[1]["image_url"]["url"] == url
+        else:
+            assert body["state"] == ctx and body["images"] == [url]
+    assert port.view_counts == {"enabled": True, "sent": 2, "omitted": 0, "stale": 0}
+    # The estimate is based on the text body, plus image tokens, never base64 character count.
+    last = send.bodies[-1]
+    plain = {"model": last["model"], "questions": last["questions"], "state": ctx}
+    assert budget.expected == math.ceil(len(canonical(plain)) / 2.5) + extra
+    assert budget.in_window > 2 * extra and budget.estimated == 2
+
+
+def test_view_omission_counts_and_forecasts_next_image_without_changing_choice(tmp_path):
+    from playtest.runner.pacing import TokenBudget
+    ctx = context()
+    ctx.update(game_view="too old", game_view_sha256=None, game_view_status="stale")
+    ledger = call_budget.Ledger(tmp_path, approval(), ARM)
+    send = Send(tmp_path, reply("next_action", "c1", usage={"input_tokens": 123, "output_tokens": 4}))
+    budget = TokenBudget(100000)
+    port = SystemOneS1(ledger, max_calls=2, send=send, arm=ARM, budget=budget, game_view=True)
+    result = asyncio.run(port.decide(ctx))
+    assert result.answer["choice_id"] == "c1" and send.bodies[0]["state"] == ctx
+    assert port.view_counts == {"enabled": True, "sent": 0, "omitted": 1, "stale": 1}
+    assert budget.in_window == 127 and budget.expected == 1127 and budget.estimated == 0
+    with pytest.raises(ValueError, match="does not match"):
+        asyncio.run(port.decide(ctx, image=b"wrong"))
+    assert len(send.bodies) == 1
+
+
+def test_unverified_arm_is_refused_before_any_call(tmp_path):
+    ledger = call_budget.Ledger(tmp_path, approval(), ARM)
+    with pytest.raises(ValueError, match="no verified image transport"):
+        SystemOneS1(ledger, max_calls=1, arm="liquid-d1-ultra", game_view=True)
+    assert not list((tmp_path / "calls").glob("*.json"))
+
+
+def test_image_echo_is_removed_from_recorded_response(tmp_path):
+    import base64
+    raw = b"private-image"
+    encoded = base64.b64encode(raw).decode()
+    ctx = context()
+    ctx.update(game_view="the attached view", game_view_sha256=digest(raw), game_view_status="sent")
+    def echoes(body):
+        answer = reply("next_action", "c1")(body)
+        answer[1]["echo"] = "data:image/jpeg;base64," + encoded
+        answer[1]["usage"]["echo"] = encoded
+        return answer
+    ledger = call_budget.Ledger(tmp_path, approval(), ARM)
+    send = Send(tmp_path, echoes)
+    port = SystemOneS1(ledger, max_calls=1, send=send, arm=ARM, game_view=True)
+    got = asyncio.run(port.decide(ctx, image=raw))
+    assert encoded not in json.dumps(got.calls[0].body())
+    assert encoded not in json.dumps(ledger.arm_rows())

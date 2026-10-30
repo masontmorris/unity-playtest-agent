@@ -231,3 +231,15 @@ def test_the_wait_line_follows_the_loops_own_facts_and_carries_no_advice():
         assert not any(advice in words for advice in ("should", "avoid", "try", "consider", "recommend", "slow"))
 
     asyncio.run(main())
+
+
+def test_image_reserve_causes_a_wait_when_the_next_view_could_exceed_the_rate():
+    b, fake = budget(10_000)
+    b.record(4_750)  # previous call had no image
+    assert ready(b) == 0.0
+    b.reserve_next_image(1_000)
+    assert b.expected == 5_750 and ready(b) == 60.0
+    assert fake.slept == [60.0] and b.in_window == 0
+    b.record(5_750)  # next call includes an image, so it needs no second reserve
+    b.reserve_next_image(0)
+    assert b.expected == 5_750

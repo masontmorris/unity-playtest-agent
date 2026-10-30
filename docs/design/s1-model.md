@@ -133,3 +133,63 @@ each on a synthetic packet.
 - Baseten publishes a price, or its credits show up.
 - The production payload size is known, once a facts builder and directive history exist.
 - A real game frame can be captured, to measure its upload size and latency.
+
+## Optional live game view (#157)
+
+`--s1-game-view` (or `run-session.ps1 -S1GameView`) sends one bridge offscreen JPEG with each S1
+request when a fresh one is available. It uses the existing `Temp/playtest-bridge-frames` window;
+`-RecordFrames` is independent and is not required. The image and the game context are sent to the
+selected provider. Frames remain local apart from that request; the context trace contains the view
+statement, status and SHA-256, never frame bytes. The request hash covers the actual image request.
+The plan and run summary record the mode; `s1_game_view.sent` and `omitted` count attempted provider
+calls, including help follow-ups, and `stale` is the subset of omitted calls with an old frame. A
+transport error counts as an attempted call because delivery may be unknown. If the runner fails before
+it can assemble the summary, those counts are `null`, not assumed to be zero.
+
+The bridge reports file write-completion time, not the actual capture time. The runner selects the
+latest measured frame whose completion time is no later than the observation, from this session only.
+Its statement gives the completion timestamp, dimensions and age relative to the observation, and
+says the capture time is unknown. A frame over **1.0 s** old is omitted as too old; a missing,
+unreadable, untrusted or unalignable frame is unknown and omitted. One second permits ten nominal
+10 Hz frame intervals while bounding the discrepancy; it is a policy bound, not measured visual
+freshness. No later frame or frame from a previous session fills a gap. The image does not alter the
+choice set, selection or escalation rules.
+
+Image support is restricted to combinations exercised in the [Day 1 probe](../probes/2026-10-26-day1.md):
+`mammoth-1` and `elephant-1` use Baseten's `state.messages` image part; `liquid-d1.1` uses Liquid's
+top-level `images` array. The default `liquid-d1-ultra` was tested with text only in the
+[29 October probe](../probes/2026-10-29-fpskit-s1-d1-ultra.md), so its image support is unknown and
+startup refuses it in this mode. Choose a supported arm explicitly. Day 1 tested PNG input; acceptance
+and latency of actual bridge JPEGs still need a live check. No call is made to discover capability.
+
+The [load probe](../probes/2026-10-27-fpskit-s1-load.md) found that a 1280x720 frame added roughly
+800–1,000 input tokens and 225 ms median on `mammoth-1`, with eight calls per size and a synthetic
+PNG; real JPEG upload costs and latency are unmeasured. Day 1 estimated about 1,400 additional Liquid
+tokens. Pacing uses reported usage when available; otherwise it estimates the text plus 1,000 Baseten
+or 1,400 Liquid image tokens, rather than counting base64 characters. Its first-turn forecast reserves
+those tokens, as does the forecast after an omitted image. More latency can cause more action freshness
+rejections and greater cost; the approved budget must cover the selected mode and arm.
+
+### S1 ownership and context audit
+
+**Verdict: pass for the changed path under fake-bridge replay; real-session verification is not
+applicable here.** The production context builder is used in the fake session, but no Unity or paid
+provider run was made. The payload provenance is:
+
+- `runner/game_view.py:64` compares the bridge JPEG's completion time with the observation wall time,
+  then produces a statement, digest and separate in-memory bytes, or a missing/stale statement.
+- `core/turn_loop.py:317` adds the statement, status and digest to the ordinary `build_context` payload;
+  its `as_of.seq`, choices, pending help, live guidance and history follow their existing paths. The
+  canonical payload hash is written in the context entry before the separate bytes go to S1.
+- `runner/s1.py:157` checks the digest and presence, then `runner/s1.py:186` serializes that same payload
+  with the provider's image transport. The trace retains the context and request hashes, not the image.
+- `core/turn_loop.py:342` still parses S1's selected id against the observation-bound choice set;
+  `core/turn_loop.py:374` and `:391` execute the chosen primary or pending selection. The view's stale
+  branch only omits evidence. It does not change choices, help routing, pending guidance or defaults.
+
+The focused fake-bridge tests in `tests/test_runner_session.py:1012` and `:1069` replay the trace and
+check adherence with sent, stale and missing views, including an unoffered answer that sends no input.
+They reconstruct the provider payload from the trace and check its digest. They do not prove real
+capture alignment or provider acceptance. The first live session must check bridge capture/self-test,
+JPEG acceptance, observed age and dimensions, token usage, call latency, freshness rejections and trace
+replay; the JPEG completion time is only an approximate proxy for capture time.
