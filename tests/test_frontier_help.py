@@ -25,7 +25,7 @@ from playtest.frontier.media import Clip
 from playtest.frontier import provider
 from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
-from playtest.runner.frontier_help import FrontierHelp, reader_calibration
+from playtest.runner.frontier_help import FrontierHelp, reader_calibration, reader_notes
 from playtest.runner.choices import build_choices
 
 
@@ -676,3 +676,17 @@ def test_reader_calibration_keeps_only_measured_classes():
     record = {"freshness": {"f:a": {"classification": "no_change_observed"}, "f:b": {"classification": "unknown"}}}
     assert reader_calibration(record, readers) == {"public.a": "no_change_observed"}
     assert reader_calibration(None, readers) == {} and reader_calibration({"freshness": None}, readers) == {}
+
+
+def test_the_frontier_sees_what_the_manifest_says_each_field_reads():
+    readers = [SimpleNamespace(alias="counter", kind="number", field_id="f:counter", why="Counts collected items",
+                               descriptor={"declaring_type": "Game.Score", "name": "m_Count"}),
+               SimpleNamespace(alias="flag", kind="bool", field_id="f:flag")]   # a reader with no notes gets none
+    notes = reader_notes(readers)
+    assert notes == {"public.counter": {"source": "Game.Score.m_Count", "preflight_note": "Counts collected items"}}
+    manifest = frontier.Manifest(fields={"public.counter": "number", "public.flag": "bool"}, actions={}, skills=[],
+                                 field_notes=notes)
+    rows = {row["path"]: row for row in json.loads(provider.manifest_message(manifest))["fields"]}
+    assert (rows["public.counter"]["source"], rows["public.counter"]["preflight_note"]) == (
+        "Game.Score.m_Count", "Counts collected items")
+    assert rows["public.flag"] == {"path": "public.flag", "kind": "bool"}

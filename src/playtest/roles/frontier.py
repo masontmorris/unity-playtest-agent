@@ -180,6 +180,9 @@ class Manifest:
     # Observation path -> when preflight calibration saw the field change on this build ("input", "idle", "both"
     # or "no_change_observed"); a field calibration could not classify is absent. Shown to the model, never scored.
     calibration: Mapping[str, str] = field(default_factory=dict, compare=False)
+    # Observation path -> what the manifest says about the field: "source" (the game field it reads) and
+    # "preflight_note" (the preflight model's own description when it chose the field). Shown, never scored.
+    field_notes: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)
 
     def enums(self) -> dict[str, list[str]]:
         return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills]}

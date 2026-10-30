@@ -36,6 +36,27 @@ def reader_calibration(record: Mapping[str, Any] | None, readers: Any) -> dict[s
     return out
 
 
+def reader_notes(readers: Any) -> dict[str, dict[str, str]]:
+    """What the manifest says about each reader: the game field it reads and the preflight model's note.
+
+    Both come from the preflight manifest, where game knowledge lives. A reader without them gets none.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for reader in readers:
+        descriptor = getattr(reader, "descriptor", None)
+        descriptor = descriptor if isinstance(descriptor, Mapping) else {}
+        owner, name = descriptor.get("declaring_type"), descriptor.get("name")
+        note: dict[str, str] = {}
+        if isinstance(owner, str) and owner and isinstance(name, str) and name:
+            note["source"] = f"{owner}.{name}"
+        why = getattr(reader, "why", None)
+        if isinstance(why, str) and why.strip():
+            note["preflight_note"] = why
+        if note:
+            out[f"public.{reader.alias}"] = note
+    return out
+
+
 class FrontierHelp:
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
@@ -57,6 +78,7 @@ class FrontierHelp:
         fields = {f"public.{reader.alias}": reader.kind for reader in manifest.readers if reader.kind}
         self.reader_fields = fields
         self.reader_calibration = reader_calibration(calibration, manifest.readers)
+        self.reader_notes = reader_notes(manifest.readers)
 
     async def run(self, request: Any) -> Any:
         from playtest.core.ports import HelpResult
@@ -267,4 +289,4 @@ class FrontierHelp:
             elif choice.kind is ChoiceKind.skill and choice.skill in skills_declared:
                 skills.append(choice.skill)
         return frontier.Manifest(fields=self.reader_fields, actions=actions, skills=skills,
-                                 calibration=self.reader_calibration)
+                                 calibration=self.reader_calibration, field_notes=self.reader_notes)
