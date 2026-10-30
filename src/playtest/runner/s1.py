@@ -30,7 +30,9 @@ from playtest.contracts.common import ClockMode
 from playtest.core.context import INSTRUCTIONS, canonical
 from playtest.core.ports import S1Answer, S1Call
 
-ARM = "mammoth-1"
+# The default S1 arm since #100 (29 October): Liquid's d1-ultra matched mammoth-1 on both S1 benches and kept every
+# live action fresh where Baseten's latency did not (docs/design/s1-model.md). `--s1-arm` picks any other arm.
+ARM = "liquid-d1-ultra"
 PRIMARY = "next_action"
 FOLLOW_UP = "while_pending"
 FOLLOW_UP_INSTRUCTIONS = (

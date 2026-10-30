@@ -50,7 +50,8 @@ from playtest.runner.choices import build_choices
 from playtest.runner.output import secret_values
 from playtest.runner.pacing import PacingStats, TokenBudget, wait_fact
 from playtest.runner.probe import DisplacementProbe, make_snapshot
-from playtest.runner.s1 import ARM, SystemOneS1
+from playtest.runner.s1 import ARM as DEFAULT_ARM, SystemOneS1
+from s1_fakes import ARM
 from playtest.runner.session import run_session
 
 OBJECTIVE = "Try each control once, then finish."
@@ -619,7 +620,7 @@ def test_a_rate_limited_turn_is_rejected_without_a_retry_and_three_in_a_row_end_
         send = Send(tmp_path, limited, limited, limited)
         fake = FakeTime()
         budget = TokenBudget(85_000, clock=fake.clock, sleep=fake.sleep)
-        s1 = SystemOneS1(call_budget.Ledger(tmp_path, approval(12), ARM), max_calls=10, send=send, budget=budget)
+        s1 = SystemOneS1(call_budget.Ledger(tmp_path, approval(12), ARM), max_calls=10, send=send, arm=ARM, budget=budget)
         sink = harness_trace()
         try:
             result = await session(client, build_choices(two_actions()), s1=s1, objective=OBJECTIVE, sink=sink,
@@ -723,7 +724,8 @@ class Project:
         values: dict[str, Any] = {
             "project": self.project, "entity": self.entity, "calibration": self.calibration, "output": self.summary,
             "manifest": self.manifest, "catalog": self.catalog, "catalog-sha256": self.catalog_sha,
-            "approval": self.approval, "max-calls": 6, "wall-limit-s": 60, "max-age-s": 2.0, "objective": OBJECTIVE}
+            "approval": self.approval, "max-calls": 6, "wall-limit-s": 60, "max-age-s": 2.0, "objective": OBJECTIVE,
+            "s1-arm": ARM}  # the Baseten arm these runs are written for; the default arm is checked separately
         values.update({key.replace("_", "-"): value for key, value in overrides.items()})
         flags: list[str] = []
         for key, value in values.items():
@@ -884,7 +886,7 @@ def test_the_cli_refuses_to_start_without_the_approval_the_cap_or_the_key(tmp_pa
 def test_the_s1_arm_defaults_to_mammoth_takes_the_environment_and_refuses_an_unknown_one(tmp_path: Path, monkeypatch):
     required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]
     monkeypatch.delenv("UPA_RUN_S1_ARM", raising=False)
-    assert cli._parser().parse_args(required).s1_arm == "mammoth-1"
+    assert cli._parser().parse_args(required).s1_arm == DEFAULT_ARM == "liquid-d1-ultra"   # #100
     monkeypatch.setenv("UPA_RUN_S1_ARM", "liquid-d1-ultra")
     assert cli._parser().parse_args(required).s1_arm == "liquid-d1-ultra"
     assert cli._parser().parse_args([*required, "--s1-arm", "elephant-1"]).s1_arm == "elephant-1"

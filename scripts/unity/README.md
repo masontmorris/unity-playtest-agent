@@ -477,11 +477,12 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
   - The frames are game footage, so keep them local.
 
 The call cap and the approval file are required: no paid call starts without them, and every call
-reserves its row in `<OutputDirectory>/calls` before it is sent. `BASETEN_API_KEY` is checked by name
-only. The output directory must be new and outside the game, and the game must be wired to this
+reserves its row in `<OutputDirectory>/calls` before it is sent. S1 runs on `-S1Arm`, by default
+`liquid-d1-ultra` (#100). Its credentials are checked by name only: `LIQUID_API_KEY` and `LIQUID_D1.1_URL` for the
+Liquid arms, and `BASETEN_API_KEY` for `mammoth-1` and `elephant-1`. The output directory must be new and outside the game, and the game must be wired to this
 checkout. The summary is `run.json` and the trace is `trace.jsonl` beside it; both stay local. The run
 ends when S1 chooses `finish`, the wall limit passes (default 600 s, at most 1500), or three
 consecutive S1 calls give no usable answer (`-MaxProviderFailures`); it then stops and verifies that
-every held input was released. S1's calls are paced to `-TokensPerMinute` (default 85000, 15% under the
-provider's 100,000 limit for `mammoth-1`): the runner waits before a turn when the last minute's tokens
+every held input was released. S1's calls are paced to `-TokensPerMinute`: default 85000, 15% under Baseten's
+100,000 limit for `mammoth-1`, kept for Liquid, whose limit is unpublished. The runner waits before a turn when the last minute's tokens
 plus the next call's would pass it, and states the wait to S1 as a measured fact.

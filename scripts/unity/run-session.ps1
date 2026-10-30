@@ -11,7 +11,7 @@ supported chord, stick or mouse value, and skill runs as declared. The host and 
 file through UPA_SESSION_CATALOG and UPA_SESSION_CATALOG_SHA256; if it is absent, altered or invalid, or the
 client finds it is not the manifest's export, the run ends before any paid call. A session never falls back
 to the keyboard-only catalog the other bench modules use. -S1Arm picks S1's model, one of replay.ARMS
-(default mammoth-1). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
+(default liquid-d1-ultra). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
 arms, and LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms. The script checks them by name only and
 never prints them.
 
@@ -54,7 +54,7 @@ param(
     [double]$MaxAgeSeconds = 0.8,
     [int]$MaxProviderFailures = 3,
     [int]$TokensPerMinute = 85000,
-    [string]$S1Arm = 'mammoth-1',
+    [string]$S1Arm = 'liquid-d1-ultra',
     [string]$Objective,
     [string]$ObjectivePath,
     [string]$ManifestOrigin,

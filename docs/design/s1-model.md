@@ -1,10 +1,63 @@
 # S1 model decision
 
-Issue #25. **Status: provisional.** Mason Morris chose `mammoth-1` on 27 October 2026 on the evidence
-below, and #25 closes on that provisional choice. Three conditions are open; each says what would
-change the choice and what the fallback is. #100 revisits them on Day 5.
+Issue #25 chose `mammoth-1` provisionally on 27 October 2026. **Status: changed on 29 October (#100).** S1's
+default is now Liquid's `d1-ultra`, Mason Morris's choice on the evidence below. `mammoth-1` stays one flag
+away (`--s1-arm`, `-S1Arm`). The 27 October decision and its evidence follow, unchanged, as the record it
+superseded.
 
-## Decision
+## Revisit, 29 October (#100): `liquid-d1-ultra`
+
+S1 is `liquid-d1-ultra`: model `d1-ultra` on Liquid's decisions endpoint, in the same System One request
+shape as every arm (#138).
+
+| | mammoth-1 | liquid-d1-ultra |
+|---|---:|---:|
+| **First bench, 40 frames** | | |
+| Top-1 acceptable | 40/40 | **40/40** |
+| Top-choice flips across identical repeats | 0/40 | 0/40 |
+| Acceptable mass, mean | 0.981 | 0.893 |
+| p50 / p95 latency at about 2,000 tokens | 250 / 266 ms | 203 / 250 ms |
+| **Shuffled re-test, 45 frames** | | |
+| Top-1 acceptable | 45/45 | **45/45**: checks 40/40, terminal 5/5 |
+| Acceptable mass, mean / minimum | 0.986 / 0.961 | 0.888 / 0.739 |
+| Repeated requests | identical 5/5 | same choice 5/5; probabilities within 0.04 |
+| Median / p95 / slowest latency | 266 / 782 / 1,188 ms | 203 / 250 / 266 ms |
+| **Live 10-minute FPSKit run, about 5,000 tokens, frontier on** | | |
+| S1 call p50 / p90 | 594 / 1,375 ms | **297 / 391 ms** |
+| Turns rejected as stale | 31 of 105 | **0 of 90** |
+| Action attempts rejected | 34 of 78 | **0 of 64** |
+| Adherence; invalid answers | 1.0; 0 | 1.0; 0 |
+| **Cost** | | |
+| Cost per 100 decisions | unknown; the price is unpublished | about $0.008 at 2,000 tokens; about $0.022 at 5,000 |
+
+Sources:
+- `docs/probes/2026-10-29-fpskit-s1-bench-d1-ultra.md`: both benches. d1-ultra ran over the frozen Day 3
+  corpora, whose payloads the current context builder reproduced byte for byte, so it answered the same
+  requests mammoth-1 answered.
+- `docs/probes/2026-10-29-fpskit-s1-d1-ultra.md`: the live run.
+- `docs/probes/2026-10-29-fpskit-directive-windows.md`: the mammoth-1 live run it is set against.
+
+**The three open conditions from 27 October:**
+1. **Price.** d1-ultra costs $0.042 per million input tokens and nothing for output, which Liquid's own
+   per-call `usage.cost` confirms. A 10-minute run costs cents. mammoth-1's post-trial price is still
+   unpublished.
+2. **Latency at the real context size.** On 29 October mammoth-1's p90 call took 0.9–1.4 s at 5,000–6,000
+   tokens, so even the 0.8 s age limit (#132) rejected a third of its actions (#136). d1-ultra's p90 was
+   391 ms, and no action went stale.
+3. **Rate limit.** Baseten's limit is 100,000 tokens a minute. Liquid's is unpublished and unverified, but
+   its 241 calls on 29 October met no rate limiting. The runner keeps its client-side pacing at 85,000
+   tokens a minute.
+
+**Caveats:**
+- d1-ultra is less certain. Its acceptable mass averages 0.89 against 0.98, its lowest acceptable pick
+  had 0.74, and identical requests return slightly different probabilities.
+- Each live run is one session, unpaired, an hour apart.
+- The benches test a checklist task in one game. They do not measure escalation judgment or bug noticing.
+- Liquid's data-use terms are unverified. The S1 context, game-state text with no image, goes to Liquid.
+- Liquid's tokenizer counted 20% more tokens than Baseten's on Day 1. d1-ultra's context is listed at
+  32,768 tokens, double Baseten's 16,384.
+
+## 27 October decision: mammoth-1 (provisional, superseded)
 
 S1 is `mammoth-1`: `decision-models/baseten-mammoth-27b-latest` on Baseten's System One endpoint
 (`inference.baseten.co/v1/systemone`), with text state and optional image input.

@@ -247,6 +247,28 @@ def test_run_makes_each_scheduled_call_once_and_resumes_without_new_calls(tmp_pa
     assert "verdict" not in report
 
 
+def test_another_arm_runs_the_same_schedule_and_scores_as_itself(tmp_path: Path, monkeypatch) -> None:
+    corpus, labels = _labelled(tmp_path, monkeypatch)
+    approval = tmp_path / "approval.json"
+    document = json.loads(_approval(tmp_path).read_text(encoding="utf-8"))
+    document["arms"] = {"liquid-d1-ultra": document["arms"]["mammoth-1"]}
+    _save(approval, document)
+    sent: list[tuple[str, str]] = []
+
+    def fake(arm: str, body: dict):
+        sent.append((arm, body["model"]))
+        return _perfect(arm, body)
+
+    directory = tmp_path / "run"
+    assert retest.run(corpus, labels, approval, directory, seed=7, send=fake, arm="liquid-d1-ultra") == 50
+    assert set(sent) == {("liquid-d1-ultra", "d1-ultra")}
+    assert json.loads((directory / "plan.json").read_text(encoding="utf-8"))["arm"] == "liquid-d1-ultra"
+    report = retest.score(corpus, labels, directory)       # the arm comes from the plan, not a default
+    assert report["arm"] == "liquid-d1-ultra" and report["top1_acceptable"]["all"]["hits"] == 45
+    with pytest.raises(ValueError, match="unknown S1 arm"):
+        retest.run(corpus, labels, approval, tmp_path / "other", seed=7, send=fake, arm="no-such-model")
+
+
 def test_envelope_smaller_than_the_schedule_stops_before_any_call(tmp_path: Path, monkeypatch) -> None:
     corpus, labels = _labelled(tmp_path, monkeypatch)
     sent: list[str] = []
