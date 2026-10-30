@@ -293,7 +293,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         tracker = DirectiveTracker(writer)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
-                                  started_utc=dt.datetime.now(dt.timezone.utc)) if args.frontier else None)
+                                  started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration)
+                     if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(

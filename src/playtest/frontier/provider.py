@@ -46,8 +46,16 @@ _MANIFEST_NOTE = (
     "A null value means unknown, not zero. Each seq is a bridge record number; game_s is game time. "
     "A directive setpoint must name one of these fields and use a value of its kind. Cite only the "
     "observation seq, a fact's seqs and a recent row's seq: numbers inside hypotheses or directives "
-    "are earlier records, not new citations."
+    "are earlier records, not new citations. A field's calibration, where present, is how it changed when "
+    "preflight sampled it on this build before play, idle and with each control held."
 )
+# Preflight's freshness classes (`preflight.freshness`), worded for the model. A field without one is unknown.
+CALIBRATION_LABELS = {
+    "input": "changed only while a control was held",
+    "idle": "changed only with no control held",
+    "both": "changed with and without a control held",
+    "no_change_observed": "no change seen, with or without a control held",
+}
 _DATA_URL = re.compile(r"^data:([^;,]+);base64,(.*)$", re.DOTALL)
 
 
@@ -65,7 +73,13 @@ class Result:
 
 def manifest_message(manifest: frontier.Manifest) -> str:
     """The run-stable first user message: fields, action bounds and skills, sorted for caching."""
-    fields = [{"path": path, "kind": manifest.fields[path]} for path in sorted(manifest.fields)]
+    fields = []
+    for path in sorted(manifest.fields):
+        row = {"path": path, "kind": manifest.fields[path]}
+        label = CALIBRATION_LABELS.get(manifest.calibration.get(path, ""))
+        if label is not None:
+            row["calibration"] = label
+        fields.append(row)
     actions = [
         {"name": name, "axis": spec.axis, "max_hold_s": spec.max_hold_s}
         for name, spec in sorted(manifest.actions.items())

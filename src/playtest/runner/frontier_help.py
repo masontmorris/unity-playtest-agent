@@ -20,12 +20,28 @@ from playtest.roles.checks import field_value
 from playtest.runner.directives import DirectiveTracker
 
 
+def reader_calibration(record: Mapping[str, Any] | None, readers: Any) -> dict[str, str]:
+    """Each reader's freshness class from the calibration record, keyed by its observation path.
+
+    Preflight measured these on this build before play (`preflight.freshness`). A reader with no class, or one
+    the frontier has no wording for, is left out, so it stays unknown rather than looking measured.
+    """
+    freshness = (record or {}).get("freshness") or {}
+    out = {}
+    for reader in readers:
+        measured = freshness.get(getattr(reader, "field_id", None)) if isinstance(freshness, Mapping) else None
+        label = measured.get("classification") if isinstance(measured, Mapping) else None
+        if label in provider.CALIBRATION_LABELS:
+            out[f"public.{reader.alias}"] = label
+    return out
+
+
 class FrontierHelp:
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
                  capture: Callable[..., media.Clip] = media.capture_clip,
-                 max_calls: int | None = None) -> None:
+                 max_calls: int | None = None, calibration: Mapping[str, Any] | None = None) -> None:
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -40,6 +56,7 @@ class FrontierHelp:
         self.findings: list[dict[str, Any]] = []  # candidate findings written to the trace
         fields = {f"public.{reader.alias}": reader.kind for reader in manifest.readers if reader.kind}
         self.reader_fields = fields
+        self.reader_calibration = reader_calibration(calibration, manifest.readers)
 
     async def run(self, request: Any) -> Any:
         from playtest.core.ports import HelpResult
@@ -87,6 +104,7 @@ class FrontierHelp:
             recent=[], hypotheses=old_hypotheses,
             new_hypothesis_ids=ids, age_s=context.get("as_of", {}).get("age_s"),
             clip=clip.descriptor, clip_unavailable_reason=clip.reason,
+            findings=[{key: f[key] for key in ("finding_id", "title", "repro_check")} for f in self.findings],
         )
         # The live S1 context does not expose the bridge frame number. Do not send the
         # placeholder needed by Observation's local constructor as if it were measured.
@@ -191,7 +209,9 @@ class FrontierHelp:
                     "reason": f"not recorded: cited observations with no trace entry: {missing or 'none cited'}"}
         finding = frontier.to_finding(proposed, finding_id=finding_id, evidence_seq=sorted(set(mapped)))
         trace_seq = FindingLog(self.sink, author=TraceAuthor.frontier).record(finding)
-        self.findings.append({"finding_id": finding_id, "trace_seq": trace_seq, "request_turn": turn})
+        self.findings.append({"finding_id": finding_id, "trace_seq": trace_seq, "request_turn": turn,
+                              "title": finding.title,
+                              "repro_check": finding.repro_check.model_dump(mode="json") if finding.repro_check else None})
         return {"finding_id": finding_id, "trace_seq": trace_seq, "reason": None}
 
     def _guidance(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -246,4 +266,5 @@ class FrontierHelp:
                 )
             elif choice.kind is ChoiceKind.skill and choice.skill in skills_declared:
                 skills.append(choice.skill)
-        return frontier.Manifest(fields=self.reader_fields, actions=actions, skills=skills)
+        return frontier.Manifest(fields=self.reader_fields, actions=actions, skills=skills,
+                                 calibration=self.reader_calibration)
