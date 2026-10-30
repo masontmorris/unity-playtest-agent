@@ -225,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
         replay._write(run_dir / "plan.json", plan, exclusive=True)
-        ledger = call_budget.Ledger(run_dir, approval, ARM)
+        # The frontier helper shares this folder and runs while S1 keeps choosing, so in-flight calls block per arm.
+        ledger = call_budget.Ledger(run_dir, approval, ARM, concurrent_arms=True)
         before = recording._game_worktree(project)
         summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256))
         after = recording._game_worktree(project)

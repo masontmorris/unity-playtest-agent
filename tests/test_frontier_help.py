@@ -134,6 +134,20 @@ def test_live_help_port_offline_end_to_end_escalates_then_adopts_hypothesis_and_
     asyncio.run(main())
 
 
+def test_both_live_ledgers_let_s1_keep_choosing_while_a_help_request_is_pending(tmp_path: Path):
+    # The Day 5 gate run halted when S1's next call met the frontier's in-flight reservation.
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=harness_trace(), tracker=DirectiveTracker(harness_trace()),
+                          started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
+    assert helper.ledger.concurrent_arms is True
+    from playtest.runner import cli
+    assert "call_budget.Ledger(run_dir, approval, ARM, concurrent_arms=True)" in Path(cli.__file__).read_text(
+        encoding="utf-8")
+
+
 @pytest.mark.parametrize("status,game_s,public,scene", [
     ("met", 0.5, {"counter": 1}, "scene"),
     ("not_met", 2, {"counter": 0}, "scene"),
