@@ -107,14 +107,14 @@ class _Track:
     previous: Any = None  # the previous observation's reading; None when it was unknown or there was none
     outside: bool = False  # whether the last known reading left the range of those before it
     # The current run of consecutive known number readings that each set a new low, or each a new high.
-    run_direction: str | None = None  # "low" or "high"; None when the last known reading set no new extreme
-    run_length: int = 0
-    run_from: float | None = None  # the extreme the run started beyond
-    run_turn: int | None = None  # the turn of the run's first reading
-    run_seq: int | None = None  # the trace_seq of the run's first reading
+    streak_direction: str | None = None  # "low" or "high"; None when the last known reading set no new extreme
+    streak_length: int = 0
+    streak_from: float | None = None  # the extreme the run started beyond
+    streak_turn: int | None = None  # the turn of the run's first reading
+    streak_seq: int | None = None  # the trace_seq of the run's first reading
     drift_id: str | None = None  # the drift suspicion raised for this run, once it is long enough
 
-    def step_run(self, value: Any, turn: int, trace_seq: int | None) -> None:
+    def step_streak(self, value: Any, turn: int, trace_seq: int | None) -> None:
         """Extend or end the run with one known reading, before the reading joins the range.
 
         An unknown reading is not passed in: it neither extends nor ends a run.
@@ -123,13 +123,13 @@ class _Track:
         if shape_of(value) == "number" and self.shape == "number" and self.count > 0:
             direction = "low" if value < self.low else "high" if value > self.high else None
         if direction is None:
-            self.run_direction, self.run_length, self.drift_id = None, 0, None
+            self.streak_direction, self.streak_length, self.drift_id = None, 0, None
             return
-        if direction != self.run_direction:
-            self.run_direction, self.run_length, self.drift_id = direction, 0, None
-            self.run_from = self.low if direction == "low" else self.high
-            self.run_turn, self.run_seq = turn, trace_seq
-        self.run_length += 1
+        if direction != self.streak_direction:
+            self.streak_direction, self.streak_length, self.drift_id = direction, 0, None
+            self.streak_from = self.low if direction == "low" else self.high
+            self.streak_turn, self.streak_seq = turn, trace_seq
+        self.streak_length += 1
 
     def earlier(self) -> str:
         """The range so far, as the reader's line states it."""
@@ -259,14 +259,14 @@ class ReaderWatch:
             if left is not None and not track.outside:
                 raised.append(self._range_exit(track, value, left, turn, trace_seq, observation, sample))
             if shape_of(value) is not None:
-                track.step_run(value, turn, trace_seq)
-                if track.run_length >= self._drift:
+                track.step_streak(value, turn, trace_seq)
+                if track.streak_length >= self._drift:
                     if track.drift_id is None:
                         raised.append(self._drift_suspicion(track, value, turn, trace_seq))
                     else:
-                        lines.append(f"public.{alias} still sets a new {track.run_direction} at every known reading "
-                                     f"(since turn {track.run_turn}, suspicion {track.drift_id}): {track.run_length} "
-                                     f"in a row, from {fmt(track.run_from)} to {fmt(value)}.")
+                        lines.append(f"public.{alias} still sets a new {track.streak_direction} at every known reading "
+                                     f"(since turn {track.streak_turn}, suspicion {track.drift_id}): {track.streak_length} "
+                                     f"in a row, from {fmt(track.streak_from)} to {fmt(value)}.")
                 track.outside = left is not None
                 track.add(value, trace_seq)
             track.previous = value
@@ -343,14 +343,14 @@ class ReaderWatch:
         return self._suspicion(SuspicionBasis.range_exit, turn, f"public.{track.alias}", statement, data, evidence)
 
     def _drift_suspicion(self, track: _Track, value: Any, turn: int, trace_seq: int | None) -> Suspicion:
-        statement = (f"public.{track.alias} has set a new {track.run_direction} at each of its last "
-                     f"{track.run_length} known readings, since turn {track.run_turn}: from {fmt(track.run_from)} "
+        statement = (f"public.{track.alias} has set a new {track.streak_direction} at each of its last "
+                     f"{track.streak_length} known readings, since turn {track.streak_turn}: from {fmt(track.streak_from)} "
                      f"to {fmt(value)}.")
-        detail = {"field": f"public.{track.alias}", "direction": track.run_direction, "readings": track.run_length,
-                  "required_readings": self._drift, "from": track.run_from, "value": value,
-                  "since_turn": track.run_turn, "since_seq": track.run_seq}
+        detail = {"field": f"public.{track.alias}", "direction": track.streak_direction, "readings": track.streak_length,
+                  "required_readings": self._drift, "from": track.streak_from, "value": value,
+                  "since_turn": track.streak_turn, "since_seq": track.streak_seq}
         suspicion = self._suspicion(SuspicionBasis.drift, turn, f"public.{track.alias}", statement, detail,
-                                    [seq for seq in (track.run_seq, trace_seq) if isinstance(seq, int)])
+                                    [seq for seq in (track.streak_seq, trace_seq) if isinstance(seq, int)])
         track.drift_id = suspicion.suspicion_id
         return suspicion
 
