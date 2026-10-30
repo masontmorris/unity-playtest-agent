@@ -32,6 +32,27 @@ namespace Playtest.Bridge.Protocol
         public string Error { get; set; }
     }
 
+    /// <summary>
+    /// Where the game-view camera points in world space, in degrees: an engine fact, not a game
+    /// field. Both angles come from the camera's forward vector and are always sent together; a
+    /// view that could not be read is a null <see cref="ObservationMessage.View"/>, never a zero
+    /// heading. Yaw is <c>atan2(forward.x, forward.z)</c> in [-180, 180] and a positive change turns
+    /// right. Pitch is <c>asin(-forward.y)</c> in [-90, 90] and a positive change looks down, as
+    /// Unity's own euler x does. A reading is a direction; a turn is the difference of two.
+    /// </summary>
+    public sealed class ObservationView
+    {
+        public const double MaxYawDeg = 180;
+
+        public const double MaxPitchDeg = 90;
+
+        [JsonProperty("yaw_deg", Order = 0)]
+        public double YawDeg { get; set; }
+
+        [JsonProperty("pitch_deg", Order = 1)]
+        public double PitchDeg { get; set; }
+    }
+
     /// <summary>Bridge -> core. One generic sample of the project.</summary>
     public sealed class ObservationMessage : Envelope
     {
@@ -68,5 +89,9 @@ namespace Playtest.Bridge.Protocol
 
         [JsonProperty("reader_errors", Order = 19)]
         public List<ObservationReaderError> ReaderErrors { get; set; } = new List<ObservationReaderError>();
+
+        /// <summary>The game-view camera's yaw and pitch, or null when the bridge has no such camera.</summary>
+        [JsonProperty("view", Order = 20)]
+        public ObservationView View { get; set; }
     }
 }

@@ -25,6 +25,19 @@ ACTION_EXECUTION_GAP = "some selected actions have no matching release-verified 
 SKILL_EXECUTION_GAP = "some selected skills have no matching release-verified execution evidence"
 # Flag only a substantial disparity, rather than preferring the maximum tested hold.
 MIN_EXPLORATION_DISPLACEMENT_RATIO = 0.25
+# A coarse turn step should turn the game view at least this many degrees; a step that measurably turns it
+# less is reported. The selection prompt asks for 30-60, so the report only starts well below that.
+MIN_USEFUL_TURN_DEG = 20.0
+# A mean turn under this many degrees is incidental camera motion, not a look step, and is never compared.
+MIN_MEASURABLE_TURN_DEG = 2.0
+# A turn is compared only when calibration measured it in at least this many valid trials, as a repeated one.
+MIN_TURN_TRIALS = 2
+# ... and only when those trials agree: they differ from each other by at most this share of the turn. A turn
+# of 180 degrees or more in one apply wraps, and a kick that varies from one repeat to the next is not a turn.
+MAX_TURN_SPREAD_RATIO = 0.25
+# Only a two-dimensional vector control, such as mouse delta or a stick, is a look axis. The view motion of a
+# button or a trigger is incidental (a kick, a lean) and is not compared with a turn step.
+LOOK_CONTROL_TYPES = preflight.AXIS_CONTROLS - preflight.ONE_D_CONTROLS
 
 
 def _axis_coverage_gaps(actions: list[dict], skills: list[dict]) -> list[str]:
@@ -77,6 +90,43 @@ def _short_step_gaps(actions: list[dict]) -> list[str]:
     return gaps
 
 
+def _short_turn_gaps(actions: list[dict]) -> list[str]:
+    """Report a look step whose measured mean turn of the game view is real but under MIN_USEFUL_TURN_DEG.
+
+    Like `_short_step_gaps`, this compares only the exact single-input value and requested hold calibration
+    measured, and only on a vector control (LOOK_CONTROL_TYPES). A turn that was not measured, was measured in
+    fewer than MIN_TURN_TRIALS valid trials, whose trials disagree by more than MAX_TURN_SPREAD_RATIO of the
+    turn, or is under MIN_MEASURABLE_TURN_DEG is unknown here and yields no gap: unknown is not small, and a
+    step that does not turn the view is not a look step. A step's turn is its larger absolute change of yaw or
+    pitch, because a coarse turn is asked for along each look axis. Skills and chords are never compared.
+    """
+    gaps = []
+    for action in actions:
+        if len(action["inputs"]) != 1:
+            continue
+        item, measured = action["inputs"][0], action["calibrations"][0]
+        if measured.get("control_type") not in LOOK_CONTROL_TYPES:
+            continue
+        if (item["x"], item["y"]) != (measured.get("declared_x"), measured.get("declared_y")):
+            continue
+        requested = action["hold_s"] if action["hold_s"] is not None else action["tap_hold_s"]
+        if requested is None:
+            continue
+        matched = [hold for hold in measured["holds"] if hold["requested_hold_s"] == requested]
+        turn = matched[0].get("mean_view_turn") if len(matched) == 1 else None
+        if turn is None or turn["trials"] < MIN_TURN_TRIALS:
+            continue
+        size = max(abs(turn["yaw_deg"]), abs(turn["pitch_deg"]))
+        if turn["spread_deg"] > MAX_TURN_SPREAD_RATIO * size:
+            continue
+        if MIN_MEASURABLE_TURN_DEG <= size < MIN_USEFUL_TURN_DEG:
+            gaps.append(f"action {action['name']!r} on control {item['control_id']!r} turns the game view "
+                        f"{size:.3g} degrees per step at {requested:g}s (yaw {turn['yaw_deg']:+.3g}, pitch "
+                        f"{turn['pitch_deg']:+.3g}), below the {MIN_USEFUL_TURN_DEG:g} degrees of a coarse turn "
+                        "step; fine turn steps may stay, but a session limited to them turns slowly")
+    return gaps
+
+
 def refresh_execution_coverage(value: dict) -> None:
     """Refresh only the coverage facts affected by newly measured execution evidence."""
     coverage = [item for item in value["gaps"]["coverage"]
@@ -117,6 +167,7 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
         coverage.append("some tested holds did not meet the repeated entity-displacement threshold")
     coverage.extend(_axis_coverage_gaps(actions, skills))
     coverage.extend(_short_step_gaps(actions))
+    coverage.extend(_short_turn_gaps(actions))
     if skills:
         coverage.append("each selected skill needs its own ordered release-verified execution evidence")
     if any((step.get("hold_s") is None and step.get("tap_hold_s") is None) for skill in skills for step in skill["steps"]):

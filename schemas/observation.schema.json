@@ -26,6 +26,30 @@
       ],
       "title": "ReaderError",
       "type": "object"
+    },
+    "ViewAngles": {
+      "additionalProperties": false,
+      "description": "Where the game-view camera points in world space, in degrees: an engine fact, not a game field.\n\nBoth come from the camera's forward vector, so they are measured together. Yaw is the heading,\natan2(forward.x, forward.z), and a positive change turns right. Pitch is asin(-forward.y), and a\npositive change looks down, as Unity's own euler x does. A reading is a direction, not a turn: a\nturn is the difference of two readings, with yaw wrapped to [-180, 180).",
+      "properties": {
+        "pitch_deg": {
+          "maximum": 90,
+          "minimum": -90,
+          "title": "Pitch Deg",
+          "type": "number"
+        },
+        "yaw_deg": {
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Yaw Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "yaw_deg",
+        "pitch_deg"
+      ],
+      "title": "ViewAngles",
+      "type": "object"
     }
   },
   "$id": "upa/observation.schema.json",
@@ -130,6 +154,18 @@
       ],
       "default": null,
       "title": "Ui"
+    },
+    "view": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ViewAngles"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The game-view camera's world yaw and pitch, or null when the bridge has no such camera. Null is unknown, never a heading of zero"
     },
     "wall_utc": {
       "format": "date-time",

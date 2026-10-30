@@ -473,44 +473,13 @@ namespace Playtest.Bridge.Unity
             }
         }
 
+        /// <summary>
+        /// The cameras that draw to the screen, in compositing order. The order is shared with the
+        /// game-view reading, so the view the bridge reports is the camera this capture draws first.
+        /// </summary>
         private static List<Camera> ScreenCameras()
         {
-            var cameras = new List<Camera>();
-            foreach (Camera camera in Camera.allCameras)
-            {
-                if (camera == null || !camera.enabled || !camera.isActiveAndEnabled)
-                {
-                    continue;
-                }
-
-                if (camera.gameObject == null || !camera.gameObject.activeInHierarchy)
-                {
-                    continue;
-                }
-
-                if (camera.cameraType != CameraType.Game || camera.targetTexture != null)
-                {
-                    continue;
-                }
-
-                cameras.Add(camera);
-            }
-
-            cameras.Sort(CompareCameras);
-            return cameras;
-        }
-
-        private static int CompareCameras(Camera left, Camera right)
-        {
-            int byDepth = left.depth.CompareTo(right.depth);
-            if (byDepth != 0)
-            {
-                return byDepth;
-            }
-
-            int leftOverlay = left.clearFlags == CameraClearFlags.Nothing ? 1 : 0;
-            int rightOverlay = right.clearFlags == CameraClearFlags.Nothing ? 1 : 0;
-            return leftOverlay.CompareTo(rightOverlay);
+            return UnityGameView.ScreenCameras();
         }
 
         private bool RenderCamera(Camera camera, RenderTexture destination, bool first)

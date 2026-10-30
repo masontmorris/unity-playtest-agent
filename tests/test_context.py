@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from playtest.contracts.bridge import Observation, ReaderError
+from playtest.contracts.bridge import Observation, ReaderError, ViewAngles
 from playtest.contracts.common import ClockMode
 from playtest.contracts.investigation import Comparator, Directive, DirectiveOutcome, Expected
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSet, ChoiceSource
@@ -104,6 +104,17 @@ def test_context_keeps_unknown_values_reader_errors_and_history():
     assert payload["pending_help"] == {"choice_id": "c2", "kind": "escalate", "since_game_s": 4.0}
     assert payload["game_view"] == "frames/3.jpg"
     assert payload["as_of"]["age_s"] is None
+
+
+def test_the_game_view_the_bridge_reports_never_reaches_s1():
+    """The view is calibration's measurement. A payload built from an observation that carries one is
+    byte-for-byte the payload built without it, so what S1 is shown, and what it may choose, is unchanged."""
+    plain = observation()
+    seen = plain.model_copy(update={"view": ViewAngles(yaw_deg=41.0, pitch_deg=-3.5)})
+    assert seen.view is not None and plain.view is None
+    assert canonical(build_context(objective="Explore.", observation=seen, choices=choices())) == canonical(
+        build_context(objective="Explore.", observation=plain, choices=choices()))
+    assert "view" not in build_context(objective="Explore.", observation=seen, choices=choices())["observation"]
 
 
 def test_context_has_no_ranking_or_recommendation():

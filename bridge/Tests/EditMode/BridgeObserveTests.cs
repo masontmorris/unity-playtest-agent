@@ -97,6 +97,7 @@ namespace Playtest.Bridge.Tests
                     Ui = current.Ui,
                     FrameRef = current.FrameRef,
                     ReaderErrors = current.ReaderErrors,
+                    View = current.View,
                     CapturedWallUtc = current.CapturedWallUtc.AddMilliseconds(sample),
                 };
             }
@@ -221,6 +222,61 @@ namespace Playtest.Bridge.Tests
                 Assert.That(line, Does.Not.Contain("\"reader_errors\""));
                 Assert.That(line, Does.Not.Contain("\"frame_ref\""));
             }
+        }
+
+        [Test]
+        public void Once_CarriesTheGameViewAsAPairAndOmitsAnUnknownOne()
+        {
+            _observations.Snapshot.View = new ObservationView { YawDeg = -172.32, PitchDeg = 12.5 };
+
+            using (var client = new TestClient(_server))
+            {
+                client.Send(BridgeTestSupport.Hello(session: "s-view"));
+                client.ReadStatus();
+
+                client.Send(Observe("once", seq: 10));
+                string known = client.ReadLine();
+                Assert.That(
+                    BridgeProtocol.TryReadObservation(known, out ObservationMessage seen, out ProtocolError error),
+                    Is.True,
+                    error?.Message);
+
+                Assert.That(seen.View, Is.Not.Null);
+                Assert.That(seen.View.YawDeg, Is.EqualTo(-172.32).Within(1e-9));
+                Assert.That(seen.View.PitchDeg, Is.EqualTo(12.5).Within(1e-9));
+                Assert.That(known, Does.Contain("\"view\":{\"yaw_deg\":-172.32,\"pitch_deg\":12.5}"));
+
+                _observations.Snapshot.View = null;
+                client.Send(Observe("once", seq: 11));
+                string unknown = client.ReadLine();
+                Assert.That(
+                    BridgeProtocol.TryReadObservation(unknown, out ObservationMessage unseen, out error),
+                    Is.True,
+                    error?.Message);
+
+                Assert.That(unseen.View, Is.Null, "an unknown view is null, never a heading of zero");
+                Assert.That(unknown, Does.Not.Contain("\"view\""));
+            }
+        }
+
+        [TestCase("{\"yaw_deg\":10}", TestName = "a view without a pitch")]
+        [TestCase("{\"pitch_deg\":10}", TestName = "a view without a yaw")]
+        [TestCase("{\"yaw_deg\":181,\"pitch_deg\":0}", TestName = "a yaw past the seam")]
+        [TestCase("{\"yaw_deg\":0,\"pitch_deg\":-90.5}", TestName = "a pitch past the pole")]
+        [TestCase("{\"yaw_deg\":\"10\",\"pitch_deg\":0}", TestName = "a yaw that is text")]
+        [TestCase("{\"yaw_deg\":0,\"pitch_deg\":0,\"roll_deg\":0}", TestName = "a view with an extra member")]
+        [TestCase("[]", TestName = "a view that is not an object")]
+        public void ARejectedView_IsAnInvalidObservationNotAZeroHeading(string view)
+        {
+            string line = "{\"protocol\":\"upa/1\",\"session\":\"s\",\"seq\":1,\"wall_utc\":\"2026-01-01T00:00:00Z\","
+                + "\"type\":\"observation\",\"clock_mode\":\"realtime\",\"scene\":\"x\",\"playing\":true,"
+                + "\"paused\":false,\"time_scale\":1,\"frame\":1,\"view\":" + view + "}";
+
+            bool accepted = BridgeProtocol.TryReadObservation(line, out ObservationMessage observation, out ProtocolError error);
+
+            Assert.That(accepted, Is.False);
+            Assert.That(observation, Is.Null);
+            Assert.That(error.Code, Is.EqualTo("invalid"));
         }
 
         [Test]

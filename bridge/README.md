@@ -246,6 +246,24 @@ Capture is on by default while the project plays. Tests that need it must run Un
 `-nographics`; the PlayMode test script does that by default and accepts `-NoGraphics` for
 machines without a device.
 
+### Game view
+
+Every observation carries `view`, where the game-view camera points in world space:
+`{"yaw_deg": ..., "pitch_deg": ...}`. The game-view camera is the first of the screen cameras the
+capture composites (lowest depth, an overlay camera after a base camera of equal depth), so the
+angles describe the frame the capture writes; `UnityGameView` owns that order and the capture
+uses it too. Both angles come from the camera's forward vector: yaw is `atan2(forward.x,
+forward.z)` in [-180, 180] and a positive change turns right, and pitch is `asin(-forward.y)` in
+[-90, 90] and a positive change looks down, as Unity's euler x does. They are engine facts, not
+game fields, and they sit beside `public` rather than in it, so what a decision-maker is shown
+under `public` is unchanged. `public.camera.rotation` stays the raw euler angles of Unity's main
+camera (the first enabled camera when none is tagged main), which need not be the game-view camera.
+
+A view that cannot be read is `null` (omitted on the wire) with a `view` entry in
+`reader_errors`: no screen camera draws, or the camera looks straight up or down where a heading
+does not exist. It is never a heading of zero. A reading is a direction; a turn is the difference
+of two readings with yaw wrapped to [-180, 180).
+
 ## Tests
 
 Three layers:

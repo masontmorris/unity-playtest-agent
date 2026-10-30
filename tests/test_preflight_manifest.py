@@ -93,8 +93,21 @@ def test_evidence_validation_rejects_modified_caps_and_coverage():
     assert "coverage gaps differ from the packet and selections" in problems
 
 
-def selection_with_measurements(selected_actions, skills=()):
-    """Run the selection chain against generic keyboard, vector and one-way axis evidence."""
+def measured_turn(value):
+    """A hold's mean_view_turn from (yaw, pitch[, trials[, spread]]); None is a turn that was not measured."""
+    if value is None:
+        return None
+    yaw, pitch, *rest = value
+    trials, spread = (rest + [2, 0.0][len(rest):])[:2]
+    return {"trials": trials, "yaw_deg": yaw, "pitch_deg": pitch, "spread_deg": spread}
+
+
+def selection_with_measurements(selected_actions, skills=(), view_turns=None):
+    """Run the selection chain against generic keyboard, vector and one-way axis evidence.
+
+    `view_turns` maps (control, requested hold) to the measured mean (yaw, pitch) turn of the game view, or to
+    (yaw, pitch, trials, spread); a hold not named there has no measured view, which is unknown.
+    """
     from playtest.preflight.calibrate import discover_actions
     from test_preflight_packet import cap
 
@@ -117,7 +130,8 @@ def selection_with_measurements(selected_actions, skills=()):
                        lowest_tested_effective_requested_hold_s=0.05,
                        holds=[{"requested_hold_s": hold, "valid_trials": 2, "mean_delta": [distance, 0, 0],
                                "mean_magnitude": distance, "sample_variance": 0,
-                               "effective_in_all_repeats": True}
+                               "effective_in_all_repeats": True,
+                               "mean_view_turn": measured_turn((view_turns or {}).get((control["control"], hold)))}
                               for hold, distance in ((0.05, 0.25), (0.4, 2), (1.2, 6))])
         calibration["action_summaries"].append(summary)
     calibration["trials"] = [{"control": control["control"], "valid": True} for control in discovered]
@@ -208,6 +222,128 @@ def test_resolved_tap_is_compared_and_unresolved_tap_stays_unknown():
     action = value.model_dump(mode="json")["actions"][0]
     action["tap_hold_s"] = None
     assert manifest._short_step_gaps([action]) == []
+    assert manifest.validate_evidence(value, packet) == []
+
+
+def turn_gaps(value):
+    return [gap for gap in value.gaps.coverage if "degrees per step" in gap]
+
+
+def test_a_look_step_measured_at_seven_degrees_is_a_gap_not_a_rejection_or_substitution():
+    # One mouse impulse turned the game view 7.68 degrees in both calibration repeats.
+    actions = [selected_action("look_right", "mouse_delta", 1, 0, 0.05)]
+    packet, result, value = selection_with_measurements(actions, view_turns={("mouse_delta", 0.05): (7.68, 0.0)})
+    gaps = turn_gaps(value)
+    assert len(gaps) == 1 and "'look_right'" in gaps[0] and "'mouse_delta'" in gaps[0]
+    assert "7.68 degrees per step at 0.05s" in gaps[0] and "yaw +7.68" in gaps[0] and "20 degrees" in gaps[0]
+    assert [(a.name, a.hold_s) for a in value.actions] == [("look_right", 0.05)]
+    assert len(result.actions.attempts) == 1 and result.actions.attempts[0].problems == ()
+    assert manifest.validate_evidence(value, packet) == []
+    changed = value.model_dump(mode="json")
+    changed["gaps"]["coverage"].remove(gaps[0])
+    assert "coverage gaps differ from the packet and selections" in manifest.validate_evidence(
+        PreflightManifest.model_validate(changed), packet)
+
+
+def test_a_coarse_turn_step_is_not_a_gap_and_a_fine_one_beside_it_is_still_reported():
+    actions = [selected_action("look_fine", "mouse_delta", 1, 0, 0.05),
+               selected_action("look_coarse", "mouse_delta", 1, 0, 0.4)]
+    packet, _, value = selection_with_measurements(
+        actions, view_turns={("mouse_delta", 0.05): (7.68, 0.0), ("mouse_delta", 0.4): (46.08, 0.0)})
+    gaps = turn_gaps(value)
+    assert len(gaps) == 1 and "'look_fine'" in gaps[0]
+    assert [a.name for a in value.actions] == ["look_fine", "look_coarse"]
+    assert manifest.validate_evidence(value, packet) == []
+    alone = selection_with_measurements(actions[1:], view_turns={("mouse_delta", 0.4): (46.08, 0.0)})[2]
+    assert turn_gaps(alone) == []
+
+
+def test_an_unknown_view_turn_yields_no_gap():
+    actions = [selected_action("look_right", "mouse_delta", 1, 0, 0.05)]
+    packet, _, value = selection_with_measurements(actions)  # calibration did not measure the view at all
+    assert value.actions[0].calibrations[0].holds[0].mean_view_turn is None
+    assert turn_gaps(value) == []
+    assert manifest.validate_evidence(value, packet) == []
+
+
+def test_turn_comparison_needs_the_exact_value_a_repeated_measure_and_a_real_turn():
+    actions = [selected_action("small", "mouse_delta", 1, 0, 0.05),
+               selected_action("opposite", "mouse_delta", -1, 0, 0.05),
+               selected_action("untested", "mouse_delta", 1, 0, 0.3),
+               selected_action("keys", "w", hold=0.05)]
+    packet, _, value = selection_with_measurements(actions, view_turns={
+        ("mouse_delta", 0.05): (7.68, 0.0), ("w", 0.05): (0.4, 0.1)})
+    rows = value.model_dump(mode="json")["actions"]
+    assert [gap.split("'")[1] for gap in manifest._short_turn_gaps(rows)] == ["small"]  # not x=-1, hold 0.3 or a key
+    assert manifest.validate_evidence(value, packet) == []
+
+    def turned(yaw, pitch, trials=2, spread=0.0):
+        row = copy.deepcopy(rows[0])
+        row["calibrations"][0]["holds"][0]["mean_view_turn"] = {
+            "trials": trials, "yaw_deg": yaw, "pitch_deg": pitch, "spread_deg": spread}
+        return row
+
+    named = lambda row: [gap.split("'")[1] for gap in manifest._short_turn_gaps([row])]
+    assert named(turned(manifest.MIN_USEFUL_TURN_DEG, 0)) == []              # at the bound is useful
+    assert named(turned(manifest.MIN_USEFUL_TURN_DEG - 0.01, 0)) == ["small"]
+    assert named(turned(manifest.MIN_MEASURABLE_TURN_DEG, 0)) == ["small"]  # at the floor is measurable
+    assert named(turned(manifest.MIN_MEASURABLE_TURN_DEG - 0.01, 0)) == []   # below it is not a look step
+    assert named(turned(0, -9.5)) == ["small"]                               # pitch alone, in either sign
+    assert named(turned(-7.68, 0)) == ["small"]
+    assert "yaw -7.68" in manifest._short_turn_gaps([turned(-7.68, 0)])[0]
+    assert named(turned(7.68, 0, trials=manifest.MIN_TURN_TRIALS - 1)) == []  # one reading is not repeated
+    assert named(turned(15, 25)) == []                                       # the larger axis is already coarse
+    chord = turned(7.68, 0)
+    chord["inputs"].append(copy.deepcopy(rows[3]["inputs"][0]))
+    assert manifest._short_turn_gaps([chord]) == []
+    unresolved = turned(7.68, 0)
+    unresolved["hold_s"] = unresolved["tap_hold_s"] = None
+    assert manifest._short_turn_gaps([unresolved]) == []
+
+
+def test_only_a_vector_control_is_a_look_axis_and_only_agreeing_repeats_are_compared():
+    # FPSKit-like numbers: a mouse impulse turns 7.68 degrees every time; a held trigger and a button kick the
+    # view by an amount that varies from one repeat to the next, and a key kicks it steadily.
+    actions = [selected_action("look_right", "mouse_delta", 1, 0, 0.05),
+               selected_action("stick_right", "gamepad_leftstick", 1, 0, 0.05),
+               selected_action("fire", "gamepad_righttrigger", 1, 0, 0.4),
+               selected_action("press", "w", hold=0.4)]
+    packet, _, value = selection_with_measurements(actions, view_turns={
+        ("mouse_delta", 0.05): (7.68, 0.0), ("gamepad_leftstick", 0.05): (12.0, 0.0),
+        ("gamepad_righttrigger", 0.4): (0.0, -7.8), ("w", 0.4): (0.0, -5.0)})
+    gaps = turn_gaps(value)
+    assert [gap.split("'")[1] for gap in gaps] == ["look_right", "stick_right"]  # not a trigger, not a button
+    assert manifest.validate_evidence(value, packet) == []
+    types = {a.name: a.calibrations[0].control_type for a in value.actions}
+    assert types == {"look_right": "Delta", "stick_right": "Stick", "fire": "Axis", "press": "Button"}
+    assert manifest.LOOK_CONTROL_TYPES == {"Vector2", "Vector3", "Stick", "Dpad", "Delta"}
+
+    rows = value.model_dump(mode="json")["actions"]
+    def spread(amount):
+        row = copy.deepcopy(rows[0])
+        row["calibrations"][0]["holds"][0]["mean_view_turn"]["spread_deg"] = amount
+        return row
+    boundary = manifest.MAX_TURN_SPREAD_RATIO * 7.68
+    assert len(manifest._short_turn_gaps([spread(0.0)])) == 1
+    assert len(manifest._short_turn_gaps([spread(boundary)])) == 1             # at the bound the repeats agree
+    assert manifest._short_turn_gaps([spread(boundary + 0.01)]) == []          # past it they do not: unknown
+    # The live right-stick hold of 1.2 s: a turn past half a circle wraps and its four repeats scatter.
+    assert manifest._short_turn_gaps([spread(35.172)]) == []
+    # A record from before the control type was known is not compared either.
+    untyped = spread(0.0)
+    untyped["calibrations"][0]["control_type"] = None
+    assert manifest._short_turn_gaps([untyped]) == []
+
+
+def test_a_skill_of_turn_steps_is_never_compared():
+    # The turn of an ordered sequence was not measured, so a skill built from fine steps is unknown, not short.
+    actions = [selected_action("look_right", "mouse_delta", 1, 0, 0.4)]
+    skills = [{"name": "quarter_turn", "purpose": "turn", "max_s": 3,
+               "steps": [{"inputs": [{"control_id": "mouse_delta", "x": 1, "y": 0}], "hold_s": 0.05, "wait_s": 0.05}
+                         for _ in range(6)]}]
+    packet, _, value = selection_with_measurements(
+        actions, skills, view_turns={("mouse_delta", 0.05): (7.68, 0.0), ("mouse_delta", 0.4): (46.08, 0.0)})
+    assert turn_gaps(value) == []
     assert manifest.validate_evidence(value, packet) == []
 
 

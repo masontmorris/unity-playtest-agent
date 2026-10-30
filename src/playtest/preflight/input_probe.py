@@ -546,7 +546,8 @@ async def measure(client: BridgeClient, plan: ProbePlan, declarations: list[Decl
         for repeat in range(1, target.repeats + 1):
             record = {"repeat": repeat, "based_on_seq": None, "observation_frame": None,
                       "before_transform": None, "after_transform": None, "transform_delta": None,
-                      "readers": None, "public": None, "execution": [], "frames": {"before": None, "after": None},
+                      "readers": None, "public": None, "view": None, "execution": [],
+                      "frames": {"before": None, "after": None},
                       "declaration": declaration.definition().model_dump(mode="json"),
                       "valid": False, "problems": [], "status": None, "executed": False,
                       "release_verified_terminal": None, "neutral_release": None,
@@ -611,6 +612,9 @@ async def measure(client: BridgeClient, plan: ProbePlan, declarations: list[Decl
             before_public = _public_values(observation, plan.public_fields)
             after_public = _public_values(after_observation, plan.public_fields)
             record["public"] = _public_deltas(before_public, after_public)
+            view_before, view_after = calibrate.view_reading(observation), calibrate.view_reading(after_observation)
+            record["view"] = {"before": view_before, "after": view_after,
+                              "turn": calibrate.view_turn(view_before, view_after)}
             record["frames"] = {"before": frame_record(observation.frame_ref, archive_dir=media_dir),
                                 "after": frame_record(after_observation.frame_ref, archive_dir=media_dir)}
             for key, captured in (("before", observation), ("after", after_observation)):

@@ -65,6 +65,45 @@ alter a hold, or add an input. Older manifests are checked against the current c
 an older manifest claiming a measured `hold_effect` for a different axis value also fails the
 current cross-field validation and needs reassembly from its original selections and evidence.
 
+## Turn coverage
+
+Displacement says nothing about a look control: an input that only turns the view moves the entity
+0. So calibration also measures how far the **game view** turns. The bridge reports the game-view
+camera's world yaw and pitch on every observation (`Observation.view`, in degrees, `null` when
+unknown; the camera is the first one the frame capture composites, see `bridge/README.md`).
+Calibration reads it from the observation that binds each action and from one taken after the same
+settle as the entity's read, and records the change per trial: yaw wrapped to [-180, 180), so a turn
+across the seam is small, and pitch as a plain difference. A positive yaw turns right and a positive
+pitch looks down. Each hold's `mean_view_turn` is the mean over its valid trials that read the view
+both times, with the count and `spread_deg`, the largest difference between any two of those trials
+along yaw or pitch; a view that was not read is `null`, never a turn of zero. The change is not
+corrected for any turn the view makes with no input. Two readings cannot show a turn of 180 degrees or
+more in one apply: it wraps and reads as a smaller one, and its repeats then scatter. On FPSKit a
+right stick held 1.2 s read 37, 37, 72 and 62 degrees, a mean of 52 with a spread of 35, where the
+holds up to 0.4 s read 18, 36, 72 and 144 degrees with spreads under 0.1. The spread is the signal, so
+the mean is never presented without it.
+
+The selection prompt shows `mean_view_turn` and asks for at least one coarse turn step, roughly 30
+to 60 degrees, in each direction of every look axis. Fine steps may stay beside it. A held control
+reaches a larger turn through its value or hold, scaled from the measured degrees per unit. A relative
+impulse such as mouse delta takes a value of at most 1, so a coarse turn is several impulses as
+ordered skill steps; the prompt says that such an estimate is not a measurement.
+
+The manifest reports a coverage gap for a single-input action on a vector control (mouse delta, a stick
+or a dpad: `LOOK_CONTROL_TYPES`) at the exact calibrated value and a tested hold whose repeated mean turn
+is **below 20 degrees** (`MIN_USEFUL_TURN_DEG`) but at least 2 (`MIN_MEASURABLE_TURN_DEG`). A step's turn
+is the larger of its absolute yaw and pitch changes. Below 2 degrees the input is not a look step; the
+view must have been read in at least two valid trials (`MIN_TURN_TRIALS`) that agree, with a spread of at
+most a quarter of the turn (`MAX_TURN_SPREAD_RATIO`); and a button or a trigger is not a look axis, whatever
+it does to the view (on FPSKit holding the fire controls kicks the pitch 6 to 12 degrees by an amount that
+differs from repeat to repeat). Otherwise, as for a view that was never measured, a different value, hold or
+direction, a chord or a skill, the turn is unknown and yields no gap: unknown is not small. The gap is a
+diagnostic. It does not reject a selection, alter a
+hold, add a coarse step or say that a coarse step is missing; the validator recomputes it from the
+packet and the unchanged selections, and manifests assembled before the view was measured have
+no turn to compare and keep their coverage unchanged. Calibration declares one value per control, so
+only that value's turn is known: for mouse delta, the effect of x = -1 and of a y impulse is unmeasured.
+
 The manifest's Pydantic model is the source of `schemas/preflight_manifest.schema.json`. The exported
 schema describes structural constraints; Python validation also checks cross-field rules, scoreable
 checks, exact descriptor and calibration bindings, the source packet hash, and the accepted answers

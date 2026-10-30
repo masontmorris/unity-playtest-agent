@@ -384,6 +384,25 @@ def test_action_selection_prompt_asks_for_useful_steps_and_opposite_axis_directi
         assert "One-way controls such as triggers do not need an opposite" in text
 
 
+def test_action_selection_prompt_asks_for_a_coarse_turn_in_each_direction_of_every_look_axis():
+    for stage in ("actions", "all"):
+        text = preflight.STAGE_PROMPTS[stage]
+        assert "mean_view_turn" in text and "how many degrees the game view turned per apply" in text
+        assert "(yaw positive turns right, pitch positive looks down)" in text
+        assert "with its trial count and spread_deg, how far its trials disagree" in text
+        assert "A turn of 180 degrees or more in one apply wraps and is read as a smaller one" in text
+        assert "a large spread_deg means the mean is not a turn to rely on" in text
+        assert "at least one coarse turn step, roughly 30 to 60 degrees, in each direction of every look axis" in text
+        assert "(a vector control such as mouse delta or a stick whose mean_view_turn shows the view turning)" in text
+        assert "fine steps may stay beside it" in text
+        assert "A held control's turn can be scaled through its value or hold" in text
+        assert "a relative impulse such as mouse delta cannot exceed 1" in text
+        assert "repeating the impulse as ordered skill steps" in text
+        assert "your estimate, not a measurement; never present it as measured" in text
+    assert "mean_view_turn" not in preflight.STAGE_PROMPTS["readers"]
+    assert "mean_view_turn" not in preflight.STAGE_PROMPTS["progress"]
+
+
 def test_retry_turn_lists_each_problem_on_its_own_line():
     text = preflight.retry_turn("actions", ["p1", "p2"])
     assert "actions" in text

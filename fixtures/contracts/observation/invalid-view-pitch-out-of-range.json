@@ -1,0 +1,21 @@
+{
+  "protocol": "upa/1",
+  "session": "s-1",
+  "seq": 1845,
+  "game_s": 61.4,
+  "wall_utc": "2026-10-26T18:00:00.15Z",
+  "type": "observation",
+  "clock_mode": "realtime",
+  "scene": "Level1",
+  "playing": true,
+  "paused": false,
+  "time_scale": 1.0,
+  "frame": 3682,
+  "public": {},
+  "ui": {},
+  "view": {
+    "yaw_deg": 10.0,
+    "pitch_deg": 120.0
+  },
+  "reader_errors": []
+}

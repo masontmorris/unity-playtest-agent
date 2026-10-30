@@ -34,6 +34,12 @@ namespace Playtest.Bridge.Transport
 
         public List<ObservationReaderError> ReaderErrors { get; set; } = new List<ObservationReaderError>();
 
+        /// <summary>
+        /// Where the game-view camera pointed when the sample was taken, or null when the source
+        /// has no such camera. Null is unknown, never a heading of zero.
+        /// </summary>
+        public ObservationView View { get; set; }
+
         /// <summary>When the sample was taken; the observation's wall_utc is this value.</summary>
         public DateTime CapturedWallUtc { get; set; } = DateTime.UtcNow;
     }

@@ -126,6 +126,8 @@ Each repeat obtains a fresh observation, binds `based_on_seq`, sends exactly the
 with `params: {}` and the declared lease (action hold or skill `max_s`), and records every success
 and failure as k/n. Before and after each act it records transform position, measured basis,
 derived yaw/pitch (documented Unity convention), public and field reader values and numeric deltas,
+the game view the bridge reports (`view`: yaw and pitch before and after, and the turn between them
+with yaw wrapped to [-180, 180); null when the bridge reported none, never zero),
 frame ref, SHA-256, byte count and image dimensions when the frame file is readable, all execution
 receipts and a neutral-release check from the post-action device state. Missing evidence stays
 null. A rejection stops that target's remaining repeats. An unverified release on any applied
