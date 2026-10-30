@@ -31,7 +31,7 @@ from playtest.contracts.investigation import (
 )
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSource
 
-from .checks import ValueKind, check_problems
+from .checks import CHANGE, ValueKind, check_problems, evaluate, field_value
 from .strict import enum_str, render
 
 FieldPath = enum_str("fields")
@@ -63,8 +63,13 @@ class Setpoint(Strict):
 
 
 class DirectiveOut(Strict):
-    deadline_s: float | None = Field(description="Game seconds S1 has after it receives the directive")
-    expected: Setpoint | None = Field(description="null when no field can show the outcome; scored unknown")
+    deadline_s: float | None = Field(
+        description="Game seconds S1 has after it receives the directive; required for an unchanged setpoint")
+    expected: Setpoint | None = Field(
+        description="null when no field can show the outcome; scored unknown. Otherwise met the first time a "
+                    "reading satisfies it, so it must not already hold. changed: met when the value first differs "
+                    "from its value when S1 receives the directive. unchanged: met only if the value stays as it "
+                    "is until the deadline")
     target: TargetOut | None
     tests: str | None = Field(description="Id of the hypothesis this tests, or null")
     text: str = Field(description="The controlled test, for S1, in one or two sentences")
@@ -129,10 +134,13 @@ SYSTEM = (
     "record. Cite only sequence numbers that appear in the packet, and say what would confirm and what would "
     "refute each.\n"
     "- directive: one controlled test for S1, or null to keep the current directive. Its expected setpoint must "
-    "be checkable by code: a manifest field, an operator, and a value of that field's type. changed and "
-    "unchanged take value null and compare with the value when S1 receives the directive. A tolerance applies "
-    "only to numeric == or !=. If no field can show the outcome, set expected to null; the directive is then "
-    "scored unknown. deadline_s is game seconds S1 has after it receives the directive.\n"
+    "be checkable by code: a manifest field, an operator, and a value of that field's type. Every operator "
+    "except changed and unchanged is met the first time a reading satisfies it, so the setpoint must not "
+    "already hold in the packet's observation; one that does is rejected. changed and unchanged take value null "
+    "and compare with the value when S1 receives the directive. changed is met when the value first differs from "
+    "it. unchanged is met only if the value stays as it is until the deadline, and it needs deadline_s. A "
+    "tolerance applies only to numeric == or !=. If no field can show the outcome, set expected to null; the "
+    "directive is then scored unknown. deadline_s is game seconds S1 has after it receives the directive.\n"
     "- add_choices: manifest actions or skills S1 should be able to pick during this directive, optionally with "
     "a hold or axis override for an action. prune_choices: manifest actions or skills to hide during this "
     "directive. Both end when the directive closes. S1 always has wait, escalate and finish; they are not manifest "
@@ -173,6 +181,10 @@ class PacketRefs:
     hypotheses: frozenset[str] = frozenset()
     new_hypothesis_ids: tuple[str, ...] = ()
     open_directive: bool = False
+    # The request observation's public readings, as the packet shows them. `review` rejects a reach setpoint
+    # they already satisfy. None when the caller has none: nothing is then judged to hold. A mapping is not
+    # hashable, so it stays out of the generated eq and hash.
+    public: Mapping[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -220,6 +232,17 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
         for reason in check_problems(item, kind, sp.op, sp.value, sp.tolerance):
             bad(item, reason)
 
+    def holds_now(sp: Setpoint) -> bool:
+        """A reach setpoint the request observation already satisfies is met before S1 can act, so it tests nothing.
+
+        Only a measured, scoreable reading counts: an unknown one (None) is not a reason to reject.
+        """
+        kind = manifest.fields.get(sp.field)
+        if refs.public is None or kind is None or sp.op in CHANGE:
+            return False
+        value = field_value(refs.public, sp.field.removeprefix("public."))
+        return evaluate(value, kind=kind, op=sp.op, expected=sp.value, tolerance=sp.tolerance) is True
+
     def text(item: str, **values: str) -> None:
         for name, value in values.items():
             if not value.strip():
@@ -255,6 +278,11 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
             bad("directive", f"tests {d.tests!r}, which is not an open or accepted hypothesis")
         if d.expected is not None:
             setpoint("directive", d.expected)
+            if d.expected.op is Comparator.unchanged and d.deadline_s is None:
+                bad("directive", "an unchanged setpoint is met only if the value stays as it is until the "
+                                 "deadline, so the directive needs deadline_s")
+            if holds_now(d.expected):
+                bad("directive", "the setpoint already holds at the request observation, so it tests nothing")
 
     unbounded = d is None and not refs.open_directive  # added and pruned choices live as long as a directive
     added: set[str] = set()

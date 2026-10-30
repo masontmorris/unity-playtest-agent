@@ -236,6 +236,95 @@ def test_numeric_equality_with_tolerance_is_clean(manifest, refs):
     assert frontier.review(answer(directive=directive(tests="h1", expected=expected)), manifest, refs).clean
 
 
+# --- how a setpoint is scored (#141) -------------------------------------------------------------
+
+
+@pytest.fixture
+def seen(refs):
+    """The same packet, whose observation reads counter 3 and item_held true."""
+    return replace(refs, public={"counter": 3, "item_held": True, "pos": [0.0, 1.0, 2.0]})
+
+
+def reviewed(manifest, refs, expected, **kwargs):
+    return frontier.review(answer(directive=directive(tests="h1", expected=expected, **kwargs)), manifest, refs)
+
+
+def test_an_unchanged_setpoint_needs_a_deadline(manifest, refs):
+    hold = setpoint("public.counter", Comparator.unchanged, None)
+    review = reviewed(manifest, refs, hold, deadline_s=None)
+    assert [p.item for p in review.problems] == ["directive"]
+    assert "unchanged" in review.problems[0].reason and "needs deadline_s" in review.problems[0].reason
+    assert reviewed(manifest, refs, hold, deadline_s=20.0).clean
+    # Only a hold needs one: a change and a reach are met by a reading, whenever it comes.
+    for other in (setpoint("public.counter", Comparator.changed, None), setpoint("public.counter", Comparator.gt, 5.0)):
+        assert reviewed(manifest, refs, other, deadline_s=None).clean
+
+
+ALREADY_HOLDS = [
+    ("equal", setpoint("public.counter", Comparator.eq, 3.0)),
+    ("equal_within_tolerance", setpoint("public.counter", Comparator.eq, 3.2, tolerance=0.5)),
+    ("at_least", setpoint("public.counter", Comparator.ge, 3.0)),
+    ("below_a_higher_value", setpoint("public.counter", Comparator.lt, 10.0)),
+    ("not_equal", setpoint("public.counter", Comparator.ne, 7.0)),
+    ("bool_equal", setpoint("public.item_held", Comparator.eq, True)),
+    ("bool_not_equal", setpoint("public.item_held", Comparator.ne, False)),
+]
+
+
+@pytest.mark.parametrize("expected", [e for _, e in ALREADY_HOLDS], ids=[n for n, _ in ALREADY_HOLDS])
+def test_a_reach_setpoint_the_request_observation_already_satisfies_is_rejected(manifest, seen, expected):
+    review = reviewed(manifest, seen, expected)
+    assert [p.item for p in review.problems] == ["directive"]
+    assert review.problems[0].reason == "the setpoint already holds at the request observation, so it tests nothing"
+
+
+NOT_YET = [
+    ("above", setpoint("public.counter", Comparator.gt, 3.0)),
+    ("at_least_more", setpoint("public.counter", Comparator.ge, 4.0)),
+    ("below", setpoint("public.counter", Comparator.lt, 3.0)),
+    ("equal_other", setpoint("public.counter", Comparator.eq, 4.0)),
+    ("equal_outside_tolerance", setpoint("public.counter", Comparator.eq, 4.0, tolerance=0.5)),
+    ("bool_other", setpoint("public.item_held", Comparator.eq, False)),
+    ("changed", setpoint("public.counter", Comparator.changed, None)),   # compared with S1's value, not this one
+    ("unchanged_vector", setpoint("public.pos", Comparator.unchanged, None)),
+]
+
+
+@pytest.mark.parametrize("expected", [e for _, e in NOT_YET], ids=[n for n, _ in NOT_YET])
+def test_a_setpoint_still_to_be_reached_is_accepted(manifest, seen, expected):
+    assert reviewed(manifest, seen, expected).clean
+
+
+@pytest.mark.parametrize("public", [None, {}, {"counter": None}, {"counter": "three"}, {"counter": float("nan")}],
+                         ids=["no_readings", "field_absent", "null", "wrong_type", "not_finite"])
+def test_an_unknown_reading_is_not_a_reason_to_reject(manifest, refs, public):
+    would_hold = setpoint("public.counter", Comparator.ge, 0.0)
+    assert reviewed(manifest, replace(refs, public=public), would_hold).clean
+
+
+def test_a_vacuous_directive_rejects_only_itself(manifest, seen):
+    a = answer(hypotheses=[hypothesis("h2")],
+               directive=directive(tests="h2", expected=setpoint("public.counter", Comparator.eq, 3.0)))
+    review = frontier.review(a, manifest, seen)
+    assert [p.item for p in review.problems] == ["directive"]
+
+
+def test_a_findings_repro_check_may_already_hold(manifest, seen):
+    # A replay check says what a reproduction must show; a finding is often true right now.
+    assert frontier.review(answer(candidate_finding=finding(repro=setpoint("public.counter", Comparator.ge, 3.0))),
+                           manifest, seen).clean
+
+
+def test_the_prompt_and_schema_say_how_each_setpoint_is_scored(manifest):
+    in_schema = strict.canonical(frontier.schema(manifest))
+    for needle in ("must not already hold", "first differs from its value when S1 receives the directive",
+                   "stays as it is until the deadline", "required for an unchanged setpoint"):
+        assert needle in in_schema
+    for needle in ("must not already hold", "changed is met when the value first differs",
+                   "unchanged is met only if the value stays as it is until the deadline", "it needs deadline_s"):
+        assert needle in frontier.SYSTEM
+
+
 # --- add and prune choices -----------------------------------------------------------------------
 
 

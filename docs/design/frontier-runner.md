@@ -54,6 +54,54 @@ labelled the same way, because the setpoint already held.
 Offline coverage uses a fake bridge, fake provider response, fake clip capture and scripted S1. It does
 not make a live model call or launch a Unity Editor.
 
+## How a setpoint is scored (#141)
+
+On the last two live runs, 4 of 6 and 3 of 5 directives were scored `met` on the turn S1 first saw them, so
+most tested nothing. Three causes, three changes.
+
+**`unchanged` is a hold.** Every other operator is met on the first scored reading that satisfies it, and
+`changed` is met on the first reading that differs from its baseline. `unchanged` used to be scored the same
+way, so it was met on its first reading and a hold could never be tested. Now, from the observation that first
+states the directive to S1:
+- the first scored reading that differs from the baseline closes it `not_met`, with the reason "the value
+  changed before the deadline";
+- when the deadline passes with at least one reading scored and none changed, it closes `met`, with the reason
+  "the value stayed unchanged through the deadline";
+- a reading that cannot be scored is skipped, never counted as held. If none could be scored by the deadline it
+  closes `expired`, as any directive does.
+
+The window and `error_class` logic of #133 runs as before in `_close`, so a hold that was missed or met without
+a completed input says so.
+
+**Review rejects setpoints that test nothing.** `roles.frontier.review` rejects a directive, with the reason in
+the answer's `review` list (which S1 reads in its guidance) and in the investigation entry's `reason`, when
+- its setpoint is `unchanged` and it has no `deadline_s`; or
+- its setpoint uses any operator but `changed`/`unchanged` and already holds at the request observation: "the
+  setpoint already holds at the request observation, so it tests nothing".
+
+The check lives in `review` so that it stays the one place that rejects answer items. `build_packet` copies the
+observation's public readings into `PacketRefs.public`, so the provider path and the runner reach it through the
+packet they already pass. It judges with `roles.checks.evaluate`, the evaluator the tracker scores with. An
+unknown evaluation (a missing, null or wrong-typed reading, or no readings at all) is not "already holds". A
+finding's `repro_check` is not judged, because a finding is often true right now. A rejected directive is not
+adopted, and the answer's other items are unaffected.
+
+**The baseline is the value when S1 receives the directive.** A `changed`/`unchanged` baseline is taken in the
+tracker's first-statement block, next to the deadline anchor in `_anchor_deadline`, from the observation that
+first states the directive to S1. It used to be the escalation's observation, which is older by the frontier call
+and the next turn's pacing, so a value that moved in between counted as a change S1 never caused. The
+escalation's value remains as the fallback when that observation cannot read the field. The tracker item's
+`baseline_source` records which was used (`first_statement`, `escalation`, or null when neither could be read,
+in which case nothing scores and the directive expires). When the fallback was used the closing reason says so.
+
+**What the frontier and S1 are told.** The frontier's system prompt and the `expected`/`deadline_s` descriptions
+in its schema state the three rules above. S1's fact line states a hold as one: "setpoint public.x unchanged
+until game_s 12.0". Other setpoints keep the line they had.
+
+**Not covered.** A reach setpoint that does not hold at the request observation can still hold at the
+observation that first states the directive, because the game keeps running while the frontier thinks. It is then
+met on that turn; its window shows whether S1 sent any input.
+
 ## Candidate findings (#38)
 
 An accepted `candidate_finding` is written to the trace as a `finding` entry in state `candidate`, with
