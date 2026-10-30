@@ -75,6 +75,12 @@ def test_inspection_caps_fail_for_their_intended_rule():
         assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
 
 
+def test_manifest_rejects_an_effect_claim_for_an_unmeasured_axis_value():
+    path = FIXTURES / "preflight_manifest" / "invalid-effect-unmeasured-axis-value.json"
+    with pytest.raises(ValidationError, match="hold effect must reflect the matching calibration trials"):
+        CONTRACTS["preflight_manifest"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
 def test_action_catalog_invalid_fixtures_fail_for_their_intended_rule():
     reasons = {
         "invalid-duplicate-control": "appears twice",

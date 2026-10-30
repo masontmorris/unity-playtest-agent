@@ -93,6 +93,124 @@ def test_evidence_validation_rejects_modified_caps_and_coverage():
     assert "coverage gaps differ from the packet and selections" in problems
 
 
+def selection_with_measurements(selected_actions, skills=()):
+    """Run the selection chain against generic keyboard, vector and one-way axis evidence."""
+    from playtest.preflight.calibrate import discover_actions
+    from test_preflight_packet import cap
+
+    snapshot, calibration = evidence()
+    for index, path in enumerate(("<Mouse>/delta", "<Gamepad>/leftStick", "<Gamepad>/rightTrigger")):
+        snapshot["data"]["bindings"].append({"id": f"binding_{index}", "action_id": f"action_{index}",
+            "binding_effective_path": path, "binding_name": "", "source_object_id": "entity",
+            "binding_is_composite": False})
+    snapshot["caps"]["bindings"] = cap(4)
+    discovered, _ = discover_actions(snapshot["data"])
+    calibration["actions"] = discovered
+    calibration["action_cap"] = cap(len(discovered))
+    original_summary = calibration["action_summaries"][0]
+    calibration["action_summaries"] = []
+    for control in discovered:
+        summary = dict(original_summary)
+        summary.update(control=control["control"], bindings=control["bindings"], resolution=control["resolution"],
+                       device=control["device"], control_name=control["control_name"],
+                       control_type=control["control_type"], declared_x=control["x"], declared_y=control["y"],
+                       lowest_tested_effective_requested_hold_s=0.05,
+                       holds=[{"requested_hold_s": hold, "valid_trials": 2, "mean_delta": [distance, 0, 0],
+                               "mean_magnitude": distance, "sample_variance": 0,
+                               "effective_in_all_repeats": True}
+                              for hold, distance in ((0.05, 0.25), (0.4, 2), (1.2, 6))])
+        calibration["action_summaries"].append(summary)
+    calibration["trials"] = [{"control": control["control"], "valid": True} for control in discovered]
+    packet = make(snapshot, calibration)
+    answers = [
+        {"stage_4": {"readers": [{"field_id": "field_00000", "alias": "state", "why": "observe"}],
+                     "unobservable": []}, "stage_5": None, "stage_6": None},
+        {"stage_4": None, "stage_5": {"actions": selected_actions, "skills": list(skills),
+                                       "uncontrollable": []}, "stage_6": None},
+        {"stage_4": None, "stage_5": None, "stage_6": {"progress": [], "invariants": [], "unjudgeable": []}},
+    ]
+    replies = iter(answers)
+    result = stages.run(packet, lambda *_: stages.CallResult(json.dumps(next(replies)), None, {}), lambda _: None)
+    return packet, result, manifest.assemble(packet, result)
+
+
+def selected_action(name, control, x=None, y=None, hold=0.4):
+    return {"name": name, "intent": "act", "hold_s": hold,
+            "inputs": [{"control_id": control, "x": x, "y": y}], "preconditions": []}
+
+
+def test_axis_direction_gaps_are_reported_per_control_and_component_without_changing_selections():
+    actions = [selected_action("east", "mouse_delta", 1, 0),
+               selected_action("north", "mouse_delta", 0, 1),
+               selected_action("other_west", "gamepad_leftstick", -1, 0),
+               selected_action("trigger", "gamepad_righttrigger", 1, 0)]
+    packet, result, value = selection_with_measurements(actions)
+    gaps = [gap for gap in value.gaps.coverage if gap.startswith("axis control")]
+    assert len(gaps) == 3
+    assert any("mouse_delta" in gap and "no negative x" in gap for gap in gaps)
+    assert any("mouse_delta" in gap and "no negative y" in gap for gap in gaps)
+    assert any("gamepad_leftstick" in gap and "no positive x" in gap for gap in gaps)
+    assert not any("trigger" in gap for gap in gaps)
+    assert [a.name for a in value.actions] == [a["name"] for a in actions]
+    assert len(result.actions.attempts) == 1 and result.actions.attempts[0].problems == ()
+    assert manifest.validate_evidence(value, packet) == []
+    changed = value.model_dump(mode="json")
+    changed["gaps"]["coverage"].remove(gaps[0])
+    assert "coverage gaps differ from the packet and selections" in manifest.validate_evidence(
+        PreflightManifest.model_validate(changed), packet)
+
+
+def test_axis_directions_can_be_balanced_by_actions_and_skill_steps():
+    actions = [selected_action("diagonal", "mouse_delta", 1, 1),
+               selected_action("trigger", "gamepad_righttrigger", 1, 0)]
+    skills = [{"name": "reverse", "purpose": "return", "max_s": 1,
+               "steps": [{"inputs": [{"control_id": "mouse_delta", "x": -1, "y": -1}],
+                          "hold_s": 0.4, "wait_s": 0}]}]
+    packet, _, value = selection_with_measurements(actions, skills)
+    assert not any(gap.startswith("axis control") for gap in value.gaps.coverage)
+    assert manifest.validate_evidence(value, packet) == []
+
+
+def test_short_calibrated_step_is_a_gap_not_a_rejection_or_substitution():
+    actions = [selected_action("small", "w", hold=0.05), selected_action("large", "w", hold=0.4)]
+    packet, result, value = selection_with_measurements(actions)
+    gaps = [gap for gap in value.gaps.coverage if "exploration steps may be short" in gap]
+    assert len(gaps) == 1 and "'small'" in gaps[0] and "0.25" in gaps[0] and "25%" in gaps[0]
+    assert [a.hold_s for a in value.actions] == [0.05, 0.4]
+    assert len(result.actions.attempts) == 1 and result.actions.attempts[0].problems == ()
+    assert manifest.validate_evidence(value, packet) == []
+
+
+def test_short_step_comparison_requires_exact_repeated_evidence_and_uses_fixed_boundary():
+    # Axis alternatives and chords were not calibrated; an untested hold is also unknown.
+    actions = [selected_action("small", "mouse_delta", 1, 0, 0.05),
+               selected_action("opposite", "mouse_delta", -1, 0, 0.05),
+               selected_action("untested", "w", hold=0.3),
+               selected_action("at_boundary", "w", hold=0.4)]
+    packet, _, value = selection_with_measurements(actions)
+    assert value.actions[0].hold_effect is True
+    assert value.actions[1].hold_effect is None  # The opposite axis value was not measured.
+    rows = value.model_dump(mode="json")["actions"]
+    rows[3]["calibrations"][0]["holds"][1]["mean_magnitude"] = 1.5  # exactly 25% of 6
+    rows.append(copy.deepcopy(rows[0]))
+    rows[-1]["name"] = "chord"
+    rows[-1]["inputs"].append(rows[2]["inputs"][0])
+    assert [gap.split("'")[1] for gap in manifest._short_step_gaps(rows)] == ["small"]
+    rows[0]["calibrations"][0]["holds"][0].update(valid_trials=1, effective_in_all_repeats=None)
+    assert manifest._short_step_gaps(rows) == []
+    assert manifest.validate_evidence(value, packet) == []
+
+
+def test_resolved_tap_is_compared_and_unresolved_tap_stays_unknown():
+    packet, _, value = selection_with_measurements([selected_action("tap", "w", hold=None)])
+    assert value.actions[0].tap_hold_s == 0.05 and value.actions[0].hold_effect is True
+    assert any("'tap'" in gap and "exploration steps may be short" in gap for gap in value.gaps.coverage)
+    action = value.model_dump(mode="json")["actions"][0]
+    action["tap_hold_s"] = None
+    assert manifest._short_step_gaps([action]) == []
+    assert manifest.validate_evidence(value, packet) == []
+
+
 def test_freshness_cannot_be_fabricated_in_the_contract():
     _, _, value = assembled()
     data = value.model_dump(mode="json")

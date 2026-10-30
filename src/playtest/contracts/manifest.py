@@ -112,7 +112,7 @@ class ManifestAction(Strict):
     calibrations: list[ActionCalibration] = Field(min_length=1, max_length=3)
     axis: bool
     max_hold_s: None = Field(description="No per-action override limit has been measured")
-    hold_effect: bool | None = Field(description="Entity-displacement response in repeated trials, or null if not established")
+    hold_effect: bool | None = Field(description="Entity-displacement response in repeated trials for the exact input value and hold, or null if not established")
     execution_evidence: InputExecutionEvidence | None = Field(
         None, description="Release-verified receipts for this exact declaration, or null when unproven")
     execution_supported: bool = Field(
@@ -134,8 +134,10 @@ class ManifestAction(Strict):
         if self.hold_s is not None and self.tap_hold_s is not None:
             raise ValueError("an explicit hold does not use a tap hold")
         requested = self.hold_s if self.hold_s is not None else self.tap_hold_s
+        same_value = len(ids) == 1 and (self.inputs[0].x, self.inputs[0].y) == (
+            self.calibrations[0].declared_x, self.calibrations[0].declared_y)
         matching = [item.effective_in_all_repeats for item in self.calibrations[0].holds
-                    if requested is not None and item.requested_hold_s == requested] if len(ids) == 1 else []
+                    if requested is not None and item.requested_hold_s == requested] if same_value else []
         if self.tap_hold_s is not None and (len(matching) != 1 or matching[0] is not True):
             raise ValueError("a tap hold requires matching effective repeated trials")
         expected = matching[0] if len(matching) == 1 else None

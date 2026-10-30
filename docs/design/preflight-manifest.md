@@ -43,6 +43,28 @@ input, a different value or a different hold has an unknown effect unless its ow
 exists. For a tap, the manifest records the tested *requested* hold rather than treating the shortest
 observed applied duration as a requested minimum.
 
+## Exploration coverage
+
+The selection prompt asks the model to compare calibrated per-hold displacement when choosing
+useful exploration steps, and to declare both signs of each two-way axis component it uses. The
+manifest reports a coverage gap for each control and component with only one declared sign across
+actions and skill steps. One-way triggers are excluded; opposite signs need not have equal magnitude,
+and their presence does not prove either direction is executable or has a measured effect.
+
+For a single-input action at the exact calibrated value and a tested hold, a separate coverage gap
+reports when its repeated mean net entity displacement is **less than 25%** of that control's
+largest repeated mean. Calibration must establish an effective response in at least one repeated
+hold. The fixed threshold distinguishes the example's short steps (about 4–7% of the maximum)
+from its longer steps (about 33–47%), without requiring the largest hold. It is a diagnostic, not
+a locomotion classifier: other entity displacement can also trigger it, and net displacement does
+not describe every effect. A chord, a different axis value, an untested or unresolved hold, or an
+insufficiently repeated measurement remains unknown and cannot produce this comparison. A tap is
+compared only if its tested requested hold was resolved. The validator recomputes these coverage
+facts against the packet and unchanged selections; it does not reject a selection for either gap,
+alter a hold, or add an input. Older manifests are checked against the current coverage rules;
+an older manifest claiming a measured `hold_effect` for a different axis value also fails the
+current cross-field validation and needs reassembly from its original selections and evidence.
+
 The manifest's Pydantic model is the source of `schemas/preflight_manifest.schema.json`. The exported
 schema describes structural constraints; Python validation also checks cross-field rules, scoreable
 checks, exact descriptor and calibration bindings, the source packet hash, and the accepted answers
