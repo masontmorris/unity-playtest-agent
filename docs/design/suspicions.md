@@ -48,16 +48,26 @@ Statements carry measured values only. A test scans every line the watch writes 
 |---|---|---|
 | `invariant` | a manifest invariant (`range`, `monotonic`, `implies`) does not hold for the readings, scored by `playtest.core.evaluate.evaluate_invariant` over the reading and the one before it. Each of its checks is scored by the shared `playtest.roles.checks.evaluate`, the same function that scores a directive's setpoint. Unknown readings make a rule unknown, never violated. | the observation before and the one it was found in |
 | `range_exit` | a reader's value leaves the range its earlier readings in the session showed (numbers: min..max; flags and strings: the values seen; vectors: per component). | the current observation, and the observations that set the earlier minimum and maximum |
+| `drift` | a number reader sets a new low, or a new high, at each of `DRIFT_MIN_READINGS = 20` consecutive known readings: it keeps moving one way and no reading comes back. | the observation that began the run and the current one |
 | `effect_mismatch` | an action's measured effect differs from its calibrated one by more than the calibration's recorded spread allows. | the execution and effect entries |
 
 **When one is raised.** An event is raised when a state begins, not on every turn it lasts. A range exit is raised
 once and again only after a reading came back inside the (extended) range; a violated invariant is raised once
-and restated as "still" while it lasts; an unknown reading neither raises nor ends either. A reader's own line
+and restated as "still" while it lasts, and so is a drift while its run lasts; an unknown reading neither raises
+nor ends any of them. A reader's own line
 shows its value against its earlier range every turn, so a departure stays visible without a record each turn.
 
 **Warm-up.** Leaving a range is stated only after `RANGE_MIN_READINGS = 10` earlier known readings: fewer is a
 point or a pair, not a range the session has shown. The number is fixed here, ahead of any run, and gates a
 fact only.
+
+**Why drift exists (#41).** A value that keeps leaving its range is outside it on every reading, so its range
+exit is raised once, and its line only ever shows it just past an earlier range that moved with it. In the
+second Day 6 gate session a reader fell steadily for the whole session: one range exit at turn 10, then
+nothing that read as unusual when S1 next escalated, 44 turns later. On the base build no reader in the #132,
+#133 or #138 sessions set more than 4 new extremes in a row, so 20 is far from ordinary play. A timer that
+counts up while nothing resets it is a drift too; the suspicion is a fact, and what it means is the frontier's
+call.
 
 **The effect allowance** is the stage 7 formula (`playtest.preflight.verify.effect_tolerance`), fixed before any
 run: the square root of the calibration's sample variance plus the calibration's measurement allowance
@@ -71,7 +81,7 @@ effect that was not measured, has no comparison: unknown, not a mismatch. The pr
 
 ```
 suspicion_id   "s1", "s2", … unique in the run, in the order raised
-basis          invariant | effect_mismatch | range_exit
+basis          invariant | effect_mismatch | range_exit | drift
 turn           the turn it was raised in (equals the trace entry's turn)
 based_on_seq   bridge seq of that turn's observation
 game_s         game clock of that observation, or null
@@ -85,6 +95,8 @@ evidence_seq   trace_seq of the entries it rests on (equals the entry's refs)
 `value`, `previous`, `readings` (earlier count), `shape`, `min`/`max`/`min_seq`/`max_seq` (numbers) or `values`
 (flags, strings) or `components`/`min`/`max` (vectors), `required_readings`, `read_game_s`, `inspection_seq`.
 `effect_mismatch` → `choice_id`, `metric`, `unit`, `expected`, `observed`, `difference`, `spread`, `allowed`, `basis`.
+`drift` → `field`, `direction` (`low` or `high`), `readings` (the run's length), `required_readings`, `from` (the
+extreme the run started beyond), `value`, `since_turn`, `since_seq`.
 
 **Trace kinds** (`playtest.contracts.trace.TraceKind`, documented in `playtest.core.trace_sink`):
 

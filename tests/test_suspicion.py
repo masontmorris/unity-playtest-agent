@@ -310,3 +310,47 @@ def test_a_suspicion_line_names_its_id_basis_and_trace_entry():
     assert suspicion_line(s, 412) == (
         "Suspicion s1 (range_exit, trace_seq 412): public.r is 5: outside the range 1 to 2 that its 5 earlier readings showed.")
     assert suspicion_line(s, None).startswith("Suspicion s1 (range_exit): ")
+
+
+# --- drift ---------------------------------------------------------------------------------------
+
+
+def drifts(notices) -> list:
+    return [s for s in raised(notices) if s.basis.value == "drift"]
+
+
+def test_a_reading_that_keeps_setting_new_lows_raises_a_drift_once_and_is_restated_while_it_lasts():
+    watch = ReaderWatch({"r": "number"}, min_readings=3, drift_readings=4)
+    notices = feed(watch, [5.0, -1, -2, -3, -4, -5, -6])
+    (drift,) = drifts(notices)
+    assert drift.turn == 4 and drift.subject == "public.r" and drift.evidence_seq == [101, 104]
+    assert drift.statement == "public.r has set a new low at each of its last 4 known readings, since turn 1: from 5 to -4."
+    assert drift.detail == {"field": "public.r", "direction": "low", "readings": 4, "required_readings": 4,
+                            "from": 5.0, "value": -4, "since_turn": 1, "since_seq": 101}
+    assert notices[5].lines[-1] == (f"public.r still sets a new low at every known reading (since turn 1, suspicion "
+                                    f"{drift.suspicion_id}): 5 in a row, from 5 to -5.")
+    assert "still sets" in notices[6].lines[-1] and "6 in a row" in notices[6].lines[-1]
+    assert [s.basis.value for s in raised(notices)] == ["range_exit", "drift"]   # the range exit is raised once
+
+
+def test_an_unknown_reading_neither_extends_nor_ends_a_run_and_a_new_run_can_raise_again():
+    watch = ReaderWatch({"r": "number"}, min_readings=3, drift_readings=3)
+    first = feed(watch, [5.0, 1, None, 0, -1])                       # 1, 0, -1 are three new lows; None is skipped
+    assert [s.detail["readings"] for s in drifts(first)] == [3]
+    second = feed(watch, [-1, 9, 10, 11], start_turn=5)              # -1 sets nothing: the low run ends
+    assert [(s.detail["direction"], s.detail["readings"]) for s in drifts(second)] == [("high", 3)]
+    assert not any("still sets" in line for line in second[0].lines)
+
+
+def test_a_short_countdown_is_no_drift_at_the_default_threshold_but_a_long_fall_is():
+    watch = ReaderWatch({"r": "number"})
+    assert watch.drift_readings == 20
+    assert drifts(feed(watch, [5.0, 4, 3, 2, 1, 0, 0, 0])) == []
+    long = drifts(feed(ReaderWatch({"r": "number"}), [float(-i) for i in range(30)]))
+    assert [s.detail["readings"] for s in long] == [20]
+
+
+def test_the_drift_threshold_must_be_a_positive_integer():
+    for bad in (0, -1, True, 2.5):
+        with pytest.raises(ValueError, match="drift_readings"):
+            ReaderWatch({"r": "number"}, drift_readings=bad)

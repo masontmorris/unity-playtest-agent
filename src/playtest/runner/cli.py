@@ -255,9 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if summary["status"] == "complete" else 1
 
 
-def _suspicions(raised: list[Any], min_readings: int) -> dict[str, Any]:
+def _suspicions(raised: list[Any], min_readings: int, drift_readings: int | None = None) -> dict[str, Any]:
     """How many suspicions the run raised and of what kind: a count of facts, not a verdict."""
-    return {"total": len(raised), "min_range_readings": min_readings,
+    return {"total": len(raised), "min_range_readings": min_readings, "min_drift_readings": drift_readings,
             "by_basis": dict(Counter(item.suspicion.basis.value for item in raised)),
             "by_subject": dict(Counter(item.suspicion.subject for item in raised))}
 
@@ -322,7 +322,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                     "declared": readers.aliases,
                     "installed": readers.installed.summary() if readers.installed is not None else None,
                     **readers.stats.summary()},
-                "suspicions": _suspicions(result.loop.suspicions, watch.min_readings),
+                "suspicions": _suspicions(result.loop.suspicions, watch.min_readings, watch.drift_readings),
                 "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,
                              "max_provider_failures": args.max_provider_failures,
                              "tokens_per_minute": args.tokens_per_minute},

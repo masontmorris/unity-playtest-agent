@@ -228,6 +228,7 @@ class SuspicionBasis(str, Enum):
     invariant = "invariant"  # a manifest invariant did not hold for the readings
     effect_mismatch = "effect_mismatch"  # an action's measured effect differs from its calibrated one beyond the recorded spread
     range_exit = "range_exit"  # a reader left the range its earlier readings in the session showed
+    drift = "drift"  # a reader set a new low (or high) at each of many consecutive readings
 
 
 class Suspicion(Strict):

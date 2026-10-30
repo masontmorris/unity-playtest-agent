@@ -7,6 +7,9 @@ includes the current reading). It raises a suspicion, which is a recorded fact a
 - a manifest invariant does not hold for the readings (`playtest.core.evaluate`, which scores each check with the
   shared `playtest.roles.checks.evaluate`);
 - a reader leaves the range its earlier readings in the session showed;
+- a number reader sets a new low, or a new high, at each of `drift_readings` consecutive known readings: it keeps
+  moving one way and no reading comes back. A value that keeps leaving its range is outside it on every reading,
+  so the range exit is raised only once; the drift says it is still going;
 - an action's measured effect differs from the calibrated one by more than the calibration's recorded spread
   allows (the probe measures both and supplies the allowance).
 
@@ -16,8 +19,9 @@ metrics arrive from the manifest and the probe.
 
 An event is raised when a state begins, not on every turn it lasts. A reader that has left its range is
 raised once, and is raised again only after a reading came back inside; an invariant that stays violated is
-raised once and then restated as "still" while it holds. A reader's own line states its current value against
-its earlier range every turn, so the departure stays visible without a new record each turn.
+raised once and then restated as "still" while it holds; so is a drift, while the run lasts. A reader's own line
+states its current value against its earlier range every turn, so the departure stays visible without a new
+record each turn.
 
 A range needs `min_readings` earlier known readings before leaving it is stated: fewer is a point or a pair,
 not a range the session has shown. The default is fixed here, ahead of any run; it only gates a fact.
@@ -40,6 +44,7 @@ from .evaluate import evaluate_invariant, is_number, same
 from .ports import EffectReport, Noticed, ReaderSample
 
 RANGE_MIN_READINGS = 10
+DRIFT_MIN_READINGS = 20  # consecutive new lows (or highs) before a drift is stated; fixed ahead of any run
 SEEN_VALUES_CAP = 20  # more distinct values than this is a set that keeps growing, not a range
 _TEXT_CHARS = 60
 
@@ -101,6 +106,30 @@ class _Track:
     highs: list[float] = field(default_factory=list)
     previous: Any = None  # the previous observation's reading; None when it was unknown or there was none
     outside: bool = False  # whether the last known reading left the range of those before it
+    # The current run of consecutive known number readings that each set a new low, or each a new high.
+    streak_direction: str | None = None  # "low" or "high"; None when the last known reading set no new extreme
+    streak_length: int = 0
+    streak_from: float | None = None  # the extreme the run started beyond
+    streak_turn: int | None = None  # the turn of the run's first reading
+    streak_seq: int | None = None  # the trace_seq of the run's first reading
+    drift_id: str | None = None  # the drift suspicion raised for this run, once it is long enough
+
+    def step_streak(self, value: Any, turn: int, trace_seq: int | None) -> None:
+        """Extend or end the run with one known reading, before the reading joins the range.
+
+        An unknown reading is not passed in: it neither extends nor ends a run.
+        """
+        direction = None
+        if shape_of(value) == "number" and self.shape == "number" and self.count > 0:
+            direction = "low" if value < self.low else "high" if value > self.high else None
+        if direction is None:
+            self.streak_direction, self.streak_length, self.drift_id = None, 0, None
+            return
+        if direction != self.streak_direction:
+            self.streak_direction, self.streak_length, self.drift_id = direction, 0, None
+            self.streak_from = self.low if direction == "low" else self.high
+            self.streak_turn, self.streak_seq = turn, trace_seq
+        self.streak_length += 1
 
     def earlier(self) -> str:
         """The range so far, as the reader's line states it."""
@@ -181,12 +210,14 @@ class ReaderWatch:
     """
 
     def __init__(self, kinds: Mapping[str, ValueKind | None], invariants: Sequence[ManifestInvariant] = (),
-                 *, min_readings: int = RANGE_MIN_READINGS) -> None:
-        if isinstance(min_readings, bool) or not isinstance(min_readings, int) or min_readings < 1:
-            raise ValueError("min_readings must be a positive integer")
+                 *, min_readings: int = RANGE_MIN_READINGS, drift_readings: int = DRIFT_MIN_READINGS) -> None:
+        for name, value in (("min_readings", min_readings), ("drift_readings", drift_readings)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
         self._kinds = dict(kinds)
         self._invariants = list(invariants)
         self._min = min_readings
+        self._drift = drift_readings
         self._tracks = {alias: _Track(alias) for alias in self._kinds}
         self._before: dict[str, Any] | None = None
         self._before_seq: int | None = None
@@ -203,6 +234,10 @@ class ReaderWatch:
     @property
     def min_readings(self) -> int:
         return self._min
+
+    @property
+    def drift_readings(self) -> int:
+        return self._drift
 
     def observe(self, observation: Observation, sample: ReaderSample | None, *, turn: int,
                 trace_seq: int | None) -> Noticed:
@@ -224,6 +259,14 @@ class ReaderWatch:
             if left is not None and not track.outside:
                 raised.append(self._range_exit(track, value, left, turn, trace_seq, observation, sample))
             if shape_of(value) is not None:
+                track.step_streak(value, turn, trace_seq)
+                if track.streak_length >= self._drift:
+                    if track.drift_id is None:
+                        raised.append(self._drift_suspicion(track, value, turn, trace_seq))
+                    else:
+                        lines.append(f"public.{alias} still sets a new {track.streak_direction} at every known reading "
+                                     f"(since turn {track.streak_turn}, suspicion {track.drift_id}): {track.streak_length} "
+                                     f"in a row, from {fmt(track.streak_from)} to {fmt(value)}.")
                 track.outside = left is not None
                 track.add(value, trace_seq)
             track.previous = value
@@ -298,6 +341,18 @@ class ReaderWatch:
                 "read_game_s": sample.game_s if sample is not None else None,
                 "inspection_seq": sample.inspection_seq if sample is not None else None}
         return self._suspicion(SuspicionBasis.range_exit, turn, f"public.{track.alias}", statement, data, evidence)
+
+    def _drift_suspicion(self, track: _Track, value: Any, turn: int, trace_seq: int | None) -> Suspicion:
+        statement = (f"public.{track.alias} has set a new {track.streak_direction} at each of its last "
+                     f"{track.streak_length} known readings, since turn {track.streak_turn}: from {fmt(track.streak_from)} "
+                     f"to {fmt(value)}.")
+        detail = {"field": f"public.{track.alias}", "direction": track.streak_direction, "readings": track.streak_length,
+                  "required_readings": self._drift, "from": track.streak_from, "value": value,
+                  "since_turn": track.streak_turn, "since_seq": track.streak_seq}
+        suspicion = self._suspicion(SuspicionBasis.drift, turn, f"public.{track.alias}", statement, detail,
+                                    [seq for seq in (track.streak_seq, trace_seq) if isinstance(seq, int)])
+        track.drift_id = suspicion.suspicion_id
+        return suspicion
 
     def _suspicion(self, basis: SuspicionBasis, turn: int, subject: str, statement: str, detail: dict[str, Any],
                    evidence: Sequence[int]) -> Suspicion:
