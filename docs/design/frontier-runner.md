@@ -172,11 +172,10 @@ kept it from being weighed.
 
 - **Calibration was read as approval.** The prompt said behaviour calibration already saw "was there before S1
   played", so a value that had changed in calibration looked normal. It now says calibration is whether a field
-  changed on this build, not whether the change is right. A field's `preflight_note` says what it is meant to be
-  (the manifest message labels it "what the field is meant to be, not a measurement"). A reading that contradicts
-  it, such as a countdown, fraction or flag running past the bounds the note gives it, or still moving after the
-  event it describes has ended, contradicts an expectation even when calibration saw it change. The prompt asks
-  for a candidate finding with source `interpretation` that cites the observation.
+  changed on this build, not whether the change is right. A reading that departs from a field's note, such as a
+  countdown, fraction or flag running past the bounds the note gives it, or still moving after the event it
+  describes has ended, is weighed even when calibration saw it change. What the note is, and what such a reading
+  can establish, is the next section.
 - **Only the fresh suspicion was answered.** The frontier answers whichever suspicion is new in the facts and
   ignores the ones only restated. The packet now lists every suspicion raised so far in the run (`suspicion_id`,
   `basis`, `subject`, `turn`, `statement`), oldest first, and the prompt asks it to account for each in a
@@ -189,6 +188,46 @@ kept it from being weighed.
 back (each entry is flushed as it is written). A trace that cannot be read fails the request before any call is
 reserved; it is never shown to the frontier as "no suspicions".
 
+## What a field's note is, and is not (#171)
+
+A reader's `preflight_note` is the preflight model's own one-line reason for choosing the field; stage 4 asks it
+for "one line on why". The manifest message first sent it as "what the field is meant to be" (#150), and the
+prompt then said a reading that contradicts it contradicts an expectation (#152). The pipeline knows neither
+claim. No code or measurement checks a note against the game, and the alias in a path is another label the
+preflight model chose. In a live session a candidate finding's only expectation was a note's wording, and a later
+read of the game's code showed the reading's direction was intended. The reading was real; the expectation was
+never established.
+
+Each field row in the manifest message now keeps three kinds of statement under separate keys:
+
+| Key | What it is | Where it comes from |
+|---|---|---|
+| `calibration` | How the field changed when preflight sampled it on this build, idle and with each control held. | Measured. Left out when calibration could not classify the field. |
+| `source` | The declaring type and field name the reader reads. | Reflected from the game by preflight's field inspection. It identifies the field and says nothing about how the field should behave. |
+| `preflight_note` | The preflight model's reason for choosing the field, exactly as recorded. | A model's inference. |
+| `preflight_note_origin`, `preflight_note_verification` | `preflight_model_inference` and `unverified`. | Sent with every note, whatever the note says. |
+
+A key a row lacks was not recorded, so it is unknown. Nothing is filled in: a field with no note carries no origin
+or verification, and half a descriptor yields no `source`. Every note that exists is sent as written. Nothing
+trims, drops, ranks or trusts one more because of its wording, and no keyword, suffix or field-family rule is
+involved, so the same code serves any game.
+
+The prompt says a note or alias is an inference nothing has verified, so what it suggests is a possible
+interpretation, not a confirmed expectation of the game. A reading that departs from it is a hypothesis: the game
+may depart from the note, or the note may be wrong, and the answer should say what would tell the two apart.
+Calibration seeing the field change does not excuse the reading, and neither does S1 having escalated about
+something else. A candidate finding from such a reading keeps `expected_source: interpretation`, never
+`invariant` or `developer_assertion`, says in `uncertainty` that the expectation rests on a note or name nothing
+has verified, and has severity `unknown` unless something besides that note or name supports one.
+
+**What this does.** It labels what the frontier is shown and asks it to reason accordingly. No code rejects, ranks
+or suppresses a finding on this basis; the answer schema, the packet and S1's choices are identical with and
+without notes (`tests/test_frontier_help.py`), and no branch of the loop reads a note.
+
+**What it does not do.** It does not make the frontier model heed the labels, and no model call was made for this
+change, so whether it does is untested. Asking for a hypothesis first and for `unknown` severity may also lower
+recall for a true defect whose only support is a note. That cost is unmeasured as well.
+
 ## S1 ownership and evidence audit
 
 | Branch | Runtime behavior | Evidence |
@@ -200,5 +239,6 @@ reserved; it is never shown to the frontier as "no suspicions".
 | Pending help | Executes exactly S1's valid `while_pending` continuation; otherwise waits under the existing default. | `core/turn_loop.py:343`; `tests/test_turn_loop.py`. |
 | Helper adoption | A result ready at turn entry is adopted once after the fresh observation's epoch check; prior-epoch help is discarded. | `core/turn_loop.py` (`run_turn`, `_adopt_finished_help`); end-to-end tests in `tests/test_loop_help_publication.py`. |
 | Directive scoring | Reads the current observation and shared comparator result to write a fact and trace outcome; it cannot call the help port or choose input. | `runner/directives.py:45-71`; all terminal outcomes covered in `tests/test_frontier_help.py`. |
+| Reader notes | Labels each recorded note an unverified preflight-model inference in the frontier's manifest message. Every note is sent as written; no code filters, ranks, or acts on one, and the answer schema, packet and choices do not change. | `provider.manifest_message`, `FrontierHelp.reader_notes`; `tests/test_frontier_provider.py` and `tests/test_frontier_help.py` (actual request). |
 
 The request uses the exact context S1 received and the explicit request turn and observation sequence. Investigation rows cite the corresponding observation's trace entry. The fake end-to-end trace passes the trace-entry validator, adherence checker and trace replay checks. No live trace was collected, as requested.

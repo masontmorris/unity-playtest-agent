@@ -47,10 +47,15 @@ _MANIFEST_NOTE = (
     "A null value means unknown, not zero. Each seq is a bridge record number; game_s is game time. "
     "A directive setpoint must name one of these fields and use a value of its kind. Cite only the "
     "observation seq, a fact's seqs and a recent row's seq: numbers inside hypotheses or directives "
-    "are earlier records, not new citations. A field's calibration, where present, is how it changed when "
-    "preflight sampled it on this build before play, idle and with each control held. Its source is the game "
-    "field it reads, and its preflight_note is what the preflight model wrote when it chose the field: what "
-    "the field is meant to be, not a measurement."
+    "are earlier records, not new citations. A field row keeps three kinds of statement apart. Its calibration, "
+    "where present, was measured: how the field changed when preflight sampled it on this build before play, "
+    "idle and with each control held. Its source was reflected from the game by preflight's field inspection: "
+    "the declaring type and field name this reader reads. That identifies the field; it does not say how the "
+    "field should behave. Its preflight_note is the preflight model's own reason for choosing the field, quoted "
+    "as written. Its preflight_note_origin and preflight_note_verification say what the note is: an inference "
+    "by the preflight model that nothing has checked, however obvious it reads, so not a measurement and not a "
+    "rule of the game. The alias in a path is also a label the preflight model chose. A key a row leaves out "
+    "was not recorded, so it is unknown."
 )
 # Added to the note only when the manifest lists effects, so a manifest without any is worded as it always was.
 _EFFECT_NOTE = (
@@ -66,6 +71,11 @@ CALIBRATION_LABELS = {
     "both": "changed with and without a control held",
     "no_change_observed": "no change seen, with or without a control held",
 }
+# Where a field's note came from and whether anything checked it, stated beside the note in the manifest message. The
+# note is the preflight model's own reason for choosing the field. No code and no measurement has tested it against
+# the game, so every note shown carries both, however obvious it reads. The note's text is never altered or dropped.
+NOTE_ORIGIN = "preflight_model_inference"
+NOTE_VERIFICATION = "unverified"
 _DATA_URL = re.compile(r"^data:([^;,]+);base64,(.*)$", re.DOTALL)
 
 
@@ -82,17 +92,26 @@ class Result:
 
 
 def manifest_message(manifest: frontier.Manifest) -> str:
-    """The run-stable first user message: fields, action bounds, skills and effects, sorted for caching."""
+    """The run-stable first user message: fields, action bounds, skills and effects, sorted for caching.
+
+    A field row keeps what was measured (`calibration`), what the game reflected (`source`) and what a model
+    inferred (`preflight_note`) under separate keys. A note is never sent without saying it is an unverified
+    inference by the preflight model. What was not recorded is left out, never filled in.
+    """
     fields = []
     for path in sorted(manifest.fields):
         row = {"path": path, "kind": manifest.fields[path]}
         label = CALIBRATION_LABELS.get(manifest.calibration.get(path, ""))
         if label is not None:
             row["calibration"] = label
+        notes = manifest.field_notes.get(path) or {}
         for key in ("source", "preflight_note"):
-            text = (manifest.field_notes.get(path) or {}).get(key)
+            text = notes.get(key)
             if isinstance(text, str) and text.strip():
                 row[key] = text
+        if "preflight_note" in row:
+            row["preflight_note_origin"] = NOTE_ORIGIN
+            row["preflight_note_verification"] = NOTE_VERIFICATION
         fields.append(row)
     actions = [
         {"name": name, "axis": spec.axis, "max_hold_s": spec.max_hold_s}

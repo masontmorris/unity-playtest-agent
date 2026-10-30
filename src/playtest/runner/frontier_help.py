@@ -64,9 +64,16 @@ def reader_calibration(record: Mapping[str, Any] | None, readers: Any) -> dict[s
 
 
 def reader_notes(readers: Any) -> dict[str, dict[str, str]]:
-    """What the manifest says about each reader: the game field it reads and the preflight model's note.
+    """What the manifest records about each reader, kept apart by where it came from.
 
-    Both come from the preflight manifest, where game knowledge lives. A reader without them gets none.
+    - `source`: the game field the reader reads, from the descriptor preflight's field inspection reflected. It
+      identifies the field; it says nothing about how the field should behave.
+    - `preflight_note`: the preflight model's own reason for choosing the field, exactly as recorded. A model wrote
+      it and nothing verified it, so it is an inference. `provider.manifest_message` sends it labelled as one
+      (`provider.NOTE_ORIGIN`, `provider.NOTE_VERIFICATION`).
+
+    Both come from the preflight manifest, where game knowledge lives. Whichever the manifest lacks is left out,
+    never filled in, and no note is dropped, reworded or judged by what it says.
     """
     out: dict[str, dict[str, str]] = {}
     for reader in readers:

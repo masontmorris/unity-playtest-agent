@@ -330,13 +330,18 @@ def test_the_prompt_and_schema_say_how_each_setpoint_is_scored(manifest):
 def test_the_prompt_weighs_calibration_against_a_fields_note_and_asks_for_every_suspicion_to_be_answered():
     prompt = frontier.SYSTEM
     for needle in ("Calibration says whether a field changed on this build, not whether the change is right",
-                   "A field's preflight_note says what it is meant to be",
-                   "even if calibration saw it change and even if S1 escalated about something else",
-                   "propose a candidate_finding with expected_source interpretation and cite the observation seq",
                    "The packet's suspicions are every suspicion raised so far in this run"):
         assert needle in prompt
-    assert ExpectedSource.interpretation.value == "interpretation"      # the source the prompt names is a real one
-    # Calibration no longer excuses a reading that contradicts its note, so the old reassurance is gone.
+    # Every source and severity the prompt tells the model to give, or not to give, is one the finding accepts.
+    for source in (ExpectedSource.interpretation, ExpectedSource.invariant, ExpectedSource.developer_assertion):
+        assert source.value in prompt
+    assert "unknown" in get_args(frontier.FindingOut.model_fields["severity"].annotation)
+    # The answer fields it points to for telling a note's reading from a departure by the game are real ones.
+    for name in ("confirm_if", "refute_if"):
+        assert name in frontier.HypothesisOut.model_fields and name in prompt
+    # A note says why the preflight model chose a field, not what the game intends, and calibration does not
+    # excuse a reading; neither earlier claim may come back.
+    assert "meant to be" not in prompt
     assert "was there before S1 played" not in prompt
     # The statuses the prompt offers for answering a suspicion are statuses an answer can carry.
     named = prompt.split("account for each in a hypothesis (")[1].split(")")[0].replace(" or ", ", ").split(", ")
