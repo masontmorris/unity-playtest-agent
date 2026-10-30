@@ -9,12 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from runner_manifest import all_modes
 from test_runner_session import OBJECTIVE, connected, two_actions, harness_trace, session, closed, end_trace
 from turn_trace_check import problems as trace_problems
 from playtest.contracts.bridge import ExecStatus, ExecutionRecord, Observation, RejectReason
 from playtest.contracts.common import ClockMode
 from playtest.contracts.investigation import Budget, Directive, RunRecord, Suspicion, SuspicionBasis
-from playtest.contracts.loop import TurnOutcome, TurnRecord
+from playtest.contracts.loop import ChoiceSet, TurnOutcome, TurnRecord
 from playtest.contracts.trace import TraceAuthor, TraceEntry, TraceKind
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.execution import Execution
@@ -26,7 +27,9 @@ from playtest.frontier.media import Clip
 from playtest.frontier import provider
 from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
-from playtest.runner.frontier_help import FrontierHelp, reader_calibration, reader_notes, recorded_suspicions
+from playtest.preflight.verify import MEASUREMENT_TOLERANCE
+from playtest.runner.frontier_help import (FrontierHelp, action_effects, reader_calibration, reader_notes,
+                                           recorded_suspicions)
 from playtest.runner.choices import build_choices
 
 
@@ -373,6 +376,64 @@ def test_a_candidate_finding_is_written_citing_trace_entries_or_not_written_at_a
     assert len(sink.of_kind("finding")) == 1 and len(helper.findings) == 1
     assert helper._guidance({"hypotheses": [], "directive": None, "candidate_finding": unmapped})[
         "candidate_finding"] == {"finding_id": "f-4", "reason": unmapped["reason"]}
+
+
+def test_a_calibrated_displacement_becomes_an_effect_field_with_the_effect_probes_allowance():
+    effects = action_effects(build_choices(two_actions()).expected)
+    assert set(effects) == {"move", "look"}
+    assert effects["move"].expected == 6.04 and effects["move"].unit == "world units"
+    assert effects["move"].allowance == pytest.approx(0.01 + MEASUREMENT_TOLERANCE)       # sqrt(0.0001) + the stage 7 allowance
+    assert effects["look"].expected == 0.0                                                # measured, and measured to be nothing
+    # Only a declaration calibration measured exactly has one: a chord, a skill or an unmeasured hold has none.
+    assert set(action_effects(build_choices(all_modes()).expected)) == {"key_hold", "stick_value"}
+
+
+def test_an_action_without_a_usable_calibrated_displacement_is_never_offered_as_an_effect_field():
+    assert action_effects({"a": None, "b": {}, "c": {"net_displacement": None}, "d": {"net_displacement": float("nan")},
+                           "e": {"net_displacement": True}, "f": {"net_displacement": "far"}}) == {}
+    one_trial = action_effects({"g": {"net_displacement": 2.0, "sample_variance": None, "unit": "world units"}})
+    assert one_trial == {"g": frontier.Effect(expected=2.0, allowance=None)}      # no recorded spread: allowance unknown
+
+
+def test_the_helper_hands_the_frontier_every_effect_even_when_a_choice_is_hidden(tmp_path: Path):
+    built = build_choices(two_actions())
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    def helper(**kwargs):
+        return FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                            approval=_approval(), sink=harness_trace(), tracker=DirectiveTracker(harness_trace()),
+                            started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
+                            capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1, **kwargs)
+    hidden = ChoiceSet(set_version=1, built_from_seq=1, choices=[c for c in built.choices if c.id != "move"])
+    role = helper(effects=action_effects(built.expected))._manifest_for(hidden)
+    assert "move" not in role.actions                                         # hidden from S1 for now
+    assert set(role.effects) == {"move", "look"}                              # still an action a check may name
+    assert role.enums()["check_fields"] == ["public.counter", "effect.look", "effect.move"]
+    assert helper()._manifest_for(hidden).effects == {}                       # no effects given: none offered
+
+
+def test_a_candidate_finding_with_an_effect_check_is_written_as_proposed(tmp_path: Path):
+    sink = harness_trace()
+    observed = sink.append("observation", {"seq": 7}, author="harness", turn=0)
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=sink, tracker=DirectiveTracker(sink),
+                          started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
+    proposed = frontier.FindingOut.model_validate({
+        "actual": "The entity ended the move where it started.", "conditions": "After the move action.",
+        "evidence_seq": [7], "expected": "The move carries the entity about as far as calibration measured.",
+        "expected_source": "interpretation",
+        "repro_check": {"field": "effect.move", "op": "<", "tolerance": None, "value": 1.5},
+        "severity": "major", "severity_reason": "The control stops working.", "steps": ["Move."],
+        "title": "The move no longer carries the entity", "uncertainty": "One sample only."})
+    written = helper._record_finding(proposed, turn=5)
+    assert written["reason"] is None
+    entry = sink.entries[written["trace_seq"]]
+    assert entry["body"]["repro_check"] == {"field": "effect.move", "op": "<", "value": 1.5, "tolerance": None}
+    assert entry["body"]["evidence_seq"] == [observed] and entry["body"]["state"] == "candidate"
+    assert helper.findings[0]["repro_check"] == entry["body"]["repro_check"]
 
 
 def test_invalid_frontier_answer_is_recorded_without_synthesizing_hypothesis_or_directive(tmp_path: Path):

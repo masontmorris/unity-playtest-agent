@@ -19,12 +19,23 @@ request. Each attempt:
 4. replays every input at its recorded offset, once, never retried or replaced;
 5. reads the readers after each input, then through a settle window that also covers the evidence's time.
 
-The check is scored with the shared evaluator (`roles.checks.evaluate`), first on the baseline:
+A reader check (`public.<reader>`) is scored with the shared evaluator (`roles.checks.evaluate`), first on the
+baseline:
 - **unknown:** the check already held after the reset, before any input, so the replay cannot show it (an
   `unchanged` check always does), or the baseline could not be scored;
 - **reproduced:** the baseline did not satisfy it, and some later reading did;
 - **not reproduced:** later readings were scored and none satisfied it;
 - **unknown:** no later reading could be scored.
+
+An effect check (`effect.<action>`, #154) is the net displacement of one execution of an action, in world units.
+It shows an action that stops having its effect, which leaves the readers at rest and so can never pass the
+baseline rule. The plan names the calibrated displacement (`build_choices(...).expected`) and marks the scored
+input: the last replayed execution of that action. Each execution of the action is measured between two position
+snapshots, as the live probe does. It is scored on the scored execution's measurement:
+- **unknown:** the check holds for the calibrated displacement, so the replay cannot show a difference;
+- **reproduced:** the scored execution's measured displacement satisfies the check;
+- **not reproduced:** it was measured and does not;
+- **unknown:** it was not measured (an unknown position is unknown, never zero).
 
 An attempt in which an input was rejected or failed diverged from the session. It is invalid: kept with its
 reason, and never counted in n.
@@ -44,11 +55,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from playtest.contracts.investigation import Comparator, Finding, FindingState, Repro, ReproCheck
+from playtest.contracts.investigation import (EFFECT_PREFIX, Comparator, Finding, FindingState, Repro, ReproCheck,
+                                              effect_action)
 from playtest.contracts.manifest import PreflightManifest
 from playtest.core.bridge_client import BridgeClient, BridgeError
 from playtest.core.bridge_lock import BridgeLockError, read_project_lock
 from playtest.roles import checks
+from playtest.runner.choices import UNIT, build_choices
+from playtest.runner.probe import Snapshot, allowance, displacement_between, make_snapshot, read_snapshot
 
 SCHEMA_VERSION = 1
 RESET = "scene_reload"
@@ -166,6 +180,41 @@ def evidence_offset(entries: Sequence[Mapping[str, Any]], evidence_seq: int, fir
     return round(seen.timestamp() - first_start_wall_s, 6)
 
 
+def effect_plan(manifest: PreflightManifest, action: str, inputs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The calibrated effect an `effect.<action>` check is compared with, and the replayed input it scores.
+
+    The scored input is the last execution of the action before the evidence; it is marked `scored` in `inputs`.
+    Calibration measured one declaration, held for one hold, so it speaks only for an execution of the action as
+    declared. A plan is refused when the manifest has no calibrated displacement for the action, when no replayed
+    input is an execution of it, or when the scored one was not the calibrated declaration (a parameter override
+    or another hold): the replay would compare a measurement with a number that is not its own.
+    """
+    if all(declared.name != action for declared in manifest.actions):
+        raise ValueError(f"repro_check field {EFFECT_PREFIX}{action} names {action!r}, which is not an action in the manifest")
+    expected = build_choices(manifest).expected.get(action)
+    displacement = _number(expected.get("net_displacement")) if expected else None
+    if expected is None or displacement is None:
+        raise ValueError(f"{action!r} has no calibrated expected displacement in the manifest, so an effect check "
+                         "on it has nothing to be compared with")
+    scored = next((item for item in reversed(inputs) if item["action"] == action), None)
+    if scored is None:
+        raise ValueError(f"no input that completed before the finding's evidence is an execution of {action!r}, "
+                         "so there is no effect to measure")
+    hold, lease = _number(expected.get("requested_hold_s")), _number(scored.get("lease_s"))
+    if scored["params"] or (lease is not None and (hold is None or abs(lease - hold) > 1e-9)):
+        raise ValueError(f"the last execution of {action!r} before the evidence (turn {scored['turn']}) was not the "
+                         f"calibrated declaration (params {scored['params']}, lease {scored['lease_s']} s; calibrated "
+                         f"for a {hold} s hold), so calibration's displacement is not its own")
+    scored["scored"] = True
+    bounds = allowance(expected)
+    return {"action": action, "expected_displacement": displacement, "unit": UNIT, "requested_hold_s": hold,
+            "sample_variance": expected.get("sample_variance"), "valid_trials": expected.get("valid_trials"),
+            "spread": bounds[0] if bounds is not None else None,
+            "allowance": bounds[1] if bounds is not None else None,
+            "executions": sum(item["action"] == action for item in inputs),
+            "scored_turn": scored["turn"], "scored_trace_seq": scored["trace_seq"]}
+
+
 def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None = None,
                repro_check: Mapping[str, Any] | None = None, attempts: int = ATTEMPTS, settle_s: float = SETTLE_S,
                start_settle_s: float = START_SETTLE_S, sample_interval_s: float = SAMPLE_INTERVAL_S) -> dict[str, Any]:
@@ -190,15 +239,17 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         check, check_source = finding.repro_check, "finding"
     else:
         raise ValueError(f"finding {finding.finding_id!r} has no repro_check; supply one")
+    action = effect_action(check.field)
     alias = check.field.removeprefix("public.")
     kinds = {reader.alias: reader.kind for reader in manifest.readers}
-    if alias not in kinds:
+    if action is None and alias not in kinds:
         raise ValueError(f"repro_check field {check.field!r} is not one of the manifest's readers")
     through = evidence_turn(entries, finding.evidence_seq)
     last_evidence = max(finding.evidence_seq)
     inputs, skipped = recorded_inputs(entries, last_evidence)
     if not inputs:
         raise ValueError("no input completed before the finding's evidence; there is nothing to replay")
+    effect = effect_plan(manifest, action, inputs) if action is not None else None
     for name, value in (("attempts", attempts), ("settle_s", settle_s), ("start_settle_s", start_settle_s),
                         ("sample_interval_s", sample_interval_s)):
         if _number(value) is None or value <= 0:
@@ -215,7 +266,7 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         "finding_id": finding.finding_id, "finding_trace_seq": chosen["trace_seq"],
         "finding": finding.model_dump(mode="json"),
         "repro_check": check.model_dump(mode="json"), "repro_check_source": check_source,
-        "repro_check_kind": kinds[alias],
+        "repro_check_kind": "number" if effect is not None else kinds[alias], "effect": effect,
         "evidence_seq": finding.evidence_seq, "evidence_turn": through, "evidence_offset_s": seen_s,
         "inputs": inputs, "skipped_inputs": skipped,
         "attempts": attempts, "settle_s": settle_s, "start_settle_s": start_settle_s,
@@ -271,31 +322,101 @@ def _reading(sample: Any, alias: str, check: ReproCheck, kind: Any, baseline: An
             "satisfied": score(check, kind, value, baseline) if value is not None else None}
 
 
+def _measurement(item: Mapping[str, Any], terminal: Any, before: tuple[dict[str, Any] | None, str | None],
+                 after: tuple[dict[str, Any] | None, str | None], check: ReproCheck) -> dict[str, Any]:
+    """One replayed execution's net displacement, from the snapshots before and after it.
+
+    The same measurement as the live probe's (`probe.displacement_between`). A snapshot that could not be taken, or
+    one with an unknown position, leaves the displacement None with the reason: unmeasured, never zero.
+    """
+    observed = displacement_between(before[0], after[0]) or {}
+    distance = observed.get("net_displacement")
+    return {"turn": item["turn"], "trace_seq": item.get("trace_seq"), "scored": bool(item.get("scored")),
+            "net_displacement": distance, "unit": UNIT,
+            "from_inspection_seq": observed.get("from_inspection_seq"),
+            "to_inspection_seq": observed.get("to_inspection_seq"), "window_game_s": observed.get("window_game_s"),
+            "applied_s": getattr(terminal, "applied_duration_s", None),
+            "problem": None if distance is not None else (before[1] or after[1] or "a position was unknown"),
+            "satisfied": score(check, "number", distance, None) if distance is not None else None}
+
+
+def _score_effect(attempt: dict[str, Any]) -> None:
+    """The result of an effect attempt whose inputs all completed: the counterpart of the baseline rule.
+
+    A check the calibrated displacement satisfies cannot show a difference, so the attempt is unknown whatever was
+    measured. Otherwise the scored execution's own measurement decides.
+    """
+    effect = attempt["effect"]
+    scored = next((m for m in effect["measurements"] if m["scored"]), None)
+    effect["measured"] = scored["net_displacement"] if scored is not None else None
+    unit, calibrated = effect["unit"], effect["expected_displacement"]
+    if effect["holds_for_expected"] is True:
+        attempt.update(valid=True, result="unknown",
+                       reason=f"the repro_check holds for the calibrated effect ({calibrated:.3f} {unit}), "
+                              "so the replay cannot show a difference")
+    elif effect["holds_for_expected"] is None:
+        attempt.update(valid=True, result="unknown",
+                       reason="the repro_check could not be scored against the calibrated effect")
+    elif scored is None:
+        attempt.update(valid=True, result="unknown", reason="no replayed execution was marked as scored")
+    elif scored["net_displacement"] is None:
+        attempt.update(valid=True, result="unknown",
+                       reason=f"the scored execution's displacement was not measured ({scored['problem']})")
+    elif scored["satisfied"] is True:
+        attempt.update(valid=True, result="reproduced",
+                       reason=f"the scored execution's measured displacement {scored['net_displacement']:.3f} {unit} "
+                              f"satisfies the repro_check (calibrated {calibrated:.3f})")
+    else:
+        attempt.update(valid=True, result="not_reproduced",
+                       reason=f"the scored execution's measured displacement {scored['net_displacement']:.3f} {unit} "
+                              f"does not satisfy the repro_check (calibrated {calibrated:.3f})")
+
+
 async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[int], Awaitable[dict[str, Any]]],
-                      connect: Callable[[], Awaitable[Any]], readers_for: Callable[[Any], Any]) -> dict[str, Any]:
+                      connect: Callable[[], Awaitable[Any]], readers_for: Callable[[Any], Any],
+                      snapshot_for: Callable[[Any], Snapshot] | None = None) -> dict[str, Any]:
+    """One attempt. A reader check reads the readers; an effect check reads position snapshots instead, so it
+    needs `snapshot_for` (the client's snapshot source) and never calls `readers_for`."""
     check = ReproCheck.model_validate(plan["repro_check"])
     kind = plan.get("repro_check_kind")
+    effect = plan.get("effect")
     alias = check.field.removeprefix("public.")
     attempt: dict[str, Any] = {"number": number, "valid": False, "result": None, "reason": None, "reload": None,
                                "baseline": None, "baseline_satisfied": None, "inputs": [], "readings": [],
-                               "error": None, "stop": None}
+                               "effect": None, "error": None, "stop": None}
     client = None
+    readers = snapshot = baseline = None
     loop = asyncio.get_running_loop()
     try:
         attempt["reload"] = await reload(number)
         client = await connect()
-        readers = readers_for(client)
-        await readers.install()
+        if effect is None:
+            readers = readers_for(client)
+            await readers.install()
+        else:
+            if snapshot_for is None:
+                raise ValueError("an effect check needs a position snapshot source")
+            snapshot = snapshot_for(client)
+            attempt["effect"] = {
+                "action": effect["action"], "expected_displacement": effect["expected_displacement"],
+                "allowance": effect.get("allowance"), "unit": effect.get("unit") or UNIT,
+                "holds_for_expected": score(check, "number", effect["expected_displacement"], None),
+                "measured": None, "measurements": []}
         await asyncio.sleep(plan["start_settle_s"])
-        first = await readers.read()
-        baseline = (getattr(first, "values", {}) or {}).get(alias)
-        attempt["baseline"] = baseline
-        attempt["baseline_satisfied"] = score(check, kind, baseline, baseline) if baseline is not None else None
+        if readers is not None:
+            first = await readers.read()
+            baseline = (getattr(first, "values", {}) or {}).get(alias)
+            attempt["baseline"] = baseline
+            attempt["baseline_satisfied"] = score(check, kind, baseline, baseline) if baseline is not None else None
         started = loop.time()
         for item in plan["inputs"]:
             delay = started + item["offset_s"] - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
+            # Like the live probe, the reading before an input is taken before the observation the act is bound to,
+            # so it adds nothing to that observation's age.
+            measures = effect is not None and item["action"] == effect["action"]
+            before = await read_snapshot(snapshot) if measures else None
             observation = await client.observe_once()
             sent_s = loop.time() - started
             action_id = f"reproduce-{uuid.uuid4().hex}"
@@ -314,10 +435,17 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
                 attempt["reason"] = (f"the replay diverged at turn {item['turn']}: {item['action']} ended {status}"
                                      + (f" ({row['reject_reason']})" if row["reject_reason"] else ""))
                 break
-            sample = await readers.read()
-            attempt["readings"].append(_reading(sample, alias, check, kind, baseline, f"after turn {item['turn']}",
-                                                loop.time() - started))
+            if measures:  # right after the terminal record, as the live probe does
+                attempt["effect"]["measurements"].append(
+                    _measurement(item, terminal, before, await read_snapshot(snapshot), check))
+            if readers is not None:
+                sample = await readers.read()
+                attempt["readings"].append(_reading(sample, alias, check, kind, baseline, f"after turn {item['turn']}",
+                                                    loop.time() - started))
         else:
+            if effect is not None:
+                _score_effect(attempt)  # a displacement is measured at its input; there is no settle window to read
+                return attempt
             settle_until = loop.time() + plan["settle_s"]
             seen_s = _number(plan.get("evidence_offset_s"))
             if seen_s is not None:
@@ -359,6 +487,17 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
     return attempt
 
 
+READER_BASIS = ("k counts valid attempts where the repro_check did not hold after the reset and a later "
+                "reading satisfied it; n counts valid attempts that scored the baseline as not holding and "
+                "at least one later reading. Unknown attempts (including a check that already held after "
+                "the reset) and invalid (diverged or failed) attempts are in neither")
+EFFECT_BASIS = ("k counts valid attempts where the scored execution's measured net displacement satisfied the "
+                "repro_check, which does not hold for the calibrated displacement; n counts valid attempts that "
+                "measured it. Unknown attempts (including a check that holds for the calibrated displacement, and "
+                "a displacement that could not be measured) and invalid (diverged or failed) attempts are in "
+                "neither")
+
+
 def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     valid = [a for a in attempts if a["valid"]]
     k = sum(a["result"] == "reproduced" for a in valid)
@@ -367,10 +506,7 @@ def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) ->
     deviations = [abs(row["deviation_s"]) for a in attempts for row in a["inputs"]]
     return {"planned": plan["attempts"], "attempted": len(attempts), "valid": len(valid), "k": k, "n": n,
             "unknown": unknown,
-            "basis": ("k counts valid attempts where the repro_check did not hold after the reset and a later "
-                      "reading satisfied it; n counts valid attempts that scored the baseline as not holding and "
-                      "at least one later reading. Unknown attempts (including a check that already held after "
-                      "the reset) and invalid (diverged or failed) attempts are in neither"),
+            "basis": EFFECT_BASIS if plan.get("effect") is not None else READER_BASIS,
             "invalid": [{"number": a["number"], "reason": a["reason"]} for a in attempts if not a["valid"]],
             "input_timing": {"max_abs_deviation_s": round(max(deviations), 3) if deviations else None,
                              "inputs_replayed": len(deviations)}}
@@ -394,9 +530,10 @@ def finding_update(plan: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[
     if summary["n"] < 1 or overrides_finding(plan):
         return None
     timing = summary["input_timing"]["max_abs_deviation_s"]
-    check = plan["repro_check"]
-    tolerance = (f"repro_check tolerance {check.get('tolerance')}; replayed inputs started within "
-                 f"{timing} s of their recorded offsets")
+    check, effect = plan["repro_check"], plan.get("effect")
+    measured = (f"repro_check tolerance {check.get('tolerance')}" if effect is None else
+                f"net displacement of one execution of {effect['action']} between two position snapshots")
+    tolerance = f"{measured}; replayed inputs started within {timing} s of their recorded offsets"
     finding = dict(plan["finding"])
     finding["state"] = (FindingState.reproduced if summary["k"] >= 1 else FindingState.repro_attempted).value
     finding["repro"] = Repro(attempts=summary["n"], reproduced=summary["k"], clock_mode=CLOCK, reset=RESET,
@@ -405,10 +542,13 @@ def finding_update(plan: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[
 
 
 async def measure(plan: Mapping[str, Any], reload: Callable[[int], Awaitable[dict[str, Any]]],
-                  connect: Callable[[], Awaitable[Any]], readers_for: Callable[[Any], Any]) -> dict[str, Any]:
+                  connect: Callable[[], Awaitable[Any]], readers_for: Callable[[Any], Any],
+                  snapshot_for: Callable[[Any], Snapshot] | None = None) -> dict[str, Any]:
+    if plan.get("effect") is not None and snapshot_for is None:
+        raise ValueError("the plan's check is an effect check, which needs a position snapshot source")
     attempts = []
     for number in range(1, plan["attempts"] + 1):
-        attempt = await run_attempt(plan, number, reload, connect, readers_for)
+        attempt = await run_attempt(plan, number, reload, connect, readers_for, snapshot_for)
         attempts.append(attempt)
         if attempt["error"] is not None and attempt["reload"] is None:
             break  # the reset itself failed: no further attempt can start from a known state
@@ -419,7 +559,7 @@ async def measure(plan: Mapping[str, Any], reload: Callable[[int], Awaitable[dic
     update_reason = None if update is not None else OVERRIDE_REASON if overrides_finding(plan) else UNSCORED_REASON
     return {"schema_version": SCHEMA_VERSION, "kind": plan["kind"], "is_s1_turn": False, "model_calls": 0,
             "status": status, "finding_id": plan["finding_id"], "repro_check": plan["repro_check"],
-            "repro_check_source": plan.get("repro_check_source"),
+            "repro_check_source": plan.get("repro_check_source"), "effect": plan.get("effect"),
             "reset": RESET, "clock_mode": CLOCK, "summary": summary, "attempts": attempts,
             "finding_update": update, "finding_update_reason": update_reason, "finished_at_utc": _utcnow()}
 
@@ -463,6 +603,12 @@ def main(argv: list[str] | None = None) -> int:
         args.output.write_text(json.dumps(plan, indent=2, allow_nan=False) + "\n", encoding="utf-8")
         print(f"plan: {len(plan['inputs'])} inputs before the evidence at trace_seq {max(plan['evidence_seq'])} "
               f"(turn {plan['evidence_turn']}), check {plan['repro_check']}")
+        if plan["effect"] is not None:
+            effect = plan["effect"]
+            allowed = "unknown" if effect["allowance"] is None else f"{effect['allowance']:.3f}"
+            print(f"effect: {effect['action']} calibrated {effect['expected_displacement']:.3f} {effect['unit']} "
+                  f"(allowance {allowed}); scored at turn {effect['scored_turn']} of "
+                  f"{effect['executions']} execution(s)")
         return 0
     project, output, handshake = args.project.resolve(), args.output.resolve(), args.handshake_dir.resolve()
     try:
@@ -487,7 +633,8 @@ def main(argv: list[str] | None = None) -> int:
     async def connect() -> BridgeClient:
         return await BridgeClient.connect_from_project(project, timeout_s=CLIENT_TIMEOUT_S)
 
-    report = asyncio.run(measure(plan, reload, connect, lambda client: FieldReaders(client, manifest.readers)))
+    report = asyncio.run(measure(plan, reload, connect, lambda client: FieldReaders(client, manifest.readers),
+                                 lambda client: make_snapshot(client, manifest.entity_id)))
     report["plan_sha256"] = _sha(plan_bytes)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, allow_nan=False, default=str) + "\n", encoding="utf-8")

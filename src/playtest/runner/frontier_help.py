@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import math
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -18,7 +19,28 @@ from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
 from playtest.roles import frontier
 from playtest.roles.checks import field_value
+from playtest.runner.choices import UNIT
 from playtest.runner.directives import DirectiveTracker
+from playtest.runner.probe import allowance
+
+
+def action_effects(expected: Mapping[str, Mapping[str, Any] | None]) -> dict[str, frontier.Effect]:
+    """Each action's calibrated net displacement and its allowance, keyed by action name.
+
+    `expected` is `build_choices(manifest).expected`: the effect calibration measured for exactly that declaration,
+    or None. An action with none is left out, so the frontier is never offered an effect check with nothing to
+    compare it with. The allowance is the one the live effect probe states (`probe.allowance`); it is None when
+    calibration recorded no spread.
+    """
+    out: dict[str, frontier.Effect] = {}
+    for name, effect in expected.items():
+        shown = effect.get("net_displacement") if effect else None
+        if isinstance(shown, bool) or not isinstance(shown, (int, float)) or not math.isfinite(shown):
+            continue
+        bounds = allowance(effect)
+        out[name] = frontier.Effect(expected=float(shown), allowance=bounds[1] if bounds is not None else None,
+                                    unit=str(effect.get("unit") or UNIT))
+    return out
 
 
 def reader_calibration(record: Mapping[str, Any] | None, readers: Any) -> dict[str, str]:
@@ -79,7 +101,8 @@ class FrontierHelp:
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
                  capture: Callable[..., media.Clip] = media.capture_clip,
-                 max_calls: int | None = None, calibration: Mapping[str, Any] | None = None) -> None:
+                 max_calls: int | None = None, calibration: Mapping[str, Any] | None = None,
+                 effects: Mapping[str, frontier.Effect] | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
@@ -100,6 +123,7 @@ class FrontierHelp:
         self.reader_fields = fields
         self.reader_calibration = reader_calibration(calibration, manifest.readers)
         self.reader_notes = reader_notes(manifest.readers)
+        self.effects = dict(effects or {})  # run-stable: it names the effect checks a finding may propose
 
     async def run(self, request: Any) -> Any:
         from playtest.core.ports import HelpResult
@@ -313,4 +337,5 @@ class FrontierHelp:
             elif choice.kind is ChoiceKind.skill and choice.skill in skills_declared:
                 skills.append(choice.skill)
         return frontier.Manifest(fields=self.reader_fields, actions=actions, skills=skills,
-                                 calibration=self.reader_calibration, field_notes=self.reader_notes)
+                                 calibration=self.reader_calibration, field_notes=self.reader_notes,
+                                 effects=self.effects)

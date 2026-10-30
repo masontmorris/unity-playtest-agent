@@ -44,6 +44,14 @@ def make_snapshot(client: BridgeClient, entity_id: str) -> Snapshot:
     return snapshot
 
 
+async def read_snapshot(snapshot: Snapshot) -> tuple[dict[str, Any] | None, str | None]:
+    """One reading, or why there is none: an incomplete reading or a missing entity is unmeasured, not zero."""
+    try:
+        return await snapshot(), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 class DisplacementProbe:
     def __init__(self, snapshot: Snapshot, expected: Mapping[str, Mapping[str, Any] | None]) -> None:
         self._snapshot = snapshot
@@ -59,21 +67,10 @@ class DisplacementProbe:
         after, after_problem = await self._read()
         expected = self._expected.get(choice.id)
         problem = before_problem or after_problem
-        distance = None
-        if before is not None and after is not None:
-            start, end = _vector(before.get("position")), _vector(after.get("position"))
-            distance = _norm(_sub(end, start)) if start is not None and end is not None else None
-            problem = problem or (None if distance is not None else "a position was unknown")
-        observed = None
-        if before is not None and after is not None:
-            observed = {
-                "net_displacement": distance,
-                "unit": UNIT,
-                "from_inspection_seq": before.get("inspection_seq"),
-                "to_inspection_seq": after.get("inspection_seq"),
-                "window_game_s": _gap(before.get("game_time_s"), after.get("game_time_s")),
-                "applied_duration_s": execution.terminal.applied_duration_s,
-            }
+        observed = displacement_between(before, after)
+        if observed is not None:
+            problem = problem or (None if observed["net_displacement"] is not None else "a position was unknown")
+            observed["applied_duration_s"] = execution.terminal.applied_duration_s
         return EffectReport(
             expected=dict(expected) if expected is not None else None,
             observed=observed,
@@ -82,10 +79,7 @@ class DisplacementProbe:
         )
 
     async def _read(self) -> tuple[dict[str, Any] | None, str | None]:
-        try:
-            return await self._snapshot(), None
-        except ValueError as exc:  # an incomplete reading or a missing entity is unmeasured, not zero
-            return None, str(exc)
+        return await read_snapshot(self._snapshot)
 
     @staticmethod
     def _fact(choice: Choice, expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None,
@@ -102,26 +96,59 @@ class DisplacementProbe:
                 f"{f'{variance:.6f}' if variance is not None else 'unknown'}, n={expected['valid_trials']}).")
 
 
-def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None) -> EffectComparison | None:
-    """The observed displacement against the calibrated one, with how far apart they may be before the
-    calibration's recorded spread no longer accounts for it.
+def displacement_between(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The net displacement between two snapshots of the entity, or None when either snapshot was not taken.
+
+    A snapshot whose position is unknown gives a `net_displacement` of None: unmeasured, never zero.
+    """
+    if before is None or after is None:
+        return None
+    start, end = _vector(before.get("position")), _vector(after.get("position"))
+    return {
+        "net_displacement": _norm(_sub(end, start)) if start is not None and end is not None else None,
+        "unit": UNIT,
+        "from_inspection_seq": before.get("inspection_seq"),
+        "to_inspection_seq": after.get("inspection_seq"),
+        "window_game_s": _gap(before.get("game_time_s"), after.get("game_time_s")),
+    }
+
+
+def allowance(expected: Mapping[str, Any] | None) -> tuple[float, float] | None:
+    """A calibrated displacement's spread and its allowance: how far a measured displacement may be from the
+    calibrated one before the calibration's recorded spread no longer accounts for it.
 
     The allowance is the stage 7 formula (`playtest.preflight.verify.effect_tolerance`), fixed before any run: the
     square root of the calibration's sample variance plus its measurement allowance (two idle reads and the effect
-    threshold). A calibration that recorded no variance (one valid trial) or an effect that was not measured
+    threshold). None when nothing is calibrated, or the calibration recorded no variance (one valid trial): the
+    allowance is then unknown, not zero.
+    """
+    if expected is None:
+        return None
+    variance, calibrated = expected.get("sample_variance"), expected.get("net_displacement")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in (variance, calibrated)) or variance < 0:
+        return None
+    spread = math.sqrt(variance)
+    return spread, spread + MEASUREMENT_TOLERANCE
+
+
+def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None) -> EffectComparison | None:
+    """The observed displacement against the calibrated one, with how far apart they may be before the
+    calibration's recorded spread no longer accounts for it (`allowance`).
+
+    A calibration that recorded no variance (one valid trial) or an effect that was not measured
     has no comparison: that is unknown, not a match and not a mismatch.
     """
     if expected is None or observed is None or observed.get("net_displacement") is None:
         return None
-    variance, calibrated = expected.get("sample_variance"), expected.get("net_displacement")
+    bounds = allowance(expected)
     seen = observed["net_displacement"]
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
-           for v in (variance, calibrated, seen)) or variance < 0:
+    if bounds is None or isinstance(seen, bool) or not isinstance(seen, (int, float)) or not math.isfinite(seen):
         return None
-    spread = math.sqrt(variance)
+    spread, allowed = bounds
     return EffectComparison(
-        metric=METRIC, unit=UNIT, expected=float(calibrated), observed=float(seen),
-        spread=spread, allowed=spread + MEASUREMENT_TOLERANCE,
+        metric=METRIC, unit=UNIT, expected=float(expected["net_displacement"]), observed=float(seen),
+        spread=spread, allowed=allowed,
         basis=f"the calibration's spread {spread:.4g} plus a measurement allowance of {MEASUREMENT_TOLERANCE:g}")
 
 

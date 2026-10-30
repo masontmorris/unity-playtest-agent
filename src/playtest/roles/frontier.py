@@ -1,7 +1,8 @@
 """The frontier's answer to an escalation: contract, prompt and validation (build bible 5.6, 6, 9).
 
 One schema serves every frontier call in a run. Its enums are run-stable: the observation fields a
-setpoint may test, and the manifest actions and skills a choice may instantiate. Per-call
+setpoint may test, the fields a finding's repro_check may test (those, plus `effect.<action>` for each
+action calibration measured), and the manifest actions and skills a choice may instantiate. Per-call
 references (sequence numbers, hypothesis ids) are named in the packet and checked by `review`.
 A problem rejects only the item it is in, with its reason; nothing is repaired or substituted.
 
@@ -12,6 +13,7 @@ code sets. What S1 does with any of it is S1's decision.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -20,6 +22,7 @@ from pydantic import Field
 
 from playtest.contracts.common import Strict
 from playtest.contracts.investigation import (
+    EFFECT_PREFIX,
     Comparator,
     Directive,
     Expected,
@@ -28,13 +31,15 @@ from playtest.contracts.investigation import (
     FindingState,
     ReproCheck,
     Target,
+    effect_action,
 )
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSource
 
-from .checks import CHANGE, ValueKind, check_problems, evaluate, field_value
+from .checks import CHANGE, ORDERING, ValueKind, check_problems, evaluate, field_value
 from .strict import enum_str, render
 
 FieldPath = enum_str("fields")
+CheckFieldPath = enum_str("check_fields")
 ManifestName = enum_str("manifest_names")
 
 MAX_HYPOTHESES = 4
@@ -60,6 +65,12 @@ class Setpoint(Strict):
     op: Comparator
     tolerance: float | None = Field(description="Only for numeric == or !=")
     value: float | str | bool | None = Field(description="null exactly for changed/unchanged")
+
+
+class ReproCheckOut(Setpoint):
+    """What a replay can score: a manifest field, or an action's effect (effect.<action>), one comparator, one value."""
+
+    field: CheckFieldPath
 
 
 class DirectiveOut(Strict):
@@ -104,9 +115,11 @@ class FindingOut(Strict):
     evidence_seq: list[int]
     expected: str
     expected_source: ExpectedSource
-    repro_check: Setpoint | None = Field(
+    repro_check: ReproCheckOut | None = Field(
         description="What a replay from a reset must show to reproduce it: false right after the reset, true once "
-                    "the bug shows. null when no field can show it")
+                    "the bug shows. null when no field can show it. An effect.<action> field is the net "
+                    "displacement of one execution of that action; it must not hold for the expected displacement "
+                    "the manifest lists for it")
     severity: Literal["blocker", "major", "minor", "cosmetic", "unknown"]
     severity_reason: str
     steps: list[str] = Field(max_length=MAX_STEPS)
@@ -153,6 +166,9 @@ SYSTEM = (
     "replay must show. A replay starts from a reset, and a check that already holds right after the reset cannot "
     "show the bug, so it never counts: an unchanged check always holds then, and so does a value the game shows "
     "at rest, such as a speed of zero. Choose a check only the bug makes true, or null if no field can show it. "
+    "When an action stops having its calibrated effect, no reader need differ from rest, so the check may name "
+    "effect.<action> from the manifest's effects: the net displacement of one execution of that action, in world "
+    "units, with <, <=, > or >= and a number. The check must not hold for the expected displacement listed there. "
     "The packet's findings are the candidate findings already recorded in this run; do not propose one of them "
     "again.\n"
     "- A field's calibration, in the manifest, says how it changed when preflight sampled it on this same build "
@@ -176,6 +192,19 @@ class ActionSpec:
 
 
 @dataclass(frozen=True)
+class Effect:
+    """What calibration measured for one action: its net displacement, and how far a measurement may differ.
+
+    The `effect.<action>` field a repro_check may name. Shown to the model so a check can be chosen that the
+    expected displacement does not satisfy; a replay compares a measurement with it, and nothing here judges.
+    """
+
+    expected: float  # net displacement of one execution, as calibrated on this build
+    allowance: float | None = None  # how far a measurement may differ before calibration's spread no longer accounts for it
+    unit: str = "world units"
+
+
+@dataclass(frozen=True)
 class Manifest:
     """What a run's frontier schema and checks need from the manifest. Stable for the whole run."""
 
@@ -188,9 +217,13 @@ class Manifest:
     # Observation path -> what the manifest says about the field: "source" (the game field it reads) and
     # "preflight_note" (the preflight model's own description when it chose the field). Shown, never scored.
     field_notes: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)
+    # Action name -> its calibrated net displacement. Each is a repro_check field, `effect.<action>`; a directive
+    # setpoint may not name one.
+    effects: Mapping[str, Effect] = field(default_factory=dict)
 
     def enums(self) -> dict[str, list[str]]:
-        return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills]}
+        return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills],
+                "check_fields": [*self.fields, *(f"{EFFECT_PREFIX}{name}" for name in sorted(self.effects))]}
 
 
 @dataclass(frozen=True)
@@ -251,6 +284,23 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
             return
         for reason in check_problems(item, kind, sp.op, sp.value, sp.tolerance):
             bad(item, reason)
+
+    def repro(item: str, sp: ReproCheckOut) -> None:
+        """A reader check is judged like a setpoint. An effect check names an action with a calibrated
+        displacement and compares it with `<`, `<=`, `>` or `>=` and a number: the schema lists only such
+        actions, but a decoded answer is a plain string, so it is checked here."""
+        action = effect_action(sp.field)
+        if action is None:
+            setpoint(item, sp)
+            return
+        if action not in manifest.effects:
+            bad(item, f"{sp.field!r} names {action!r}, which has no calibrated expected displacement in the manifest")
+        for reason in check_problems(item, "number", sp.op, sp.value, sp.tolerance):
+            bad(item, reason)
+        if sp.op not in ORDERING:
+            bad(item, f"an effect check compares with <, <=, > or >=, not '{sp.op.value}'")
+        if isinstance(sp.value, float) and not math.isfinite(sp.value):
+            bad(item, "an effect check compares with a finite number")
 
     def holds_now(sp: Setpoint) -> bool:
         """A reach setpoint the request observation already satisfies is met before S1 can act, so it tests nothing.
@@ -356,7 +406,7 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
             bad("candidate_finding", "steps must be non-empty")
         cite("candidate_finding", "evidence_seq", f.evidence_seq)
         if f.repro_check is not None:
-            setpoint("candidate_finding", f.repro_check)
+            repro("candidate_finding", f.repro_check)
     return out
 
 

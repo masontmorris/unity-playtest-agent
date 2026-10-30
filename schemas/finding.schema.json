@@ -90,10 +90,10 @@
     },
     "ReproCheck": {
       "additionalProperties": false,
-      "description": "What a replay must show to reproduce a finding: one reader field, one comparator, one value.\n\nScored with the shared check evaluator against the readers a replay reads. `changed` and `unchanged` take\nno value and compare with the reading when the replay starts.",
+      "description": "What a replay must show to reproduce a finding: one field, one comparator, one value.\n\nA reader field (`public.<reader>`) is scored with the shared check evaluator against the readers a replay\nreads. `changed` and `unchanged` take no value and compare with the reading when the replay starts.\n\n`effect.<action>` is the net displacement, in world units, of one execution of that action, measured between\ntwo position snapshots. It shows an action that stops having its effect, which leaves the readers as they are\nat rest. It takes `<`, `<=`, `>` or `>=` and a finite number, and no tolerance; the other comparators have\nnothing to compare a displacement with.",
       "properties": {
         "field": {
-          "description": "Dotted path into the observation, e.g. public.<reader>",
+          "description": "Dotted path into the observation, e.g. public.<reader>; or effect.<action>, the net displacement of one execution of an action",
           "minLength": 1,
           "title": "Field",
           "type": "string"

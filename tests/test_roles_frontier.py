@@ -11,6 +11,7 @@ import json
 from dataclasses import replace
 from typing import get_args
 
+import jsonschema
 import pytest
 
 from playtest.contracts.investigation import Comparator, ExpectedSource, FindingState
@@ -341,6 +342,117 @@ def test_the_prompt_weighs_calibration_against_a_fields_note_and_asks_for_every_
     named = prompt.split("account for each in a hypothesis (")[1].split(")")[0].replace(" or ", ", ").split(", ")
     assert named == ["open", "supported", "contradicted"]
     assert set(named) <= set(get_args(frontier.HypothesisOut.model_fields["status"].annotation))
+
+
+# --- effect checks (#154) ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def effect_manifest(manifest):
+    """The same manifest, with a calibrated expected displacement for `move` only."""
+    return replace(manifest, effects={"move": frontier.Effect(expected=6.04, allowance=0.06)})
+
+
+def effect_check(op=Comparator.lt, value=1.5, tolerance=None, action="move"):
+    return setpoint(f"effect.{action}", op, value, tolerance)
+
+
+def test_the_schema_offers_an_effect_check_to_a_finding_and_never_to_a_directive(effect_manifest):
+    schema = frontier.schema(effect_manifest)
+    assert strict.check(schema) == []
+    defs = schema["$defs"]
+    assert "effect.move" in defs["check_fields"]["enum"] and "effect.use" not in defs["check_fields"]["enum"]
+    assert set(defs["fields"]["enum"]) <= set(defs["check_fields"]["enum"])       # every reader is still a check field
+    assert not any(name.startswith("effect.") for name in defs["fields"]["enum"])   # a setpoint's enum stays readers only
+    payload = full_answer().model_dump(mode="json")
+    payload["candidate_finding"]["repro_check"] = effect_check()
+    jsonschema.Draft202012Validator(schema).validate(payload)
+    payload["candidate_finding"]["repro_check"] = effect_check(action="use")        # no calibrated displacement
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(payload)
+    payload = full_answer().model_dump(mode="json")
+    payload["directive"]["expected"] = effect_check()
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(payload)
+
+
+def test_a_manifest_without_effects_offers_a_finding_the_same_fields_as_a_directive(manifest):
+    defs = frontier.schema(manifest)["$defs"]
+    assert defs["check_fields"]["enum"] == defs["fields"]["enum"]
+    assert manifest.effects == {}
+
+
+def test_effect_check_fields_are_listed_in_a_stable_order_after_the_readers(manifest):
+    effects = {"use": frontier.Effect(expected=1.0), "move": frontier.Effect(expected=6.04, allowance=None)}
+    listed = replace(manifest, effects=effects).enums()["check_fields"]
+    assert listed == [*manifest.fields, "effect.move", "effect.use"]
+    assert strict.canonical(frontier.schema(replace(manifest, effects=effects))) == strict.canonical(
+        frontier.schema(replace(manifest, effects=dict(reversed(list(effects.items()))))))
+
+
+@pytest.mark.parametrize("op, value", [(Comparator.lt, 1.5), (Comparator.le, 1.5), (Comparator.gt, 9.0),
+                                       (Comparator.ge, 9)])
+def test_an_effect_check_on_a_calibrated_action_reviews_clean(effect_manifest, refs, op, value):
+    review = frontier.review(answer(candidate_finding=finding(repro=effect_check(op, value))), effect_manifest, refs)
+    assert review.clean
+
+
+EFFECT_CASES = [
+    ("equal", effect_check(Comparator.eq, 0.0), "compares with <, <=, > or >=, not '=='"),
+    ("not_equal", effect_check(Comparator.ne, 0.0), "compares with <, <=, > or >=, not '!='"),
+    ("changed", effect_check(Comparator.changed, None), "compares with <, <=, > or >=, not 'changed'"),
+    ("unchanged", effect_check(Comparator.unchanged, None), "compares with <, <=, > or >=, not 'unchanged'"),
+    ("equal_with_tolerance", effect_check(Comparator.eq, 0.0, tolerance=0.1), "compares with <, <=, > or >=, not '=='"),
+    ("text_value", effect_check(Comparator.lt, "far"), "needs a numeric field and a number"),
+    ("no_value", effect_check(Comparator.lt, None), "'<' needs a value"),
+    ("bool_value", effect_check(Comparator.lt, True), "needs a numeric field and a number"),
+    ("infinite_value", effect_check(Comparator.lt, float("inf")), "compares with a finite number"),
+    ("tolerance_on_a_bound", effect_check(Comparator.lt, 1.5, tolerance=0.1), "tolerance applies only to numeric == or !="),
+    ("action_without_a_calibrated_displacement", effect_check(action="use"), "has no calibrated expected displacement"),
+    ("action_not_in_the_manifest", effect_check(action="missing"), "has no calibrated expected displacement"),
+]
+
+
+@pytest.mark.parametrize("repro, needle", [(repro, needle) for _, repro, needle in EFFECT_CASES],
+                         ids=[name for name, _, _ in EFFECT_CASES])
+def test_a_bad_effect_check_rejects_only_its_finding(effect_manifest, refs, repro, needle):
+    review = frontier.review(answer(candidate_finding=finding(repro=repro)), effect_manifest, refs)
+    assert [p.item for p in review.problems] == ["candidate_finding"]
+    assert any(needle in p.reason for p in review.problems)
+
+
+def test_a_manifest_without_effects_rejects_every_effect_check(manifest, refs):
+    review = frontier.review(answer(candidate_finding=finding(repro=effect_check())), manifest, refs)
+    assert [p.item for p in review.problems] == ["candidate_finding"]
+    assert "has no calibrated expected displacement" in review.problems[0].reason
+
+
+def test_a_directive_may_not_name_an_effect_field(effect_manifest, refs):
+    review = frontier.review(answer(directive=directive(tests="h1", expected=effect_check())), effect_manifest, refs)
+    assert [p.item for p in review.problems] == ["directive"]
+    assert "'effect.move' is not a manifest field" in review.problems[0].reason
+
+
+def test_an_effect_check_that_holds_for_the_calibrated_displacement_is_left_to_the_replay_to_score(effect_manifest, refs):
+    # Review does not judge a repro_check against the calibration (a finding is often true now); `reproduce` scores
+    # a check the calibrated displacement satisfies as unknown, and says why.
+    assert frontier.review(answer(candidate_finding=finding(repro=effect_check(Comparator.gt, 1.0))),
+                           effect_manifest, refs).clean
+
+
+def test_an_effect_check_survives_conversion_into_the_finding_record(effect_manifest):
+    record = frontier.to_finding(answer(candidate_finding=finding(repro=effect_check())).candidate_finding,
+                                 finding_id="f1", evidence_seq=[3])
+    assert (record.repro_check.field, record.repro_check.op, record.repro_check.value) == ("effect.move", Comparator.lt, 1.5)
+
+
+def test_the_prompt_and_schema_say_when_a_check_may_name_an_effect_and_what_it_must_not_satisfy(effect_manifest):
+    for needle in ("When an action stops having its calibrated effect", "may name effect.<action>",
+                   "net displacement of one execution of that action", "with <, <=, > or >= and a number",
+                   "must not hold for the expected displacement listed there"):
+        assert needle in frontier.SYSTEM
+    in_schema = strict.canonical(frontier.schema(effect_manifest))
+    assert "must not hold for the expected displacement the manifest lists for it" in in_schema
 
 
 # --- add and prune choices -----------------------------------------------------------------------

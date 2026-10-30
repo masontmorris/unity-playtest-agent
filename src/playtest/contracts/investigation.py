@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -170,14 +171,29 @@ class Repro(Strict):
         return self
 
 
-class ReproCheck(Strict):
-    """What a replay must show to reproduce a finding: one reader field, one comparator, one value.
+EFFECT_PREFIX = "effect."
+_ORDERING = (Comparator.lt, Comparator.le, Comparator.gt, Comparator.ge)
 
-    Scored with the shared check evaluator against the readers a replay reads. `changed` and `unchanged` take
-    no value and compare with the reading when the replay starts.
+
+def effect_action(field: str) -> str | None:
+    """The action an `effect.<action>` repro-check field names; None for any other field."""
+    return field[len(EFFECT_PREFIX):] if field.startswith(EFFECT_PREFIX) else None
+
+
+class ReproCheck(Strict):
+    """What a replay must show to reproduce a finding: one field, one comparator, one value.
+
+    A reader field (`public.<reader>`) is scored with the shared check evaluator against the readers a replay
+    reads. `changed` and `unchanged` take no value and compare with the reading when the replay starts.
+
+    `effect.<action>` is the net displacement, in world units, of one execution of that action, measured between
+    two position snapshots. It shows an action that stops having its effect, which leaves the readers as they are
+    at rest. It takes `<`, `<=`, `>` or `>=` and a finite number, and no tolerance; the other comparators have
+    nothing to compare a displacement with.
     """
 
-    field: str = Field(min_length=1, description="Dotted path into the observation, e.g. public.<reader>")
+    field: str = Field(min_length=1, description="Dotted path into the observation, e.g. public.<reader>; or "
+                                                 "effect.<action>, the net displacement of one execution of an action")
     op: Comparator
     value: Any = None
     tolerance: float | None = Field(None, ge=0, description="Only for numeric == or !=")
@@ -189,6 +205,21 @@ class ReproCheck(Strict):
                 raise ValueError(f"'{self.op.value}' takes no value")
         elif self.value is None:
             raise ValueError(f"'{self.op.value}' needs a value")
+        return self
+
+    @model_validator(mode="after")
+    def _effect_is_a_bound(self) -> "ReproCheck":
+        action = effect_action(self.field)
+        if action is None:
+            return self
+        if not action.strip():
+            raise ValueError("an effect field names an action: effect.<action>")
+        if self.op not in _ORDERING:
+            raise ValueError(f"an effect check compares with <, <=, > or >=, not '{self.op.value}'")
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)) or not math.isfinite(self.value):
+            raise ValueError("an effect check compares with a finite number")
+        if self.tolerance is not None:
+            raise ValueError("an effect check takes no tolerance")
         return self
 
 

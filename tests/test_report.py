@@ -29,16 +29,16 @@ def _write(path: Path, value: Any) -> Path:
     return path
 
 
-def _finding(title: str = "Speed jumps after a short hold") -> dict[str, Any]:
+def _finding(title: str = "Speed jumps after a short hold", check: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"finding_id": "f-1", "state": "candidate", "title": title, "expected": "Speed stays below 5",
             "expected_source": "developer_assertion", "actual": "Speed read 9.5", "conditions": "After one move",
             "steps": ["Reload the scene", "Move once"], "evidence_seq": [3], "clips": [], "repro": None,
             "uncertainty": "One sample only", "severity": "major", "severity_reason": "It breaks the level",
-            "repro_check": {"field": "public.speed", "op": ">=", "value": 9, "tolerance": None}}
+            "repro_check": check or {"field": "public.speed", "op": ">=", "value": 9, "tolerance": None}}
 
 
 def _run_folder(tmp_path: Path, *, title: str = "Speed jumps after a short hold", frontier_cost: Any = 0.01,
-                frontier_reserved: Any = "0.05") -> Path:
+                frontier_reserved: Any = "0.05", check: dict[str, Any] | None = None) -> Path:
     run = tmp_path / "run"
     entries = [
         {"kind": "run", "author": "harness", "turn": None, "body": {
@@ -53,7 +53,7 @@ def _run_folder(tmp_path: Path, *, title: str = "Speed jumps after a short hold"
         {"kind": "help", "author": "core", "turn": None, "body": {
             "event": "adopted", "opened_turn": 1, "source": "frontier",
             "result": {"candidate_finding": {"finding_id": "f-1", "reason": None}}}},
-        {"kind": "finding", "author": "frontier", "turn": None, "body": _finding(title)},
+        {"kind": "finding", "author": "frontier", "turn": None, "body": _finding(title, check)},
         {"kind": "help", "author": "core", "turn": None, "body": {
             "event": "adopted", "opened_turn": 2, "source": "frontier",
             "result": {"candidate_finding": {"finding_id": "f-2",
@@ -108,6 +108,39 @@ def _replay(tmp_path: Path, name: str, trace: Path, *, source: str = "finding", 
         "finding_update_reason": None if update else "an operator check overrode the finding's own, so the "
                                                      "finding's state is unchanged",
         "finished_at_utc": _at(100)})
+    return folder
+
+
+EFFECT_CHECK = {"field": "effect.move", "op": "<", "value": 3.0, "tolerance": None}
+EFFECT = {"action": "move", "expected_displacement": 6.04, "allowance": 0.06, "unit": "world units",
+          "scored_turn": 2, "scored_trace_seq": 6, "executions": 2}
+
+
+def _effect_replay(tmp_path: Path, name: str, trace: Path) -> Path:
+    """A `reproduce` folder for an effect check: no baseline or readings, a measured displacement per attempt."""
+    folder = tmp_path / name
+    finding = _finding(check=EFFECT_CHECK)
+    _write(folder / "plan.json", {"trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(), "finding_id": "f-1",
+                                  "finding": finding, "repro_check": EFFECT_CHECK, "repro_check_source": "finding",
+                                  "repro_check_kind": "number", "effect": EFFECT, "inputs": [{}, {}, {}],
+                                  "skipped_inputs": {}, "evidence_turn": 1})
+
+    def attempt(number: int, result: str | None, measured: float | None, reason: str) -> dict[str, Any]:
+        return {"number": number, "valid": result is not None, "result": result, "reason": reason, "baseline": None,
+                "baseline_satisfied": None, "readings": [], "inputs": [{"deviation_s": 0.02}],
+                "effect": {**EFFECT, "holds_for_expected": False, "measured": measured, "measurements": [{}, {}]}}
+
+    _write(folder / "reproduce.json", {
+        "finding_id": "f-1", "model_calls": 0, "status": "measured_with_gaps", "repro_check": EFFECT_CHECK,
+        "repro_check_source": "finding", "effect": EFFECT, "reset": "scene_reload", "clock_mode": "realtime",
+        "attempts": [attempt(1, "reproduced", 0.05, "the scored execution moved the entity 0.050 world units"),
+                     attempt(2, "not_reproduced", 6.0, "the scored execution moved the entity 6.000 world units"),
+                     attempt(3, "unknown", None, "the scored execution's displacement was not measured"),
+                     attempt(4, None, None, "the replay diverged at turn 0")],
+        "summary": {"planned": 4, "attempted": 4, "valid": 3, "k": 1, "n": 2, "unknown": 1,
+                    "invalid": [{"number": 4, "reason": "the replay diverged at turn 0"}],
+                    "input_timing": {"max_abs_deviation_s": 0.02, "inputs_replayed": 4}},
+        "finding_update": {**finding, "state": "reproduced"}, "finding_update_reason": None, "finished_at_utc": _at(100)})
     return folder
 
 
@@ -206,3 +239,40 @@ def test_the_command_writes_both_files_to_a_new_folder_and_refuses_an_existing_o
     assert report.main(["--run", str(run), "--output", str(out)]) == 1
     assert report.main(["--run", str(run), "--finding", "f-9", "--output", str(tmp_path / "x")]) == 1
     assert "no finding f-9" in capsys.readouterr().err
+
+
+def test_an_effect_replay_shows_the_check_the_calibrated_effect_and_each_attempts_measured_displacement(tmp_path):
+    run = _run_folder(tmp_path, check=EFFECT_CHECK)
+    built = report.build_report(run, reproduce_dirs=[_effect_replay(tmp_path, "effect", run / "trace.jsonl")])
+    (f,) = built["findings"]
+    (r,) = f["replays"]
+    assert r["check"] == EFFECT_CHECK and r["check_kind"] == "number" and r["effect"] == EFFECT
+    assert [(a["number"], a["result"], a["measured"]) for a in r["attempts"]] == [
+        (1, "reproduced", 0.05), (2, "not_reproduced", 6.0), (3, "unknown", None), (4, "invalid", None)]
+    assert (r["k"], r["n"], r["unknown"], r["changes_state"], f["state"]) == (1, 2, 1, True, "reproduced")
+    # An effect is a displacement a replay measures: the cited observation holds no reading of it, so none is shown.
+    (cited,) = f["evidence"]
+    assert cited["kind"] == "observation" and "check_field" not in cited and "check_value" not in cited
+    md = report.render_markdown(built)
+    assert "| What a replay must show | `effect.move < 3.0` |" in md
+    assert "Calibration measured 6.040 world units (allowance 0.060 world units)" in md
+    assert "(turn 2, of 2 replayed)" in md
+    assert "| Attempt | Result | Measured | Reason |" in md and "| Attempt | Result | Baseline | Reason |" not in md
+    assert "| 1 | reproduced | 0.050 world units |" in md and "| 2 | not_reproduced | 6.000 world units |" in md
+    assert "| 3 | unknown | unknown |" in md and "| 4 | invalid | unknown |" in md       # unmeasured is unknown, never 0
+    assert "`effect.move` =" not in md
+
+
+def test_a_reader_replay_beside_an_effect_replay_keeps_its_baseline_table_and_its_reading(tmp_path):
+    run = _run_folder(tmp_path)
+    trace = run / "trace.jsonl"
+    built = report.build_report(run, reproduce_dirs=[_replay(tmp_path, "own", trace),
+                                                     _effect_replay(tmp_path, "effect", trace)])
+    (f,) = built["findings"]
+    own, effect = f["replays"]
+    assert own["effect"] is None and own["attempts"][0]["measured"] is None and effect["effect"] == EFFECT
+    assert f["evidence"][0]["check_field"] == "public.speed" and f["evidence"][0]["check_value"] == 9.5
+    md = report.render_markdown(built)
+    assert "| Attempt | Result | Baseline | Reason |" in md and "| Attempt | Result | Measured | Reason |" in md
+    assert "| 3 | invalid | 1.0 | the replay diverged at turn 0 |" in md
+    assert "`public.speed` = 9.5" in md

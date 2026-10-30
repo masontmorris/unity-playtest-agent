@@ -28,6 +28,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from playtest.contracts.investigation import EFFECT_PREFIX
 from playtest.core.context import canonical
 from playtest.roles import frontier, strict
 
@@ -50,6 +51,13 @@ _MANIFEST_NOTE = (
     "preflight sampled it on this build before play, idle and with each control held. Its source is the game "
     "field it reads, and its preflight_note is what the preflight model wrote when it chose the field: what "
     "the field is meant to be, not a measurement."
+)
+# Added to the note only when the manifest lists effects, so a manifest without any is worded as it always was.
+_EFFECT_NOTE = (
+    " An effects row is a repro_check field: the net displacement, in world units, of one execution of that "
+    "action. Its expected value is what calibration measured on this build. Its allowance is how far a "
+    "measurement may differ from it before calibration's recorded spread no longer accounts for it; null means "
+    "calibration recorded no spread. Only a repro_check may name an effects path; a directive setpoint may not."
 )
 # Preflight's freshness classes (`preflight.freshness`), worded for the model. A field without one is unknown.
 CALIBRATION_LABELS = {
@@ -74,7 +82,7 @@ class Result:
 
 
 def manifest_message(manifest: frontier.Manifest) -> str:
-    """The run-stable first user message: fields, action bounds and skills, sorted for caching."""
+    """The run-stable first user message: fields, action bounds, skills and effects, sorted for caching."""
     fields = []
     for path in sorted(manifest.fields):
         row = {"path": path, "kind": manifest.fields[path]}
@@ -91,7 +99,15 @@ def manifest_message(manifest: frontier.Manifest) -> str:
         for name, spec in sorted(manifest.actions.items())
     ]
     skills = sorted(manifest.skills)
-    return canonical({"fields": fields, "actions": actions, "skills": skills, "notes": _MANIFEST_NOTE})
+    message: dict[str, Any] = {"fields": fields, "actions": actions, "skills": skills, "notes": _MANIFEST_NOTE}
+    if manifest.effects:
+        message["effects"] = [
+            {"path": f"{EFFECT_PREFIX}{name}", "kind": "number", "unit": effect.unit, "expected": effect.expected,
+             "allowance": effect.allowance}
+            for name, effect in sorted(manifest.effects.items())
+        ]
+        message["notes"] = _MANIFEST_NOTE + _EFFECT_NOTE
+    return canonical(message)
 
 
 def build_request(

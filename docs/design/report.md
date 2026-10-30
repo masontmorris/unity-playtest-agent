@@ -21,7 +21,8 @@ finding in the report carries:
 - **Trigger:** the scene, the conditions and the steps.
 - **Wrong state:** expected, its source, and actual.
 - **Evidence:** each cited trace entry. For an observation, that is the game time, the scene, the value of the
-  repro_check field and the moment in the session video.
+  repro_check field and the moment in the session video. An effect check (`effect.<action>`) has no value in an
+  observation, because it is a displacement a replay measures, so none is shown.
 - **Severity** and the reason given for it.
 
 The finding appears as recorded. The state the replays measured is shown next to the recorded one, never in
@@ -39,7 +40,9 @@ place of it.
 
 - **Replays.** Every attempt is listed with its result and reason, including unknown and invalid ones. A replay
   folder for another trace, or for a finding not in the report, is listed under "Replays not applied", with
-  the reason.
+  the reason. A reader check's attempts show the baseline reading. An effect check's show the scored execution's
+  measured displacement, and the replay states the calibrated one and its allowance beside them; a displacement
+  that was not measured reads `unknown`, never 0.
 - **A replay moves the finding only on its own check.** That means the finding's own `repro_check`, or an
   operator check when the finding had none. An operator check that overrides the finding's own is a different
   test, such as a control. It is shown, but it never changes the state. The report applies this rule even to
