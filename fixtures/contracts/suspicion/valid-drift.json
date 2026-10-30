@@ -1,0 +1,23 @@
+{
+  "suspicion_id": "s9",
+  "basis": "drift",
+  "turn": 27,
+  "based_on_seq": 1311,
+  "game_s": 48.5,
+  "subject": "public.r_timer",
+  "statement": "public.r_timer has set a new low at each of its last 20 known readings, since turn 8: from -1 to -22.4.",
+  "detail": {
+    "field": "public.r_timer",
+    "direction": "low",
+    "readings": 20,
+    "required_readings": 20,
+    "from": -1.0,
+    "value": -22.4,
+    "since_turn": 8,
+    "since_seq": 140
+  },
+  "evidence_seq": [
+    140,
+    401
+  ]
+}

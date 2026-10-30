@@ -1,0 +1,8 @@
+{
+  "suspicion_id": "s9",
+  "basis": "trend",
+  "turn": 27,
+  "based_on_seq": 1311,
+  "subject": "public.r_timer",
+  "statement": "public.r_timer has set a new low at each of its last 20 known readings, since turn 8: from -1 to -22.4."
+}

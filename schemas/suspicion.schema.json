@@ -4,7 +4,8 @@
       "enum": [
         "invariant",
         "effect_mismatch",
-        "range_exit"
+        "range_exit",
+        "drift"
       ],
       "title": "SuspicionBasis",
       "type": "string"
