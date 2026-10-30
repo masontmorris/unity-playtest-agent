@@ -62,7 +62,7 @@ def test_help_completing_during_observation_cannot_publish_until_adoption(tmp_pa
             else:
                 await loop.run_turn()
                 assert s1.contexts[2]["pending_help"] is None
-                assert s1.contexts[2]["guidance"][0]["result"]["directive_id"] == "d-0"
+                assert s1.contexts[2]["guidance"]["help_adoptions"][0]["result"]["directive_id"] == "d-0"
                 assert any("Frontier directive d-0" in line for line in s1.contexts[2]["facts"])
                 assert len(tracker.history) == 1 and tracker.history[0]["first_turn"] == 2
                 assert [entry["turn"] for entry in sink.of_kind("help")
@@ -134,7 +134,7 @@ def test_boundary_discards_unadopted_frontier_result_and_allows_new_help(tmp_pat
             await loop._pending.task
             await loop.run_turn()
             assert packets[1]["hypotheses"] == [] and packets[1]["directive"] is None
-            assert s1.contexts[3]["guidance"][0]["result"]["directive_id"] == "d-2"
+            assert s1.contexts[3]["guidance"]["help_adoptions"][0]["result"]["directive_id"] == "d-2"
             assert [item["directive_id"] for item in tracker.history] == ["d-2"]
             assert tracker.history[0]["first_turn"] == 3
             assert [e["turn"] for e in sink.of_kind("help") if e["body"]["event"] == "adopted"] == [3]
@@ -318,7 +318,7 @@ def test_external_resolution_during_observation_cannot_replace_entry_ready_resul
             assert s1.contexts[1]["pending_help"] is not None and "guidance" not in s1.contexts[1]
             assert tracker.history == [] and helper._staged == {} and loop.adoptions == []
             await loop.run_turn()
-            assert s1.contexts[2]["guidance"][0]["result"] == "replacement"
+            assert s1.contexts[2]["guidance"]["help_adoptions"][0]["result"] == "replacement"
             assert tracker.history == [] and loop.adoptions == ["replacement"]
             assert bridge.requests == [] and check_adherence(loop.turns) == []
         finally:
@@ -357,7 +357,7 @@ def test_frontier_receives_actual_action_shortfall_after_nine_waits(tmp_path):
             assert sink.entries[attempt["trace_seq"]]["kind"] == "execution"
             assert sink.entries[attempt["observation_trace_seq"]]["body"]["seq"] == attempt["seq"]
             assert len(bridge.requests) == 1 and bridge.requests[0]["choice_id"] == "a"
-            assert s1.contexts[-1]["guidance"][0]["result"]["directive_id"] == "d-10"
+            assert s1.contexts[-1]["guidance"]["help_adoptions"][0]["result"]["directive_id"] == "d-10"
         finally:
             await loop.stop("user")
 

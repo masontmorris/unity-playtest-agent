@@ -124,6 +124,11 @@ class HelpPort(Protocol):
     Ports that stage state can implement ``adopt_result(request_turn, result) -> HelpResult``
     and ``discard_result(request_turn)``. The loop invokes these at adoption or invalidation;
     completion during another turn does not publish state into that turn's context.
+
+    A port may also lay out its adopted results for S1 with ``render_guidance(items) -> Mapping`` and
+    ``restore_guidance(view) -> list``, the exact inverse. Both are given copies. The loop sends the
+    layout only when ``restore_guidance`` returns ``items`` exactly; if it differs or either call raises,
+    S1 gets ``items`` unchanged. Neither call may add, drop, rank or reword anything.
     """
 
     async def run(self, request: HelpRequest) -> HelpResult:

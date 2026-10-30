@@ -228,6 +228,54 @@ without notes (`tests/test_frontier_help.py`), and no branch of the loop reads a
 change, so whether it does is untested. Asking for a hypothesis first and for `unknown` severity may also lower
 recall for a true defect whose only support is a note. That cost is unmeasured as well.
 
+## How S1 reads the adopted guidance (#170)
+
+An adopted frontier answer stays in S1's context for the rest of the run, and every answer lists its hypotheses in
+full, so a revised hypothesis recurred once per answer. In the b04 session-05 trace the guidance reached 31,622
+characters, 55% of the final 57,538-character payload, and the larger requests made token pacing wait longer.
+`FrontierHelp.render_guidance` (the codec is `runner/guidance_codec.py`) lays the same adopted list out as three blocks:
+
+| Block | Holds |
+|---|---|
+| `current_hypotheses` | The latest complete row of every hypothesis id, with the `requested_turn` of the answer that stated it. A closed hypothesis (`supported`, `contradicted`, `withdrawn`) stays, with its status. |
+| `earlier_versions` | Every older row of those ids, newest first. A row states only the fields that differ from the next newer version, and `other_fields_same_as_requested_turn: N` says every field it leaves out equals the version stated at request turn N. A null is always stated, never left out. |
+| `help_adoptions` | One entry per adopted answer, in order, with `source`, `kind`, `choice_id`, the turns, `age_s`, `waited_s` and the result as adopted. An answer whose rows moved to the first two blocks lists their ids in `hypothesis_ids`. Another helper's result, and a frontier result with no usable hypothesis row (an error, the call cap, a replacement), are copied in byte for byte. |
+
+Only the layout changes. Every statement, `confirm_if`, `refute_if`, status, citation, candidate finding, error and
+review stays in S1's view, nothing is ranked or reworded, and `1`, `1.0` and `true` stay distinct.
+
+**Exact roundtrip, or the list.** `TurnLoop._guidance_view` builds the list of adopted items as before. If the help
+port also offers `render_guidance(items)` and `restore_guidance(view)` (both are given copies), the loop sends the
+layout only when `restore_guidance` returns that very list, compared as canonical JSON. With no such pair, or a layout
+that is lossy, malformed or raises, S1 reads the list unchanged. The core names no frontier word: it holds the generic
+hook and `build_context` takes either a list or a mapping. With no guidance the key is absent and the payload bytes are
+unchanged (golden hash in `tests/test_loop_guidance_layout.py`). The trace keeps today's per-answer result in each
+`help` `adopted` entry, and the `context` entry holds the payload as sent, so `restore_guidance(payload["guidance"])`
+gives back the list and the request hash can be rebuilt. Cancellation, scene boundaries and operator results behave as
+before: a cancelled request adds no row, version or entry, adopted guidance stays after a boundary, and an operator's
+result sits in the ledger unchanged.
+
+**Measured size** (canonical-JSON characters, not tokens; offline, no model call; `scripts/guidance_layout_trace.py`
+on the 94 contexts of the b04 session-05 trace, 77 of which carry guidance):
+
+| | List | Layout |
+|---|---|---|
+| Final guidance | 31,622 | 22,342 (29.3% smaller) |
+| Final payload | 57,538 | 48,258 (16.1% smaller) |
+| Median payload, contexts with guidance | 39,406 | 35,989 (8.7% smaller) |
+| State characters summed over the 123 S1 calls | 4,461,714 | 4,128,624 (7.5% smaller) |
+
+All 77 layouts restore to the traced list exactly, and the recorded context hash is rebuilt from the restored list in
+all 77. At the final context the blocks hold 4,651 characters (10 current rows), 13,999 (47 earlier versions) and 3,631
+(15 adoptions); the layout is larger than the list in the first 19 contexts that carry guidance, by at most 155.
+
+**What this does not show.** Only bytes were measured. Whether S1 reads the layout better or worse, or decides
+differently, is untested, and a claim about decisions needs a paired evaluation on frozen contexts. The earlier
+wordings stay in view, so growth is still linear in the number of answers (this trace averages 1.5k characters per
+answer in the layout against 2.1k in the list), and nothing bounds it: dropping an old hypothesis would hide an open or
+negative one. With the frontier attached, `guidance` is a mapping once anything is adopted (an error-only first answer
+gives empty first two blocks); it was a list.
+
 ## S1 ownership and evidence audit
 
 | Branch | Runtime behavior | Evidence |
@@ -239,6 +287,7 @@ recall for a true defect whose only support is a note. That cost is unmeasured a
 | Pending help | Executes exactly S1's valid `while_pending` continuation; otherwise waits under the existing default. | `core/turn_loop.py:343`; `tests/test_turn_loop.py`. |
 | Helper adoption | A result ready at turn entry is adopted once after the fresh observation's epoch check; prior-epoch help is discarded. | `core/turn_loop.py` (`run_turn`, `_adopt_finished_help`); end-to-end tests in `tests/test_loop_help_publication.py`. |
 | Directive scoring | Reads the current observation and shared comparator result to write a fact and trace outcome; it cannot call the help port or choose input. | `runner/directives.py:45-71`; all terminal outcomes covered in `tests/test_frontier_help.py`. |
+| Guidance layout | Lays out results already adopted. The loop sends the layout only if `restore_guidance` returns the adopted list exactly, else the list. No choice, help request, default or adoption is read or changed, and no count, score or timer is involved. | `TurnLoop._guidance_view`; `runner/guidance_codec.py`; `tests/test_guidance_codec.py`, `tests/test_loop_guidance_layout.py`. |
 | Reader notes | Labels each recorded note an unverified preflight-model inference in the frontier's manifest message. Every note is sent as written; no code filters, ranks, or acts on one, and the answer schema, packet and choices do not change. | `provider.manifest_message`, `FrontierHelp.reader_notes`; `tests/test_frontier_provider.py` and `tests/test_frontier_help.py` (actual request). |
 
 The request uses the exact context S1 received and the explicit request turn and observation sequence. Investigation rows cite the corresponding observation's trace entry. The fake end-to-end trace passes the trace-entry validator, adherence checker and trace replay checks. No live trace was collected, as requested.

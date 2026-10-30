@@ -92,15 +92,16 @@ def test_live_help_port_offline_end_to_end_escalates_then_adopts_hypothesis_and_
                     "Frontier directive" in line for line in context["facts"])
                 if len(self.contexts) == 1:
                     return self.answer(context, "escalate", {"mode": "continue", "choice_id": "move"})
-                guidance = context.get("guidance", [])
-                frontier_result = next((row.get("result") for row in guidance
+                guidance = context.get("guidance", {})  # the frontier's layout: current rows, earlier rows, a ledger
+                frontier_result = next((row.get("result") for row in guidance.get("help_adoptions", [])
                                         if row.get("source") == "frontier"), None)
                 if not frontier_result:
                     frontier_release.set()
                     return self.answer(context, "wait")
                 assert self.directive_seen
                 assert suspicion_fact in context["facts"]
-                assert frontier_result["hypotheses"][0]["confirm_if"] == "The count reaches one."
+                assert guidance["current_hypotheses"][0]["confirm_if"] == "The count reaches one."
+                assert frontier_result["directive_id"] == "d-0"
                 return self.answer(context, "finish")
 
         tracker = DirectiveTracker(sink)
@@ -463,11 +464,13 @@ def test_invalid_frontier_answer_is_recorded_without_synthesizing_hypothesis_or_
                 if len(self.contexts) == 1:
                     return S1Answer(answer={"choice_id": "escalate", "set_version": context["choice_set_version"],
                                             "while_pending": {"mode": "wait"}})
-                guidance = context.get("guidance", [])
+                guidance = context.get("guidance", {})
                 if not guidance:
                     frontier_release.set()
                     return S1Answer(answer={"choice_id": "wait", "set_version": context["choice_set_version"]})
-                assert guidance[-1]["result"]["directive"] is None
+                # An error answer lists no hypothesis, so the frontier's layout carries it in the ledger unchanged.
+                assert guidance["help_adoptions"][-1]["result"]["directive"] is None
+                assert guidance["current_hypotheses"] == [] and guidance["earlier_versions"] == []
                 return S1Answer(answer={"choice_id": "finish", "set_version": context["choice_set_version"]})
         try:
             result = await session(client, build_choices(two_actions()), s1=S1(), objective=OBJECTIVE,
