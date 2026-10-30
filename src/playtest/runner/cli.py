@@ -76,6 +76,16 @@ def _env(name: str, cast: Any, default: Any) -> Any:
         raise SystemExit(f"playtest-run: {name} is not a valid {cast.__name__}") from None
 
 
+def switch(raw: str) -> bool:
+    """An on/off environment value: exactly `1`/`true` or `0`/`false`, so a typo is an error, not off."""
+    value = raw.strip().lower()
+    if value in ("1", "true"):
+        return True
+    if value in ("0", "false"):
+        return False
+    raise ValueError(raw)
+
+
 def _describe(exc: BaseException) -> str:
     """`Name: message`, or just the name when the exception carries no message."""
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
@@ -97,7 +107,8 @@ def _parser() -> argparse.ArgumentParser:
                         help="the approval file naming the call and cost caps (also UPA_RUN_APPROVAL)")
     parser.add_argument("--max-calls", type=int, default=_env("UPA_RUN_MAX_CALLS", int, None),
                         help="the most paid calls this run may make (also UPA_RUN_MAX_CALLS)")
-    parser.add_argument("--frontier", action="store_true", help="enable frontier calls after S1 chooses escalate")
+    parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
+                        help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
                         default=_env("UPA_RUN_MAX_FRONTIER_CALLS", int, 0),
                         help="approved frontier call cap; requires --frontier")
@@ -214,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
         replay._write(run_dir / "plan.json", plan, exclusive=True)
-        ledger = call_budget.Ledger(run_dir, approval, ARM)
+        # The frontier helper shares this folder and runs while S1 keeps choosing, so in-flight calls block per arm.
+        ledger = call_budget.Ledger(run_dir, approval, ARM, concurrent_arms=True)
         before = recording._game_worktree(project)
         summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256))
         after = recording._game_worktree(project)

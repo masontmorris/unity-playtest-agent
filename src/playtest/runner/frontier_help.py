@@ -26,7 +26,8 @@ class FrontierHelp:
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
-        self.ledger = call_budget.Ledger(directory, approval, provider.MODEL)
+        # S1 keeps choosing while this request is pending, so the two arms' calls overlap by design.
+        self.ledger = call_budget.Ledger(directory, approval, provider.MODEL, concurrent_arms=True)
         self.max_calls = max_calls if max_calls is not None else self.ledger.limit["max_calls"]
         if isinstance(self.max_calls, bool) or not isinstance(self.max_calls, int) or self.max_calls < 1:
             raise ValueError("max_calls must be a positive integer")

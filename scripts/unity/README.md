@@ -458,8 +458,23 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
   -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
   -ApprovalPath "C:\path\outside\game\approval.json" -MaxCalls <n> `
   -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.5] `
-  [-TokensPerMinute 85000] [-Objective "<text>" | -ObjectivePath "<file>"]
+  [-TokensPerMinute 85000] [-Objective "<text>" | -ObjectivePath "<file>"] `
+  [-Frontier -MaxFrontierCalls <n>] [-RecordFrames]
 ```
+
+- **`-Frontier`.** The runner may call the frontier model when S1 chooses `escalate`, at most
+  `-MaxFrontierCalls` times. The flag reaches the hosted client as `UPA_RUN_FRONTIER=1`, because the PlayMode
+  host passes only paths. It needs `META_API_KEY` (checked by name only), and an approval file whose
+  `muse-spark-1.3` arm covers the cap. S1 keeps choosing while a frontier request is pending, so the two arms
+  each keep one call in flight on the shared ledger.
+- **`-RecordFrames`.** Records the whole play view. `playtest.runner.session_video` runs beside the session
+  and copies every frame the bridge writes into its rolling capture window. After Unity exits it encodes
+  them, in the bridge's counter order, into `<OutputDirectory>/recording/session.mp4`, with `recording.json`
+  beside it.
+  - That summary gives the frames copied, the frames missed (gaps in the counter, never filled in), the
+    write-time basis of each frame's duration, and the video's hash.
+  - The recorder never talks to the bridge or the runner.
+  - The frames are game footage, so keep them local.
 
 The call cap and the approval file are required: no paid call starts without them, and every call
 reserves its row in `<OutputDirectory>/calls` before it is sent. `BASETEN_API_KEY` is checked by name

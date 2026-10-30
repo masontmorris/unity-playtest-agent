@@ -47,14 +47,25 @@ class Reservation:
 
 
 class Ledger:
-    """The reservations of one run, shared by every adapter that spends from the approval."""
+    """The reservations of one run, shared by every adapter that spends from the approval.
 
-    def __init__(self, directory: Path, approval: Mapping[str, Any], arm: str) -> None:
+    By default any call left in flight, of any arm, stops every new reservation. That suits the benches,
+    whose adapters take turns: an in-flight row there can only be one a crash left behind.
+
+    A live session's adapters overlap by design. S1 keeps choosing while a frontier request is pending.
+    For those ledgers, pass `concurrent_arms=True`: an in-flight row then stops only its own arm, so each
+    arm still has at most one call outstanding. Every row's reservation, in flight or not, still counts
+    against the shared envelope.
+    """
+
+    def __init__(self, directory: Path, approval: Mapping[str, Any], arm: str, *,
+                 concurrent_arms: bool = False) -> None:
         self.directory = directory
         self.call_dir = directory / "calls"
         self.call_dir.mkdir(parents=True, exist_ok=True)
         self.approval = approval
         self.arm = arm
+        self.concurrent_arms = concurrent_arms
         self.limit = approval["arms"][arm]
         self.bound = replay._decimal(self.limit["per_call_max_usd"], f"{arm} per-call bound")
         self.rows: list[dict[str, Any]] = replay._calls(self.call_dir)
@@ -87,7 +98,8 @@ class Ledger:
         deadline = replay._price_deadline(self.limit, self.arm)
         if dt.datetime.now(dt.timezone.utc) >= deadline:
             raise BudgetStop(f"{self.arm} pricing validity expired; stopped before another call")
-        if any(row.get("status") == "in_flight" for row in self.rows):
+        if any(row.get("status") == "in_flight" and (not self.concurrent_arms or row.get("arm") == self.arm)
+               for row in self.rows):
             raise BudgetStop("an earlier call was left in flight; no new call is sent until it is resolved")
 
         arm_rows = self.arm_rows()

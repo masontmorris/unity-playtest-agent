@@ -29,6 +29,15 @@ The manifest's readers are installed in the live observation (one Editor field i
 observation) and the run states what they and the actions' effects measured as facts and suspicions; see
 docs/design/suspicions.md. -ManifestOrigin is free text recorded in the plan and the summary, for a manifest that
 was made on another build and is reused here (say so; a reused manifest is not a fresh preflight).
+
+-Frontier lets the runner call the frontier model when S1 chooses escalate, at most -MaxFrontierCalls times. It needs
+META_API_KEY in this session's environment (checked by name only), and the approval file must carry the frontier arm.
+Without -Frontier the runner has no frontier helper, exactly as before.
+
+-RecordFrames records the whole session's play view. A separate process copies every frame the bridge writes into
+its rolling capture window, then encodes them into <OutputDirectory>/recording/session.mp4 after Unity exits, with
+recording.json beside it. It never talks to the bridge or the runner, and nothing in the session reads what it
+writes. The frames are game footage: keep them local.
 #>
 [CmdletBinding()]
 param(
@@ -46,6 +55,9 @@ param(
     [string]$Objective,
     [string]$ObjectivePath,
     [string]$ManifestOrigin,
+    [switch]$Frontier,
+    [int]$MaxFrontierCalls = 0,
+    [switch]$RecordFrames,
     [string]$UnityPath
 )
 
@@ -73,6 +85,9 @@ if ($output.Equals($project, [StringComparison]::OrdinalIgnoreCase) -or
 }
 if ([IO.Directory]::Exists($output)) { throw 'Choose a new output directory; existing evidence is never overwritten.' }
 if ([string]::IsNullOrEmpty($env:BASETEN_API_KEY)) { throw 'BASETEN_API_KEY is not set in this session.' }
+if ($Frontier -and $MaxFrontierCalls -lt 1) { throw '-Frontier needs -MaxFrontierCalls of at least 1: no frontier call starts without a cap.' }
+if (-not $Frontier -and $MaxFrontierCalls -ne 0) { throw '-MaxFrontierCalls needs -Frontier.' }
+if ($Frontier -and [string]::IsNullOrEmpty($env:META_API_KEY)) { throw 'META_API_KEY is not set in this session.' }
 $packages = Get-Content -LiteralPath (Join-Path $project 'Packages/manifest.json') -Raw | ConvertFrom-Json
 $expected = 'file:' + (Join-Path $repoRoot 'bridge').Replace('\', '/')
 if (-not [string]::Equals($packages.dependencies.'com.playtest.bridge', $expected, [StringComparison]::OrdinalIgnoreCase)) {
@@ -101,9 +116,11 @@ $invariant = [Globalization.CultureInfo]::InvariantCulture
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
-           'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256')
+           'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_FRONTIER',
+           'UPA_RUN_MAX_FRONTIER_CALLS')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
+$recorder = $null
 try {
     $env:UPA_BENCH_OUTPUT = Join-Path $output 'run.json'
     $env:UPA_BENCH_PYTHON = $python
@@ -122,17 +139,41 @@ try {
     $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
     $env:UPA_RUN_MANIFEST_ORIGIN = if ($ManifestOrigin) { $ManifestOrigin } else { '' }
+    $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
+    $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }
     $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
     $runnerArgs = @('-ExecutionPolicy', 'Bypass', '-File', $runner, '-ProjectPath', $project,
                     '-TestPlatform', 'PlayMode', '-TestFilter', 'Playtest.Bridge.Tests.BenchRecordingPlayModeTests',
                     '-ResultsPath', (Join-Path $output 'playmode-results.xml'), '-LogPath', (Join-Path $output 'playmode.log'))
     if ($UnityPath) { $runnerArgs += @('-UnityPath', $UnityPath) }
+    if ($RecordFrames) {
+        # Started before Unity so the first frame is caught; it ignores any frame older than its own start.
+        $recordDir = Join-Path $output 'recording'
+        $recordStop = Join-Path $output 'recording.stop'
+        $recordArgs = '-m playtest.runner.session_video --project "' + $project + '" --output "' + $recordDir +
+                      '" --stop-file "' + $recordStop + '" --max-wall-s ' + [string]($WallLimitSeconds + 900)
+        $recorder = Start-Process -FilePath $python -ArgumentList $recordArgs -WorkingDirectory $repoRoot -NoNewWindow `
+            -PassThru -RedirectStandardOutput (Join-Path $output 'recording.out.log') `
+            -RedirectStandardError (Join-Path $output 'recording.err.log')
+    }
     & powershell.exe @runnerArgs
-    if ($LASTEXITCODE -ne 0) { throw "The session failed (exit $LASTEXITCODE); inspect the retained summary, trace and log." }
+    $sessionExit = $LASTEXITCODE
+    if ($sessionExit -ne 0) { throw "The session failed (exit $sessionExit); inspect the retained summary, trace and log." }
     Write-Host "Served catalog: $catalogFile (sha256 $catalogSha)"
     Write-Host "Saved run summary: $env:UPA_BENCH_OUTPUT"
     Write-Host "Saved trace: $(Join-Path $output 'trace.jsonl')"
 }
 finally {
+    if ($recorder) {
+        # Unity has exited, so no frame is still to come: stop the recorder and let it encode.
+        New-Item -ItemType File -Path $recordStop -Force | Out-Null
+        if (-not $recorder.WaitForExit(900000)) {
+            Write-Warning 'The session recorder did not finish encoding within 15 minutes; stopping it.'
+            Stop-Process -Id $recorder.Id -Force -ErrorAction SilentlyContinue
+        }
+        $recordSummary = Join-Path $recordDir 'recording.json'
+        if ([IO.File]::Exists($recordSummary)) { Write-Host "Saved session recording: $recordSummary" }
+        else { Write-Warning "The session recorder wrote no summary; see $(Join-Path $output 'recording.err.log')." }
+    }
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
 }

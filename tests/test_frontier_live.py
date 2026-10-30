@@ -515,6 +515,35 @@ def test_an_expired_price_or_a_stale_in_flight_row_sends_nothing(tmp_path: Path)
     assert [path.name for path in calls.glob("*.json")] == ["old.json"]
 
 
+def test_a_live_sessions_arms_may_overlap_but_each_keeps_one_call_in_flight(tmp_path: Path) -> None:
+    # In a live session S1 keeps choosing while a frontier request is pending (the Day 5 gate run halted on this).
+    approval = _approval(overall=10)
+    s1 = call_budget.Ledger(tmp_path / "run", approval, live.ARM, concurrent_arms=True)
+    frontier = call_budget.Ledger(tmp_path / "run", approval, frontier_live.FRONTIER_ARM, concurrent_arms=True)
+    pending = frontier.reserve(episode=0, turn=3, based_on_seq=4, request_sha256="a" * 64, requested_model="f")
+    s1.reserve(episode=0, turn=4, based_on_seq=5, request_sha256="b" * 64, requested_model="s1").finish(http_status=200)
+    with pytest.raises(call_budget.BudgetStop, match="in flight"):  # still one frontier request at a time
+        frontier.reserve(episode=0, turn=5, based_on_seq=6, request_sha256="c" * 64, requested_model="f")
+    s1_pending = s1.reserve(episode=0, turn=5, based_on_seq=6, request_sha256="d" * 64, requested_model="s1")
+    with pytest.raises(call_budget.BudgetStop, match="in flight"):  # and one S1 call at a time
+        s1.reserve(episode=0, turn=6, based_on_seq=7, request_sha256="e" * 64, requested_model="s1")
+    pending.finish(http_status=200)
+    s1_pending.finish(http_status=200)
+    frontier.reserve(episode=0, turn=6, based_on_seq=7, request_sha256="f" * 64, requested_model="f").finish(
+        http_status=200)
+    assert len(frontier.arm_rows()) == 2 and len(s1.arm_rows()) == 2
+
+
+def test_an_overlapping_arms_in_flight_reservation_still_counts_against_the_envelope(tmp_path: Path) -> None:
+    approval = _approval(overall=2)
+    s1 = call_budget.Ledger(tmp_path / "run", approval, live.ARM, concurrent_arms=True)
+    frontier = call_budget.Ledger(tmp_path / "run", approval, frontier_live.FRONTIER_ARM, concurrent_arms=True)
+    frontier.reserve(episode=0, turn=1, based_on_seq=2, request_sha256="a" * 64, requested_model="f")
+    s1.reserve(episode=0, turn=2, based_on_seq=3, request_sha256="b" * 64, requested_model="s1").finish(http_status=200)
+    with pytest.raises(call_budget.BudgetStop, match="envelope"):
+        s1.reserve(episode=0, turn=3, based_on_seq=4, request_sha256="c" * 64, requested_model="s1")
+
+
 def test_validate_approval_maps_the_frontier_arm_to_meta_not_baseten() -> None:
     approval = {
         "approved_by": "Test User", "approved_at_utc": "2026-01-01T00:00:00Z",
