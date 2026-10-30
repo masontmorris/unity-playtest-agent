@@ -984,3 +984,25 @@ def test_the_catalog_and_its_pin_take_the_session_variables_then_the_flags(monke
     assert (args.catalog, args.catalog_sha256) == (Path("from-env.json"), "a" * 64)
     args = cli._parser().parse_args([*required, "--catalog", "flag.json", "--catalog-sha256", "b" * 64])
     assert (args.catalog, args.catalog_sha256) == (Path("flag.json"), "b" * 64)
+
+
+def test_a_frontier_session_builds_its_helper_with_the_calibration_record(tmp_path: Path, monkeypatch):
+    from playtest.frontier import provider as frontier_provider
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0001")
+    monkeypatch.setenv("META_API_KEY", "sk-test-meta-key-0001")
+    built: dict[str, Any] = {}
+    real = cli.FrontierHelp
+
+    def capture(**kwargs):
+        built.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(cli, "FrontierHelp", capture)
+    with GameThread(CatalogGame, catalog=export(two_actions()), effects={"move": (6.0, 0.0, 0.0)}) as thread:
+        files = Project(tmp_path, thread.port, git=True)
+        both = approval(12)
+        both["arms"][frontier_provider.MODEL] = {**both["arms"][ARM], "max_calls": 1, "per_call_max_usd": 0.001}
+        files.approval.write_text(json.dumps(both), encoding="utf-8")
+        with_fake_send(monkeypatch, Send(files.out, reply("next_action", "finish")))
+        assert cli.main([*files.args(tokens_per_minute=60000, max_frontier_calls=1), "--frontier"]) == 0
+    assert built["calibration"] == json.loads(files.calibration.read_text(encoding="utf-8"))
