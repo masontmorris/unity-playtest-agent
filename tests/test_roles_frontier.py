@@ -153,6 +153,13 @@ def test_finding_stays_a_candidate_and_keeps_its_evidence(manifest, refs):
     record = frontier.to_finding(a.candidate_finding, finding_id="f1")
     assert record.state is FindingState.candidate
     assert record.evidence_seq == [11, 12]
+    # Severity and the replay check now have contract fields; a trace writer passes trace seqs instead.
+    assert record.severity == a.candidate_finding.severity
+    check = a.candidate_finding.repro_check
+    assert (record.repro_check is None) == (check is None)
+    if check is not None:
+        assert (record.repro_check.field, record.repro_check.op) == (check.field, check.op)
+    assert frontier.to_finding(a.candidate_finding, finding_id="f1", evidence_seq=[40, 52]).evidence_seq == [40, 52]
 
 
 # --- hypothesis and packet references ------------------------------------------------------------

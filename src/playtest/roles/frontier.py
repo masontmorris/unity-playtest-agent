@@ -26,6 +26,7 @@ from playtest.contracts.investigation import (
     ExpectedSource,
     Finding,
     FindingState,
+    ReproCheck,
     Target,
 )
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSource
@@ -348,9 +349,17 @@ def to_choices(adds: Sequence[AddChoice], manifest: Manifest, *, ids: Sequence[s
     return out
 
 
-def to_finding(f: FindingOut, *, finding_id: str) -> Finding:
-    """A candidate finding. The model never sets the state; severity and repro_check have no
-    field in the current contract and travel separately (#73 contract gaps)."""
+def to_finding(f: FindingOut, *, finding_id: str, evidence_seq: Sequence[int] | None = None) -> Finding:
+    """A candidate finding. The model never sets the state.
+
+    The answer cites packet sequence numbers (bridge observations). A trace finding must cite trace entries,
+    so a caller that writes it passes the mapped `evidence_seq`. Without one, the answer's own numbers are
+    kept, as in a record that never enters a trace.
+    """
+    check = f.repro_check
     return Finding(finding_id=finding_id, state=FindingState.candidate, title=f.title, expected=f.expected,
                    expected_source=f.expected_source, actual=f.actual, conditions=f.conditions or None,
-                   steps=list(f.steps), evidence_seq=list(f.evidence_seq), uncertainty=f.uncertainty)
+                   steps=list(f.steps), evidence_seq=list(f.evidence_seq if evidence_seq is None else evidence_seq),
+                   uncertainty=f.uncertainty, severity=f.severity, severity_reason=f.severity_reason or None,
+                   repro_check=(ReproCheck(field=check.field, op=check.op, value=check.value, tolerance=check.tolerance)
+                                if check is not None else None))

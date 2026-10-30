@@ -11,6 +11,8 @@ from playtest.bench.record import digest
 from playtest.contracts.bridge import Observation
 from playtest.contracts.investigation import Directive
 from playtest.contracts.loop import ChoiceKind, ChoiceSet, TurnOutcome, TurnRecord
+from playtest.contracts.trace import TraceAuthor
+from playtest.core.findings import FindingLog
 from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
 from playtest.roles import frontier
@@ -34,6 +36,7 @@ class FrontierHelp:
         self.calls = 0
         self.hypotheses: dict[str, dict[str, Any]] = {}
         self._shown: dict[str, dict[str, Any]] = {}  # each hypothesis as S1's guidance last listed it
+        self.findings: list[dict[str, Any]] = []  # candidate findings written to the trace
         fields = {f"public.{reader.alias}": reader.kind for reader in manifest.readers if reader.kind}
         self.reader_fields = fields
 
@@ -151,6 +154,8 @@ class FrontierHelp:
                                "last_game_s": observation.game_s, "requested_game_s": observation.game_s,
                                "directive": directive.model_dump(mode="json")},
                               request_turn=request.turn, based_on_seq=seq, evidence_trace_seq=obs_trace)
+            if answer.candidate_finding is not None and not review.rejected("candidate_finding"):
+                result_payload["candidate_finding"] = self._record_finding(answer.candidate_finding, request.turn)
             reservation.finish(http_status=status, latency_ms=latency, cost_usd=result.cost_usd,
                                resolved_model=result.resolved_model, usage=result.usage,
                                parse_valid=True, answer=answer.model_dump(mode="json"))
@@ -161,6 +166,26 @@ class FrontierHelp:
         except Exception:
             reservation.finish(directive_result="failed", cost_usd=None)
             raise
+
+    def _record_finding(self, proposed: Any, turn: int) -> dict[str, Any]:
+        """Write the frontier's candidate finding to the trace, citing trace entries, and say what happened.
+
+        The answer cites bridge observation seqs, which review checked against the packet. A trace finding
+        must cite earlier trace entries, so each seq maps to the entry that recorded its observation. If any
+        has none, the finding is not written and the reason is returned: a citation is never dropped or
+        guessed to make it fit.
+        """
+        finding_id = f"f-{turn}"
+        mapper = getattr(self.sink, "trace_seq_for_observation", None)
+        mapped = [mapper(seq) if mapper is not None else None for seq in proposed.evidence_seq]
+        if not mapped or any(seq is None for seq in mapped):
+            missing = [seq for seq, trace_seq in zip(proposed.evidence_seq, mapped) if trace_seq is None]
+            return {"finding_id": finding_id, "trace_seq": None,
+                    "reason": f"not recorded: cited observations with no trace entry: {missing or 'none cited'}"}
+        finding = frontier.to_finding(proposed, finding_id=finding_id, evidence_seq=sorted(set(mapped)))
+        trace_seq = FindingLog(self.sink, author=TraceAuthor.frontier).record(finding)
+        self.findings.append({"finding_id": finding_id, "trace_seq": trace_seq, "request_turn": turn})
+        return {"finding_id": finding_id, "trace_seq": trace_seq, "reason": None}
 
     def _guidance(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """What S1 keeps from one answer: each hypothesis listed once, and the directive by id.
@@ -191,6 +216,9 @@ class FrontierHelp:
             view["restated_hypotheses"] = restated
         directive = payload.get("directive")
         view["directive_id"] = directive.get("directive_id") if isinstance(directive, Mapping) else None
+        finding = payload.get("candidate_finding")
+        if isinstance(finding, Mapping):
+            view["candidate_finding"] = {key: finding.get(key) for key in ("finding_id", "reason")}
         for key in ("errors", "review"):
             if payload.get(key):
                 view[key] = payload[key]

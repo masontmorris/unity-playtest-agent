@@ -1,0 +1,25 @@
+{
+  "finding_id": "f-12",
+  "state": "candidate",
+  "title": "Counter rises twice for one action",
+  "expected": "One action adds one to the counter",
+  "expected_source": "invariant",
+  "actual": "The counter went from 0 to 2 after one action",
+  "steps": [
+    "Load the scene",
+    "Do the action once"
+  ],
+  "evidence_seq": [
+    140,
+    152
+  ],
+  "uncertainty": "Seen once; timing between the two increments unknown.",
+  "repro_check": {
+    "field": "public.counter",
+    "op": ">=",
+    "value": 2,
+    "tolerance": null
+  },
+  "severity": "major",
+  "severity_reason": "Breaks the scoring rule players rely on."
+}

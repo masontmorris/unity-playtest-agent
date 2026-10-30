@@ -23,6 +23,7 @@ from playtest.core.trace_sink import MemorySink
 from playtest.core.trace_replay import replay as replay_trace
 from playtest.frontier.media import Clip
 from playtest.frontier import provider
+from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
 from playtest.runner.frontier_help import FrontierHelp
 from playtest.runner.choices import build_choices
@@ -339,6 +340,36 @@ def test_guidance_lists_each_hypothesis_once_and_names_the_directive_by_id(tmp_p
     assert second["errors"] == ["one problem"] and second["review"] == [{"item": "x", "reason": "y"}]
     third = helper._guidance({"hypotheses": [{**changed, "status": "open"}], "directive": None})
     assert third["hypotheses"] == [{**changed, "status": "open"}]    # reopening is a status change too
+
+
+def test_a_candidate_finding_is_written_citing_trace_entries_or_not_written_at_all(tmp_path: Path):
+    sink = harness_trace()
+    observed = sink.append("observation", {"seq": 7}, author="harness", turn=0)
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=sink, tracker=DirectiveTracker(sink),
+                          started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
+    proposed = frontier.FindingOut.model_validate({
+        "actual": "The count stays at zero.", "conditions": "After the move action.", "evidence_seq": [7, 7],
+        "expected": "The count reaches one.", "expected_source": "developer_assertion",
+        "repro_check": {"field": "public.counter", "op": "<", "tolerance": None, "value": 1.0},
+        "severity": "major", "severity_reason": "It blocks progress.", "steps": ["Move."],
+        "title": "The count never rises", "uncertainty": "One sample only."})
+    written = helper._record_finding(proposed, turn=3)
+    assert written["finding_id"] == "f-3" and written["reason"] is None
+    entry = sink.entries[written["trace_seq"]]
+    assert entry["kind"] == "finding" and entry["author"] == "frontier" and entry["refs"] == [observed]
+    assert entry["body"]["evidence_seq"] == [observed] and entry["body"]["state"] == "candidate"
+    assert entry["body"]["repro_check"]["op"] == "<" and entry["body"]["severity"] == "major"
+    assert helper.findings == [{"finding_id": "f-3", "trace_seq": written["trace_seq"], "request_turn": 3}]
+    # A cited observation the trace never recorded: nothing is written, and the reason names the seq.
+    unmapped = helper._record_finding(proposed.model_copy(update={"evidence_seq": [7, 99]}), turn=4)
+    assert unmapped["trace_seq"] is None and "[99]" in unmapped["reason"]
+    assert len(sink.of_kind("finding")) == 1 and len(helper.findings) == 1
+    assert helper._guidance({"hypotheses": [], "directive": None, "candidate_finding": unmapped})[
+        "candidate_finding"] == {"finding_id": "f-4", "reason": unmapped["reason"]}
 
 
 def test_invalid_frontier_answer_is_recorded_without_synthesizing_hypothesis_or_directive(tmp_path: Path):
