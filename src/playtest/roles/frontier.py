@@ -151,7 +151,12 @@ SYSTEM = (
     "otherwise null. Say where the expectation comes from and what is still uncertain. repro_check is what a "
     "replay must show. A replay starts from a reset, and a check that already holds right after the reset cannot "
     "show the bug, so it never counts: an unchanged check always holds then, and so does a value the game shows "
-    "at rest, such as a speed of zero. Choose a check only the bug makes true, or null if no field can show it.\n"
+    "at rest, such as a speed of zero. Choose a check only the bug makes true, or null if no field can show it. "
+    "The packet's findings are the candidate findings already recorded in this run; do not propose one of them "
+    "again.\n"
+    "- A field's calibration, in the manifest, says how it changed when preflight sampled it on this same build "
+    "before play. Behaviour that calibration already saw, such as a field that never changed, was there before "
+    "S1 played.\n"
     "Observations are measured; null means unknown, not zero."
 )
 
@@ -172,6 +177,9 @@ class Manifest:
     fields: Mapping[str, ValueKind]  # observation path -> kind, e.g. "public.<alias>" -> "bool"
     actions: Mapping[str, ActionSpec]
     skills: Collection[str]
+    # Observation path -> when preflight calibration saw the field change on this build ("input", "idle", "both"
+    # or "no_change_observed"); a field calibration could not classify is absent. Shown to the model, never scored.
+    calibration: Mapping[str, str] = field(default_factory=dict, compare=False)
 
     def enums(self) -> dict[str, list[str]]:
         return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills]}

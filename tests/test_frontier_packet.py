@@ -470,3 +470,17 @@ def test_nonfinite_values_are_rejected_by_canonical_serialization():
         build(observation=observation(public={"counter": float("nan")}))
     with pytest.raises(ValueError, match="finite"):
         build(age_s=float("inf"))
+
+
+def test_findings_already_recorded_are_carried_and_malformed_rows_are_refused():
+    check = {"field": "public.score", "op": ">=", "value": 3, "tolerance": None}
+    rows = [{"finding_id": "f-1", "title": "The score jumps", "repro_check": check, "trace_seq": 9},
+            {"finding_id": "f-2", "title": "A second finding", "repro_check": None}]
+    packet = build(findings=rows)
+    assert packet.payload["findings"] == [{"finding_id": "f-1", "title": "The score jumps", "repro_check": check},
+                                          {"finding_id": "f-2", "title": "A second finding", "repro_check": None}]
+    assert build().payload["findings"] == []
+    for bad, needle in (([rows[0], rows[0]], "unique finding_id"), ([{**rows[0], "title": " "}], "empty title"),
+                        ([{**rows[0], "repro_check": "x"}], "not an object")):
+        with pytest.raises(ValueError, match=needle):
+            build(findings=bad)

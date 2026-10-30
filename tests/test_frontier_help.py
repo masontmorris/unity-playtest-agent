@@ -25,7 +25,7 @@ from playtest.frontier.media import Clip
 from playtest.frontier import provider
 from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
-from playtest.runner.frontier_help import FrontierHelp
+from playtest.runner.frontier_help import FrontierHelp, reader_calibration
 from playtest.runner.choices import build_choices
 
 
@@ -363,7 +363,9 @@ def test_a_candidate_finding_is_written_citing_trace_entries_or_not_written_at_a
     assert entry["kind"] == "finding" and entry["author"] == "frontier" and entry["refs"] == [observed]
     assert entry["body"]["evidence_seq"] == [observed] and entry["body"]["state"] == "candidate"
     assert entry["body"]["repro_check"]["op"] == "<" and entry["body"]["severity"] == "major"
-    assert helper.findings == [{"finding_id": "f-3", "trace_seq": written["trace_seq"], "request_turn": 3}]
+    assert helper.findings == [{"finding_id": "f-3", "trace_seq": written["trace_seq"], "request_turn": 3,
+                                "title": "The count never rises",
+                                "repro_check": {"field": "public.counter", "op": "<", "value": 1.0, "tolerance": None}}]
     # A cited observation the trace never recorded: nothing is written, and the reason names the seq.
     unmapped = helper._record_finding(proposed.model_copy(update={"evidence_seq": [7, 99]}), turn=4)
     assert unmapped["trace_seq"] is None and "[99]" in unmapped["reason"]
@@ -636,3 +638,41 @@ def test_a_vacuous_or_deadline_less_directive_is_not_adopted_and_the_entry_says_
             assert tracker.active is None and tracker.history == []
 
     asyncio.run(main())
+
+
+def test_the_frontier_sees_each_fields_calibration_and_the_findings_already_on_record(tmp_path: Path):
+    async def main():
+        stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number", field_id="f:counter"),
+                                                 SimpleNamespace(alias="flag", kind="bool", field_id="f:flag")],
+                                        actions=two_actions().actions, skills=[])
+        calibration = {"freshness": {"f:counter": {"classification": "input"},
+                                     "f:flag": {"classification": "unknown"}}}   # unknown stays unlabelled
+        sent = []
+
+        def send(body):
+            sent.append(body)
+            return _meta_reply(body)
+
+        helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                              approval=_approval(), sink=MemorySink(), tracker=DirectiveTracker(MemorySink()),
+                              started_utc=datetime.now(timezone.utc), send=send,
+                              capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1,
+                              calibration=calibration)
+        helper.findings.append({"finding_id": "f-0", "trace_seq": 1, "request_turn": 0,
+                                "title": "The count never rises", "repro_check": None})
+        await helper.run(_escalation_request(1, counter=3))
+        fields = json.loads(sent[0]["messages"][1]["content"])["fields"]
+        assert {f["path"]: f.get("calibration") for f in fields} == {
+            "public.counter": "changed only while a control was held", "public.flag": None}
+        packet = json.loads(sent[0]["messages"][2]["content"])
+        assert packet["findings"] == [{"finding_id": "f-0", "title": "The count never rises", "repro_check": None}]
+
+    asyncio.run(main())
+
+
+def test_reader_calibration_keeps_only_measured_classes():
+    readers = [SimpleNamespace(alias="a", field_id="f:a"), SimpleNamespace(alias="b", field_id="f:b"),
+               SimpleNamespace(alias="c", field_id="f:c")]
+    record = {"freshness": {"f:a": {"classification": "no_change_observed"}, "f:b": {"classification": "unknown"}}}
+    assert reader_calibration(record, readers) == {"public.a": "no_change_observed"}
+    assert reader_calibration(None, readers) == {} and reader_calibration({"freshness": None}, readers) == {}

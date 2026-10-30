@@ -233,7 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         # The frontier helper shares this folder and runs while S1 keeps choosing, so in-flight calls block per arm.
         ledger = call_budget.Ledger(run_dir, approval, args.s1_arm, concurrent_arms=True)
         before = recording._game_worktree(project)
-        summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256))
+        summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256,
+                                   calibration=calibration))
         after = recording._game_worktree(project)
         summary["game_worktree_changed"] = None if before is None or after is None else before != after
         if summary["game_worktree_changed"] is True and summary["status"] == "complete":
@@ -263,7 +264,7 @@ def _suspicions(raised: list[Any], min_readings: int) -> dict[str, Any]:
 
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
-               manifest_sha: str, catalog_sha: str) -> dict[str, Any]:
+               manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None) -> dict[str, Any]:
     run_dir = args.output.resolve().parent
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
@@ -293,7 +294,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         tracker = DirectiveTracker(writer)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
-                                  started_utc=dt.datetime.now(dt.timezone.utc)) if args.frontier else None)
+                                  started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration)
+                     if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(

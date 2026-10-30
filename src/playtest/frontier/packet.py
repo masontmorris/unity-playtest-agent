@@ -73,6 +73,7 @@ def build_packet(
     age_s: float | None = None,
     clip: dict[str, Any] | None = None,
     clip_unavailable_reason: str | None = None,
+    findings: Sequence[Mapping[str, Any]] = (),
 ) -> Packet:
     """Build one packet without changing what S1 saw or chose.
 
@@ -92,6 +93,7 @@ def build_packet(
     history_rows = [_directive(item, where=f"directive_history[{i}]") for i, item in enumerate(directive_history)]
     clip_row, reason = _clip(clip, clip_unavailable_reason)
     escalation_row = _escalation(escalation)
+    finding_rows = _findings(findings)
 
     payload: dict[str, Any] = {
         "objective": objective,
@@ -122,6 +124,7 @@ def build_packet(
         "recent": recent_rows,
         "hypotheses": hypothesis_rows,
         "new_hypothesis_ids": new_ids,
+        "findings": finding_rows,
         "clip": clip_row,
         "clip_unavailable_reason": reason,
     }
@@ -248,6 +251,26 @@ def _new_ids(values: Sequence[str]) -> list[str]:
             raise ValueError(f"new_hypothesis_ids[{i}] {value!r} appears twice")
         out.append(value)
         seen.add(value)
+    return out
+
+
+def _findings(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The candidate findings already recorded in this run, so the model can see what is on record."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, value in enumerate(values):
+        if not isinstance(value, Mapping):
+            raise ValueError(f"findings[{i}] is not an object")
+        finding_id, title, check = value.get("finding_id"), value.get("title"), value.get("repro_check")
+        if not isinstance(finding_id, str) or not finding_id.strip() or finding_id in seen:
+            raise ValueError(f"findings[{i}] needs a unique finding_id")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"findings[{i}] has an empty title")
+        if check is not None and not isinstance(check, Mapping):
+            raise ValueError(f"findings[{i}].repro_check is not an object")
+        out.append({"finding_id": finding_id, "title": title,
+                    "repro_check": copy.deepcopy(dict(check)) if check is not None else None})
+        seen.add(finding_id)
     return out
 
 
