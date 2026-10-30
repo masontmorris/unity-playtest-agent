@@ -100,9 +100,6 @@ $s1Credentials = @{
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."
 }
-if ($S1GameView -and $S1Arm -notin @('mammoth-1', 'elephant-1', 'liquid-d1.1')) {
-    throw "-S1GameView: S1 arm '$S1Arm' has no verified image transport."
-}
 foreach ($variable in $s1Credentials[$S1Arm]) {
     if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($variable))) { throw "$variable is not set in this session." }
 }
@@ -116,6 +113,12 @@ if (-not [string]::Equals($packages.dependencies.'com.playtest.bridge', $expecte
 }
 $python = (& uv run --directory $repoRoot python -c 'import sys; print(sys.executable)')
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($python)) { throw 'Could not locate the repository Python executable.' }
+if ($S1GameView) {
+    # The runner's own allowlist decides, so this early check cannot drift from it; asked before Unity starts.
+    $imageArms = @(& $python -c 'from playtest.runner.s1 import IMAGE_TRANSPORT; print(chr(10).join(IMAGE_TRANSPORT))')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read the runner''s image allowlist.' }
+    if ($S1Arm -notin $imageArms) { throw "-S1GameView: S1 arm '$S1Arm' has no verified image transport." }
+}
 New-Item -ItemType Directory -Path $output | Out-Null
 # What the host serves is the manifest's own export: the exporter validates the manifest and writes only the
 # declarations with exact release-verified execution evidence. Its digest is pinned for the host and the client.
