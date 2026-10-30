@@ -189,6 +189,31 @@ def test_an_exception_exempts_a_violation_and_an_unknown_one_leaves_it_unknown()
     assert evaluate_invariant(r, {"paused": True, "count": None}, None, KINDS).holds is None
 
 
+def test_an_exception_excuses_a_range_violation_and_an_unknown_one_leaves_it_unknown():
+    r = rule("range", field="count", min=0, max=10, unless=check("paused", "==", True))
+    assert evaluate_invariant(r, {"count": 20, "paused": False}, None, KINDS).holds is False
+    excused = evaluate_invariant(r, {"count": 20, "paused": True}, None, KINDS)
+    assert excused.holds is True and excused.readings == {"count": 20, "paused": True}
+    assert evaluate_invariant(r, {"count": 5, "paused": None}, None, KINDS).holds is True    # holds: not consulted
+    unsure = evaluate_invariant(r, {"count": 20, "paused": None}, None, KINDS)
+    assert unsure.holds is None and unsure.reason == "the exception on paused cannot be scored"
+    violated = evaluate_invariant(r, {"count": -1, "paused": False}, None, KINDS)
+    assert violated.reason == "count is -1, below the minimum 0" and violated.readings["paused"] is False
+
+
+def test_an_exception_excuses_a_monotonic_violation_against_the_previous_sample():
+    m = rule("monotonic", field="count", direction="non_decreasing", unless=check("moved", "changed"))
+    before = {"count": 5, "moved": [0, 0, 0]}
+    assert evaluate_invariant(m, {"count": 2, "moved": [0, 0, 0]}, before, KINDS).holds is False
+    reset = evaluate_invariant(m, {"count": 2, "moved": [1, 0, 0]}, before, KINDS)
+    assert reset.holds is True and reset.baselines == {"count": 5, "moved": [0, 0, 0]}
+    assert evaluate_invariant(m, {"count": 2, "moved": None}, before, KINDS).holds is None
+    assert evaluate_invariant(m, {"count": 7, "moved": None}, before, KINDS).holds is True   # holds: not consulted
+    ranged = rule("range", field="count", max=10, unless=check("moved", "changed"))
+    assert evaluate_invariant(ranged, {"count": 20, "moved": [1, 0, 0]}, before, KINDS).holds is True
+    assert evaluate_invariant(ranged, {"count": 20, "moved": [1, 0, 0]}, None, KINDS).holds is None  # no baseline
+
+
 def test_a_rule_missing_a_part_is_unknown():
     assert evaluate_invariant(rule("implies", when=check("paused", "==", True)), {"paused": True}, None, KINDS).holds is None
     assert evaluate_invariant(rule("monotonic", field="count"), {"count": 1}, {"count": 2}, KINDS).holds is None

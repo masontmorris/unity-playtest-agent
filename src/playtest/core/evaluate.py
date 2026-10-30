@@ -72,15 +72,18 @@ def evaluate_invariant(rule: ManifestInvariant, now: Mapping[str, Any], before: 
 
     `before` is the previous observation's readings, or `None` on the first. A rule that names a reading
     nobody measured is unknown; it is violated only when every reading it needs was measured and breaks it.
+    An `unless` check excuses a sample that would otherwise violate the rule, for every kind; an exception
+    that cannot be scored leaves that sample unknown.
     """
     if rule.kind == "range":
-        return _range(rule, now, kinds)
+        return _range(rule, now, before, kinds)
     if rule.kind == "monotonic":
         return _monotonic(rule, now, before, kinds)
     return _implies(rule, now, before, kinds)
 
 
-def _range(rule: ManifestInvariant, now: Mapping[str, Any], kinds: Mapping[str, ValueKind | None]) -> InvariantResult:
+def _range(rule: ManifestInvariant, now: Mapping[str, Any], before: Mapping[str, Any] | None,
+           kinds: Mapping[str, ValueKind | None]) -> InvariantResult:
     name = rule.field
     if name is None or (rule.min is None and rule.max is None):
         return InvariantResult(None, "the rule names no field or no bound")
@@ -93,8 +96,10 @@ def _range(rule: ManifestInvariant, now: Mapping[str, Any], kinds: Mapping[str, 
     below = rule.min is not None and value < rule.min
     above = rule.max is not None and value > rule.max
     if below or above:
-        return InvariantResult(False, f"{name} is {value:.6g}, {'below the minimum' if below else 'above the maximum'} "
-                                      f"{(rule.min if below else rule.max):.6g}", readings)
+        return _unless(rule, InvariantResult(False, f"{name} is {value:.6g}, "
+                                                    f"{'below the minimum' if below else 'above the maximum'} "
+                                                    f"{(rule.min if below else rule.max):.6g}", readings),
+                       now, before, kinds)
     return InvariantResult(True, None, readings)
 
 
@@ -112,8 +117,38 @@ def _monotonic(rule: ManifestInvariant, now: Mapping[str, Any], before: Mapping[
     broken = value < earlier if rule.direction == "non_decreasing" else value > earlier
     if broken:
         way = "fell" if rule.direction == "non_decreasing" else "rose"
-        return InvariantResult(False, f"{name} {way} from {earlier:.6g} to {value:.6g}", readings, baselines)
+        return _unless(rule, InvariantResult(False, f"{name} {way} from {earlier:.6g} to {value:.6g}", readings,
+                                             baselines), now, before, kinds)
     return InvariantResult(True, None, readings, baselines)
+
+
+def _score(check: ManifestCheck, now: Mapping[str, Any], before: Mapping[str, Any] | None,
+           kinds: Mapping[str, ValueKind | None]) -> bool | None:
+    baseline = before.get(check.field) if before is not None else None
+    return evaluate(now.get(check.field), kind=_kind(kinds, check.field), op=check.op, expected=check.value,
+                    baseline=baseline)
+
+
+def _unless(rule: ManifestInvariant, violation: InvariantResult, now: Mapping[str, Any],
+            before: Mapping[str, Any] | None, kinds: Mapping[str, ValueKind | None]) -> InvariantResult:
+    """A violating range or monotonic sample, unless the rule's exception holds on that same sample.
+
+    The exception is consulted only for a violation. One that cannot be scored leaves the sample unknown,
+    never violated; its reading (and baseline, for a change comparison) is reported with the rule's.
+    """
+    exception = rule.unless
+    if exception is None:
+        return violation
+    readings = {**violation.readings, exception.field: now.get(exception.field)}
+    baselines = dict(violation.baselines)
+    if exception.op in CHANGE:
+        baselines[exception.field] = before.get(exception.field) if before is not None else None
+    exempt = _score(exception, now, before, kinds)
+    if exempt is None:
+        return InvariantResult(None, f"the exception on {exception.field} cannot be scored", readings, baselines)
+    if exempt:
+        return InvariantResult(True, None, readings, baselines)
+    return InvariantResult(False, violation.reason, readings, baselines)
 
 
 def _implies(rule: ManifestInvariant, now: Mapping[str, Any], before: Mapping[str, Any] | None,
@@ -126,9 +161,7 @@ def _implies(rule: ManifestInvariant, now: Mapping[str, Any], before: Mapping[st
                  for _, check in checks if check.op in CHANGE}
 
     def score(check: ManifestCheck) -> bool | None:
-        baseline = before.get(check.field) if before is not None else None
-        return evaluate(now.get(check.field), kind=_kind(kinds, check.field), op=check.op, expected=check.value,
-                        baseline=baseline)
+        return _score(check, now, before, kinds)
 
     antecedent = score(rule.when)
     if antecedent is None:
