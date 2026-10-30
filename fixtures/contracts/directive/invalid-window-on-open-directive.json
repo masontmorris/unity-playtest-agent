@@ -1,0 +1,34 @@
+{
+  "directive_id": "d-38",
+  "parent": null,
+  "model": "muse-spark-1.3",
+  "based_on_seq": 170,
+  "text": "Choose the side step once, then observe whether the measured value rises above zero.",
+  "target": {
+    "kind": "field",
+    "ref": "public.r_bob"
+  },
+  "expected": {
+    "field": "public.r_bob",
+    "op": ">",
+    "value": 0.0
+  },
+  "deadline_game_s": 140.05,
+  "outcome": "open",
+  "evidence_seq": [],
+  "error_class": null,
+  "window": {
+    "first_turn": 44,
+    "first_game_s": 131.2,
+    "turns": 6,
+    "inputs_sent": 3,
+    "inputs_completed": 0,
+    "inputs_rejected": {
+      "stale_age": 3
+    },
+    "inputs_unfinished": {},
+    "inputs_unrecorded": 0,
+    "waits": 2,
+    "escalations": 1
+  }
+}

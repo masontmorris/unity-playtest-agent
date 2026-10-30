@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from .bridge import ExecStatus, RejectReason
 from .common import ClockMode, Strict
 
 
@@ -65,6 +66,43 @@ class Expected(Strict):
         return self
 
 
+_UNFINISHED = frozenset({ExecStatus.failed, ExecStatus.cancelled, ExecStatus.timed_out})
+
+
+class DirectiveWindow(Strict):
+    """What S1's inputs did between a directive first reaching S1 and its outcome. Counts, never a verdict.
+
+    A `not_met` whose window completed no input was never tested. The window says so, and so does the
+    directive's `error_class`.
+    """
+
+    first_turn: int = Field(ge=0, description="The first turn whose context stated the directive")
+    first_game_s: float | None = Field(
+        None, ge=0, description="Game time of that context's observation; the deadline counts from here. "
+                                "Null when the game clock was unknown")
+    turns: int = Field(ge=0, description="Turns completed from first_turn up to the outcome")
+    inputs_sent: int = Field(ge=0)
+    inputs_completed: int = Field(ge=0)
+    inputs_rejected: dict[RejectReason, int] = Field(default_factory=dict, description="By the bridge's reason")
+    inputs_unfinished: dict[ExecStatus, int] = Field(
+        default_factory=dict, description="Failed, cancelled or timed out, by terminal status")
+    inputs_unrecorded: int = Field(0, ge=0, description="Sent, but the bridge returned no record")
+    waits: int = Field(0, ge=0)
+    escalations: int = Field(0, ge=0)
+
+    @model_validator(mode="after")
+    def _counts_add_up(self) -> "DirectiveWindow":
+        if any(count < 0 for count in (*self.inputs_rejected.values(), *self.inputs_unfinished.values())):
+            raise ValueError("window counts cannot be negative")
+        if not set(self.inputs_unfinished) <= _UNFINISHED:
+            raise ValueError("inputs_unfinished counts only failed, cancelled or timed_out inputs")
+        accounted = (self.inputs_completed + sum(self.inputs_rejected.values())
+                     + sum(self.inputs_unfinished.values()) + self.inputs_unrecorded)
+        if accounted != self.inputs_sent:
+            raise ValueError("every input sent must be completed, rejected, unfinished or unrecorded")
+        return self
+
+
 class Directive(Strict):
     directive_id: str = Field(min_length=1)
     parent: str | None = None
@@ -79,6 +117,7 @@ class Directive(Strict):
     outcome: DirectiveOutcome = DirectiveOutcome.open
     evidence_seq: list[int] = Field(default_factory=list)
     error_class: DirectiveErrorClass | None = None
+    window: DirectiveWindow | None = Field(None, description="Set when the directive closes; null while open")
 
     @model_validator(mode="after")
     def _consistency(self) -> "Directive":
@@ -86,6 +125,14 @@ class Directive(Strict):
             raise ValueError("a directive with no expected postcondition cannot be scored met or not_met")
         if self.error_class is not None and self.outcome is not DirectiveOutcome.not_met:
             raise ValueError("error_class only applies to a not_met outcome")
+        if self.window is not None and self.outcome is DirectiveOutcome.open:
+            raise ValueError("a window is recorded only when the directive closes")
+        window = self.window
+        if self.error_class is DirectiveErrorClass.no_attempt and (window is None or window.inputs_sent != 0):
+            raise ValueError("no_attempt needs a window in which no input was sent")
+        if self.error_class is DirectiveErrorClass.action_rejected and (
+                window is None or window.inputs_completed != 0 or not sum(window.inputs_rejected.values())):
+            raise ValueError("action_rejected needs a window in which inputs were rejected and none completed")
         return self
 
 

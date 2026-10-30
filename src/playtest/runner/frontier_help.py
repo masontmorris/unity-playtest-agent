@@ -148,7 +148,8 @@ class FrontierHelp:
                 self.tracker.adopt({**directive.model_dump(mode="json"),
                                "hypothesis": result_payload["hypotheses"], "kind": kind, "baseline": baseline,
                                "scene": observation.scene, "last_frame": observation.frame,
-                               "last_game_s": observation.game_s, "directive": directive.model_dump(mode="json")},
+                               "last_game_s": observation.game_s, "requested_game_s": observation.game_s,
+                               "directive": directive.model_dump(mode="json")},
                               request_turn=request.turn, based_on_seq=seq, evidence_trace_seq=obs_trace)
             reservation.finish(http_status=status, latency_ms=latency, cost_usd=result.cost_usd,
                                resolved_model=result.resolved_model, usage=result.usage,

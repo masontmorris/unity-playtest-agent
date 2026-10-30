@@ -38,6 +38,111 @@
       "title": "DirectiveOutcome",
       "type": "string"
     },
+    "DirectiveWindow": {
+      "additionalProperties": false,
+      "description": "What S1's inputs did between a directive first reaching S1 and its outcome. Counts, never a verdict.\n\nA `not_met` whose window completed no input was never tested. The window says so, and so does the\ndirective's `error_class`.",
+      "properties": {
+        "escalations": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Escalations",
+          "type": "integer"
+        },
+        "first_game_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Game time of that context's observation; the deadline counts from here. Null when the game clock was unknown",
+          "title": "First Game S"
+        },
+        "first_turn": {
+          "description": "The first turn whose context stated the directive",
+          "minimum": 0,
+          "title": "First Turn",
+          "type": "integer"
+        },
+        "inputs_completed": {
+          "minimum": 0,
+          "title": "Inputs Completed",
+          "type": "integer"
+        },
+        "inputs_rejected": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "By the bridge's reason",
+          "propertyNames": {
+            "$ref": "#/$defs/RejectReason"
+          },
+          "title": "Inputs Rejected",
+          "type": "object"
+        },
+        "inputs_sent": {
+          "minimum": 0,
+          "title": "Inputs Sent",
+          "type": "integer"
+        },
+        "inputs_unfinished": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Failed, cancelled or timed out, by terminal status",
+          "propertyNames": {
+            "$ref": "#/$defs/ExecStatus"
+          },
+          "title": "Inputs Unfinished",
+          "type": "object"
+        },
+        "inputs_unrecorded": {
+          "default": 0,
+          "description": "Sent, but the bridge returned no record",
+          "minimum": 0,
+          "title": "Inputs Unrecorded",
+          "type": "integer"
+        },
+        "turns": {
+          "description": "Turns completed from first_turn up to the outcome",
+          "minimum": 0,
+          "title": "Turns",
+          "type": "integer"
+        },
+        "waits": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Waits",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "first_turn",
+        "turns",
+        "inputs_sent",
+        "inputs_completed"
+      ],
+      "title": "DirectiveWindow",
+      "type": "object"
+    },
+    "ExecStatus": {
+      "enum": [
+        "requested",
+        "validated",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "rejected"
+      ],
+      "title": "ExecStatus",
+      "type": "string"
+    },
     "Expected": {
       "additionalProperties": false,
       "description": "A checkable postcondition over a public observation field.",
@@ -62,6 +167,18 @@
       ],
       "title": "Expected",
       "type": "object"
+    },
+    "RejectReason": {
+      "enum": [
+        "stale_age",
+        "stale_fields",
+        "unknown_action",
+        "invalid_params",
+        "not_playing",
+        "busy"
+      ],
+      "title": "RejectReason",
+      "type": "string"
     },
     "Target": {
       "additionalProperties": false,
@@ -201,6 +318,18 @@
       ],
       "default": null,
       "title": "Tolerance"
+    },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DirectiveWindow"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Set when the directive closes; null while open"
     }
   },
   "required": [
