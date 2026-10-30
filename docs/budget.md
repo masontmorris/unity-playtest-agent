@@ -9,6 +9,7 @@ At measured rates, with frontier calls at `reasoning_effort: minimal`, a 10-minu
 | Role | Model | Measured cost per call | Basis |
 |---|---|---|---|
 | S1 turn | Liquid d1.1 | $0.00003 small, $0.00006 with a frame, $0.00026 at 13k tokens | `usage.cost` returned by the API |
+| S1 turn | Liquid d1-ultra (the default since #100) | $0.00015–0.00026 at 3.7k–6.1k tokens: $0.042 per 1M input tokens, no output charge | `usage.cost` returned by the API (#138) |
 | S1 turn | mammoth-1 / elephant-1 | $0 during the Baseten free week (until about 28 Oct); unknown after | No published post-trial price; no notice of Baseten credits (#8) |
 | Frontier call | Muse Spark 1.3, `minimal` effort (default) | $0.006–0.016 (median about $0.007); $0.0066 and $0.0087 with the #73 candidate schema | Token usage × $1.25 / $0.15 cached / $4.25 per 1M |
 | Frontier call | Muse Spark 1.3, `low` or default effort | $0.018–0.029 (median about $0.024) | Same |
@@ -38,7 +39,7 @@ With one byte-identical schema for every stage (`roles.preflight.StageAnswer`), 
 
 | Item | Count | Cost |
 |---|---|---|
-| S1 turns (0.7–1.6 decisions/s) | 400–1,000 | $0.02–0.06 on d1.1 with frames; $0 on Baseten during the trial |
+| S1 turns (0.7–1.6 decisions/s) | 400–1,000 | about $0.02 on d1-ultra at 5,000 tokens (measured: $0.021 for 96 calls); $0.02–0.06 on d1.1 with frames; Baseten's price unpublished |
 | Frontier calls at `minimal` | ≤ 30 | ≤ $0.30 (at most $0.48 if every call carries a large packet) |
 | **Total** | | **about $0.15–0.35** |
 

@@ -21,7 +21,9 @@ from playtest.contracts.bridge import Observation
 from playtest.contracts.common import ClockMode
 from playtest.contracts.loop import ChoiceSet
 from playtest.core.context import INSTRUCTIONS, build_context, canonical
-from playtest.runner.s1 import ARM, FOLLOW_UP_INSTRUCTIONS, SystemOneS1
+from playtest.runner.s1 import ARM as DEFAULT_ARM, FOLLOW_UP_INSTRUCTIONS, SystemOneS1
+
+ARM = "mammoth-1"  # these tests exercise the Baseten path; the default arm is checked separately
 
 MODEL = replay.ARMS[ARM][0]
 
@@ -54,7 +56,7 @@ def adapter(tmp_path: Path, *replies: Any, max_calls: int = 10, limit: int = 12,
             budget: Meter | None = None) -> tuple[SystemOneS1, Send, call_budget.Ledger]:
     ledger = call_budget.Ledger(tmp_path, approval(limit), ARM)
     send = Send(tmp_path, *replies)
-    return SystemOneS1(ledger, max_calls=max_calls, send=send, budget=budget), send, ledger
+    return SystemOneS1(ledger, max_calls=max_calls, send=send, arm=ARM, budget=budget), send, ledger
 
 
 def decide(port: SystemOneS1, ctx: dict[str, Any]):
@@ -96,6 +98,8 @@ def test_the_liquid_d1_ultra_arm_sends_the_same_shape_to_liquid_and_bills_there(
     assert replay.ARMS[arm][1:] == replay.ARMS["liquid-d1.1"][1:]   # one Liquid key and decisions endpoint
     assert {replay.provider_of(a) for a in ("liquid-d1.1", arm)} == {"liquid"}
     assert replay.provider_of("mammoth-1") == "baseten" and replay.provider_of("muse-spark-1.3") == "meta"
+    # Since #100 an adapter built without an arm runs on d1-ultra.
+    assert DEFAULT_ARM == arm and SystemOneS1(ledger, max_calls=1).model == "d1-ultra"
 
 
 def test_a_wait_finish_or_action_answer_never_triggers_a_follow_up(tmp_path: Path):

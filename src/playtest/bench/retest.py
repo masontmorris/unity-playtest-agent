@@ -196,26 +196,28 @@ def schedule_for(corpus: dict[str, Any], seed: int) -> tuple[list[tuple[dict[str
 
 
 def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Path, *, seed: int,
-        send: Send = send_systemone) -> int:
+        send: Send = send_systemone, arm: str = ARM) -> int:
+    if arm not in replay.ARMS:
+        raise ValueError(f"unknown S1 arm {arm!r}")
     corpus, corpus_sha = load_corpus(corpus_path)
     _, _, label_sha = load_labels(labels_path, corpus, corpus_sha)
     approval, approval_sha = replay._load(approval_path)
-    validate_approval(approval, [ARM])
+    validate_approval(approval, [arm])
     entries, repeated = schedule_for(corpus, seed)
-    limit = approval["arms"][ARM]
+    limit = approval["arms"][arm]
     bound = replay._decimal(limit["per_call_max_usd"], "per-call bound")
     if len(entries) > approval["max_calls"] or len(entries) > limit["max_calls"] \
             or bound * len(entries) > replay._decimal(approval["max_cost_usd"], "overall limit") \
             or bound * len(entries) > replay._decimal(limit["max_cost_usd"], "arm limit"):
         raise ValueError("the approved call or cost envelope is smaller than the schedule")
     design = Path(__file__).resolve().parents[3] / "docs" / "design" / "s1-bench.md"
-    plan = {"version": 1, "protocol": "shuffled-retest", "arm": ARM, "corpus_sha256": corpus_sha,
+    plan = {"version": 1, "protocol": "shuffled-retest", "arm": arm, "corpus_sha256": corpus_sha,
             "labels_sha256": label_sha, "approval_sha256": approval_sha,
             **{key: digest(path.read_bytes()) for key, path in SOURCES.items()},
             "design_sha256": digest(design.read_bytes()) if design.is_file() else None,
             "seed": seed, "scheduled_calls": len(entries), "repeated_frames": repeated,
             "budget_assumptions": {"balance_override": approval.get("unverified_balance_override"),
-                                   "unverified_price_arms": [ARM] if limit.get("allow_unverified_price") is True else []}}
+                                   "unverified_price_arms": [arm] if limit.get("allow_unverified_price") is True else []}}
     directory.mkdir(parents=True, exist_ok=True)
     call_dir = directory / "calls"
     call_dir.mkdir(exist_ok=True)
@@ -236,27 +238,27 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
     completed = {row["slot"] for row in rows}
     made = 0
     for index, (frame, repeat) in enumerate(entries):
-        body = request_body(frame, replay.ARMS[ARM][0])
+        body = request_body(frame, replay.ARMS[arm][0])
         request_sha = digest(canonical(body))
         phase = "sweep" if repeat == 0 else "repeat"
-        slot = digest(canonical({"phase": phase, "arm": ARM, "frame": frame["id"], "repeat": repeat,
+        slot = digest(canonical({"phase": phase, "arm": arm, "frame": frame["id"], "repeat": repeat,
                                  "request_sha256": request_sha}))
         if slot in completed:
             continue
-        if dt.datetime.now(dt.timezone.utc) >= replay._price_deadline(limit, ARM):
-            raise ValueError(f"{ARM} pricing validity expired during the run; stopped before another call")
+        if dt.datetime.now(dt.timezone.utc) >= replay._price_deadline(limit, arm):
+            raise ValueError(f"{arm} pricing validity expired during the run; stopped before another call")
         total_bound = sum((Decimal(str(row["reserved_usd"])) for row in rows), Decimal(0))
         if len(rows) >= approval["max_calls"] or len(rows) >= limit["max_calls"] \
                 or total_bound + bound > replay._decimal(approval["max_cost_usd"], "overall limit") \
                 or total_bound + bound > replay._decimal(limit["max_cost_usd"], "arm limit"):
             raise ValueError("the approved call or cost envelope would be exceeded")
-        row = {"slot": slot, "phase": phase, "arm": ARM, "frame_id": frame["id"], "repeat": repeat,
+        row = {"slot": slot, "phase": phase, "arm": arm, "frame_id": frame["id"], "repeat": repeat,
                "schedule_index": index, "payload_sha256": frame["payload_sha256"], "request_sha256": request_sha,
-               "requested_model": replay.ARMS[ARM][0], "reserved_usd": str(bound), "status": "in_flight"}
+               "requested_model": replay.ARMS[arm][0], "reserved_usd": str(bound), "status": "in_flight"}
         path = call_dir / f"{slot}.json"
         replay._write(path, row, exclusive=True)  # Reserve before the POST; a crash must not cause a retry.
         try:
-            http_status, data, latency_ms, problem = send(ARM, body)
+            http_status, data, latency_ms, problem = send(arm, body)
             offered = {choice["id"] for choice in frame["choice_set"]["choices"]}
             choice, distribution, answer_problem = parse_answer(data if http_status == 200 else None, offered)
             usage = (data or {}).get("usage")
@@ -293,6 +295,7 @@ def score(corpus_path: Path, labels_path: Path, directory: Path) -> dict[str, An
     corpus, corpus_sha = load_corpus(corpus_path)
     document, labels, label_sha = load_labels(labels_path, corpus, corpus_sha)
     plan = replay._load(directory / "plan.json")[0]
+    arm = plan.get("arm", ARM)  # the arm the run was planned for
     if plan.get("corpus_sha256") != corpus_sha or plan.get("labels_sha256") != label_sha:
         raise ValueError("the saved calls do not match the frozen corpus and labels")
     for key, path in SOURCES.items():
@@ -302,7 +305,7 @@ def score(corpus_path: Path, labels_path: Path, directory: Path) -> dict[str, An
     frames = {frame["id"]: frame for frame in corpus["frames"]}
     for row in rows:
         frame = frames.get(row.get("frame_id"))
-        if frame is None or row.get("payload_sha256") != frame["payload_sha256"] or row.get("arm") != ARM:
+        if frame is None or row.get("payload_sha256") != frame["payload_sha256"] or row.get("arm") != arm:
             raise ValueError("a call does not belong to the frozen run")
     sweep_rows = [row for row in rows if row.get("phase") == "sweep"]
     sweep = {row["frame_id"]: row for row in sweep_rows}
@@ -347,7 +350,7 @@ def score(corpus_path: Path, labels_path: Path, directory: Path) -> dict[str, An
     durations = [f["execution"][-1]["applied_duration_s"] for f in corpus["frames"] if f["kind"] == "check"]
     succeeded = sum(item["choice"] is not None for item in per_frame)
     return {
-        "arm": ARM, "protocol_seed": corpus["protocol"]["seed"],
+        "arm": arm, "protocol_seed": corpus["protocol"]["seed"],
         "label_authorship": document.get("authorship", {"kind": "unknown"}),
         "label_disagreements": [fid for fid, entries in labels.items() if accepted(entries) is None],
         "budget_assumptions": plan.get("budget_assumptions"),
@@ -398,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("corpus", "labels", "approval", "directory"):
         runner.add_argument(f"--{name}", type=Path, required=True)
     runner.add_argument("--seed", type=int, required=True)
+    runner.add_argument("--arm", choices=tuple(replay.ARMS), default=ARM, help=f"the S1 arm (default {ARM})")
     reporter = sub.add_parser("score", help="score saved calls; makes no call")
     for name in ("corpus", "labels", "directory"):
         reporter.add_argument(f"--{name}", type=Path, required=True)
@@ -406,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "labels":
             print(f"wrote {draft_labels(args.corpus, args.output, date=args.date)} draft labels")
         elif args.command == "run":
-            print(f"new calls: {run(args.corpus, args.labels, args.approval, args.directory, seed=args.seed)}")
+            print(f"new calls: {run(args.corpus, args.labels, args.approval, args.directory, seed=args.seed, arm=args.arm)}")
         else:
             print(json.dumps(score(args.corpus, args.labels, args.directory), indent=2, allow_nan=False))
     except (OSError, ValueError, KeyError, TypeError) as exc:
