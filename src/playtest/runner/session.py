@@ -40,6 +40,13 @@ from .pacing import PacingFacts, PacingStats, TokenBudget
 
 MAX_PROVIDER_FAILURES = 3
 WALL_LIMIT_S = 600.0
+# The oldest observation the bridge will still run an action against. The action can only be as fresh as
+# S1's decision is fast. The age it measured at the bridge (observation to act) was:
+# - 29 Oct reader run: median 0.41 s, 95th percentile 0.65 s;
+# - Day 5 gate run-02: median 0.52 s, 95th percentile 0.75 s.
+# At 0.5 s, 12% and 85% of actions were rejected, so S1 could not act (#132). Below the decision latency,
+# a stale rejection buys no fresher decision. Lower this if S1 gets faster.
+MAX_AGE_S = 0.8
 _NORMAL_ENDS = ("finish", "wall_limit")
 _RULE_ENDS = ("provider_failures", "halt")
 
@@ -69,7 +76,7 @@ async def run_session(
     readers: ReaderPort | None = None,
     watch: Watch | None = None,
     sink: TraceSink | None = None,
-    max_age_s: float = 0.5,
+    max_age_s: float = MAX_AGE_S,
     wall_limit_s: float = WALL_LIMIT_S,
     max_provider_failures: int = MAX_PROVIDER_FAILURES,
     clock: Callable[[], float] = time.monotonic,

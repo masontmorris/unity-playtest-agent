@@ -46,10 +46,8 @@ class DirectiveTracker(FactsSource):
         from playtest.core.facts import RecordFacts
         lines = list(await RecordFacts().facts(reports, observation))
         item = self.active
-        if item is None:
-            return lines
-        outcome = self._evaluate(item, observation)
-        if outcome is not None:
+        outcome = self._evaluate(item, observation) if item is not None else None
+        if item is not None and outcome is not None:
             observation_trace = (self.sink.trace_seq_for_observation(observation.seq)
                                  if self.sink is not None and hasattr(self.sink, "trace_seq_for_observation") else None)
             reason = {
@@ -60,8 +58,9 @@ class DirectiveTracker(FactsSource):
                 "unknown": "the directive had no scoreable postcondition",
             }[outcome]
             self._close(outcome, len(reports), observation.seq, observation_trace, reason)
-        current = self.active or item
-        lines.append(self._fact_line(current))
+        # Every directive stays in S1's context with its outcome, not only on the turn it closed
+        # (build bible law 4). The open one, if any, is the last line.
+        lines.extend(self._fact_line(entry) for entry in self.history)
         return lines
 
     def finish(self, *, turn: int, based_on_seq: int, evidence_trace_seq: int | None = None) -> None:
@@ -121,10 +120,13 @@ class DirectiveTracker(FactsSource):
     def _fact_line(item: Mapping[str, Any]) -> str:
         d = item.get("directive", item)
         sp = d.get("expected")
+        status = item.get("status", "open")
+        if status != "open" and item.get("reason"):
+            status = f"{status} ({item['reason']})"
         if not isinstance(sp, Mapping):
-            return f"Frontier directive {d.get('directive_id')}: {d.get('text')}; status {item.get('status', 'open')}."
+            return f"Frontier directive {d.get('directive_id')}: {d.get('text')}; status {status}."
         op = sp.get("op")
         val = "null" if sp.get("value") is None else repr(sp.get("value"))
         return (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
                 f"{sp.get('field')} {op} {val}; deadline game_s {d.get('deadline_game_s')}; "
-                f"status {item.get('status', 'open')}.")
+                f"status {status}.")

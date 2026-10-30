@@ -457,7 +457,7 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
   -ProjectPath "C:\path\to\game" -EntityPath "C:\path\outside\game\entity.json" `
   -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
   -ApprovalPath "C:\path\outside\game\approval.json" -MaxCalls <n> `
-  -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.5] `
+  -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.8] `
   [-TokensPerMinute 85000] [-Objective "<text>" | -ObjectivePath "<file>"] `
   [-Frontier -MaxFrontierCalls <n>] [-RecordFrames]
 ```

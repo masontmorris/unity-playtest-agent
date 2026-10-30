@@ -118,6 +118,38 @@ reserves a ledger row before it is sent (`bench/call_budget.py`), the HTTP call 
 send. The follow-up is bound to the same observation as the primary answer, so on a help turn the
 continued input is older by a second call's latency when the bridge checks it; `--max-age-s` is the knob.
 
+### The default age limit
+
+`--max-age-s` defaults to 0.8 s. An action is bound to the observation S1 decided on, so it reaches the
+bridge at least one S1 call old.
+
+| Run | Median age at the bridge | 95th percentile | Rejected as stale at 0.5 s |
+|---|---|---|---|
+| 29 October reader run | 0.41 s | 0.65 s | 12% |
+| Day 5 gate run-02 | 0.52 s | 0.75 s | 85% |
+
+Below the decision latency, a stale rejection buys no fresher decision; the next turn is just as slow, so
+S1 cannot act at all (#132). The limit should follow the measured latency down if S1 gets faster.
+
+A frontier answer stays in S1's guidance for the rest of the run, and the frontier restates every open
+hypothesis in each answer, usually reworded. So the frontier helper lists a hypothesis in full only when its
+id is new or its status changed. A same-status restatement is listed by id in `restated_hypotheses`. The
+trace keeps every version, and the frontier's own requests carry the latest. The helper names its directive
+by id. The directive tracker states every directive's setpoint,
+deadline and current or final outcome as facts on every turn. Before this, the facts showed an outcome
+only on the turn it closed, and guidance kept a copy frozen at `open`.
+
+On run-02, the full copies added about 5,500 characters to every later context, and S1's median call rose
+from 422 ms to 484 ms. Replaying run-02's three answers through the compact form, directive lines included,
+gives:
+
+| | Before | After |
+|---|---|---|
+| Guidance | 5,553 characters | 2,894 characters |
+| Final context | 14,578 characters | 12,780 characters (about 720 tokens fewer) |
+
+Growth per later answer is now its new or changed hypotheses plus one directive line.
+
 ## Pacing the calls
 
 Baseten rate-limits `mammoth-1` to 100,000 tokens per minute. The 27 October live smoke sent about 2,200
