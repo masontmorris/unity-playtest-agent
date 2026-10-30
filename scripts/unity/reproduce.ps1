@@ -12,7 +12,8 @@ param(
 )
 
 # Reproduce a finding k of n times (#38): replay a finished session's recorded inputs, up to the finding's
-# evidence turn, after a scene reload each attempt, and score the finding's repro_check on the readers. A
+# evidence turn, after a scene reload each attempt, and score the finding's repro_check on the readers (an
+# effect check, #154, on the measured displacement of one action instead). A
 # code-driven procedure; no model is called. The existing bridge-test runner supplies the single-Editor mutex
 # and refuses to start while the game is open in an Editor. This script restores every environment variable it
 # sets and never writes to the game project. Everything lands in the new output directory:

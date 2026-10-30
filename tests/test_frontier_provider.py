@@ -204,6 +204,69 @@ def test_manifest_message_lists_fields_action_bounds_and_skills_without_order_de
     assert provider.manifest_message(reordered) == text
 
 
+def with_effects(**effects) -> frontier.Manifest:
+    return replace(manifest(), effects=effects)
+
+
+def test_manifest_message_lists_each_calibrated_effect_with_its_expected_displacement_and_allowance():
+    text = provider.manifest_message(
+        with_effects(move=frontier.Effect(expected=6.04, allowance=0.06), use=frontier.Effect(expected=0.0)))
+    value = json.loads(text)
+    assert value["effects"] == [
+        {"path": "effect.move", "kind": "number", "unit": "world units", "expected": 6.04, "allowance": 0.06},
+        {"path": "effect.use", "kind": "number", "unit": "world units", "expected": 0.0, "allowance": None},
+    ]
+    assert "Only a repro_check may name an effects path; a directive setpoint may not." in value["notes"]
+    assert ("Its allowance is how far a measurement may differ from it before calibration's recorded spread no "
+            "longer accounts for it; null means calibration recorded no spread.") in value["notes"]
+    assert provider.manifest_message(with_effects(use=frontier.Effect(expected=0.0), move=frontier.Effect(
+        expected=6.04, allowance=0.06))) == text                          # insertion order does not matter
+
+
+def test_a_manifest_without_effects_is_worded_exactly_as_before():
+    value = json.loads(provider.manifest_message(manifest()))
+    assert "effects" not in value and "effects row" not in value["notes"]
+    assert value["notes"] == provider._MANIFEST_NOTE
+
+
+def test_a_request_carries_the_effect_rows_and_a_schema_that_offers_them_to_a_finding_only():
+    body = provider.build_request(with_effects(move=frontier.Effect(expected=6.04, allowance=0.06)), sample())
+    assert json.loads(body["messages"][1]["content"])["effects"][0]["path"] == "effect.move"
+    defs = body["response_format"]["json_schema"]["schema"]["$defs"]
+    assert "effect.move" in defs["check_fields"]["enum"] and "effect.move" not in defs["fields"]["enum"]
+
+
+def finding_answer(repro_check) -> str:
+    finding = {"actual": "The entity barely moved.", "conditions": "After one move.", "evidence_seq": [10],
+               "expected": "A move carries the entity about as far as calibration measured.",
+               "expected_source": "interpretation", "repro_check": repro_check, "severity": "major",
+               "severity_reason": "The control stops working.", "steps": ["Do the move."], "title": "A move does not move",
+               "uncertainty": "One sample."}
+    return json.dumps({**EMPTY_ANSWER, "candidate_finding": finding})
+
+
+def test_a_decoded_effect_check_reviews_clean_for_a_calibrated_action_and_is_reported_for_any_other():
+    check = {"field": "effect.move", "op": "<", "tolerance": None, "value": 1.5}
+    known = with_effects(move=frontier.Effect(expected=6.04, allowance=0.06))
+    result = provider.decode_response(response(finding_answer(check)), known, sample())
+    assert result.errors == [] and result.review is not None and result.review.clean
+    assert result.answer.candidate_finding.repro_check.field == "effect.move"
+    unknown = provider.decode_response(response(finding_answer(check)), manifest(), sample())     # no effects calibrated
+    assert unknown.answer is not None and [p.item for p in unknown.review.problems] == ["candidate_finding"]
+    assert "has no calibrated expected displacement" in unknown.review.problems[0].reason
+    equality = provider.decode_response(response(finding_answer({**check, "op": "==", "value": 0.0})), known, sample())
+    assert [p.item for p in equality.review.problems] == ["candidate_finding"]
+
+
+def test_a_directive_that_names_an_effect_field_is_reported_on_the_directive():
+    directive = {"deadline_s": 5.0, "expected": {"field": "effect.move", "op": "<", "tolerance": None, "value": 1.5},
+                 "target": None, "tests": None, "text": "Move once."}
+    known = with_effects(move=frontier.Effect(expected=6.04, allowance=0.06))
+    result = provider.decode_response(response(json.dumps({**EMPTY_ANSWER, "directive": directive})), known, sample())
+    assert [p.item for p in result.review.problems] == ["directive"]
+    assert "'effect.move' is not a manifest field" in result.review.problems[0].reason
+
+
 def test_the_manifest_note_says_a_preflight_note_is_what_the_field_is_meant_to_be_not_a_measurement():
     note = json.loads(provider.manifest_message(manifest()))["notes"]
     assert ("its preflight_note is what the preflight model wrote when it chose the field: "

@@ -1,0 +1,25 @@
+{
+  "finding_id": "f-14",
+  "state": "candidate",
+  "title": "The move action no longer carries the entity forward",
+  "expected": "One move moves the entity about as far as calibration measured",
+  "expected_source": "interpretation",
+  "actual": "The entity ended a move almost where it started",
+  "steps": [
+    "Load the scene",
+    "Do the move action once"
+  ],
+  "evidence_seq": [
+    140,
+    152
+  ],
+  "uncertainty": "Seen once; the calibrated displacement was measured before play.",
+  "repro_check": {
+    "field": "effect.move",
+    "op": "<",
+    "value": 1.5,
+    "tolerance": null
+  },
+  "severity": "major",
+  "severity_reason": "The control stops working."
+}

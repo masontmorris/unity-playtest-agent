@@ -110,6 +110,34 @@ observations' trace entries. If any cited seq has none, nothing is written and t
 S1's guidance names the finding id and that reason. `reproduce` replays the finding later; see
 `reproduce.md`.
 
+### Effect checks (#154)
+
+A `repro_check` may name `effect.<action>` instead of a reader: the net displacement, in world units, of one
+execution of that action. It is for an action that stops having its calibrated effect, which leaves every reader
+as it is at rest. A reader check that already holds right after the reset is `unknown` to `reproduce`, and a
+stopped action looks like rest, so no reader check could reproduce it.
+
+- **What the frontier is shown.** The manifest message gets an `effects` row for each action with a calibrated
+  expected displacement: `path` (`effect.<action>`), `expected` (what calibration measured on this build) and
+  `allowance` (how far a measurement may differ before the calibration's recorded spread no longer accounts for
+  it; null when calibration recorded no spread). `FrontierHelp` takes them from `build_choices(...).expected` and
+  the live probe's allowance (`runner.probe.allowance`), so they are the figures S1's fact lines state. They are
+  run-stable: a choice hidden from S1 during a directive is still an action a check may name. A manifest with no
+  calibrated action lists none, and its message is worded as it was.
+- **Where an effect field is allowed.** The answer schema has a second field enum, `check_fields` (the readers
+  plus `effect.<action>` for each effect), used only by a finding's `repro_check`. A directive's setpoint keeps
+  the readers-only `fields` enum, and review rejects an effect field there ("not a manifest field").
+- **What review checks.** An effect check must name an action with a calibrated expected displacement, use `<`,
+  `<=`, `>` or `>=`, a finite number and no tolerance. A violation rejects only the candidate finding, with its
+  reason. Review does not judge a check against the calibration: the prompt says the check must not hold for the
+  expected displacement, and `reproduce` scores a check that does as `unknown` and says why.
+- **The prompt** says that when an action stops having its calibrated effect, the check may name
+  `effect.<action>` with an ordering operator and a number, and must not hold for the expected displacement the
+  manifest lists.
+
+The code names no game action: the actions and their displacements come from this run's own manifest and
+calibration. Code still never chooses, rejects a finding as a duplicate, or sets a threshold; the frontier does.
+
 ## What the frontier knows about fields and recorded findings
 
 The first session of the Day 6 gate (#41) used all 15 frontier calls the same way. Each call recorded the

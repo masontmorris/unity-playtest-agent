@@ -24,6 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from playtest.contracts.investigation import effect_action
 from playtest.roles.checks import field_value
 from playtest.runner.reproduce import (OVERRIDE_REASON, UNSCORED_REASON, latest_findings, overrides_finding,
                                        read_trace)
@@ -224,7 +225,8 @@ def evidence(entries_by_seq: Mapping[int, Mapping[str, Any]], finding: Mapping[s
         if entry.get("kind") == "observation":
             row.update(bridge_seq=body.get("seq"), game_s=body.get("game_s"), wall_utc=body.get("wall_utc"),
                        scene=body.get("scene"), video_s=video_offset(recording, body.get("wall_utc")))
-            if isinstance(check.get("field"), str):
+            # An effect check is a displacement a replay measures, not a reading an observation carries.
+            if isinstance(check.get("field"), str) and effect_action(check["field"]) is None:
                 row["check_field"] = check["field"]
                 row["check_value"] = field_value(body.get("public") or {}, check["field"].removeprefix("public."))
         rows.append(row)
@@ -259,13 +261,15 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
                          "result": attempt.get("result") if attempt.get("valid") else "invalid",
                          "reason": attempt.get("reason"), "baseline": attempt.get("baseline"),
                          "baseline_satisfied": attempt.get("baseline_satisfied"),
+                         "measured": (attempt.get("effect") or {}).get("measured"),
                          "readings": len(attempt.get("readings") or []),
                          "inputs_replayed": len(attempt.get("inputs") or []),
                          "max_abs_deviation_s": round(max(deviations), 3) if deviations else None})
     return {"path": record["path"], "finished_at_utc": report.get("finished_at_utc"), "status": report.get("status"),
             "check": report.get("repro_check", plan.get("repro_check")),
             "check_source": report.get("repro_check_source", plan.get("repro_check_source")),
-            "check_kind": plan.get("repro_check_kind"), "reset": report.get("reset"),
+            "check_kind": plan.get("repro_check_kind"), "effect": report.get("effect", plan.get("effect")),
+            "reset": report.get("reset"),
             "clock_mode": report.get("clock_mode"), "inputs": len(plan.get("inputs") or []),
             "skipped_inputs": plan.get("skipped_inputs"), "evidence_turn": plan.get("evidence_turn"),
             "planned": summary.get("planned"), "attempted": summary.get("attempted"), "valid": summary.get("valid"),
@@ -396,6 +400,13 @@ def _check(check: Mapping[str, Any] | None) -> str:
     return f"`{check.get('field')} {check.get('op')}{value}`{tolerance}".replace("|", "\\|")
 
 
+def _displacement(value: Any, effect: Mapping[str, Any]) -> str:
+    """A net displacement with its unit; unknown stays unknown, never 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "unknown"
+    return f"{value:.3f} {effect.get('unit') or 'world units'}"
+
+
 def _clock(seconds: float | None) -> str:
     if seconds is None:
         return "unknown"
@@ -459,12 +470,23 @@ def _finding_markdown(f: Mapping[str, Any]) -> list[str]:
         source = "the finding's check" if r["check_source"] == "finding" else f"{r['check_source']} check"
         effect = (f"Moved the finding to {r['state_after']}." if r["changes_state"]
                   else f"Did not change the finding's state: {r['finding_update_reason']}.")
+        calibrated = r.get("effect")
         lines += [f"Replay `{r['path']}`, {source} {_check(r['check'])}: {r['status']}, {r['k']} of {r['n']} "
                   f"reproduced, {r['unknown']} unknown, {len(r['invalid'] or [])} invalid; reset {r['reset']}, "
-                  f"{r['inputs']} inputs. {effect}", "",
-                  "| Attempt | Result | Baseline | Reason |", "|---|---|---|---|"]
-        lines += [f"| {a['number']} | {a['result']} | {_cell(a['baseline'])} | {_cell(a['reason'])} |"
-                  for a in r["attempts"]]
+                  f"{r['inputs']} inputs. {effect}", ""]
+        if calibrated:
+            lines += [f"The check is the net displacement of one execution of `{calibrated.get('action')}`. "
+                      f"Calibration measured {_displacement(calibrated.get('expected_displacement'), calibrated)} "
+                      f"(allowance {_displacement(calibrated.get('allowance'), calibrated)}). Each attempt scores "
+                      f"the last execution before the evidence (turn {_cell(calibrated.get('scored_turn'))}, of "
+                      f"{_cell(calibrated.get('executions'))} replayed).", "",
+                      "| Attempt | Result | Measured | Reason |", "|---|---|---|---|"]
+            lines += [f"| {a['number']} | {a['result']} | {_displacement(a['measured'], calibrated)} | "
+                      f"{_cell(a['reason'])} |" for a in r["attempts"]]
+        else:
+            lines += ["| Attempt | Result | Baseline | Reason |", "|---|---|---|---|"]
+            lines += [f"| {a['number']} | {a['result']} | {_cell(a['baseline'])} | {_cell(a['reason'])} |"
+                      for a in r["attempts"]]
         lines.append("")
     lines += ["**Evidence**", ""]
     for row in f["evidence"]:

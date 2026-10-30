@@ -159,6 +159,56 @@ def test_suspicion_invalid_fixtures_fail_for_their_intended_rule():
         assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
 
 
+def test_effect_check_invalid_fixtures_fail_for_their_intended_rule():
+    reasons = {
+        "invalid-effect-check-equality": "an effect check compares with <, <=, > or >=, not '=='",
+        "invalid-effect-check-changed": "an effect check compares with <, <=, > or >=, not 'changed'",
+        "invalid-effect-check-non-numeric-value": "an effect check compares with a finite number",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "finding" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["finding"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def _with_check(**check):
+    body = json.loads((FIXTURES / "finding" / "valid-candidate-with-effect-check.json").read_text(encoding="utf-8"))
+    body["repro_check"] = {**body["repro_check"], **check}
+    return body
+
+
+@pytest.mark.parametrize("check, reason", [
+    ({"op": "unchanged", "value": None}, "not 'unchanged'"),
+    ({"op": "!=", "value": 3}, "not '!='"),
+    ({"op": "<", "value": True}, "compares with a finite number"),
+    ({"op": "<", "value": float("inf")}, "compares with a finite number"),
+    ({"op": "<", "value": 1.5, "tolerance": 0.1}, "takes no tolerance"),
+    ({"op": "<", "value": None}, "'<' needs a value"),
+    ({"field": "effect."}, "names an action"),
+    ({"field": "effect.  "}, "names an action"),
+], ids=["unchanged", "not_equal", "bool_value", "infinite_value", "tolerance", "no_value", "no_action", "blank_action"])
+def test_an_effect_check_is_a_bound_on_a_finite_number(check, reason):
+    with pytest.raises(ValidationError) as excinfo:
+        CONTRACTS["finding"].model_validate(_with_check(**check))
+    assert reason in str(excinfo.value)
+
+
+@pytest.mark.parametrize("op, value", [("<", 1), ("<=", 1.5), (">", 0), (">=", 6.04)])
+def test_every_ordering_comparator_takes_an_effect_check(op, value):
+    finding = CONTRACTS["finding"].model_validate(_with_check(op=op, value=value))
+    assert (finding.repro_check.field, finding.repro_check.op.value, finding.repro_check.value) == ("effect.move", op, value)
+
+
+def test_a_reader_check_is_judged_as_before():
+    """Only `effect.` fields are bound to a number: a reader check keeps `==` with a tolerance, `changed` and a string."""
+    for check in ({"field": "public.counter", "op": "==", "value": 2, "tolerance": 0.5},
+                  {"field": "public.counter", "op": "changed", "value": None},
+                  {"field": "public.state", "op": "!=", "value": "open"},
+                  {"field": "public.effect.speed", "op": "unchanged", "value": None}):   # not the "effect." prefix
+        CONTRACTS["finding"].model_validate(_with_check(**check))
+
+
 def test_suspicion_and_finding_trace_entries_fail_for_their_intended_rule():
     reasons = {
         "invalid-suspicion-turn-differs": "suspicion turn must equal the entry's turn",

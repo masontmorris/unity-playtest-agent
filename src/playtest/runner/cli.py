@@ -47,7 +47,7 @@ from playtest.core.trace import TraceWriter
 from playtest.preflight import manifest as manifest_checks
 from playtest.frontier import provider as frontier_provider
 from playtest.runner.directives import DirectiveTracker
-from playtest.runner.frontier_help import FrontierHelp
+from playtest.runner.frontier_help import FrontierHelp, action_effects
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
@@ -294,7 +294,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         tracker = DirectiveTracker(writer)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
-                                  started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration)
+                                  started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
+                                  effects=action_effects(built.expected))
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
