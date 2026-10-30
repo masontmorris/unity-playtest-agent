@@ -376,9 +376,22 @@ def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) ->
                              "inputs_replayed": len(deviations)}}
 
 
+OVERRIDE_REASON = "an operator check overrode the finding's own, so the finding's state is unchanged"
+UNSCORED_REASON = "no attempt was scored, so the finding's state is unchanged"
+
+
+def overrides_finding(plan: Mapping[str, Any]) -> bool:
+    """True when an operator check replaced the finding's own check, so the replay tested something else."""
+    return plan.get("repro_check_source") == "operator" and (plan.get("finding") or {}).get("repro_check") is not None
+
+
 def finding_update(plan: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The finding's next state: reproduced when k >= 1, repro_attempted when k = 0 of n >= 1, none otherwise."""
-    if summary["n"] < 1:
+    """The finding's next state: reproduced when k >= 1, repro_attempted when k = 0 of n >= 1, none otherwise.
+
+    An operator check that overrides the finding's own is a different test, such as a control. Its replay is
+    reported, but it never changes the finding's state.
+    """
+    if summary["n"] < 1 or overrides_finding(plan):
         return None
     timing = summary["input_timing"]["max_abs_deviation_s"]
     check = plan["repro_check"]
@@ -402,10 +415,13 @@ async def measure(plan: Mapping[str, Any], reload: Callable[[int], Awaitable[dic
     summary = summarize(plan, attempts)
     status = ("measured" if summary["valid"] == plan["attempts"] and summary["unknown"] == 0
               else "inconclusive" if summary["n"] == 0 else "measured_with_gaps")
+    update = finding_update(plan, summary)
+    update_reason = None if update is not None else OVERRIDE_REASON if overrides_finding(plan) else UNSCORED_REASON
     return {"schema_version": SCHEMA_VERSION, "kind": plan["kind"], "is_s1_turn": False, "model_calls": 0,
             "status": status, "finding_id": plan["finding_id"], "repro_check": plan["repro_check"],
+            "repro_check_source": plan.get("repro_check_source"),
             "reset": RESET, "clock_mode": CLOCK, "summary": summary, "attempts": attempts,
-            "finding_update": finding_update(plan, summary), "finished_at_utc": _utcnow()}
+            "finding_update": update, "finding_update_reason": update_reason, "finished_at_utc": _utcnow()}
 
 
 # --- command line --------------------------------------------------------------------------------

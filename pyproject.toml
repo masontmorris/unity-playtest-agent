@@ -39,6 +39,7 @@ playtest-export-catalog = "playtest.preflight.catalog:main"
 playtest-input-probe = "playtest.preflight.input_probe:main"
 playtest-trace = "playtest.core.trace_cli:main"
 playtest-run = "playtest.runner.cli:main"
+playtest-report = "playtest.runner.report:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/playtest"]

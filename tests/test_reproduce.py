@@ -222,6 +222,10 @@ def test_k_of_n_keeps_unknown_and_invalid_attempts_out_and_moves_the_finding_hon
     none = reproduce.summarize(plan, [attempts[1] | {"result": "not_reproduced"}])
     assert Finding.model_validate(reproduce.finding_update(plan, none)).state is FindingState.repro_attempted
     assert reproduce.finding_update(plan, reproduce.summarize(plan, [attempts[2]])) is None   # nothing scored
+    control = {**plan, "repro_check_source": "operator"}      # the finding has its own check; this one replaced it
+    assert reproduce.finding_update(control, summary) is None
+    standin = {**control, "finding": {**plan["finding"], "repro_check": None}}   # it had none: the operator's counts
+    assert Finding.model_validate(reproduce.finding_update(standin, summary)).state is FindingState.reproduced
 
 
 def test_measure_runs_every_attempt_and_reports_k_of_n(tmp_path):
