@@ -147,7 +147,7 @@ def test_both_live_ledgers_let_s1_keep_choosing_while_a_help_request_is_pending(
                           capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
     assert helper.ledger.concurrent_arms is True
     from playtest.runner import cli
-    assert "call_budget.Ledger(run_dir, approval, ARM, concurrent_arms=True)" in Path(cli.__file__).read_text(
+    assert "call_budget.Ledger(run_dir, approval, args.s1_arm, concurrent_arms=True)" in Path(cli.__file__).read_text(
         encoding="utf-8")
 
 

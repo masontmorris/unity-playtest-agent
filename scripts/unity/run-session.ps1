@@ -10,8 +10,10 @@ For this client module the host registers exactly that file, under each declarat
 supported chord, stick or mouse value, and skill runs as declared. The host and the client both read the
 file through UPA_SESSION_CATALOG and UPA_SESSION_CATALOG_SHA256; if it is absent, altered or invalid, or the
 client finds it is not the manifest's export, the run ends before any paid call. A session never falls back
-to the keyboard-only catalog the other bench modules use. The model call needs BASETEN_API_KEY in this
-session's environment; the script checks it by name only and never prints it.
+to the keyboard-only catalog the other bench modules use. -S1Arm picks S1's model, one of replay.ARMS
+(default mammoth-1). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
+arms, and LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms. The script checks them by name only and
+never prints them.
 
 No paid call starts without an approval file and a call cap (-MaxCalls). Every call reserves its row in
 `<OutputDirectory>/calls` before it is sent. The output directory must be new and outside the Unity
@@ -52,6 +54,7 @@ param(
     [double]$MaxAgeSeconds = 0.8,
     [int]$MaxProviderFailures = 3,
     [int]$TokensPerMinute = 85000,
+    [string]$S1Arm = 'mammoth-1',
     [string]$Objective,
     [string]$ObjectivePath,
     [string]$ManifestOrigin,
@@ -84,7 +87,18 @@ if ($output.Equals($project, [StringComparison]::OrdinalIgnoreCase) -or
     throw 'The output directory must be outside the Unity project.'
 }
 if ([IO.Directory]::Exists($output)) { throw 'Choose a new output directory; existing evidence is never overwritten.' }
-if ([string]::IsNullOrEmpty($env:BASETEN_API_KEY)) { throw 'BASETEN_API_KEY is not set in this session.' }
+# Each S1 arm's credentials, by name only. This mirrors replay.ARMS so a missing key fails before Unity starts;
+# the runner checks them again from replay.ARMS itself.
+$s1Credentials = @{
+    'mammoth-1' = @('BASETEN_API_KEY'); 'elephant-1' = @('BASETEN_API_KEY')
+    'liquid-d1.1' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL'); 'liquid-d1-ultra' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL')
+}
+if (-not $s1Credentials.ContainsKey($S1Arm)) {
+    throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."
+}
+foreach ($variable in $s1Credentials[$S1Arm]) {
+    if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($variable))) { throw "$variable is not set in this session." }
+}
 if ($Frontier -and $MaxFrontierCalls -lt 1) { throw '-Frontier needs -MaxFrontierCalls of at least 1: no frontier call starts without a cap.' }
 if (-not $Frontier -and $MaxFrontierCalls -ne 0) { throw '-MaxFrontierCalls needs -Frontier.' }
 if ($Frontier -and [string]::IsNullOrEmpty($env:META_API_KEY)) { throw 'META_API_KEY is not set in this session.' }
@@ -116,7 +130,7 @@ $invariant = [Globalization.CultureInfo]::InvariantCulture
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
-           'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_FRONTIER',
+           'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
            'UPA_RUN_MAX_FRONTIER_CALLS')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
@@ -139,6 +153,7 @@ try {
     $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
     $env:UPA_RUN_MANIFEST_ORIGIN = if ($ManifestOrigin) { $ManifestOrigin } else { '' }
+    $env:UPA_RUN_S1_ARM = $S1Arm
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }
     $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'

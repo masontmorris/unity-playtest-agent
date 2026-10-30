@@ -881,6 +881,32 @@ def test_the_cli_refuses_to_start_without_the_approval_the_cap_or_the_key(tmp_pa
     assert not files.out.exists()                      # nothing was created, nothing was contacted
 
 
+def test_the_s1_arm_defaults_to_mammoth_takes_the_environment_and_refuses_an_unknown_one(tmp_path: Path, monkeypatch):
+    required = ["--project", "p", "--entity", "e", "--calibration", "c", "--output", "o"]
+    monkeypatch.delenv("UPA_RUN_S1_ARM", raising=False)
+    assert cli._parser().parse_args(required).s1_arm == "mammoth-1"
+    monkeypatch.setenv("UPA_RUN_S1_ARM", "liquid-d1-ultra")
+    assert cli._parser().parse_args(required).s1_arm == "liquid-d1-ultra"
+    assert cli._parser().parse_args([*required, "--s1-arm", "elephant-1"]).s1_arm == "elephant-1"
+    monkeypatch.delenv("UPA_RUN_S1_ARM")
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0010")
+    files = Project(tmp_path, 1)
+    with pytest.raises(SystemExit) as unknown:
+        cli.main([*files.args(), "--s1-arm", "no-such-model"])
+    assert unknown.value.code == 2 and not files.out.exists()
+
+
+def test_a_liquid_arm_needs_its_own_key_and_endpoint_not_basetens(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0011")
+    monkeypatch.delenv("LIQUID_API_KEY", raising=False)
+    monkeypatch.setenv("LIQUID_D1.1_URL", "https://example.invalid/decide")
+    files = Project(tmp_path, 1)
+    with pytest.raises(SystemExit) as refused:
+        cli.main([*files.args(), "--s1-arm", "liquid-d1-ultra"])
+    assert refused.value.code == 2 and "LIQUID_API_KEY is not set" in capsys.readouterr().err
+    assert not files.out.exists()                      # nothing was created, nothing was contacted
+
+
 def test_the_cli_refuses_an_output_inside_the_project_or_over_existing_evidence(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0004")
     files = Project(tmp_path, 1)
