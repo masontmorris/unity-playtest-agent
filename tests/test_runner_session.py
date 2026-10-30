@@ -35,6 +35,7 @@ from playtest.contracts.common import ClockMode
 from playtest.contracts.investigation import Budget, ModelRef, RunRecord
 from playtest.contracts.loop import TurnOutcome
 from playtest.contracts.trace import TraceAuthor, TraceKind
+from playtest.core.context import canonical
 from playtest.core.adherence import check_adherence
 from playtest.core.bridge_client import BridgeClient, BridgeError
 from playtest.core.execution import Execution
@@ -1006,3 +1007,89 @@ def test_a_frontier_session_builds_its_helper_with_the_calibration_record(tmp_pa
         with_fake_send(monkeypatch, Send(files.out, reply("next_action", "finish")))
         assert cli.main([*files.args(tokens_per_minute=60000, max_frontier_calls=1), "--frontier"]) == 0
     assert built["calibration"] == json.loads(files.calibration.read_text(encoding="utf-8"))
+
+
+def test_cli_image_mode_sends_bridge_frames_and_replays_without_image_bytes(tmp_path, monkeypatch):
+    import base64
+    from test_runner_game_view import JPEG
+    from playtest.frontier.media import FRAME_SUBDIR
+
+    class CaptureGame(CatalogGame):
+        frame_path: Path | None = None
+        frame_count = 0
+
+        def _status(self, seq, session):
+            return super()._status(seq, session).model_copy(update={"capture": True, "capture_self_test": "passed"})
+
+        def _observation(self, seq, session):
+            if self.frame_path is not None:
+                self.frame_count += 1
+                self.frame_path.mkdir(parents=True, exist_ok=True)
+                (self.frame_path / f"f-{self.frame_count:06d}.jpg").write_bytes(JPEG)
+            return super()._observation(seq, session)
+
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0001")
+    with GameThread(CaptureGame, catalog=export(two_actions())) as thread:
+        files = Project(tmp_path, thread.port)
+        thread.game.frame_path = files.project / FRAME_SUBDIR
+        send = Send(files.out, reply("next_action", "move"), reply("next_action", "finish"))
+        with_fake_send(monkeypatch, send)
+        assert cli.main([*files.args(), "--s1-game-view"]) == 0
+        assert thread.game.applied() == ["move"]
+    summary = json.loads(files.summary.read_text(encoding="utf-8"))
+    assert summary["s1_game_view"] == {"enabled": True, "sent": 2, "omitted": 0, "stale": 0}
+    entries = read_trace(files.out / "trace.jsonl")
+    assert replay(entries) == []
+    contexts = [entry.body for entry in entries if entry.kind is TraceKind.context]
+    assert len(contexts) == 2
+    for body, request in zip(contexts, send.bodies):
+        payload = body["payload"]
+        parts = request["state"]["messages"][0]["content"]
+        assert json.loads(parts[0]["text"]) == payload
+        assert base64.b64decode(parts[1]["image_url"]["url"].split(",", 1)[1]) == JPEG
+        assert payload["game_view_sha256"] == hashlib.sha256(JPEG).hexdigest()
+        assert payload["game_view_status"] == "sent" and "640x360" in payload["game_view"]
+        assert body["sha256"] == hashlib.sha256(canonical(payload).encode()).hexdigest()
+    raw_trace = (files.out / "trace.jsonl").read_text(encoding="utf-8")
+    assert base64.b64encode(JPEG).decode() not in raw_trace and "data:image/" not in raw_trace
+    assert summary["adherence"]["violations"] == []
+
+
+def test_cli_refuses_unverified_image_arm_before_contact_or_credentials(tmp_path, capsys):
+    args = ["--project", str(tmp_path / "game"), "--entity", "entity", "--calibration", "calibration",
+            "--output", str(tmp_path / "run.json"), "--manifest", "manifest", "--approval", "approval",
+            "--catalog", "catalog", "--catalog-sha256", "a" * 64, "--max-calls", "1",
+            "--s1-arm", "liquid-d1-ultra", "--s1-game-view"]
+    with pytest.raises(SystemExit) as error:
+        cli.main(args)
+    assert error.value.code == 2 and "no verified image transport" in capsys.readouterr().err
+    assert not (tmp_path / "run.json").exists()
+
+
+def test_cli_omitted_views_preserve_choices_and_invalid_answer_replays(tmp_path, monkeypatch):
+    from playtest.core.ports import ViewSample
+
+    class MissingViews:
+        def __init__(self, *args, **kwargs):
+            self.samples = iter([ViewSample("Game view too old; no image attached.", None, "stale"),
+                                 ViewSample("Game view unknown; no image attached.", None, "missing"),
+                                 ViewSample("Game view unknown; no image attached.", None, "missing")])
+
+        def sample(self, observation):
+            return next(self.samples)
+
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0001")
+    monkeypatch.setattr(cli, "BridgeView", MissingViews)
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
+        files = Project(tmp_path, thread.port)
+        send = Send(files.out, reply("next_action", "unoffered"), reply("next_action", "move"),
+                    reply("next_action", "finish"))
+        with_fake_send(monkeypatch, send)
+        assert cli.main([*files.args(), "--s1-game-view"]) == 0
+        assert thread.game.applied() == ["move"]  # no repaired choice on the invalid turn
+    summary = json.loads(files.summary.read_text(encoding="utf-8"))
+    assert summary["s1_game_view"] == {"enabled": True, "sent": 0, "omitted": 3, "stale": 1}
+    assert [body["state"]["game_view_status"] for body in send.bodies] == ["stale", "missing", "missing"]
+    assert all("images" not in body and "choices" in body["state"] for body in send.bodies)
+    entries = read_trace(files.out / "trace.jsonl")
+    assert replay(entries) == [] and summary["adherence"]["violations"] == []

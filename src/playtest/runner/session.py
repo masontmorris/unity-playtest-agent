@@ -31,7 +31,7 @@ from playtest.contracts.bridge import StopResult
 from playtest.contracts.loop import ChoiceKind
 from playtest.core.adherence import Violation, check_adherence
 from playtest.core.bridge_client import BridgeClient
-from playtest.core.ports import EffectProbe, FactsSource, HelpPort, ReaderPort, S1Port, Watch
+from playtest.core.ports import EffectProbe, FactsSource, HelpPort, ReaderPort, S1Port, ViewSource, Watch
 from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
@@ -71,6 +71,7 @@ async def run_session(
     *,
     s1: S1Port,
     objective: str,
+    view: ViewSource | None = None,
     probe: EffectProbe | None = None,
     help: HelpPort | None = None,
     readers: ReaderPort | None = None,
@@ -94,7 +95,7 @@ async def run_session(
     paced = PacingFacts(inner=facts) if budget is not None else None
     loop = TurnLoop(
         client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
-        objective=objective, s1=s1, help=help, facts=paced if paced is not None else facts,
+        objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else facts,
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
     )
     deadline = clock() + wall_limit_s

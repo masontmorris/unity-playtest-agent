@@ -83,6 +83,7 @@ from .ports import (
     S1Call,
     S1Port,
     TurnReport,
+    ViewSource,
     Watch,
 )
 from .readers import install
@@ -175,6 +176,7 @@ class TurnLoop:
         depends_on: tuple[str, ...] = (),
         objective: str | None = None,
         s1: S1Port | None = None,
+        view: ViewSource | None = None,
         help: HelpPort | None = None,
         facts: FactsSource | None = None,
         effects: EffectProbe | None = None,
@@ -196,6 +198,7 @@ class TurnLoop:
         )
         self._objective = objective
         self._s1 = s1
+        self._view = view
         self._help = help
         self._facts: FactsSource = facts if facts is not None else RecordFacts()
         self._effects = effects
@@ -311,6 +314,7 @@ class TurnLoop:
             answer = S1Answer(answer=decide(choice_set, observation) if callable(decide) else decide)
         else:
             facts = [*await self._facts.facts(self._reports, observation), *noticed]
+            view = self._view.sample(observation) if self._view is not None else None
             now = self._clock()
             payload = build_context(
                 objective=self._objective or "",
@@ -321,13 +325,17 @@ class TurnLoop:
                 age_s=_elapsed_s(observation.wall_utc, now),
                 sample_gap_s=self._gap_s(observation),
                 guidance=self._guidance_view(now),
+                game_view=view.statement if view is not None else None,
             )
+            if view is not None:
+                payload["game_view_sha256"] = view.sha256
+                payload["game_view_status"] = view.status
             context = self._emit(
                 TraceKind.context,
                 {"sha256": _sha256(canonical(payload)), "payload": payload},
                 TraceAuthor.core, turn, [observed, offered],
             )
-            answer = await self._ask(payload)
+            answer = await self._ask(payload, view.image if view is not None else None, view is not None)
             calls = [self._emit(TraceKind.s1_call, call.body(), TraceAuthor.s1, turn, [context])
                      for call in answer.calls]
 
@@ -437,11 +445,12 @@ class TurnLoop:
 
     # --- the S1 port ------------------------------------------------------------------------
 
-    async def _ask(self, payload: dict[str, Any]) -> S1Answer:
+    async def _ask(self, payload: dict[str, Any], image: bytes | None = None, with_view: bool = False) -> S1Answer:
         """One provider turn. A port that raises is a provider failure: recorded, never retried or replaced."""
         assert self._s1 is not None
         try:
-            got = await self._s1.decide(copy.deepcopy(payload))
+            got = (await self._s1.decide(copy.deepcopy(payload), image=image) if with_view
+                   else await self._s1.decide(copy.deepcopy(payload)))
         except Exception as exc:  # noqa: BLE001 - a failed provider rejects the turn; it never ends it with a guess
             problem = f"port error: {type(exc).__name__}"
             return S1Answer(answer=None, calls=(S1Call(problem=problem),), failure=problem)

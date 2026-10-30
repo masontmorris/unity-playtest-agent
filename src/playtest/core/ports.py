@@ -71,8 +71,24 @@ class S1Answer:
     halt: str | None = None
 
 
+@dataclass(frozen=True)
+class ViewSample:
+    """A measured view statement and digest; bytes are passed only to the provider port."""
+
+    statement: str
+    sha256: str | None
+    status: str  # sent, missing, or stale
+    image: bytes | None = None
+
+
+class ViewSource(Protocol):
+    def sample(self, observation: Observation) -> ViewSample:
+        """Measure the latest available view against this observation."""
+        ...
+
+
 class S1Port(Protocol):
-    async def decide(self, context: Mapping[str, Any]) -> S1Answer:
+    async def decide(self, context: Mapping[str, Any], *, image: bytes | None = None) -> S1Answer:
         """Answer one turn from the exact context the loop built. Blocking I/O must not block the event loop."""
         ...
 

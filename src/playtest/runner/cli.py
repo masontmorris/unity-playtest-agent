@@ -51,11 +51,12 @@ from playtest.runner.frontier_help import FrontierHelp, action_effects
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
+from .game_view import BridgeView
 from .output import secret_values
-from .pacing import TOKENS_PER_MINUTE, TokenBudget
+from .pacing import INITIAL_ESTIMATE, TOKENS_PER_MINUTE, TokenBudget
 from .probe import DisplacementProbe, make_snapshot
 from .readers import FieldReaders
-from .s1 import ARM, SystemOneS1
+from .s1 import ARM, IMAGE_TOKENS, IMAGE_TRANSPORT, SystemOneS1
 from .session import MAX_AGE_S, MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
 
 DEFAULT_OBJECTIVE = (
@@ -108,6 +109,8 @@ def _parser() -> argparse.ArgumentParser:
                         help="the most paid calls this run may make (also UPA_RUN_MAX_CALLS)")
     parser.add_argument("--s1-arm", default=_env("UPA_RUN_S1_ARM", str, ARM),
                         help=f"the S1 model arm, one of replay.ARMS (default {ARM}; also UPA_RUN_S1_ARM)")
+    parser.add_argument("--s1-game-view", action="store_true", default=_env("UPA_RUN_S1_GAME_VIEW", switch, False),
+                        help="send a fresh bridge frame to a verified image-capable S1 arm (also UPA_RUN_S1_GAME_VIEW=1)")
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
@@ -185,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output must be a new file outside the Unity project")
     if args.s1_arm not in replay.ARMS:
         parser.error(f"--s1-arm must be one of {sorted(replay.ARMS)}")
+    if args.s1_game_view and args.s1_arm not in IMAGE_TRANSPORT:
+        parser.error(f"--s1-game-view: S1 arm {args.s1_arm!r} has no verified image transport")
     for variable in replay.ARMS[args.s1_arm][1:]:
         if variable and not os.environ.get(variable):
             parser.error(f"{variable} is not set in the environment")
@@ -193,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     objective = _objective(parser, args)
 
     run_dir = output.parent
-    summary: dict[str, Any] = {"version": 1, "status": "inconclusive", "error": None}
+    summary: dict[str, Any] = {"version": 1, "status": "inconclusive", "error": None,
+                               "s1_game_view": {"enabled": args.s1_game_view, "sent": None, "omitted": None, "stale": None}}
     try:
         manifest_bytes = args.manifest.read_bytes()
         manifest = PreflightManifest.model_validate_json(manifest_bytes, strict=True)
@@ -226,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                                                    "measurement allowance (playtest.preflight.verify.MEASUREMENT_TOLERANCE)"},
                 "offered": [c.id for c in built.choices], "not_offered": built.not_offered,
                 "budget_assumptions": {"balance_override": approval.get("unverified_balance_override")}}
+        plan["s1_game_view"] = args.s1_game_view
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
@@ -266,6 +273,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
                manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None) -> dict[str, Any]:
     run_dir = args.output.resolve().parent
+    started_utc = dt.datetime.now(dt.timezone.utc)
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
         snapshot = make_snapshot(client, manifest.entity_id)
@@ -275,9 +283,13 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         if readers is not None:
             await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
-        budget = TokenBudget(args.tokens_per_minute)
-        s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget)
+        extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
+        per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
+        budget = TokenBudget(per_minute, initial_estimate=first_call)
+        s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
+                          game_view=args.s1_game_view)
         status = client.status
+        view = BridgeView(project, status, started_utc=started_utc) if args.s1_game_view else None
         record = await asyncio.to_thread(  # it runs git; keep the bridge connection serviced meanwhile
             build_run_record,
             game_project=project, status=status, scene=scene, manifest_fingerprint=manifest_sha,
@@ -300,7 +312,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(
-                client, built, s1=s1, objective=objective, probe=DisplacementProbe(snapshot, built.expected),
+                client, built, s1=s1, objective=objective, view=view, probe=DisplacementProbe(snapshot, built.expected),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
                 facts=tracker)
@@ -313,6 +325,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "stop": result.stop.model_dump(mode="json") if result.stop is not None else None,
                 "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
                        "calls": s1.calls_reserved, "call_cap": args.max_calls},
+                "s1_game_view": s1.view_counts,
                 "frontier": {"enabled": args.frontier, "model": frontier_provider.MODEL if args.frontier else None,
                              "calls": help_port.calls if help_port is not None else 0,
                              "call_cap": args.max_frontier_calls if args.frontier else 0},
