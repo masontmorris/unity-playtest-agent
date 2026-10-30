@@ -82,6 +82,22 @@ def test_an_ordinary_turn_makes_one_call_in_the_proven_shape(tmp_path: Path):
     assert ledger.arm_rows()[0]["question"] == "next_action"
 
 
+def test_the_liquid_d1_ultra_arm_sends_the_same_shape_to_liquid_and_bills_there(tmp_path: Path):
+    arm = "liquid-d1-ultra"
+    limits = approval()
+    limits["arms"] = {arm: limits["arms"][ARM]}
+    ledger = call_budget.Ledger(tmp_path, limits, arm)
+    send = Send(tmp_path, reply("next_action", "c1"))
+    port = SystemOneS1(ledger, max_calls=10, send=send, arm=arm)
+    got = decide(port, context())
+    assert send.bodies[0]["model"] == "d1-ultra" and set(send.bodies[0]) == {"model", "questions", "state"}
+    assert (port.provider, port.model) == ("liquid", "d1-ultra") and got.calls[0].provider == "liquid"
+    assert ledger.arm_rows()[0]["arm"] == arm
+    assert replay.ARMS[arm][1:] == replay.ARMS["liquid-d1.1"][1:]   # one Liquid key and decisions endpoint
+    assert {replay.provider_of(a) for a in ("liquid-d1.1", arm)} == {"liquid"}
+    assert replay.provider_of("mammoth-1") == "baseten" and replay.provider_of("muse-spark-1.3") == "meta"
+
+
 def test_a_wait_finish_or_action_answer_never_triggers_a_follow_up(tmp_path: Path):
     port, send, _ = adapter(tmp_path, reply("next_action", "w"), reply("next_action", "f"), reply("next_action", "c3"))
     for _ in range(3):

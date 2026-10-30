@@ -39,7 +39,6 @@ FOLLOW_UP_INSTRUCTIONS = (
     "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero."
 )
 PROMPTS = {PRIMARY: INSTRUCTIONS, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
-_PROVIDERS = {"liquid-d1.1": "liquid"}
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
 CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
@@ -103,7 +102,7 @@ class SystemOneS1:
 
     @property
     def provider(self) -> str:
-        return _PROVIDERS.get(self._arm, "baseten")
+        return replay.provider_of(self._arm)
 
     @property
     def model(self) -> str:

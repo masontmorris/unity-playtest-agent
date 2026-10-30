@@ -106,6 +106,8 @@ def _parser() -> argparse.ArgumentParser:
                         help="the approval file naming the call and cost caps (also UPA_RUN_APPROVAL)")
     parser.add_argument("--max-calls", type=int, default=_env("UPA_RUN_MAX_CALLS", int, None),
                         help="the most paid calls this run may make (also UPA_RUN_MAX_CALLS)")
+    parser.add_argument("--s1-arm", default=_env("UPA_RUN_S1_ARM", str, ARM),
+                        help=f"the S1 model arm, one of replay.ARMS (default {ARM}; also UPA_RUN_S1_ARM)")
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
@@ -140,9 +142,9 @@ def _objective(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str
     return text.strip()
 
 
-def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0) -> None:
+def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0, arm: str = ARM) -> None:
     """The approved envelope must cover the most the run may spend."""
-    limit = approval["arms"][ARM]
+    limit = approval["arms"][arm]
     bound = replay._decimal(limit["per_call_max_usd"], "per-call bound")
     total_bound = bound * calls
     if frontier_calls:
@@ -181,8 +183,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tokens-per-minute (or UPA_RUN_TOKENS_PER_MINUTE) must be at least 1")
     if output.is_relative_to(project) or output.exists():
         parser.error("--output must be a new file outside the Unity project")
-    if not os.environ.get(replay.ARMS[ARM][1]):
-        parser.error(f"{replay.ARMS[ARM][1]} is not set in the environment")
+    if args.s1_arm not in replay.ARMS:
+        parser.error(f"--s1-arm must be one of {sorted(replay.ARMS)}")
+    for variable in replay.ARMS[args.s1_arm][1:]:
+        if variable and not os.environ.get(variable):
+            parser.error(f"{variable} is not set in the environment")
     if args.frontier and not os.environ.get("META_API_KEY"):
         parser.error("META_API_KEY is required when --frontier is enabled")
     objective = _objective(parser, args)
@@ -200,15 +205,16 @@ def main(argv: list[str] | None = None) -> int:
         if entity.get("entity_id") != manifest.entity_id or calibration.get("entity_id") != manifest.entity_id:
             raise ValueError("the manifest, the entity record and the calibration record name different entities")
         approval, approval_sha = replay._load(args.approval)
-        replay.validate_approval(approval, [ARM, frontier_provider.MODEL] if args.frontier else [ARM])
-        _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0)
+        arms = [args.s1_arm, frontier_provider.MODEL] if args.frontier else [args.s1_arm]
+        replay.validate_approval(approval, arms)
+        _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0, args.s1_arm)
         built = build_choices(manifest)
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
         if not any(c.source.value == "manifest" for c in built.choices):
             raise ValueError("the manifest offers no executable action")
         run_dir.mkdir(parents=True, exist_ok=True)
         manifest_sha = digest(manifest_bytes)
-        plan = {"version": 1, "kind": "session", "arm": ARM, "approval_sha256": approval_sha,
+        plan = {"version": 1, "kind": "session", "arm": args.s1_arm, "approval_sha256": approval_sha,
                 "manifest_sha256": manifest_sha, "catalog_sha256": host.sha256, "max_calls": args.max_calls,
                 "wall_limit_s": args.wall_limit_s, "max_age_s": args.max_age_s,
                 "max_provider_failures": args.max_provider_failures, "tokens_per_minute": args.tokens_per_minute,
@@ -225,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                              "model": frontier_provider.MODEL if args.frontier else None}
         replay._write(run_dir / "plan.json", plan, exclusive=True)
         # The frontier helper shares this folder and runs while S1 keeps choosing, so in-flight calls block per arm.
-        ledger = call_budget.Ledger(run_dir, approval, ARM, concurrent_arms=True)
+        ledger = call_budget.Ledger(run_dir, approval, args.s1_arm, concurrent_arms=True)
         before = recording._game_worktree(project)
         summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256))
         after = recording._game_worktree(project)
@@ -269,7 +275,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         budget = TokenBudget(args.tokens_per_minute)
-        s1 = SystemOneS1(ledger, max_calls=args.max_calls, budget=budget)
+        s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget)
         status = client.status
         record = await asyncio.to_thread(  # it runs git; keep the bridge connection serviced meanwhile
             build_run_record,

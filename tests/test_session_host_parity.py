@@ -61,6 +61,16 @@ def test_the_script_turns_the_frontier_and_the_recorder_on_only_when_asked():
     assert finish < SCRIPT.index("New-Item -ItemType File -Path $recordStop") # and stops only after Unity exits
 
 
+def test_the_scripts_s1_credentials_match_the_arm_table():
+    from playtest.bench import replay
+
+    table = SCRIPT[SCRIPT.index("$s1Credentials = @{"):SCRIPT.index("if (-not $s1Credentials.ContainsKey")]
+    declared = {arm: re.findall(r"'([A-Z0-9_.]+)'", names)
+                for arm, names in re.findall(r"'([a-z0-9.-]+)' = @\(([^)]*)\)", table)}
+    assert declared == {arm: [v for v in (key, url) if v] for arm, (_, key, url) in replay.ARMS.items()}
+    assert "$env:UPA_RUN_S1_ARM = $S1Arm" in SCRIPT and "UPA_RUN_S1_ARM" in Path(cli.__file__).read_text(encoding="utf-8")
+
+
 def test_the_keyboard_bench_catalog_is_still_the_other_modules_own():
     method = HOST[HOST.index("private static BridgeActionCatalog KeyboardBenchCatalog()"):]
     assert '"preflight_key_" + control' in method and "DefaultLeaseS = 0.4" in method

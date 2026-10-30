@@ -21,12 +21,22 @@ from typing import Any, Callable
 from playtest.bench.record import _save, context_for, digest
 from playtest.core.context import canonical
 
+# Arm: (model, key variable, endpoint variable). Liquid's endpoint is its general decisions endpoint and the
+# request's `model` picks the model, so both Liquid arms share LIQUID_D1.1_URL.
 ARMS = {
     "mammoth-1": ("decision-models/baseten-mammoth-27b-latest", "BASETEN_API_KEY", None),
     "elephant-1": ("decision-models/baseten-elephant-9b-latest", "BASETEN_API_KEY", None),
     "liquid-d1.1": ("d1.1", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
+    "liquid-d1-ultra": ("d1-ultra", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
 }
 BASETEN_URL = "https://inference.baseten.co/v1/systemone"
+
+
+def provider_of(arm: str) -> str:
+    """The provider an arm bills through: the key a balance check and an approval cap are counted against."""
+    if arm == "muse-spark-1.3":
+        return "meta"
+    return "liquid" if arm.startswith("liquid-") else "baseten"
 Send = Callable[[str, dict[str, Any]], tuple[int | None, dict[str, Any] | None, float, str | None]]
 
 
@@ -216,7 +226,7 @@ def validate_approval(approval: dict[str, Any], arms: list[str]) -> None:
             raise ValueError(f"{arm} exceeds its verified balance or per-arm envelope")
         if dt.datetime.now(dt.timezone.utc) >= _price_deadline(limit, arm):
             raise ValueError(f"{arm} pricing validity has expired; verify the rate again")
-        provider = {"liquid-d1.1": "liquid", "muse-spark-1.3": "meta"}.get(arm, "baseten")
+        provider = provider_of(arm)
         provider_caps[provider] += maximum
         if balance is not None:
             provider_balances[provider].append(balance)
