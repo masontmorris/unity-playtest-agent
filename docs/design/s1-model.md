@@ -45,8 +45,11 @@ Sources:
    tokens, so even the 0.8 s age limit (#132) rejected a third of its actions (#136). d1-ultra's p90 was
    391 ms, and no action went stale.
 3. **Rate limit.** Baseten's limit is 100,000 tokens a minute. Liquid's is unpublished and unverified, but
-   its 241 calls on 29 October met no rate limiting. The runner keeps its client-side pacing at 85,000
-   tokens a minute.
+   its probes met no rate limiting. The runner now paces `liquid-d1-ultra` at 280,000 tokens/minute:
+   80% of the minimum completed 60 s window in the 30 October paced probe, rounded down.
+   This is an operating setting for the measured workload, not a provider limit or a guarantee of
+   longer-run stability. See the [probe record](../probes/2026-10-30-liquid-d1-ultra-rate.md).
+   Other arms retain the 85,000 fallback; explicit flags or environment values override defaults.
 
 **Caveats:**
 - d1-ultra is less certain. Its acceptable mass averages 0.89 against 0.98, its lowest acceptable pick

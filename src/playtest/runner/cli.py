@@ -16,8 +16,8 @@ before the bridge is even contacted. The key is only checked for by name and is 
 
 The run record and the trace go through the #30 writer (`playtest.core.trace.TraceWriter`): the trace
 is opened before the first turn and closed exactly once, with the session's status and error, after the
-loop's `stop` entry, even when an exception escapes. S1's calls are paced to `--tokens-per-minute` (see
-`playtest.runner.pacing`); the pacing only delays when a turn begins.
+loop's `stop` entry, even when an exception escapes. S1's calls are paced to `--tokens-per-minute` or that
+arm's own default (see `playtest.runner.pacing`); the pacing only delays when a turn begins.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
 from .game_view import BridgeView
 from .output import secret_values
-from .pacing import INITIAL_ESTIMATE, TOKENS_PER_MINUTE, TokenBudget
+from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
 from .probe import DisplacementProbe, make_snapshot
 from .readers import FieldReaders
 from .s1 import ARM, IMAGE_TOKENS, IMAGE_TRANSPORT, SystemOneS1
@@ -122,9 +122,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-provider-failures", type=int,
                         default=_env("UPA_RUN_MAX_PROVIDER_FAILURES", int, MAX_PROVIDER_FAILURES))
     parser.add_argument("--tokens-per-minute", type=int,
-                        default=_env("UPA_RUN_TOKENS_PER_MINUTE", int, TOKENS_PER_MINUTE),
+                        default=_env("UPA_RUN_TOKENS_PER_MINUTE", int, None),
                         help="the most S1 tokens the runner lets one minute use; it waits before a turn to stay "
-                             "under it (also UPA_RUN_TOKENS_PER_MINUTE)")
+                             "under it (default: the selected arm's own rate; also UPA_RUN_TOKENS_PER_MINUTE)")
     parser.add_argument("--objective", default=None)
     parser.add_argument("--objective-file", type=Path, default=_env("UPA_RUN_OBJECTIVE_FILE", Path, None))
     return parser
@@ -182,12 +182,15 @@ def main(argv: list[str] | None = None) -> int:
                      "a session runs only against the catalog the manifest exports, never a default one")
     if args.wall_limit_s <= 0 or args.max_age_s <= 0 or args.max_provider_failures < 1:
         parser.error("the wall limit and maximum age must be positive and the failure limit at least 1")
+    if args.s1_arm not in replay.ARMS:
+        parser.error(f"--s1-arm must be one of {sorted(replay.ARMS)}")
+    # Neither the flag nor the environment named a rate, so the selected arm's own default applies. Resolving
+    # before the plan and the summary is written is what makes both record the rate this run actually used.
+    args.tokens_per_minute = resolve_tokens_per_minute(args.s1_arm, args.tokens_per_minute)
     if args.tokens_per_minute < 1:
         parser.error("--tokens-per-minute (or UPA_RUN_TOKENS_PER_MINUTE) must be at least 1")
     if output.is_relative_to(project) or output.exists():
         parser.error("--output must be a new file outside the Unity project")
-    if args.s1_arm not in replay.ARMS:
-        parser.error(f"--s1-arm must be one of {sorted(replay.ARMS)}")
     if args.s1_game_view and args.s1_arm not in IMAGE_TRANSPORT:
         parser.error(f"--s1-game-view: S1 arm {args.s1_arm!r} has no verified image transport")
     for variable in replay.ARMS[args.s1_arm][1:]:

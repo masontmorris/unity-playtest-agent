@@ -458,7 +458,7 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
   -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
   -ApprovalPath "C:\path\outside\game\approval.json" -MaxCalls <n> `
   -OutputDirectory "C:\path\outside\game\session-01" [-WallLimitSeconds 600] [-MaxAgeSeconds 0.8] `
-  [-TokensPerMinute 85000] [-Objective "<text>" | -ObjectivePath "<file>"] `
+  [-TokensPerMinute <n>] [-Objective "<text>" | -ObjectivePath "<file>"] `
   [-Frontier -MaxFrontierCalls <n>] [-RecordFrames]
 ```
 
@@ -483,6 +483,11 @@ Liquid arms, and `BASETEN_API_KEY` for `mammoth-1` and `elephant-1`. The output 
 checkout. The summary is `run.json` and the trace is `trace.jsonl` beside it; both stay local. The run
 ends when S1 chooses `finish`, the wall limit passes (default 600 s, at most 1500), or three
 consecutive S1 calls give no usable answer (`-MaxProviderFailures`); it then stops and verifies that
-every held input was released. S1's calls are paced to `-TokensPerMinute`: default 85000, 15% under Baseten's
-100,000 limit for `mammoth-1`, kept for Liquid, whose limit is unpublished. The runner waits before a turn when the last minute's tokens
-plus the next call's would pass it, and states the wait to S1 as a measured fact.
+every held input was released. S1's calls are paced to `-TokensPerMinute` when it is given. Otherwise the
+runner uses the selected arm's default from `playtest.runner.pacing`: arms without an entry share the 85,000
+fallback (15% under Baseten's 100,000 limit for `mammoth-1`), and `liquid-d1-ultra` uses 280,000 based on the
+[paced probe](../../docs/probes/2026-10-30-liquid-d1-ultra-rate.md), with headroom; its provider limit remains unknown.
+The wrapper exports a rate only
+when `-TokensPerMinute` is given, so an unset parameter never overrides the runner's choice; an explicit
+parameter or `UPA_RUN_TOKENS_PER_MINUTE` still wins. The runner waits before a turn when the last minute's
+tokens plus the next call's would pass it, and states the wait to S1 as a measured fact.
