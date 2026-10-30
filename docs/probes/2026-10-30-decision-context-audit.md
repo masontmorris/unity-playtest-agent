@@ -33,8 +33,9 @@ The session's lone cooldown candidate was not reproduced; the stair defect remai
    remain explicit. Window omissions and reset/scene/clock boundaries are recorded.
 2. Frontier receives those same records with bridge observation citations distinguished from trace
    and effect references. It no longer starts from an empty live action history.
-3. Directive/hypothesis updates are staged until adoption. A result finishing during observation
-   cannot publish into that turn. Discarded or replaced results cannot publish later.
+3. Directive/hypothesis updates are staged until adoption. The loop checks the fresh observation's
+   epoch before consuming a result that was ready at turn entry. A result finishing during observation
+   cannot publish into that turn. Prior-epoch, discarded or replaced results cannot publish later.
 4. Any changed hypothesis text or evidence is delivered in full, including same-status revisions.
    Earlier support/contradiction citations remain available; identical versions may be restated by ID.
 5. Session facts expose remaining wall time and measured call counts. Unknown counters stay null;

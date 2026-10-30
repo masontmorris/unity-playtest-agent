@@ -266,3 +266,29 @@ def test_replay_detects_wrong_context_hash(tmp_path):
     rows = _rows(tmp_path)
     next(x for x in rows if x["kind"] == "context")["body"]["sha256"] = "bad"
     _problem(rows, "context hash")
+
+
+def test_epoch_aware_adoption_requires_observation_then_publication_then_choices(tmp_path):
+    rows = _rows(tmp_path)  # historical adoption-before-observation traces remain readable
+    context = next(row for row in rows if row["turn"] == 9 and row["kind"] == "context")
+    context["body"]["payload"]["recent_history"] = {"epoch": 0}
+    context["body"]["sha256"] = hashlib.sha256(canonical(context["body"]["payload"]).encode()).hexdigest()
+    _problem(rows, "help adoption must follow the epoch check")
+    adopted = next(row for row in rows if row["turn"] == 9 and row["kind"] == "help")
+    observed = next(row for row in rows if row["turn"] == 9 and row["kind"] == "observation")
+    rows.remove(adopted)
+    rows.insert(rows.index(observed) + 1, adopted)
+
+    def renumber():
+        mapping = {row["trace_seq"]: index for index, row in enumerate(rows)}
+        for index, row in enumerate(rows):
+            row["trace_seq"] = index
+            row["refs"] = [mapping[ref] for ref in row["refs"]]
+
+    renumber()
+    assert replay(_models(rows)) == []
+    offered = next(row for row in rows if row["turn"] == 9 and row["kind"] == "choice_set")
+    rows.remove(adopted)
+    rows.insert(rows.index(offered) + 1, adopted)
+    renumber()
+    _problem(rows, "precede choice assembly")

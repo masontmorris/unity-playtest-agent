@@ -34,8 +34,10 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
   `{"choice_id", "action", "expected": <object or null>, "observed": <object or null>}`.
 - `help` (core): `{"event": "opened" | "repeat" | "adopted" | "cancelled", "choice_id", "kind":
   "escalate" | "delegate", "opened_turn", "source", "result", "reason"}`. `opened` and `repeat`
-  follow the decision and ref it; `adopted` comes first in the turn that adopts the result, before
-  its observation; `adopted` and `cancelled` ref the `opened` entry. A cancel at stop has no turn.
+  follow the decision and ref it; `adopted` follows the fresh observation's epoch check and precedes
+  the choice set, facts and context. Epoch invalidation may cancel in that same slot. Older traces
+  without epoch memory adopted before observation. `adopted` and `cancelled` ref the `opened` entry.
+  A cancel at stop has no turn.
 - `suspicion` (core; refs exactly the entries it rests on): the `Suspicion` record (`playtest.contracts.investigation`),
   with `evidence_seq` equal to its refs. One raised from an observation (an invariant that does not hold, a reader
   that left the range its earlier readings showed) follows the `choice_set` and comes before the `context`, so the

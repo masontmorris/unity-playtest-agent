@@ -1,6 +1,7 @@
 """Turn loop: S1's answer is validated, bound and executed, never repaired.
 
-Each turn adopts a finished helper's result, observes once, builds the `ChoiceSet` that answer must
+Each turn observes once, checks its epoch boundary, adopts a helper result that was already finished
+at turn entry, builds the `ChoiceSet` that answer must
 name (bound to that observation's `seq`), states the measured facts, builds S1's context (the
 observation's age, `pending_help`, the choices), asks the S1 port, and validates the answer with
 `parse_decision`. The loop then executes only the chosen action, or on a help turn exactly the
@@ -21,8 +22,9 @@ Law 1 branches:
   and starts nothing. `while_pending` runs exactly the choice S1 named; a missing or invalid one
   defaults to `wait` and records `policy_default`, while the valid primary survives.
 
-A finished helper's result is adopted once, at the top of a later turn, and shown to S1 with its
-source and age. `stop` cancels a pending helper and releases every held input. Nothing here retries,
+A finished helper's result is adopted once, after a later turn's observation passes the epoch check
+and before facts and context are built, and shown to S1 with its source and age. A boundary discards
+pending help. `stop` cancels a pending helper and releases every held input. Nothing here retries,
 and no score, threshold or timer opens help or picks an action.
 
 With a reader port, the readers are read once before each observation (never between it and the act) and
@@ -136,6 +138,7 @@ class _Pending:
     opened_wall: datetime
     entry: int | None = None
     task: "asyncio.Task[HelpResult] | None" = None
+    resolved: HelpResult | None = None
     finished_wall: datetime | None = None
 
 
@@ -207,6 +210,7 @@ class TurnLoop:
         self._memory_previous: Observation | None = None
         self._previous: Observation | None = None
         self._pending: _Pending | None = None
+        self._retired_helpers: set[asyncio.Task[HelpResult]] = set()
         self._adoptions: list[Any] = []
         self._guidance: list[_Guidance] = []
         self._cancelled_helpers = 0
@@ -278,7 +282,13 @@ class TurnLoop:
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
         turn = len(self._turns)
-        self._adopt_finished_help(turn)
+        pending = self._pending
+        ready: HelpResult | asyncio.Task[HelpResult] | None = None
+        if pending is not None:
+            if pending.resolved is not None:
+                ready = pending.resolved
+            elif pending.task is not None and pending.task.done():
+                ready = pending.task
         if self._effects is not None:
             await self._effects.before_turn(turn)
         sample = await self._readers.read() if self._readers is not None else None  # before the observation, never between it and the act
@@ -290,8 +300,12 @@ class TurnLoop:
         observed = self._emit(TraceKind.observation, observation.model_dump(mode="json"), TraceAuthor.bridge, turn)
         if observed is not None:
             self._observation_entries[observation.seq] = observed
-        self._memory.observe(self._memory_previous, observation, turn=turn, trace_seq=observed)
+        boundary = self._memory.observe(self._memory_previous, observation, turn=turn, trace_seq=observed)
         self._memory_previous = observation
+        if boundary and self._pending is not None:
+            self._cancel_pending(self._pending, "observation_boundary", turn=turn)
+        elif ready is not None and pending is self._pending:
+            self._adopt_finished_help(pending, ready, turn)
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
@@ -620,16 +634,26 @@ class TurnLoop:
                 context=copy.deepcopy(payload) if payload is not None else {},
             )
             pending.task = asyncio.ensure_future(self._help.run(request))
-            pending.task.add_done_callback(lambda _task, p=pending: setattr(p, "finished_wall", self._clock()))
+            def finished(_task: asyncio.Task[HelpResult], p: _Pending = pending) -> None:
+                if p.resolved is None:
+                    p.finished_wall = self._clock()
+
+            pending.task.add_done_callback(finished)
         self._pending = pending
         return "opened"
 
-    def _adopt_finished_help(self, turn: int) -> None:
-        """Adopt a finished helper's result, once, before this turn observes."""
-        pending = self._pending
-        if pending is None or pending.task is None or not pending.task.done():
+    def _adopt_finished_help(self, pending: _Pending, ready: HelpResult | asyncio.Task[HelpResult],
+                             turn: int) -> None:
+        """Adopt the result that was ready at entry, after the observation epoch check."""
+        if self._pending is not pending:
             return
-        task = pending.task
+        if isinstance(ready, HelpResult):
+            if pending.resolved is ready:
+                self._adopt(pending, ready, turn)
+            return
+        task = ready
+        if pending.task is not task or pending.resolved is not None or not task.done():
+            return
         if task.cancelled():
             self._drop_pending(pending, "cancelled", turn=turn)
             return
@@ -669,14 +693,18 @@ class TurnLoop:
         )
 
     def resolve_helper(self, result: Any, *, source: str | None = None) -> bool:
-        """Adopt the pending request's result from outside, exactly once. It is shown to S1 from the next turn."""
+        """Stage one external result for adoption after a later observation's epoch check."""
         pending = self._pending
-        if pending is None:
+        if pending is None or pending.resolved is not None:
             return False
-        if pending.task is not None and not pending.task.done():
-            pending.task.cancel()
+        discard = getattr(self._help, "discard_result", None)
+        if discard is not None:
+            discard(pending.turn)
+        if pending.task is not None:
+            self._retire_helper(pending.task)
+            pending.task = None
         pending.finished_wall = self._clock()
-        self._adopt(pending, HelpResult(source=source, result=result), len(self._turns))
+        pending.resolved = HelpResult(source=source, result=result)
         return True
 
     def _drop_pending(self, pending: _Pending, reason: str, *, turn: int | None) -> None:
@@ -691,6 +719,31 @@ class TurnLoop:
              "opened_turn": pending.turn, "source": None, "result": None, "reason": reason},
             TraceAuthor.core, turn, [pending.entry],
         )
+
+    def _cancel_pending(self, pending: _Pending, reason: str, *, turn: int | None) -> None:
+        """Invalidate first, then cancel and consume even a cancellation-resistant task's result."""
+        self._drop_pending(pending, reason, turn=turn)
+        task = pending.task
+        if task is not None:
+            self._retire_helper(task)
+
+    def _retire_helper(self, task: asyncio.Task[HelpResult]) -> None:
+        """Cancel a replaced task and consume its eventual result or exception."""
+        if task.done():
+            if not task.cancelled():
+                task.exception()
+            return
+        # Do not hold up the turn if the helper suppresses cancellation. Its discard hook has
+        # already invalidated any staged or late result; retain the task until it finishes.
+        self._retired_helpers.add(task)
+
+        def consume(done: asyncio.Task[HelpResult]) -> None:
+            self._retired_helpers.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(consume)
+        task.cancel()
 
     def _pending_view(self, observation: Observation, now: datetime) -> dict[str, Any] | None:
         """The open request as S1 reads it: what was asked, how long ago in game and wall seconds, and what it waits on."""

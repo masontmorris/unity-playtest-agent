@@ -52,8 +52,8 @@ class DecisionMemory:
         return bool(self._turn_total or self._attempt_total or self._boundary)
 
     def observe(self, previous: Observation | None, current: Observation, *, turn: int,
-                trace_seq: int | None) -> None:
-        """Start a new epoch on the observation signals used by directive tracking, or a session change."""
+                trace_seq: int | None) -> bool:
+        """Start a new epoch on explicit signals; return whether a boundary was observed."""
         reasons: list[str] = []
         if self._explicit_boundary is not None:
             reasons.append(self._explicit_boundary)
@@ -69,7 +69,7 @@ class DecisionMemory:
                     and current.game_s < previous.game_s):
                 reasons.append("game_time_regression")
         if not reasons:
-            return
+            return False
         self._discarded_turns += self._turn_total
         self._discarded_attempts += self._attempt_total
         self._turns.clear()
@@ -84,6 +84,7 @@ class DecisionMemory:
             "discarded_turns": self._discarded_turns,
             "discarded_action_attempts": self._discarded_attempts,
         }
+        return True
 
     def record(self, report: TurnReport, *, observation_trace_seq: int | None,
                turn_trace_seq: int | None, execution_trace_seqs: Sequence[int | None],

@@ -117,8 +117,17 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
         group = groups[turn_no]
         kinds = [x.kind for x in group]
         adopted = [x for x in group if x.kind is TraceKind.help and x.body.get("event") == "adopted"]
-        if adopted and group[0] is not adopted[0]:
-            issue("adopted help must open the turn", adopted[0], turn_no)
+        if adopted:
+            observed = next((x for x in group if x.kind is TraceKind.observation), None)
+            offered = next((x for x in group if x.kind is TraceKind.choice_set), None)
+            context = next((x for x in group if x.kind is TraceKind.context), None)
+            has_epoch_memory = context is not None and "recent_history" in context.body.get("payload", {})
+            for entry in adopted:
+                # Historical traces adopted before observation. Epoch-aware contexts must first
+                # validate that observation, and every adoption must precede choice/context assembly.
+                if (offered is None or entry.trace_seq >= offered.trace_seq
+                        or (has_epoch_memory and (observed is None or entry.trace_seq <= observed.trace_seq))):
+                    issue("help adoption must follow the epoch check and precede choice assembly", entry, turn_no)
         rank = {TraceKind.observation: 0, TraceKind.choice_set: 1, TraceKind.context: 2,
                 TraceKind.s1_call: 3, TraceKind.decision: 4, TraceKind.execution: 5,
                 TraceKind.effect: 6, TraceKind.turn: 7}

@@ -359,7 +359,8 @@ def test_a_result_is_adopted_once_and_shown_with_its_source_and_age():
             assert adopted[0]["body"]["source"] == "fake-helper"
             assert adopted[0]["body"]["result"] == {"advice": "try c1"} and adopted[0]["body"]["opened_turn"] == 0
             first_of_turn = [e for e in r.sink.entries if e["turn"] == 1][0]
-            assert first_of_turn["kind"] == "help"     # adopted comes first in the turn, before its observation
+            assert first_of_turn["kind"] == "observation"  # validate the epoch before adopting old help
+            assert [e["kind"] for e in r.sink.entries if e["turn"] == 1][:3] == ["observation", "help", "choice_set"]
             assert r.loop.helper_count == 0
             # The next context carries it with its source and age; the request is no longer open.
             context = r.s1.contexts[1]
@@ -458,7 +459,7 @@ def test_stop_cancels_a_pending_helper_and_releases_a_held_lease():
     run(main)
 
 
-def test_resolve_helper_adopts_exactly_once_before_the_next_observation():
+def test_resolve_helper_adopts_exactly_once_after_the_next_observation_epoch_check():
     async def main():
         r = await rig(pick("h"), "w")
         try:
@@ -468,7 +469,7 @@ def test_resolve_helper_adopts_exactly_once_before_the_next_observation():
             await r.turns(1)
             adopted = r.helps("adopted")
             assert len(adopted) == 1 and adopted[0]["turn"] == 1 and adopted[0]["body"]["source"] == "operator"
-            assert [e["kind"] for e in r.sink.entries if e["turn"] == 1][:2] == ["help", "observation"]
+            assert [e["kind"] for e in r.sink.entries if e["turn"] == 1][:2] == ["observation", "help"]
             assert r.s1.contexts[1]["guidance"][0]["source"] == "operator"
             await r.loop.stop("finish")
             finish_trace(r)

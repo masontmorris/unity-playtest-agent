@@ -43,8 +43,8 @@ BODY_KEYS = {
 REQUEST_KEYS = {"action_id", "choice_id", "action", "params", "based_on_seq", "max_age_s", "depends_on", "lease_s"}
 TOKENS = {"observation": "O", "choice_set": "S", "context": "C", "s1_call": "1", "decision": "D",
           "execution": "X", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F"}
-# [adopted] observation choice_set suspicion* context s1_call* decision [opened|repeat] (execution [effect suspicion*])* turn
-ORDER = re.compile(r"^A?OSP*C1*DH?(X(EP*)?){0,2}T$")
+# New traces check the observation epoch before adoption/cancellation; historical traces may resolve first.
+ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1*DH?(X(EP*)?){0,2}T$")
 
 
 def problems(entries: list[dict[str, Any]]) -> list[str]:
@@ -81,6 +81,9 @@ def problems(entries: list[dict[str, Any]]) -> list[str]:
         if not ORDER.match(tokens):
             found.append(f"turn {number} has entries in the order {tokens}")
             continue
+        context = next((e["body"]["payload"] for e in group if e["kind"] == "context"), {})
+        if "recent_history" in context and tokens.startswith("A"):
+            found.append(f"turn {number} adopts help before checking its observation epoch")
         try:
             found += _turn(number, group, previous_version, records)
             previous_version = ChoiceSet.model_validate(_one(group, "choice_set")["body"]).set_version
@@ -93,7 +96,7 @@ def problems(entries: list[dict[str, Any]]) -> list[str]:
 
 def _token(entry: dict[str, Any]) -> str:
     if entry["kind"] == "help":
-        return "A" if entry["body"]["event"] == "adopted" else "H"
+        return {"adopted": "A", "cancelled": "K"}.get(entry["body"]["event"], "H")
     if entry["kind"] == "investigation":
         return ""
     return TOKENS[entry["kind"]]

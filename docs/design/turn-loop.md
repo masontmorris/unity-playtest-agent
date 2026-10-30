@@ -105,10 +105,12 @@ tests never really wait.
 2. While help is pending S1's ordinary selections execute exactly as chosen, and an explicit wait sends
    no input.
 3. At most one request is open. A repeat is recorded (`help` `repeat`) and creates no new call.
-4. A finished result is adopted once, at the top of a later turn, and shown with its source and age; S1
-   decides what to do with it. The frontier stages directive and hypothesis updates while its task runs.
-   The loop's synchronous `adopt_result` hook publishes that state at adoption, before collecting facts.
-   A result that finishes during observation capture cannot start a scoring window in that same turn.
+4. The loop remembers which result was ready when a turn began, then checks the fresh observation's
+   epoch before adopting it and collecting facts. A scene/session change or regressing clock/frame
+   discards the prior epoch's request, including completed, externally resolved or late results.
+   The adopted result carries its source and age; S1 decides what to do with it. The frontier stages
+   updates while its task runs, and the synchronous `adopt_result` hook publishes them at adoption.
+   A result that finishes during observation capture waits until a later eligible turn.
 5. Stop cancels the helper and releases inputs. The optional `discard_result` hook clears unadopted
    state and prevents late completion from publishing after cancellation or invalidation.
 

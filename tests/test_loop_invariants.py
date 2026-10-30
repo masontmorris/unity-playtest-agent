@@ -122,7 +122,7 @@ def test_help_continue_runs_only_pending_choice():
             assert game.applied() == ["shift"]
             assert loop.helper_count == 1
             assert loop.resolve_helper("helped") is True
-            assert loop.helper_count == 0
+            assert loop.helper_count == 1  # externally resolved, awaiting a fresh observation's epoch check
             second = await loop.run_turn(Script([
                 {"choice_id": "d", "while_pending": {"mode": "continue", "choice_id": "c2"}},
             ]))
@@ -200,9 +200,10 @@ def test_helper_resolves_exactly_once():
             ]))
             assert loop.helper_count == 1
             assert loop.resolve_helper("resolution") is True
-            assert loop.adoptions == ["resolution"]
-            assert loop.helper_count == 0
+            assert loop.adoptions == []
+            assert loop.helper_count == 1
             assert loop.resolve_helper("resolution-again") is False
+            await loop.run_turn(Script([{"choice_id": "w"}]))
             assert loop.adoptions == ["resolution"]
             assert loop.helper_count == 0
         finally:
