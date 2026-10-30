@@ -669,3 +669,38 @@ def test_list_caps_remain_model_constraints():
     assert value is None
     assert any("steps" in error for error in errors)
     assert any("hypotheses" in error for error in errors)
+
+
+# --- exploration targets (#179) ------------------------------------------------------------------
+
+
+def test_system_prompt_invites_exploration_targets():
+    """The frontier may point S1 at parts of the level its clip shows but no recorded action tried.
+
+    The provider serializes SYSTEM verbatim as the request's system message, so this also keeps
+    the instruction in every frontier request.
+    """
+    assert "- exploration targets:" in frontier.SYSTEM
+    for needle in (
+        "do not appear to have reached or used",
+        "never replaces accounting for each suspicion",
+        "target (kind location)",
+        "propose none",
+        "supports no candidate_finding by itself",
+    ):
+        assert needle in frontier.SYSTEM
+
+
+def test_exploration_answer_passes_review(manifest, refs):
+    """A hypothesis about an untried part plus a go-try directive needs no contract change."""
+    body = answer(
+        hypotheses=[{**hypothesis("h2"), "statement": "an untried part of the level may respond to input"}],
+        directive={
+            "text": "turn toward the part with move, approach it and use it",
+            "tests": "h2",
+            "target": {"kind": "location", "ref": "in view, left of centre"},
+            "expected": None,
+            "deadline_s": 60.0,
+        },
+    )
+    assert frontier.review(body, manifest, refs).clean

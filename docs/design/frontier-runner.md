@@ -276,6 +276,33 @@ answer in the layout against 2.1k in the list), and nothing bounds it: dropping 
 negative one. With the frontier attached, `guidance` is a mapping once anything is adopted (an error-only first answer
 gives empty first two blocks); it was a list.
 
+## Exploration targets (#179)
+
+Across six b04 sessions S1 never reached the stairs' front (closest measured:
+4.42 units in sessions 4–6, beside the stairs; once 3.24 units from a side
+staircase in session 4). In session 6 it picked `wait` (63) or `move_forward`
+(36) on 99 of 146 turns, and the adopted frontier hypotheses explained
+suspicions (jump displacement, `move_forward` shortfalls, `jump_ttl`) rather
+than pointing at untried level parts. The system prompt now lets the frontier,
+when its clip shows a part of the level no recorded action appears to have
+reached or used, add a hypothesis about it with a directive that sends S1 to go
+and try it. The wording stays generic
+(`tests/test_name_blind.py` bans feature words in roles): a part, grounded in
+what the clip shows and where in the view it appears, with `unknown` for what
+the clip and the bounded recent rows do not settle.
+
+**What this does.** Advice only, inside the existing contracts: a hypothesis
+whose `confirm_if`/`refute_if` name readings or an `effect.<action>`
+displacement, and a directive with a `location` target proposing packet choices
+by id. It adds to the answer and never replaces accounting for each suspicion;
+the clip alone supports no candidate finding. `review` accepts such an answer
+unchanged (`tests/test_roles_frontier.py`).
+
+**What this does not do.** No code chooses, ranks or substitutes: S1 still
+decides whether to follow the directive. Whether the frontier proposes such
+targets, and whether S1 follows them, is untested — no model call was made for
+this change — and any claim about findings needs a paired evaluation.
+
 ## S1 ownership and evidence audit
 
 | Branch | Runtime behavior | Evidence |
@@ -289,5 +316,6 @@ gives empty first two blocks); it was a list.
 | Directive scoring | Reads the current observation and shared comparator result to write a fact and trace outcome; it cannot call the help port or choose input. | `runner/directives.py:45-71`; all terminal outcomes covered in `tests/test_frontier_help.py`. |
 | Guidance layout | Lays out results already adopted. The loop sends the layout only if `restore_guidance` returns the adopted list exactly, else the list. No choice, help request, default or adoption is read or changed, and no count, score or timer is involved. | `TurnLoop._guidance_view`; `runner/guidance_codec.py`; `tests/test_guidance_codec.py`, `tests/test_loop_guidance_layout.py`. |
 | Reader notes | Labels each recorded note an unverified preflight-model inference in the frontier's manifest message. Every note is sent as written; no code filters, ranks, or acts on one, and the answer schema, packet and choices do not change. | `provider.manifest_message`, `FrontierHelp.reader_notes`; `tests/test_frontier_provider.py` and `tests/test_frontier_help.py` (actual request). |
+| Exploration targets | Prompt text invites a hypothesis plus a go-try directive about a clip-shown part no recorded action tried. Advice only: no branch chooses, escalates, or substitutes, and the directive is scored like any other. | `roles/frontier.py` SYSTEM; `tests/test_roles_frontier.py` (prompt needles, review acceptance). |
 
 The request uses the exact context S1 received and the explicit request turn and observation sequence. Investigation rows cite the corresponding observation's trace entry. The fake end-to-end trace passes the trace-entry validator, adherence checker and trace replay checks. No live trace was collected, as requested.
