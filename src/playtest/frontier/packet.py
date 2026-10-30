@@ -1,9 +1,9 @@
 """One frontier escalation packet: what S1 saw, offered and chose (#33).
 
 The packet is assembled from records the loop already measured: the observation the choice set was
-bound to, the full choice set, the escalation turn, facts, recent records, hypotheses and the live
-directive. Nothing is ranked, recommended or replaced, and S1's rationale and distribution are not
-part of it (build bible section 6; S1 ownership rules 1-3).
+bound to, the full choice set, the escalation turn, facts, recent records, hypotheses, the live
+directive and the suspicions raised so far. Nothing is ranked, recommended or replaced, and S1's
+rationale and distribution are not part of it (build bible section 6; S1 ownership rules 1-3).
 
 Citable sequence numbers come only from explicit fields: the observation, a fact's `seqs`, and a
 recent row's `seq`. Numbers nested elsewhere are evidence for a reader, not citations the frontier
@@ -26,6 +26,10 @@ from playtest.core.context import canonical
 from playtest.roles import frontier
 
 HYPOTHESIS_STATUSES = frozenset({"open", "supported", "contradicted", "withdrawn"})
+
+# The packet states this many suspicions, the most recent. A run can raise more (one Day 6 gate session raised 46);
+# the packet says how many it left out, so a cut is stated and never hidden.
+MAX_SUSPICIONS = 40
 
 _RATIONALE_KEYS = frozenset({"reason", "distribution"})
 _RECORD_KEYS = frozenset({"turn", "decision"})
@@ -74,6 +78,7 @@ def build_packet(
     clip: dict[str, Any] | None = None,
     clip_unavailable_reason: str | None = None,
     findings: Sequence[Mapping[str, Any]] = (),
+    suspicions: Sequence[Mapping[str, Any]] = (),
 ) -> Packet:
     """Build one packet without changing what S1 saw or chose.
 
@@ -94,6 +99,7 @@ def build_packet(
     clip_row, reason = _clip(clip, clip_unavailable_reason)
     escalation_row = _escalation(escalation)
     finding_rows = _findings(findings)
+    suspicion_rows, suspicions_omitted = _suspicions(suspicions)
 
     payload: dict[str, Any] = {
         "objective": objective,
@@ -125,6 +131,8 @@ def build_packet(
         "hypotheses": hypothesis_rows,
         "new_hypothesis_ids": new_ids,
         "findings": finding_rows,
+        "suspicions": suspicion_rows,
+        "suspicions_omitted": suspicions_omitted,
         "clip": clip_row,
         "clip_unavailable_reason": reason,
     }
@@ -272,6 +280,34 @@ def _findings(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                     "repro_check": copy.deepcopy(dict(check)) if check is not None else None})
         seen.add(finding_id)
     return out
+
+
+def _suspicions(values: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """The suspicions raised so far in this run, in the order given (oldest first), and how many the cap left out.
+
+    Every row is checked, kept or not. Nothing is ranked, filtered by content or merged; when there are more than
+    `MAX_SUSPICIONS`, the oldest are the only ones dropped, and their number is returned so the packet can state it.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, value in enumerate(values):
+        where = f"suspicions[{i}]"
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{where} is not an object")
+        suspicion_id = value.get("suspicion_id")
+        if not isinstance(suspicion_id, str) or not suspicion_id.strip() or suspicion_id in seen:
+            raise ValueError(f"{where} needs a unique suspicion_id")
+        row: dict[str, Any] = {"suspicion_id": suspicion_id}
+        for key in ("basis", "subject", "statement"):
+            text = value.get(key)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"{where} has an empty {key}")
+            row[key] = text
+        row["turn"] = _seq(value.get("turn"), f"{where}.turn")
+        out.append(row)
+        seen.add(suspicion_id)
+    kept = out[-MAX_SUSPICIONS:]
+    return kept, len(out) - len(kept)
 
 
 def _directive(value: Directive | None, *, where: str) -> dict[str, Any] | None:

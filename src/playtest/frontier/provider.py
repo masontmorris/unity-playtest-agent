@@ -48,8 +48,8 @@ _MANIFEST_NOTE = (
     "observation seq, a fact's seqs and a recent row's seq: numbers inside hypotheses or directives "
     "are earlier records, not new citations. A field's calibration, where present, is how it changed when "
     "preflight sampled it on this build before play, idle and with each control held. Its source is the game "
-    "field it reads, and its preflight_note is what the preflight model wrote when it chose the field: a "
-    "description, not a measurement."
+    "field it reads, and its preflight_note is what the preflight model wrote when it chose the field: what "
+    "the field is meant to be, not a measurement."
 )
 # Preflight's freshness classes (`preflight.freshness`), worded for the model. A field without one is unknown.
 CALIBRATION_LABELS = {

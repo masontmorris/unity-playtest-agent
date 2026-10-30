@@ -24,7 +24,7 @@ from playtest.contracts.loop import (
     WhilePending,
 )
 from playtest.core.context import canonical
-from playtest.frontier.packet import Packet, build_packet
+from playtest.frontier.packet import MAX_SUSPICIONS, Packet, build_packet
 from playtest.roles import frontier
 
 
@@ -484,3 +484,67 @@ def test_findings_already_recorded_are_carried_and_malformed_rows_are_refused():
                         ([{**rows[0], "repro_check": "x"}], "not an object")):
         with pytest.raises(ValueError, match=needle):
             build(findings=bad)
+
+
+# --- suspicions ----------------------------------------------------------------------------------
+
+
+def suspicion_row(n: int, **overrides) -> dict:
+    values = {"suspicion_id": f"s{n}", "basis": "drift", "subject": "public.counter", "turn": n,
+              "statement": f"public.counter set a new low at each of {n} readings."}
+    values.update(overrides)
+    return values
+
+
+def test_suspicions_are_carried_in_the_order_given_with_nothing_left_out():
+    rows = [suspicion_row(3, basis="range_exit"), suspicion_row(1, subject="move"), suspicion_row(2)]
+    packet = build(suspicions=[{**row, "trace_seq": 40 + i} for i, row in enumerate(rows)])
+    # Only the five stated keys are kept, and the order is the caller's: nothing is ranked or sorted.
+    assert packet.payload["suspicions"] == rows
+    assert packet.payload["suspicions_omitted"] == 0
+    assert build().payload["suspicions"] == [] and build().payload["suspicions_omitted"] == 0
+    # A suspicion states no sequence number, so it adds nothing the frontier may cite.
+    assert packet.refs.seqs == build().refs.seqs
+
+
+def test_only_the_most_recent_suspicions_are_kept_and_the_packet_counts_the_rest():
+    limit = MAX_SUSPICIONS
+    assert limit == 40
+    rows = [suspicion_row(n) for n in range(1, 46)]
+    packet = build(suspicions=rows)
+    assert packet.payload["suspicions"] == rows[-limit:]            # the 40 newest, still oldest first
+    assert packet.payload["suspicions"][0]["suspicion_id"] == "s6" and packet.payload["suspicions_omitted"] == 5
+    exact = build(suspicions=rows[:limit])
+    assert exact.payload["suspicions"] == rows[:limit] and exact.payload["suspicions_omitted"] == 0
+    over = build(suspicions=rows[:limit + 1])
+    assert over.payload["suspicions"] == rows[1:limit + 1] and over.payload["suspicions_omitted"] == 1
+
+
+@pytest.mark.parametrize(
+    "rows, needle",
+    [
+        ([suspicion_row(1), suspicion_row(2, suspicion_id="s1")], "unique suspicion_id"),
+        ([suspicion_row(1, suspicion_id=" ")], "unique suspicion_id"),
+        ([suspicion_row(1, suspicion_id=None)], "unique suspicion_id"),
+        ([suspicion_row(1, statement="  ")], "empty statement"),
+        ([suspicion_row(1, statement=None)], "empty statement"),
+        ([suspicion_row(1, basis="")], "empty basis"),
+        ([suspicion_row(1, subject=3)], "empty subject"),
+        ([suspicion_row(1, turn=-1)], "non-negative integer"),
+        ([suspicion_row(1, turn=True)], "non-negative integer"),
+        ([suspicion_row(1, turn="4")], "non-negative integer"),
+        (["s1: a suspicion as text"], "not an object"),
+        ([{key: value for key, value in suspicion_row(1).items() if key != "turn"}], "non-negative integer"),
+    ],
+    ids=["duplicate_id", "blank_id", "null_id", "blank_statement", "null_statement", "empty_basis", "number_subject",
+         "negative_turn", "bool_turn", "string_turn", "not_a_row", "missing_turn"],
+)
+def test_malformed_suspicion_rows_are_refused(rows, needle):
+    with pytest.raises(ValueError, match=needle):
+        build(suspicions=rows)
+
+
+def test_a_malformed_row_is_refused_even_when_the_cap_would_have_dropped_it():
+    rows = [suspicion_row(1, statement=""), *(suspicion_row(n) for n in range(2, 50))]
+    with pytest.raises(ValueError, match="empty statement"):
+        build(suspicions=rows)

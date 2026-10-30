@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import get_args
 
 import pytest
 
@@ -323,6 +324,23 @@ def test_the_prompt_and_schema_say_how_each_setpoint_is_scored(manifest):
     for needle in ("must not already hold", "changed is met when the value first differs",
                    "unchanged is met only if the value stays as it is until the deadline", "it needs deadline_s"):
         assert needle in frontier.SYSTEM
+
+
+def test_the_prompt_weighs_calibration_against_a_fields_note_and_asks_for_every_suspicion_to_be_answered():
+    prompt = frontier.SYSTEM
+    for needle in ("Calibration says whether a field changed on this build, not whether the change is right",
+                   "A field's preflight_note says what it is meant to be",
+                   "even if calibration saw it change and even if S1 escalated about something else",
+                   "propose a candidate_finding with expected_source interpretation and cite the observation seq",
+                   "The packet's suspicions are every suspicion raised so far in this run"):
+        assert needle in prompt
+    assert ExpectedSource.interpretation.value == "interpretation"      # the source the prompt names is a real one
+    # Calibration no longer excuses a reading that contradicts its note, so the old reassurance is gone.
+    assert "was there before S1 played" not in prompt
+    # The statuses the prompt offers for answering a suspicion are statuses an answer can carry.
+    named = prompt.split("account for each in a hypothesis (")[1].split(")")[0].replace(" or ", ", ").split(", ")
+    assert named == ["open", "supported", "contradicted"]
+    assert set(named) <= set(get_args(frontier.HypothesisOut.model_fields["status"].annotation))
 
 
 # --- add and prune choices -----------------------------------------------------------------------
