@@ -768,8 +768,14 @@ class TurnLoop:
             "helper_attached": self._help is not None,
         }
 
-    def _guidance_view(self, now: datetime) -> list[dict[str, Any]]:
-        return [
+    def _guidance_view(self, now: datetime) -> list[dict[str, Any]] | Mapping[str, Any]:
+        """The adopted results as S1 reads them: this list, or the port's layout of exactly this list.
+
+        A port that implements `render_guidance(items)` and `restore_guidance(view)` is believed only when
+        `restore_guidance` gives back the very list it was handed. A layout that is lossy, malformed or raises
+        is never sent; the list goes as it is, so a faulty renderer can make a context larger and nothing else.
+        """
+        items = [
             {
                 "source": item.source,
                 "kind": item.kind,
@@ -782,6 +788,17 @@ class TurnLoop:
             }
             for item in self._guidance
         ]
+        render = getattr(self._help, "render_guidance", None)
+        restore = getattr(self._help, "restore_guidance", None)
+        if not items or render is None or restore is None:
+            return items
+        try:
+            view = render(copy.deepcopy(items))
+            if isinstance(view, (Mapping, list)) and canonical(restore(copy.deepcopy(view))) == canonical(items):
+                return view
+        except Exception:  # noqa: BLE001 - whatever went wrong, S1 gets the list unchanged
+            pass
+        return items
 
     # --- stop -------------------------------------------------------------------------------
 

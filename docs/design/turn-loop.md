@@ -98,6 +98,8 @@ tests never really wait.
 - `guidance` appears only once a helper's result has been adopted, so a payload without any keeps its exact
   bytes (frozen corpora hash their payloads). Each entry carries the source, the request's kind and turns,
   the result and its age. It stays in every later context with a growing age; the loop does not window it.
+  A help port may lay the list out differently (`render_guidance` and `restore_guidance`, see `frontier-runner.md`).
+  The loop sends that layout only if `restore_guidance` gives back exactly this list; otherwise it sends the list.
 
 ## Help
 
@@ -355,7 +357,8 @@ the order of the entries and what the next steps can cite.
   duration is honored only in real time). A hold blocks the bridge client until its terminal record, so the
   cycle is the hold plus the S1 call.
 - **The frontier and helper implementations.** The port, request and result types exist; nothing answers.
-- **A facts window.** Facts describe the last turn only, and guidance is never windowed or compacted.
+- **A facts window.** Facts describe the last turn only, and guidance is never windowed or summarised (#170 lays
+  it out more compactly and drops nothing).
 - **Per-action freshness.** `depends_on` is empty because reader freshness is `null` in the manifest.
 - **A runtime choice builder.** The choice set is static and preconditions are not evaluated. (The
   manifest's readers are installed in the live observation now; see "Readers and the watch".)

@@ -10,9 +10,10 @@ module never drops, reorders, ranks or rewrites any of them, and it never adds a
 wall time, because the game clock can be paused or stepped.
 
 `pending_help` is always present: `null` when no help request is open, an object when one is.
-`guidance` is present only once a helper's result has been adopted. `recent_history` is present
-only when supplied. A payload built without either keeps its exact bytes (frozen corpora hash their
-payloads); the history is copied so later changes cannot alter the request.
+`guidance` is present only once a helper's result has been adopted: a list of the adopted items, or
+the mapping a helper laid them out as (the caller has checked that it loses none of them). `recent_history`
+is present only when supplied. A payload built without either keeps its exact bytes (frozen corpora
+hash their payloads); a mapping and the history are copied so later changes cannot alter the request.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def build_context(
     age_s: float | None = None,
     sample_gap_s: float | None = None,
     game_view: str | None = None,
-    guidance: Sequence[Mapping[str, Any]] = (),
+    guidance: Sequence[Mapping[str, Any]] | Mapping[str, Any] = (),
     recent_history: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the S1 request payload without changing what S1 is allowed to see.
@@ -89,7 +90,8 @@ def build_context(
         "game_view": game_view,
     }
     if guidance:
-        payload["guidance"] = [dict(item) for item in guidance]
+        payload["guidance"] = (copy.deepcopy(dict(guidance)) if isinstance(guidance, Mapping)
+                               else [dict(item) for item in guidance])
     if recent_history is not None:
         payload["recent_history"] = copy.deepcopy(dict(recent_history))
     return payload

@@ -22,6 +22,7 @@ from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
 from playtest.roles import frontier
 from playtest.roles.checks import field_value
+from playtest.runner import guidance_codec
 from playtest.runner.choices import UNIT
 from playtest.runner.directives import DirectiveTracker
 from playtest.runner.frontier_history import recent_records
@@ -466,6 +467,17 @@ class FrontierHelp:
         """Forget an unadopted response, including one that finishes after invalidation."""
         self._staged.pop(request_turn, None)
         self._discarded.add(request_turn)
+
+    def render_guidance(self, items: Any) -> dict[str, Any]:
+        """The adopted guidance as S1 reads it: current rows, earlier versions and a ledger (`guidance_codec`).
+
+        Layout only. The loop sends it only if `restore_guidance` gives back exactly `items`.
+        """
+        return guidance_codec.render(items)
+
+    def restore_guidance(self, view: Any) -> list[dict[str, Any]]:
+        """The exact inverse of `render_guidance`; raises when `view` is not one it could have produced."""
+        return guidance_codec.restore(view)
 
     def _record_finding(self, proposed: Any, turn: int, evidence: _FindingEvidence) -> dict[str, Any]:
         """Write the frontier's candidate finding to the trace, citing trace entries, and say what happened.
