@@ -144,7 +144,12 @@ def action(name: str, controls: str | dict[str, Any] | list[str | dict[str, Any]
     measured = holds if holds is not None else []
     lowest = tap_hold_s if tap_hold_s is not None else None
     requested = hold_s if hold_s is not None else tap_hold_s
-    matching = [h["effective_in_all_repeats"] for h in measured if h["requested_hold_s"] == requested] if len(ids) == 1 else []
+    # As the contract requires: a hold effect only for the exact input value calibration measured.
+    single = specs[0] if len(ids) == 1 else None
+    same_value = single is not None and (
+        single.get("device") == "Keyboard"
+        or (single.get("x"), single.get("y")) == (calibrated if calibrated is not None else (single.get("x"), single.get("y"))))
+    matching = [h["effective_in_all_repeats"] for h in measured if h["requested_hold_s"] == requested] if same_value else []
     proven = requested is not None if supported is None else supported and requested is not None
     declaration = {"backend": "input_system", "inputs": specs, "default_lease_s": requested}
     return {

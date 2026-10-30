@@ -1,0 +1,311 @@
+{
+  "schema_version": 2,
+  "packet_sha256": "8c7afd8f123476c344c271347b4bc68c0076a5902e63374fc6e475f06cdea918",
+  "entity_id": "entity",
+  "entity": {
+    "id": "entity",
+    "path": "root",
+    "scene_id": "scene",
+    "scene_path": "Assets/scene"
+  },
+  "inventory_caps": {},
+  "discovery_caps": {
+    "bindings": {
+      "limit": 100,
+      "observed": 4,
+      "returned": 4,
+      "truncated": false
+    },
+    "components": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "fields": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    },
+    "game_objects": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    },
+    "input_asset_bindings": {
+      "limit": 100,
+      "observed": 0,
+      "returned": 0,
+      "truncated": false
+    },
+    "source_characters": {
+      "limit": 100,
+      "observed": 7,
+      "returned": 7,
+      "truncated": false
+    },
+    "source_files": {
+      "limit": 100,
+      "observed": 1,
+      "returned": 1,
+      "truncated": false
+    }
+  },
+  "image": null,
+  "readers": [
+    {
+      "alias": "state",
+      "selection_id": "field_00000",
+      "field_id": "field",
+      "why": "observe",
+      "declared_type": "System.Single",
+      "kind": "number",
+      "descriptor": {
+        "field_type": "System.Single",
+        "id": "field",
+        "scene_id": "scene",
+        "value_kind": "number",
+        "value_state": "present"
+      },
+      "freshness": null,
+      "freshness_reason": "field identity across captures is not established",
+      "freshness_evidence": {
+        "classification": "unknown",
+        "continuous_classification": null,
+        "field_id": "field_00000",
+        "sampling_limitation": null,
+        "identity_verified": false
+      }
+    }
+  ],
+  "actions": [
+    {
+      "name": "reverse_axis",
+      "intent": "act",
+      "inputs": [
+        {
+          "control_id": "mouse_delta",
+          "device": "Mouse",
+          "control": "delta",
+          "x": -1.0,
+          "y": 0.0
+        }
+      ],
+      "hold_s": 0.05,
+      "tap_hold_s": null,
+      "preconditions": [],
+      "calibrations": [
+        {
+          "control": "mouse_delta",
+          "bindings": [
+            {
+              "action_id": "action_0",
+              "binding_id": "binding_0",
+              "part": "",
+              "path": "<Mouse>/delta",
+              "source_object_id": "entity"
+            }
+          ],
+          "resolution": "mouse_relative_delta",
+          "device": "Mouse",
+          "control_name": "delta",
+          "control_type": "Delta",
+          "declared_x": 1.0,
+          "declared_y": 0.0,
+          "holds": [
+            {
+              "requested_hold_s": 0.05,
+              "valid_trials": 2,
+              "mean_delta": [
+                0.25,
+                0.0,
+                0.0
+              ],
+              "mean_magnitude": 0.25,
+              "sample_variance": 0.0,
+              "effective_in_all_repeats": true
+            },
+            {
+              "requested_hold_s": 0.4,
+              "valid_trials": 2,
+              "mean_delta": [
+                2.0,
+                0.0,
+                0.0
+              ],
+              "mean_magnitude": 2.0,
+              "sample_variance": 0.0,
+              "effective_in_all_repeats": true
+            },
+            {
+              "requested_hold_s": 1.2,
+              "valid_trials": 2,
+              "mean_delta": [
+                6.0,
+                0.0,
+                0.0
+              ],
+              "mean_magnitude": 6.0,
+              "sample_variance": 0.0,
+              "effective_in_all_repeats": true
+            }
+          ],
+          "lowest_tested_effective_requested_hold_s": 0.05,
+          "shortest_observed_effective_hold_s": null,
+          "minimum_hold_scope": "unknown",
+          "inverted_relative_to_entity_basis": null,
+          "signed_basis_projections": [],
+          "dead_zone": null,
+          "dead_zone_reason": "not measured",
+          "sensitivity": null,
+          "sensitivity_reason": "sensitivity is unknown: one declared value per control was measured, not a response curve"
+        }
+      ],
+      "axis": true,
+      "max_hold_s": null,
+      "hold_effect": true,
+      "execution_evidence": null,
+      "execution_supported": false
+    }
+  ],
+  "skills": [],
+  "progress": [],
+  "invariants": [],
+  "gaps": {
+    "scope": "model_report_relative_to_offered_and_selected_evidence",
+    "unobservable": [],
+    "uncontrollable": [],
+    "unjudgeable": [],
+    "coverage": [
+      "field freshness is unknown until calibration field identity is established",
+      "execution support requires release-verified evidence for the exact declared inputs, values, holds and step order",
+      "selected readers are not installed or verified in the live observation source",
+      "the manifest action catalog is not installed or verified in a live run",
+      "reset has not been verified as part of this manifest run",
+      "reset method candidates are not emitted by the current discovery collector",
+      "no screenshot was supplied",
+      "some selected action holds have no established effective response",
+      "axis control 'mouse_delta' has a negative x direction but no positive x direction in selected actions or skills",
+      "some selected actions have no matching release-verified execution evidence"
+    ]
+  },
+  "selection": {
+    "offered_fields": [
+      {
+        "field_type": "System.Single",
+        "id": "field_00000",
+        "same_scene_as_entity": true,
+        "source_field_id": "field"
+      }
+    ],
+    "unselected_field_ids": [],
+    "unoffered_fields": [],
+    "offered_controls": [
+      {
+        "action": "preflight_gamepad_leftstick",
+        "bindings": [
+          {
+            "action_id": "action_1",
+            "binding_id": "binding_1",
+            "part": "",
+            "path": "<Gamepad>/leftStick",
+            "source_object_id": "entity"
+          }
+        ],
+        "control": "leftStick",
+        "control_name": "leftStick",
+        "control_type": "Stick",
+        "declared_x": 1.0,
+        "declared_y": 0.0,
+        "device": "Gamepad",
+        "id": "gamepad_leftstick",
+        "resolution": "gamepad_root_control",
+        "x": 1.0,
+        "y": 0.0
+      },
+      {
+        "action": "preflight_gamepad_righttrigger",
+        "bindings": [
+          {
+            "action_id": "action_2",
+            "binding_id": "binding_2",
+            "part": "",
+            "path": "<Gamepad>/rightTrigger",
+            "source_object_id": "entity"
+          }
+        ],
+        "control": "rightTrigger",
+        "control_name": "rightTrigger",
+        "control_type": "Axis",
+        "declared_x": 1.0,
+        "declared_y": 0.0,
+        "device": "Gamepad",
+        "id": "gamepad_righttrigger",
+        "resolution": "gamepad_one_dimensional_axis",
+        "x": 1.0,
+        "y": 0.0
+      },
+      {
+        "action": "preflight_mouse_delta",
+        "bindings": [
+          {
+            "action_id": "action_0",
+            "binding_id": "binding_0",
+            "part": "",
+            "path": "<Mouse>/delta",
+            "source_object_id": "entity"
+          }
+        ],
+        "control": "delta",
+        "control_name": "delta",
+        "control_type": "Delta",
+        "declared_x": 1.0,
+        "declared_y": 0.0,
+        "device": "Mouse",
+        "id": "mouse_delta",
+        "resolution": "mouse_relative_delta",
+        "x": 1.0,
+        "y": 0.0
+      },
+      {
+        "action": "preflight_key_w",
+        "bindings": [
+          {
+            "action_id": "action",
+            "binding_id": "binding",
+            "part": "up",
+            "path": "<Keyboard>/w",
+            "source_object_id": "entity"
+          }
+        ],
+        "control": "w",
+        "control_name": "w",
+        "control_type": "Button",
+        "declared_x": null,
+        "declared_y": null,
+        "device": "Keyboard",
+        "id": "w",
+        "resolution": "unity_key_name",
+        "x": null,
+        "y": null
+      }
+    ],
+    "unoffered_controls": [],
+    "unsupported_bindings": [],
+    "reader_cap": 16,
+    "reader_cap_reached": false,
+    "action_cap": 14,
+    "action_cap_reached": false,
+    "skill_cap": 6,
+    "skill_cap_reached": false,
+    "gap_caps_reached": {
+      "unobservable": false,
+      "uncontrollable": false,
+      "unjudgeable": false
+    }
+  },
+  "reset_bindings": null,
+  "reset_bindings_reason": "discovery did not emit callable reset candidates; no binding was selected"
+}

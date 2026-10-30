@@ -8,6 +8,7 @@ import json
 from playtest.contracts.action_catalog import (
     ActionDefinition,
     ActionStep,
+    GAMEPAD_ONE_DIMENSIONAL,
     InputBinding,
     evidence_problems,
     evidence_receipt_problems,
@@ -22,6 +23,58 @@ from playtest.roles.checks import value_kind
 
 ACTION_EXECUTION_GAP = "some selected actions have no matching release-verified execution evidence"
 SKILL_EXECUTION_GAP = "some selected skills have no matching release-verified execution evidence"
+# Flag only a substantial disparity, rather than preferring the maximum tested hold.
+MIN_EXPLORATION_DISPLACEMENT_RATIO = 0.25
+
+
+def _axis_coverage_gaps(actions: list[dict], skills: list[dict]) -> list[str]:
+    """Report missing signs for each declared component of a two-way physical axis."""
+    directions: dict[tuple[str, str], set[int]] = {}
+    declarations = [action["inputs"] for action in actions]
+    declarations += [step["inputs"] for skill in skills for step in skill["steps"]]
+    for inputs in declarations:
+        for item in inputs:
+            if item["device"] == "Gamepad" and item["control"] in GAMEPAD_ONE_DIMENSIONAL:
+                continue  # Trigger values are nonnegative, not two-way axes.
+            for component in ("x", "y"):
+                value = item[component]
+                if value is not None and value != 0:
+                    directions.setdefault((item["control_id"], component), set()).add(1 if value > 0 else -1)
+    gaps = []
+    for (control, component), signs in sorted(directions.items()):
+        if len(signs) == 1:
+            present = "positive" if 1 in signs else "negative"
+            missing = "negative" if 1 in signs else "positive"
+            gaps.append(f"axis control {control!r} has a {present} {component} direction but no {missing} "
+                        f"{component} direction in selected actions or skills")
+    return gaps
+
+
+def _short_step_gaps(actions: list[dict]) -> list[str]:
+    """Compare only the exact single-input value and requested holds measured in calibration."""
+    gaps = []
+    for action in actions:
+        if len(action["inputs"]) != 1:
+            continue
+        item, measured = action["inputs"][0], action["calibrations"][0]
+        if (item["x"], item["y"]) != (measured.get("declared_x"), measured.get("declared_y")):
+            continue
+        requested = action["hold_s"] if action["hold_s"] is not None else action["tap_hold_s"]
+        if requested is None:
+            continue
+        holds = [hold for hold in measured["holds"]
+                 if hold["effective_in_all_repeats"] is not None and hold["mean_magnitude"] is not None]
+        matched = [hold for hold in holds if hold["requested_hold_s"] == requested]
+        if len(matched) != 1 or not any(hold["effective_in_all_repeats"] is True for hold in holds):
+            continue
+        largest = max(hold["mean_magnitude"] for hold in holds)
+        chosen = matched[0]["mean_magnitude"]
+        if largest > 0 and chosen < MIN_EXPLORATION_DISPLACEMENT_RATIO * largest:
+            gaps.append(f"action {action['name']!r} on control {item['control_id']!r} has a measured mean "
+                        f"displacement of {chosen:.4g} at {requested:g}s, below "
+                        f"{MIN_EXPLORATION_DISPLACEMENT_RATIO:.0%} of the largest repeated mean "
+                        f"displacement {largest:.4g} for that control; exploration steps may be short")
+    return gaps
 
 
 def refresh_execution_coverage(value: dict) -> None:
@@ -62,6 +115,8 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
         coverage.append("some selected action holds have no established effective response")
     if any(a["hold_effect"] is False for a in actions):
         coverage.append("some tested holds did not meet the repeated entity-displacement threshold")
+    coverage.extend(_axis_coverage_gaps(actions, skills))
+    coverage.extend(_short_step_gaps(actions))
     if skills:
         coverage.append("each selected skill needs its own ordered release-verified execution evidence")
     if any((step.get("hold_s") is None and step.get("tap_hold_s") is None) for skill in skills for step in skill["steps"]):
@@ -199,8 +254,10 @@ def assemble(packet: Packet, result: RunResult) -> PreflightManifest:
         if tap is not None and (len(tap_matches) != 1 or tap_matches[0]["effective_in_all_repeats"] is not True):
             tap = None
         requested = action.hold_s if action.hold_s is not None else tap
+        same_value = len(ids) == 1 and (action.inputs[0].x, action.inputs[0].y) == (
+            measured[0].get("declared_x"), measured[0].get("declared_y"))
         matching = [h["effective_in_all_repeats"] for h in measured[0]["holds"]
-                    if requested is not None and h["requested_hold_s"] == requested] if len(ids) == 1 else []
+                    if requested is not None and h["requested_hold_s"] == requested] if same_value else []
         axis = any((summary.get("control_type") or "Button") in preflight.AXIS_CONTROLS for summary in measured)
         declared_inputs = [{"control_id": item.control_id,
                             "device": summary.get("device") or "Keyboard",

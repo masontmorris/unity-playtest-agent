@@ -820,7 +820,7 @@
               "type": "null"
             }
           ],
-          "description": "Entity-displacement response in repeated trials, or null if not established",
+          "description": "Entity-displacement response in repeated trials for the exact input value and hold, or null if not established",
           "title": "Hold Effect"
         },
         "hold_s": {

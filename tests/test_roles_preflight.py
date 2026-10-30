@@ -373,6 +373,17 @@ def test_all_stage_uses_the_readers_in_the_same_answer(discovery):
 # --- prompts -------------------------------------------------------------------------------------
 
 
+def test_action_selection_prompt_asks_for_useful_steps_and_opposite_axis_directions():
+    for stage in ("actions", "all"):
+        text = preflight.STAGE_PROMPTS[stage]
+        assert "per-hold displacement numbers" in text
+        assert "useful exploration step" in text
+        assert "not merely the shortest hold" in text
+        assert "a few units per step can let a session cover the level" in text
+        assert "opposite direction on that same control: left and right, up and down" in text
+        assert "One-way controls such as triggers do not need an opposite" in text
+
+
 def test_retry_turn_lists_each_problem_on_its_own_line():
     text = preflight.retry_turn("actions", ["p1", "p2"])
     assert "actions" in text
