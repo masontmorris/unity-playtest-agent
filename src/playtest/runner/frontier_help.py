@@ -12,7 +12,8 @@ from playtest.contracts.bridge import Observation
 from playtest.contracts.investigation import Directive
 from playtest.contracts.loop import ChoiceKind, ChoiceSet, TurnOutcome, TurnRecord
 from playtest.contracts.trace import TraceAuthor
-from playtest.core.findings import FindingLog
+from playtest.core.findings import FindingLog, suspicions_in
+from playtest.core.trace import read_trace
 from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
 from playtest.roles import frontier
@@ -57,12 +58,32 @@ def reader_notes(readers: Any) -> dict[str, dict[str, str]]:
     return out
 
 
+def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
+    """Every suspicion the trace holds so far, oldest first, as rows for the packet.
+
+    A `MemorySink` lists its entries by kind. The file-backed `TraceWriter` keeps no entries, but it flushes each
+    one as it writes it, so its file is the trace so far and is read back whole. A line that does not parse is an
+    error here, not a gap: a suspicion is never left out because the file could not be read. Nothing is filtered,
+    merged or reordered; the packet's cap is the only limit.
+    """
+    of_kind = getattr(sink, "of_kind", None)
+    entries = of_kind("suspicion") if of_kind is not None else read_trace(sink.path)
+    return [{"suspicion_id": raised.suspicion.suspicion_id, "basis": raised.suspicion.basis.value,
+             "subject": raised.suspicion.subject, "turn": raised.suspicion.turn,
+             "statement": raised.suspicion.statement}
+            for raised in suspicions_in(entries)]
+
+
 class FrontierHelp:
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
                  capture: Callable[..., media.Clip] = media.capture_clip,
                  max_calls: int | None = None, calibration: Mapping[str, Any] | None = None) -> None:
+        # A sink that cannot be read back is refused now, before any paid call, not at the first request.
+        if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
+            raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
+                             "frontier can be shown the suspicions recorded so far")
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -96,6 +117,8 @@ class FrontierHelp:
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
             return HelpResult(source="frontier", result={"error": "approved frontier call cap reached",
                                                            "hypotheses": [], "directive": None})
+        # The trace as of this request, read before the first await: S1 keeps choosing while the clip is captured.
+        suspicions = recorded_suspicions(self.sink)
         now = dt.datetime.now(dt.timezone.utc)
         observation = Observation(
             session="runner", seq=seq, game_s=as_of.get("game_s"), wall_utc=now,
@@ -127,6 +150,7 @@ class FrontierHelp:
             new_hypothesis_ids=ids, age_s=context.get("as_of", {}).get("age_s"),
             clip=clip.descriptor, clip_unavailable_reason=clip.reason,
             findings=[{key: f[key] for key in ("finding_id", "title", "repro_check")} for f in self.findings],
+            suspicions=suspicions,
         )
         # The live S1 context does not expose the bridge frame number. Do not send the
         # placeholder needed by Observation's local constructor as if it were measured.

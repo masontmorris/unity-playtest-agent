@@ -120,12 +120,37 @@ never had would have changed that.
   and with every control held, and never saw it change. The manifest message now gives each reader the
   class calibration measured: changed only while a control was held, only with none held, both, or no
   change seen. A reader calibration could not classify carries no label, so it stays unknown rather than
-  looking measured. The prompt says this behaviour was present before S1 played.
+  looking measured. The prompt says what calibration does and does not tell it; see the next section.
 - **Recorded findings.** The packet now lists the candidate findings already recorded in this run (id,
   title and `repro_check`), and the prompt asks for none of them again. Code still never compares,
   merges or rejects a finding as a duplicate; the frontier decides.
 
 The code names no game field and no seeded bug: both facts come from this run's own preflight and trace.
+
+## What the frontier is told about a field's note and the run's suspicions
+
+In four live sessions of the Day 6 gate (#41), a reader drifted far past what its own field description allows,
+and the frontier never proposed a finding. The drift suspicion was restated in the facts every turn. Two things
+kept it from being weighed.
+
+- **Calibration was read as approval.** The prompt said behaviour calibration already saw "was there before S1
+  played", so a value that had changed in calibration looked normal. It now says calibration is whether a field
+  changed on this build, not whether the change is right. A field's `preflight_note` says what it is meant to be
+  (the manifest message labels it "what the field is meant to be, not a measurement"). A reading that contradicts
+  it, such as a countdown, fraction or flag running past the bounds the note gives it, or still moving after the
+  event it describes has ended, contradicts an expectation even when calibration saw it change. The prompt asks
+  for a candidate finding with source `interpretation` that cites the observation.
+- **Only the fresh suspicion was answered.** The frontier answers whichever suspicion is new in the facts and
+  ignores the ones only restated. The packet now lists every suspicion raised so far in the run (`suspicion_id`,
+  `basis`, `subject`, `turn`, `statement`), oldest first, and the prompt asks it to account for each in a
+  hypothesis or a candidate finding. At most `MAX_SUSPICIONS` (40), the most recent, are listed, and
+  `suspicions_omitted` states how many older ones are left out. Code never ranks, filters by content or merges
+  them: the cap is the only cut.
+
+`FrontierHelp` reads the suspicions from the trace when a request starts, before the clip is captured. A
+`MemorySink` lists its `suspicion` entries; the file-backed `TraceWriter` keeps no entries, so its file is read
+back (each entry is flushed as it is written). A trace that cannot be read fails the request before any call is
+reserved; it is never shown to the frontier as "no suspicions".
 
 ## S1 ownership and evidence audit
 

@@ -13,19 +13,20 @@ from test_runner_session import OBJECTIVE, connected, two_actions, harness_trace
 from turn_trace_check import problems as trace_problems
 from playtest.contracts.bridge import ExecStatus, ExecutionRecord, Observation, RejectReason
 from playtest.contracts.common import ClockMode
-from playtest.contracts.investigation import Directive
+from playtest.contracts.investigation import Budget, Directive, RunRecord, Suspicion, SuspicionBasis
 from playtest.contracts.loop import TurnOutcome, TurnRecord
-from playtest.contracts.trace import TraceEntry
+from playtest.contracts.trace import TraceAuthor, TraceEntry, TraceKind
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.execution import Execution
 from playtest.core.ports import Executed, S1Answer, S1Call, TurnReport
+from playtest.core.trace import TraceWriter
 from playtest.core.trace_sink import MemorySink
 from playtest.core.trace_replay import replay as replay_trace
 from playtest.frontier.media import Clip
 from playtest.frontier import provider
 from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
-from playtest.runner.frontier_help import FrontierHelp, reader_calibration, reader_notes
+from playtest.runner.frontier_help import FrontierHelp, reader_calibration, reader_notes, recorded_suspicions
 from playtest.runner.choices import build_choices
 
 
@@ -668,6 +669,114 @@ def test_the_frontier_sees_each_fields_calibration_and_the_findings_already_on_r
         assert packet["findings"] == [{"finding_id": "f-0", "title": "The count never rises", "repro_check": None}]
 
     asyncio.run(main())
+
+
+# --- the suspicions the frontier is shown ----------------------------------------------------------------------
+
+
+def _raised(n: int, *, turn: int, basis: SuspicionBasis = SuspicionBasis.drift, subject: str = "public.counter") -> dict:
+    """The body of a `suspicion` trace entry, as the loop writes it."""
+    return Suspicion(suspicion_id=f"s{n}", basis=basis, turn=turn, based_on_seq=7, subject=subject,
+                     statement=f"{subject} set a new low at each of {20 + n} consecutive readings."
+                     ).model_dump(mode="json")
+
+
+def _stated(body: dict) -> dict:
+    """What the packet says of a recorded suspicion: five keys, each as recorded."""
+    return {key: body[key] for key in ("suspicion_id", "basis", "subject", "turn", "statement")}
+
+
+def _helper_sending_to(sent: list, tmp_path: Path, sink) -> FrontierHelp:
+    """A helper over `sink` whose fake frontier keeps each packet it is sent."""
+    def send(body):
+        sent.append(json.loads(body["messages"][2]["content"]))
+        return _meta_reply(body)
+
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    return FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                        approval=_approval(), sink=sink, tracker=DirectiveTracker(sink),
+                        started_utc=datetime.now(timezone.utc), send=send,
+                        capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=2)
+
+
+def test_the_frontier_sees_every_suspicion_already_in_the_trace(tmp_path: Path):
+    async def main():
+        sink, sent = harness_trace(), []
+        helper = _helper_sending_to(sent, tmp_path, sink)
+        await helper.run(_escalation_request(1, counter=3))
+        assert sent[0]["suspicions"] == [] and sent[0]["suspicions_omitted"] == 0   # none raised yet: stated as none
+
+        # Every basis, appended out of id order: all are carried, none ranked, in the order they were recorded.
+        bodies = [_raised(2, turn=0, basis=SuspicionBasis.range_exit),
+                  _raised(1, turn=1),
+                  _raised(3, turn=1, basis=SuspicionBasis.invariant, subject="bounded"),
+                  _raised(4, turn=2, basis=SuspicionBasis.effect_mismatch, subject="c1")]
+        for body in bodies:
+            sink.append(TraceKind.suspicion, body, author=TraceAuthor.core, turn=body["turn"])
+        sink.append(TraceKind.help, {"event": "opened", "choice_id": "c", "kind": "escalate", "opened_turn": 2,
+                                     "source": None, "result": None, "reason": None},
+                    author=TraceAuthor.core, turn=2)                                    # other entries are not suspicions
+        await helper.run(_escalation_request(2, counter=3))
+        assert sent[1]["suspicions"] == [_stated(body) for body in bodies]
+        assert sent[1]["suspicions_omitted"] == 0
+
+    asyncio.run(main())
+
+
+def test_the_frontier_is_shown_suspicions_read_back_from_the_live_trace_file(tmp_path: Path):
+    # The live runner's sink is a TraceWriter, which keeps no entries in memory. Its file is read while the writer is
+    # still open, so a suspicion recorded between two requests reaches the second one.
+    async def main():
+        record = RunRecord(run_id="r1", game_project="game", clock_mode=ClockMode.realtime, models=[],
+                           objective=OBJECTIVE, budget=Budget(), core_version="0.0.1")
+        observed = Observation(session="s", seq=7, game_s=2.0, wall_utc=datetime(2026, 10, 30, tzinfo=timezone.utc),
+                               clock_mode="realtime", scene="scene", playing=True, paused=False, time_scale=1.0, frame=1)
+        writer = TraceWriter(tmp_path / "trace.jsonl", record)
+        sent = []
+        try:
+            writer.append(TraceKind.observation, observed.model_dump(mode="json"), author=TraceAuthor.bridge, turn=0)
+            first = _raised(1, turn=0)
+            writer.append(TraceKind.suspicion, first, author=TraceAuthor.core, turn=0)
+            helper = _helper_sending_to(sent, tmp_path, writer)
+            await helper.run(_escalation_request(1, counter=3))
+            second = _raised(2, turn=1, basis=SuspicionBasis.range_exit)
+            writer.append(TraceKind.suspicion, second, author=TraceAuthor.core, turn=1)
+            await helper.run(_escalation_request(2, counter=3))
+        finally:
+            writer.close()
+        assert sent[0]["suspicions"] == [_stated(first)]
+        assert sent[1]["suspicions"] == [_stated(first), _stated(second)]
+        assert sent[1]["suspicions_omitted"] == 0
+
+    asyncio.run(main())
+
+
+def test_a_trace_file_that_cannot_be_read_is_an_error_never_a_missing_suspicion(tmp_path: Path):
+    record = RunRecord(run_id="r1", game_project="game", clock_mode=ClockMode.realtime, models=[],
+                       objective=OBJECTIVE, budget=Budget(), core_version="0.0.1")
+    writer = TraceWriter(tmp_path / "trace.jsonl", record)
+    try:
+        writer.append(TraceKind.suspicion, _raised(1, turn=0), author=TraceAuthor.core, turn=0)
+        assert [row["suspicion_id"] for row in recorded_suspicions(writer)] == ["s1"]
+        with writer.path.open("ab") as damage:
+            damage.write(b'{"trace_seq":9,')
+        with pytest.raises(ValueError, match="final line"):
+            recorded_suspicions(writer)
+    finally:
+        writer.close()
+
+
+def test_a_sink_that_cannot_be_read_back_is_refused_before_any_call(tmp_path: Path):
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    write_only = SimpleNamespace(append=lambda *args, **kwargs: 0)
+    with pytest.raises(ValueError, match="of_kind"):
+        FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                     approval=_approval(), sink=write_only, tracker=DirectiveTracker(MemorySink()),
+                     started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
+                     capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
+    assert not (tmp_path / "run").exists()                                          # nothing was set up for a paid call
 
 
 def test_reader_calibration_keeps_only_measured_classes():

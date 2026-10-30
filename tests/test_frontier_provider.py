@@ -204,6 +204,13 @@ def test_manifest_message_lists_fields_action_bounds_and_skills_without_order_de
     assert provider.manifest_message(reordered) == text
 
 
+def test_the_manifest_note_says_a_preflight_note_is_what_the_field_is_meant_to_be_not_a_measurement():
+    note = json.loads(provider.manifest_message(manifest()))["notes"]
+    assert ("its preflight_note is what the preflight model wrote when it chose the field: "
+            "what the field is meant to be, not a measurement.") in note
+    assert "a description, not a measurement" not in note
+
+
 def test_schema_and_manifest_message_are_stable_while_the_packet_changes():
     first = provider.build_request(manifest(), sample())
     second = provider.build_request(
