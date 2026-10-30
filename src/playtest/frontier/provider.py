@@ -47,7 +47,9 @@ _MANIFEST_NOTE = (
     "A directive setpoint must name one of these fields and use a value of its kind. Cite only the "
     "observation seq, a fact's seqs and a recent row's seq: numbers inside hypotheses or directives "
     "are earlier records, not new citations. A field's calibration, where present, is how it changed when "
-    "preflight sampled it on this build before play, idle and with each control held."
+    "preflight sampled it on this build before play, idle and with each control held. Its source is the game "
+    "field it reads, and its preflight_note is what the preflight model wrote when it chose the field: a "
+    "description, not a measurement."
 )
 # Preflight's freshness classes (`preflight.freshness`), worded for the model. A field without one is unknown.
 CALIBRATION_LABELS = {
@@ -79,6 +81,10 @@ def manifest_message(manifest: frontier.Manifest) -> str:
         label = CALIBRATION_LABELS.get(manifest.calibration.get(path, ""))
         if label is not None:
             row["calibration"] = label
+        for key in ("source", "preflight_note"):
+            text = (manifest.field_notes.get(path) or {}).get(key)
+            if isinstance(text, str) and text.strip():
+                row[key] = text
         fields.append(row)
     actions = [
         {"name": name, "axis": spec.axis, "max_hold_s": spec.max_hold_s}
