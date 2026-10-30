@@ -45,9 +45,10 @@ FOLLOW_UP_INSTRUCTIONS = (
 PROMPTS = {PRIMARY: INSTRUCTIONS, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
-# Day 1 exercised these exact model/transport combinations. d1-ultra was text-only in its probe;
-# sharing Liquid's endpoint does not establish that this model accepts images.
-IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images"}
+# Day 1 exercised the Baseten and d1.1 combinations. d1-ultra took the same `images` array in its
+# 30 October probe: a 640x480 JPEG added 450 input tokens, the Day 1 image cost scaled by pixel count.
+IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images",
+                   "liquid-d1-ultra": "images"}
 IMAGE_TOKENS = {"messages": 1000, "images": 1400}  # Day 1 1280x720 measurements
 CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
 

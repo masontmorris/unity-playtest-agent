@@ -370,7 +370,9 @@ def test_view_omission_counts_and_forecasts_next_image_without_changing_choice(t
     assert len(send.bodies) == 1
 
 
-def test_unverified_arm_is_refused_before_any_call(tmp_path):
+def test_unverified_arm_is_refused_before_any_call(tmp_path, monkeypatch):
+    from playtest.runner import s1 as s1_module
+    monkeypatch.delitem(s1_module.IMAGE_TRANSPORT, "liquid-d1-ultra")   # every real arm is verified; drop one
     ledger = call_budget.Ledger(tmp_path, approval(), ARM)
     with pytest.raises(ValueError, match="no verified image transport"):
         SystemOneS1(ledger, max_calls=1, arm="liquid-d1-ultra", game_view=True)

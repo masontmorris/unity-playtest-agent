@@ -157,10 +157,11 @@ choice set, selection or escalation rules.
 
 Image support is restricted to combinations exercised in the [Day 1 probe](../probes/2026-10-26-day1.md):
 `mammoth-1` and `elephant-1` use Baseten's `state.messages` image part; `liquid-d1.1` uses Liquid's
-top-level `images` array. The default `liquid-d1-ultra` was tested with text only in the
-[29 October probe](../probes/2026-10-29-fpskit-s1-d1-ultra.md), so its image support is unknown and
-startup refuses it in this mode. Choose a supported arm explicitly. Day 1 tested PNG input; acceptance
-and latency of actual bridge JPEGs still need a live check. No call is made to discover capability.
+top-level `images` array. The default `liquid-d1-ultra` takes the same `images` array: in the
+[30 October probe](../probes/2026-10-30-d1-ultra-images.md) a 640×480 JPEG added 450 input tokens, about
+what the Day 1 image cost predicts for a third of the pixels. That shows the image was taken in, not that the
+model made use of it. An arm with no recorded transport is refused at startup in this mode. Acceptance and
+latency of actual bridge JPEGs in a live session still need checking. No call is made to discover capability.
 
 The [load probe](../probes/2026-10-27-fpskit-s1-load.md) found that a 1280x720 frame added roughly
 800–1,000 input tokens and 225 ms median on `mammoth-1`, with eight calls per size and a synthetic

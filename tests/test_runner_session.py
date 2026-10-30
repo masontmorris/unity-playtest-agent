@@ -1055,7 +1055,9 @@ def test_cli_image_mode_sends_bridge_frames_and_replays_without_image_bytes(tmp_
     assert summary["adherence"]["violations"] == []
 
 
-def test_cli_refuses_unverified_image_arm_before_contact_or_credentials(tmp_path, capsys):
+def test_cli_refuses_unverified_image_arm_before_contact_or_credentials(tmp_path, capsys, monkeypatch):
+    from playtest.runner import s1 as s1_module
+    monkeypatch.delitem(s1_module.IMAGE_TRANSPORT, "liquid-d1-ultra")   # every real arm is verified; drop one
     args = ["--project", str(tmp_path / "game"), "--entity", "entity", "--calibration", "calibration",
             "--output", str(tmp_path / "run.json"), "--manifest", "manifest", "--approval", "approval",
             "--catalog", "catalog", "--catalog-sha256", "a" * 64, "--max-calls", "1",
