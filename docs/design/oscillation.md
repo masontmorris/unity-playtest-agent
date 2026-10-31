@@ -117,13 +117,24 @@ Two remedies follow, and both fit the rules:
   heading satisfies it.
 - **Shrink the step** with a calibrated finer turn (below).
 
-## Finer turns: design only
+## Finer turns: already measured, being built
 
-The manifest's turn skills are five identical mouse impulses. A skill that ran k of the 5 would turn by
-some smaller angle, but that angle cannot be inferred from the full skill's 38.4°, because mouse
-smoothing and acceleration make it non-linear. Under "measured, not inferred", it could only be offered
-labelled as uncalibrated. The honest fix is a preflight calibration step that measures a short turn and
-publishes it like any other skill. Until then, finer turns stay out.
+An earlier version of this note said a shorter mouse turn's angle could not be known without new
+calibration. That was wrong: manifest 2's calibration already measured both look controls.
+- **One mouse impulse** (64 px, x=+1) turns 7.68° with zero spread at every hold. The 38.4° skill is five
+  of them with 0.1 s waits between, which is why it takes about 0.72 s.
+- **The gamepad right stick** (x=+1) turns about 365° a second: 18.4° at 0.05 s, 36.2° at 0.1 s, 74.1° at
+  0.2 s and 144.2° at 0.4 s, each with a spread of 4° or less.
+
+What is missing is the other direction. Calibration measured only the declared sign (+x), so no left turn
+has a measured angle. The five-impulse skills' labels also tell S1 nothing about their size.
+
+A worker is building two things:
+- calibration of both signs;
+- an opt-in `--turn-sizes`: one choice per measured size and direction, each one quick input labelled with
+  its measured angle.
+
+With a 7.7° step the half-step is 3.8°, so no reasonable tolerance can hunt.
 
 Contributors: gpt-6.1-terra (first implementation and replay), with the orchestrator adding the
 rounding, compression, range summary, tests and this note.
