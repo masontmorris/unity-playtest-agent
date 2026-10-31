@@ -318,3 +318,26 @@ view"), so that any change could be put down to the turn sizes. The code was 191
 and "centre of the view" asks for a tolerance tighter than half of that (9°). Offering ten turn options
 against four also pulled S1's choices toward turning. By the deadband rule, the next check is turn sizes
 with the "middle half" wording, whose ±20° covers half of the 18° step with room to spare.
+
+## Pointing turns with the "centre" wording (`climb-point-turns-01`, 180 s)
+
+Settings: as `climb-turn-sizes-01`, with `--point-turns` in place of `--turn-sizes`. The code was daa6af1, and
+the approval is `approval-trial-point-turns.json`. The run completed.
+
+- **Speed:** 115 turns in 178 s (38.4 decisions a minute), S1 p50 312 ms, and no stale rejections.
+- **Hunting: still there, and the pointing vocabulary explains it.** S1 chose the strip skills 101 times and
+  held walks 12 times. It swung between headings about 25° and 46° around the foot (41°) until 159 s.
+  - Scoring each choice against the foot's true strip shows the problem. With the foot in the centre strip
+    (32 decisions), S1 chose "face strip 4" (turn left) 22 times and walked only 8 times.
+  - The centre strip was not offered: the brief left it out, because facing it is not a turn. So S1's
+    natural answer, "it is in strip 5", had no choice, and it took the neighbouring strip, turning away.
+  - Off centre it pointed as in the probe: true strip 4 got 4 sixteen times and 3 ten times; true strip 7 got
+    7 ten times and 6 three times.
+- **Climb: none.** At 159 s it walked at 40° and crossed the foot diagonally at x 8–13.
+
+**Totals:** S1 116 calls, $0.0502; frontier 1 call, $0.0303.
+
+**What it shows.** S1's pointing works, but an action vocabulary without the fixed point cannot settle. "The
+target is straight ahead" must be a choice in the same terms S1 perceives in: strip 5. The proposed fix is
+"go toward strip k" for all nine strips, where each choice turns by the strip's measured angle and then
+takes one measured step. Strip 5 is then a step straight ahead, and even an imperfect point makes progress.
