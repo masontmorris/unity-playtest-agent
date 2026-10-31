@@ -415,3 +415,36 @@ def test_primary_policy_is_sent_and_does_not_override_selection(tmp_path: Path, 
     assert port.prompt_sha256 == digest(canonical({"next_action": prompt, "while_pending": FOLLOW_UP_INSTRUCTIONS}))
     assert got.calls[0].request_sha256 == digest(canonical(body))
     assert got.answer["choice_id"] == selected
+
+@pytest.mark.parametrize("primary,secondary,expected,condition", [
+    ("c1", "c2", None, "condition not met"),
+    ("h", "c2", {"mode": "continue", "choice_id": "c2"}, "met"),
+    ("h", "bogus", None, "met"),
+])
+def test_batched_conditional_answer(tmp_path, primary, secondary, expected, condition):
+    def response(body):
+        return 200, {"answers": {"next_action": {"type": "choice", "choice": primary},
+                                  "while_pending": {"type": "choice", "choice": secondary}}}, 10, None
+    ledger = call_budget.Ledger(tmp_path, approval(), ARM)
+    send = Send(tmp_path, response)
+    port = SystemOneS1(ledger, max_calls=3, arm=ARM, send=send, pending_question="batched")
+    got = decide(port, context())
+    assert got.answer["choice_id"] == primary
+    assert got.answer.get("while_pending") == expected
+    assert len(got.calls) == len(send.bodies) == len(ledger.arm_rows()) == 1
+    assert ledger.arm_rows()[0]["conditional_answer"]["condition"] == condition
+    assert got.calls[0].response == response(None)[1]  # recorded as the provider sent it, nothing added
+    assert got.calls[0].request_sha256 == digest(canonical(send.bodies[0]))
+
+
+def test_pending_default_is_identical_and_meta_refused(tmp_path):
+    a, send_a, _ = adapter(tmp_path / "a", reply("next_action", "c1"))
+    ledger = call_budget.Ledger(tmp_path / "b", approval(), ARM)
+    send_b = Send(tmp_path / "b", reply("next_action", "c1"))
+    b = SystemOneS1(ledger, max_calls=10, arm=ARM, send=send_b, pending_question="follow_up")
+    assert decide(a, context()) == decide(b, context())
+    assert canonical(send_a.bodies[0]) == canonical(send_b.bodies[0])
+    assert a.prompt_sha256 == b.prompt_sha256
+    assert a.prompt_sha256 != SystemOneS1(ledger, max_calls=10, arm=ARM, pending_question="batched").prompt_sha256
+    with pytest.raises(ValueError, match="no questions map"):
+        SystemOneS1(ledger, max_calls=10, arm="meta-muse-spark-s1", pending_question="batched")

@@ -48,15 +48,24 @@ FOLLOW_UP_INSTRUCTIONS = (
     "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
     "When an image is present, it is the current game view."
 )
+# Asked beside `next_action` in the opt-in batched mode. The questions are answered independently, so this one is
+# conditional: it is applied only when the primary answer requests help on a real-time turn.
+BATCH_INSTRUCTIONS = (
+    "If help is requested on this turn, choose exactly one id from the listed choices to say what "
+    "happens to the game's input while it is pending. A wait choice sends no input; any other listed "
+    "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
+    "When an image is present, it is the current game view."
+)
 
 
-def prompts(instructions: str = INSTRUCTIONS) -> dict[str, str]:
-    """Every prompt text this adapter sends for one primary-instruction variant.
+def prompts(instructions: str = INSTRUCTIONS, *, batched: bool = False) -> dict[str, str]:
+    """Every prompt text this adapter sends for one primary-instruction variant and pending-question mode.
 
     The follow-up question keeps its own fixed text: it already asks one direct question, it is never
     duplicated in `state` (which carries the primary text), and a run should vary one prompt at a time.
     """
-    return {PRIMARY: instructions, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
+    texts = {PRIMARY: instructions, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
+    return {**texts, "batched_while_pending": BATCH_INSTRUCTIONS} if batched else texts
 
 
 _HELP_KINDS = ("escalate", "delegate")
@@ -123,13 +132,18 @@ def _without_image(value: Any, image: bytes | None) -> Any:
 
 
 class _Reply:
-    """One call's outcome: its `s1_call` record, the choice it named, and why there is none."""
+    """One call's outcome: its `s1_call` record, the choice it named, and why there is none.
 
-    __slots__ = ("call", "choice", "distribution", "failure", "halt")
+    `conditional` is the batched `while_pending` answer as the ledger records it, or `None` when none was asked.
+    """
+
+    __slots__ = ("call", "choice", "distribution", "failure", "halt", "conditional")
 
     def __init__(self, call: S1Call, choice: str | None = None, distribution: Any = None,
-                 failure: str | None = None, halt: str | None = None) -> None:
+                 failure: str | None = None, halt: str | None = None,
+                 conditional: dict[str, Any] | None = None) -> None:
         self.call, self.choice, self.distribution, self.failure, self.halt = call, choice, distribution, failure, halt
+        self.conditional = conditional
 
 
 class SystemOneS1:
@@ -146,7 +160,13 @@ class SystemOneS1:
         game_view: bool = False,
         layout: RequestLayout | str = RequestLayout.full,
         instructions: str = INSTRUCTIONS,
+        pending_question: str = "follow_up",
     ) -> None:
+        if pending_question not in ("follow_up", "batched"):
+            raise ValueError("unknown pending_question mode")
+        if pending_question == "batched" and arm == "meta-muse-spark-s1":
+            raise ValueError("meta-muse-spark-s1 has no questions map for batched pending questions")
+        self._pending_question = pending_question
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
         if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
@@ -167,7 +187,7 @@ class SystemOneS1:
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._instructions = instructions
-        self._prompts = prompts(instructions)
+        self._prompts = prompts(instructions, batched=pending_question == "batched")
         self._ledger = ledger
         self._max_calls = max_calls
         self._send = send
@@ -223,8 +243,11 @@ class SystemOneS1:
         turn, self._turn = self._turn, self._turn + 1
         choices = context["choices"]
         kinds = {item["id"]: item["kind"] for item in choices}
+        criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
+        batch = (self._pending_question == "batched" and self._clock_mode is ClockMode.realtime
+                 and any(kind in _HELP_KINDS for kind in kinds.values()) and bool(criteria))
         first = await self._call(PRIMARY, self._instructions, {item["id"]: item["label"] for item in choices},
-                                 context, turn, image)
+                                 context, turn, image, pending_criteria=criteria if batch else None)
         calls = [first.call]
         if first.choice is None:
             return S1Answer(answer=None, calls=tuple(calls), failure=first.failure, halt=first.halt)
@@ -232,7 +255,12 @@ class SystemOneS1:
         if first.distribution is not None:
             answer["distribution"] = first.distribution
         halt = first.halt
-        if kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
+        if batch:
+            secondary = (first.conditional or {}).get("choice")
+            if kinds[first.choice] in _HELP_KINDS and secondary is not None:
+                answer["while_pending"] = ({"mode": "wait"} if kinds[secondary] == "wait"
+                                           else {"mode": "continue", "choice_id": secondary})
+        if not batch and kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
             criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
             if criteria:
                 second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn, image)
@@ -244,11 +272,14 @@ class SystemOneS1:
         return S1Answer(answer=answer, calls=tuple(calls), halt=halt)
 
     async def _call(self, question: str, instructions: str, criteria: dict[str, str],
-                    context: Mapping[str, Any], turn: int, image: bytes | None) -> _Reply:
+                    context: Mapping[str, Any], turn: int, image: bytes | None,
+                    pending_criteria: dict[str, str] | None = None) -> _Reply:
         model = self.model
         body = {"model": model,
                 "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
                 "state": context}
+        if pending_criteria is not None:
+            body["questions"][FOLLOW_UP] = {"type": "choice", "instructions": BATCH_INSTRUCTIONS, "criteria": pending_criteria}
         if self._arm == "meta-muse-spark-s1":
             try:
                 content: Any = _stable_first(criteria, context)
@@ -318,15 +349,24 @@ class SystemOneS1:
             cost = meta_cost(usage)
         note = _without_image(problem or answer_problem, image)
         resolved = _without_image((data or {}).get("model"), image)
-        row = reservation.finish(http_status=status, choice=choice, distribution=distribution, problem=note,
+        batch_fields = {}
+        if pending_criteria is not None:
+            secondary, secondary_distribution, secondary_problem = replay.parse_answer(
+                self._as_next_action(data if status == 200 else None, FOLLOW_UP), set(pending_criteria))
+            batch_fields["conditional_answer"] = {"choice": secondary, "distribution": secondary_distribution,
+                "problem": secondary_problem, "condition": ("unknown" if choice is None else "met" if
+                next((x["kind"] for x in context["choices"] if x["id"] == choice), None) in _HELP_KINDS
+                else "condition not met")}
+        row = reservation.finish(**batch_fields, http_status=status, choice=choice, distribution=distribution, problem=note,
                                  latency_ms=latency_ms, resolved_model=resolved, usage=usage, cost_usd=cost)
+        # The provider's response is recorded as received: its `while_pending` answer is already in it.
         call = self._record(question, request_sha, status, latency_ms, resolved, note,
                             _without_image(data, image) if isinstance(data, dict) else None, usage)
         failure = None
         if choice is None:
             failure = (note or "no usable answer") + (f" (HTTP {status})" if status not in (None, 200) else "")
         halt = "a provider-reported cost exceeded the per-call bound" if row["cost_bound_exceeded"] else None
-        return _Reply(call, choice, distribution, failure, halt)
+        return _Reply(call, choice, distribution, failure, halt, batch_fields.get("conditional_answer"))
 
     def _count_tokens(self, usage: Any, request_text: str, has_image: bool) -> None:
         """Report what a sent call used: the provider's own count, else an estimate marked as one."""
