@@ -23,16 +23,21 @@ def _hold(action: str = "preflight_key_w", lease: float = 0.4) -> dict:
 
 
 class FakeClient:
-    def __init__(self, statuses: list[str] | None = None) -> None:
+    def __init__(self, statuses: list[str] | None = None, probe: dict | None = ...) -> None:
         self.statuses, self.sent, self.observes, self.closed = list(statuses or []), [], 0, False
+        self.probe = ({"version": 1, "anchor": {"kind": "path", "name": "Anchor", "position": [0.0, 0.08, -27.0]}}
+                      if probe is ... else probe)
         self.seq = 0
 
     async def observe_once(self):
         self.observes += 1
         self.seq += 1
+        public = {"camera": {"position": [0.0, 1.78, 0.0]}}
+        if self.probe is not None:
+            public["probe"] = self.probe
         return SimpleNamespace(seq=self.seq, frame=10 * self.seq, game_s=float(self.seq),
                                scene="Assets/Main.unity", playing=True, paused=False,
-                               public={"camera": {"position": [0.0, 1.78, 0.0]}}, view=None)
+                               public=public, view=None)
 
     async def act(self, **kwargs):
         self.sent.append(kwargs)
@@ -99,6 +104,16 @@ def test_each_hold_is_sent_once_in_order_bound_to_a_fresh_observation(tmp_path):
     assert second["net_displacement"] == pytest.approx(0.25)
     assert first["before"]["yaw_deg"] == 90.0 and first["after"]["inspection_seq"] == 2
     assert first["closing_observation"]["camera"]["position"] == [0.0, 1.78, 0.0]
+    assert first["observation"]["probe"] == client.probe          # the geometry field travels with the report
+    assert second["closing_observation"]["probe"] == client.probe
+
+
+def test_a_game_without_the_geometry_field_leaves_it_null(tmp_path):
+    script, _ = scripted.load_script(_script(tmp_path, [_hold("a")], settle_s=0.0))
+    report = _run(script, FakeClient(probe=None), Snapshots(_at(0, 1), _at(2, 2)))
+    row = report["holds"][0]
+    assert row["observation"]["probe"] is None and row["closing_observation"]["probe"] is None
+    assert row["net_displacement"] == pytest.approx(2.0)          # the hold is still measured without it
 
 
 def test_a_rejected_hold_stops_the_run_and_nothing_is_retried(tmp_path):

@@ -110,13 +110,20 @@ def _transform(reading: Mapping[str, Any] | None, problem: str | None) -> dict[s
 
 
 def _view(observation: Any) -> dict[str, Any]:
-    """What the observation published: the camera facts, the frame, the game clock and its own view angles."""
+    """What the observation published: the camera and geometry facts, the frame, the game clock and its own view.
+
+    The geometry field (`public.probe`) is what makes a blocked hold legible: the same zero displacement reads as a
+    0.25 riser or a 1.1 face only by the surface ahead, so a probe report that left it out would not answer the
+    question the probe was sent to ask. A game that publishes no field leaves both here `None`.
+    """
     public = getattr(observation, "public", None) or {}
     view = getattr(observation, "view", None)
+    facts = public if isinstance(public, Mapping) else {}
     return {"seq": getattr(observation, "seq", None), "frame": getattr(observation, "frame", None),
             "game_s": getattr(observation, "game_s", None), "scene": getattr(observation, "scene", None),
             "playing": getattr(observation, "playing", None), "paused": getattr(observation, "paused", None),
-            "camera": public.get("camera") if isinstance(public, Mapping) else None,
+            "camera": facts.get("camera"),
+            "probe": facts.get("probe"),
             "view": view.model_dump(mode="json") if hasattr(view, "model_dump") else view}
 
 

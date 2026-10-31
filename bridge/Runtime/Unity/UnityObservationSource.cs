@@ -22,12 +22,15 @@ namespace Playtest.Bridge.Unity
     ///
     /// Every publish creates a new snapshot. Published snapshots are never mutated afterwards,
     /// so a reader holding an older instance keeps a consistent sample. The UI/camera walk is
-    /// expensive and runs at most once per <see cref="UiRefreshIntervalSeconds"/>; the other
-    /// facts refresh on every tick.
+    /// expensive and runs at most once per <see cref="UiRefreshIntervalSeconds"/>, and the probe
+    /// at most once per <see cref="ProbeRefreshIntervalSeconds"/>; the other facts refresh on
+    /// every tick.
     ///
     /// Missing facts stay missing: a reader that cannot produce a value records an
     /// <see cref="ObservationReaderError"/> instead of inventing one. Camera facts are published
-    /// under <c>public.camera</c>; the UI tree is only <c>{"canvases": [...]}</c>. Where the game
+    /// under <c>public.camera</c>; the UI tree is only <c>{"canvases": [...]}</c>. The probe is
+    /// <c>public.probe</c> (see <see cref="UnityProbeField"/>), measured in the anchor's own frame
+    /// and omitted, with a reader error, when there is no anchor. Where the game
     /// view points is the observation's own <c>view</c> (yaw and pitch of the camera the frame
     /// capture draws first, see <see cref="UnityGameView"/>), not a <c>public</c> entry, so what a
     /// decision-maker is shown under <c>public</c> does not change.
@@ -46,6 +49,8 @@ namespace Playtest.Bridge.Unity
 
         private const string UiReader = "ui";
 
+        private const string ProbeReader = "probe";
+
         private const string TextTypeMarker = "Text";
 
         private const string TextMemberName = "text";
@@ -59,6 +64,9 @@ namespace Playtest.Bridge.Unity
         /// <summary>Minimum spacing of the UI and camera walk, in unscaled seconds.</summary>
         private const double UiRefreshIntervalSeconds = 0.01;
 
+        /// <summary>Minimum spacing of the probe, in unscaled seconds.</summary>
+        private const double ProbeRefreshIntervalSeconds = 0.1;
+
         private static readonly Dictionary<Type, MemberInfo> TextMemberCache =
             new Dictionary<Type, MemberInfo>();
 
@@ -70,11 +78,15 @@ namespace Playtest.Bridge.Unity
 
         private readonly IBridgeCapture _capture;
 
+        private readonly UnityProbeField _probeField;
+
         private BridgeObservationSnapshot _current;
 
         private Dictionary<string, object> _ui;
 
         private Dictionary<string, object> _camera;
+
+        private Dictionary<string, object> _probe;
 
         private ObservationView _view;
 
@@ -82,20 +94,29 @@ namespace Playtest.Bridge.Unity
 
         private ObservationReaderError _cameraError;
 
+        private ObservationReaderError _probeError;
+
         private ObservationReaderError _viewError;
 
         private double _lastUiRefresh;
+
+        private double _lastProbeRefresh;
 
         private bool _started;
 
         private bool _disposed;
 
-        public UnityObservationSource(IBridgeClock clock = null, IBridgeCapture capture = null)
+        public UnityObservationSource(
+            IBridgeClock clock = null,
+            IBridgeCapture capture = null,
+            IProbeRaycasts probeRaycasts = null)
         {
             _clock = clock;
             _capture = capture;
+            _probeField = new UnityProbeField(probeRaycasts);
             _ui = CreateEmptyUi();
             _lastUiRefresh = double.NegativeInfinity;
+            _lastProbeRefresh = double.NegativeInfinity;
             _current = CreateUnsampledSnapshot(_ui);
         }
 
@@ -228,13 +249,24 @@ namespace Playtest.Bridge.Unity
                 _lastUiRefresh = ReadRealtimeSeconds();
             }
 
+            if (forceUiRefresh || now - _lastProbeRefresh >= ProbeRefreshIntervalSeconds)
+            {
+                RefreshProbe();
+                _lastProbeRefresh = ReadRealtimeSeconds();
+            }
+
             var publicFacts = new Dictionary<string, object>();
             if (_camera != null)
             {
                 publicFacts["camera"] = _camera;
             }
 
-            var errors = new List<ObservationReaderError>(4);
+            if (_probe != null)
+            {
+                publicFacts["probe"] = _probe;
+            }
+
+            var errors = new List<ObservationReaderError>(5);
             if (sceneError != null)
             {
                 errors.Add(sceneError);
@@ -248,6 +280,11 @@ namespace Playtest.Bridge.Unity
             if (_cameraError != null)
             {
                 errors.Add(_cameraError);
+            }
+
+            if (_probeError != null)
+            {
+                errors.Add(_probeError);
             }
 
             if (_viewError != null)
@@ -352,6 +389,37 @@ namespace Playtest.Bridge.Unity
             _uiError = uiError;
             _cameraError = cameraError;
             _viewError = viewError;
+        }
+
+        /// <summary>
+        /// Rebuilds the probe. Without an anchor, or when sampling throws, the probe is absent from
+        /// this tick and its error says why; it is never replaced by an empty or invented reading.
+        /// </summary>
+        private void RefreshProbe()
+        {
+            Dictionary<string, object> probe = null;
+            ObservationReaderError probeError = null;
+            try
+            {
+                string reason;
+                if (!_probeField.TrySample(out probe, out reason))
+                {
+                    probe = null;
+                    probeError = new ObservationReaderError
+                    {
+                        Reader = ProbeReader,
+                        Error = reason,
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                probe = null;
+                probeError = Describe(ProbeReader, ex);
+            }
+
+            _probe = probe;
+            _probeError = probeError;
         }
 
         private static string ReadScene(out ObservationReaderError error)
@@ -715,6 +783,7 @@ namespace Playtest.Bridge.Unity
                     new ObservationReaderError { Reader = SceneReader, Error = "not sampled" },
                     new ObservationReaderError { Reader = UiReader, Error = "not sampled" },
                     new ObservationReaderError { Reader = CameraReader, Error = "not sampled" },
+                    new ObservationReaderError { Reader = ProbeReader, Error = "not sampled" },
                     new ObservationReaderError { Reader = ViewReader, Error = "not sampled" },
                 },
                 View = null,
