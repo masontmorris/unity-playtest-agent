@@ -174,5 +174,13 @@ What `--point-turns` offers:
 It is game-agnostic. It uses only the camera's field of view, which the bridge reads in any game, and the
 calibration's measured turns. It is mutually exclusive with `--turn-sizes`.
 
+**Live check (`climb-point-turns-01`): the vocabulary lacked its fixed point.** The centre strip was left
+out because facing it is not a turn. With the foot dead ahead, S1 then chose "face strip 4" 22 times in 32
+and walked 8 times, so it hunted around the foot. Off centre it pointed as the probe predicted.
+
+A controller allowed only to correct can never settle. The "no correction" answer has to exist in the terms
+the chooser perceives in. The next form is "go toward strip k" for all nine strips: the measured turn, then
+one measured step. Strip 5 is then straight ahead, and an imperfect point still makes progress.
+
 Contributors: gpt-6.1-terra (first implementation and replay), with the orchestrator adding the
 rounding, compression, range summary, tests and this note.
