@@ -96,3 +96,31 @@ afterwards and the game checkout unchanged.
 That is three early `finish` choices in three compact-object sessions, each a near-tie. The `finish` choice
 reaches S1 labelled only "Finish", so the completion condition sits only in the objective. Whether the
 compact format contributes is still untested; it would take the matching control with the format off.
+
+## Control: the same staircase trial with the compact format off (`climb-stairs-control-01`)
+
+Everything as in `climb-stairs-01` except `--s1-compact-state off` and the night layout `dup-state-ref/1`;
+the approval is `approval-trial-stairs-control.json`. **S1 behaved the same way, so the early `finish` is not
+caused by the compact format:**
+- **Turns 0–9:** ten `look_right` in place.
+- **Turns 10–14:** `move_forward` north-east, about 30° off the staircase's axis, then a running jump at
+  its foot.
+- **Turns 15–16:** on the flight. The feet height rose 0.08 → 1.49 → 2.19, about eight risers, higher than
+  the compact run's 1.02, with the running jumps helping.
+- **Turn 17:** off the side of the flight (x 10.5), height back to 0.08.
+- **Turn 19:** `finish` at 0.27 against `move_forward` at 0.25.
+
+The `finish` probability rose 0.05 → 0.08 → 0.16 → 0.24 → 0.27 once S1 had left the stairs, the same
+pattern as the compact run (0.11 → 0.16 → 0.20 → 0.23).
+
+**Totals:** 20 turns in 40.5 s, 19 executed, 0 frontier calls, 24.4 s of pacing. S1 billed 216,460 tokens
+(10,823 per call, against 9,041 per call for the compact run on different contexts) for $0.00909.
+
+With one run in each arm this is anecdotal. Three things hold in both arms:
+- S1 reaches the flight quickly but never squares up to its axis, so it walks off the side of a 2-unit-wide
+  staircase.
+- Once it is back on flat ground, `finish` creeps up to a narrow first place, though the objective says to
+  finish only on top.
+- The `finish` choice is labelled only "Finish".
+
+The early finish belongs to d1-ultra's decisions under this objective, not to the request format.
