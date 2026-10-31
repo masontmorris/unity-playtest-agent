@@ -38,7 +38,10 @@ def provider_of(arm: str) -> str:
     if arm in {"muse-spark-1.3", "meta-muse-spark-s1"}:
         return "meta"
     return "liquid" if arm.startswith("liquid-") else "baseten"
-Send = Callable[[str, dict[str, Any]], tuple[int | None, dict[str, Any] | None, float, str | None]]
+# A send takes the arm and either a body to serialize canonically or the exact request text to post
+# verbatim (the adapter renders that text when it sends a declared state order, so the text hashed into
+# the ledger row is the text on the wire).
+Send = Callable[[str, dict[str, Any] | str], tuple[int | None, dict[str, Any] | None, float, str | None]]
 
 
 def _load(path: Path) -> tuple[dict[str, Any], str]:
@@ -143,7 +146,7 @@ def parse_answer(data: dict[str, Any] | None, offered: set[str]) -> tuple[str | 
     return selected, probabilities, None
 
 
-def send_systemone(arm: str, body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
+def send_systemone(arm: str, body: dict[str, Any] | str) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
     if arm == "meta-muse-spark-s1":
         from playtest.frontier.provider import send_meta
         return send_meta(body)
@@ -151,7 +154,8 @@ def send_systemone(arm: str, body: dict[str, Any]) -> tuple[int | None, dict[str
     key, url = os.environ.get(key_env), (os.environ.get(url_env) if url_env else BASETEN_URL)
     if not key or not url:
         raise ValueError(f"missing endpoint or credential for {arm}")
-    request = urllib.request.Request(url, data=canonical(body).encode("utf-8"), method="POST",
+    text = body if isinstance(body, str) else canonical(body)  # a text body is sent exactly as given
+    request = urllib.request.Request(url, data=text.encode("utf-8"), method="POST",
                                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
     started = time.monotonic()
     try:
