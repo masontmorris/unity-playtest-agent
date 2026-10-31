@@ -67,3 +67,32 @@ would separate the two. It was not run.
 
 Artifacts are local under `runs/s1-trial/` (inputs, approvals, launcher, both session directories with
 `run.json`, `trace.jsonl` and recordings). The launcher is `runs/s1-trial/run-trial.ps1`.
+
+## Staircase trial (`climb-stairs-01`, 60 s)
+
+The same setup with three changes: the objective `objective-climb-stairs.txt`, coverage facts off, and the
+frontier capped at 2 calls. The objective:
+- names the long staircase as ahead and to the right of the start;
+- asks S1 to line up, walk into each step and jump only if blocked;
+- says not to choose `finish` unless standing on top.
+
+The approval is `runs/s1-trial/approval-trial-stairs.json`.
+
+**S1 reached the staircase and started climbing, then walked off its side and finished early:**
+- **Turns 0–8:** a few alternating mouse turns, then `move_forward` diagonally north-east from the spawn
+  ([3.58, 0.08, −16.25]).
+- **Turns 9–10:** onto the flight, x 8.6–9.9 and z −10.0 to −8.6. The feet height rose 0.08 → 0.40 → 1.02,
+  about four 0.2575 risers.
+- **Turn 11:** still heading about 38° east of the staircase's axis (north), S1 walked off the side of the
+  2-unit-wide flight (x 11.1), and its height fell back to 0.08.
+- **Turns 12–16:** north-east on flat ground, with one running jump.
+- **Turn 17:** `finish` at 0.23 against `move_forward` at 0.21. Its probability had risen 0.11 → 0.16 →
+  0.20 → 0.23 over the last turns.
+
+**Totals:** 18 turns in 30.1 s, 17 executed, adherence 1.0, 0 frontier calls, 13.0 s of pacing. S1 billed
+162,741 tokens, 15.5% fewer than the night layout on the same contexts, for $0.00684. Unity was closed
+afterwards and the game checkout unchanged.
+
+That is three early `finish` choices in three compact-object sessions, each a near-tie. The `finish` choice
+reaches S1 labelled only "Finish", so the completion condition sits only in the objective. Whether the
+compact format contributes is still untested; it would take the matching control with the format off.
