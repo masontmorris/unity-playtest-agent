@@ -14,6 +14,12 @@ Phases:
   question.
 * `bench`: 40 contexts × 3 arms × 5 repeats in a seeded random order.
 * `summary`: the predeclared comparison, with no calls.
+* `followup` (`--run-dir` of its own; `--bench-dir` the bench's): three single-variable arms, each built
+  directly from the night's exact request, judged against the bench's 5-repeat night arm.
+  * `null-string`: the night's state as the indented text the server renders. It should reproduce the night.
+  * `reorder`: the same text with the state's keys reordered, a harmless change certain to reach the model,
+    because a string state is rendered verbatim.
+  * `format-only`: the night's exact state as compact JSON, with no header or rules.
 
 The scoring rule is written to `plan.json` before any call is made. Every call is reserved in the
 approval's ledger before it is sent, and the run is paced on the reported input tokens. It stops at the
@@ -29,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import collections
 import datetime as dt
 import hashlib
@@ -44,7 +51,10 @@ from typing import Any
 from playtest.bench import call_budget, replay
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
+from playtest.core.context import canonical
+from playtest.runner import request_layout
 from playtest.runner.s1 import SystemOneS1
+from playtest.runner.state_order import state_keys
 
 ARM = "liquid-d1-ultra"
 ARMS = {"night": {"layout": "dup-state-ref/1"},
@@ -196,6 +206,8 @@ async def run(args: argparse.Namespace) -> int:
                                          "predicted_tokens": pred}, indent=1), encoding="utf-8")
     if args.phase == "summary":
         return summary(run_dir, pred)
+    if args.phase == "followup":
+        return await followup(args, pred, run_dir)
     bounds = {"probe": 0.0013, "night": 0.00125, "compact-default": 0.0010, "compact-all": 0.0009}
     calls = {"probe": 6, "night": len(keys) * REPEATS, "compact-default": len(keys) * REPEATS,
              "compact-all": len(keys) * REPEATS}
@@ -331,9 +343,188 @@ def summary(run_dir: Path, pred: dict[str, Any]) -> int:
     return 0
 
 
+FOLLOWUP = {"null-string": 1, "reorder": 2, "format-only": 2}  # repeats per context
+FOLLOWUP_PLAN = {
+    "question": "Is the choice change specific to compaction, or does any harmless presentation change flip "
+                "d1-ultra's near-ties? And does whitespace alone do it?",
+    "arms": {"null-string": "the night's sent state as the indented text the server renders (a null change)",
+             "reorder": "the same indented text with state's top-level keys in STATE_ORDER (a harmless change)",
+             "format-only": "the night's sent state as compact JSON, with no header and no rules"},
+    "repeats": FOLLOWUP, "seed": SEED + 1,
+    "reference": "the bench's night arm: 5 repeats per context, its modal choice and mean distribution",
+    "metric": "per-call agreement with the night modal (night leave-one-out 0.905; compact arms 0.705-0.725)",
+    "reading": "null-string must agree >= 0.85 (no drift, string path equivalent), else the follow-up is void. "
+               "reorder <= 0.80: any harmless change flips near-ties, so compaction is not special. reorder >= 0.85 and "
+               "format-only <= 0.80: whitespace itself moves choices. reorder >= 0.85 and format-only >= 0.85: the "
+               "structure (tables, '=', '@', header) moves them. Anything else is inconclusive.",
+}
+
+
+def night_request(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The night's exact request body: the payload under `dup-state-ref/1`, with its JPEG."""
+    p = ctx["payload"]
+    body = {"model": replay.ARMS[ARM][0], "questions": {"next_action": {
+        "type": "choice", "instructions": p["instructions"], "criteria": {c["id"]: c["label"] for c in p["choices"]}}},
+        "state": p}
+    sent = request_layout.encode(body)
+    sent["images"] = ["data:image/jpeg;base64," + base64.b64encode(ctx["image"]).decode("ascii")]
+    return sent
+
+
+def variant(sent: dict[str, Any], arm: str) -> dict[str, Any]:
+    state = sent["state"]
+    if arm == "null-string":
+        text = json.dumps(state, ensure_ascii=False, indent=2)
+    elif arm == "reorder":
+        text = json.dumps({k: state[k] for k in state_keys(state)}, ensure_ascii=False, indent=2)
+    elif arm == "format-only":
+        text = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+    else:
+        raise ValueError(arm)
+    return dict(sent, state=text)
+
+
+async def direct(ledger: call_budget.Ledger, body: dict[str, Any], episode: int, seq: int) -> dict[str, Any]:
+    """One ledgered call that posts exactly `canonical(body)` and hashes that text."""
+    text = canonical(body)
+    sha = digest(text)
+    criteria = body["questions"]["next_action"]["criteria"]
+    reservation = ledger.reserve(episode=episode, turn=0, based_on_seq=seq, request_sha256=sha,
+                                 requested_model=body["model"], extra={"question": "next_action"})
+    status, data, latency_ms, problem = await asyncio.to_thread(replay.send_systemone, ARM, text)
+    choice, distribution, answer_problem = replay.parse_answer(data if status == 200 else None, set(criteria))
+    usage = (data or {}).get("usage") if isinstance(data, dict) else None
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    row = reservation.finish(http_status=status, choice=choice, distribution=distribution,
+                             problem=problem or answer_problem, latency_ms=latency_ms,
+                             resolved_model=(data or {}).get("model") if isinstance(data, dict) else None,
+                             usage=usage, cost_usd=cost if isinstance(cost, (int, float)) else None)
+    return {"status": status, "choice": choice, "distribution": distribution,
+            "input_tokens": (usage or {}).get("input_tokens"), "cost": cost, "latency_ms": latency_ms,
+            "request_sha256": sha, "failure": problem or answer_problem,
+            "halt": "a provider-reported cost exceeded the per-call bound" if row.get("cost_bound_exceeded") else None}
+
+
+async def followup(args: argparse.Namespace, pred: dict[str, Any], run_dir: Path) -> int:
+    keys = list(pred)
+    plan_path = run_dir / "followup-plan.json"
+    if not plan_path.exists():
+        plan_path.write_text(json.dumps({**FOLLOWUP_PLAN, "contexts": keys, "bench_dir": args.bench_dir,
+                                         "script_sha256": digest(Path(__file__).read_bytes())}, indent=1),
+                             encoding="utf-8")
+    bounds = {"null-string": 0.00125, "reorder": 0.00125, "format-only": 0.0010}
+    calls = {arm: len(keys) * n for arm, n in FOLLOWUP.items()}
+    approval_path = run_dir / "approval.json"
+    if not approval_path.exists():
+        now = dt.datetime.now(dt.timezone.utc)
+        arms = {name: {"max_calls": calls[name], "per_call_max_usd": bounds[name],
+                       "max_cost_usd": round(calls[name] * bounds[name], 6), "verified_balance_usd": None,
+                       "balance_checked_at_utc": None, "allow_unverified_price": True,
+                       "estimated_price_basis": "Liquid-reported usage.cost: $0.042 per million input tokens.",
+                       "estimate_use_by_utc": (now + dt.timedelta(hours=4)).isoformat()} for name in bounds}
+        approval_path.write_text(json.dumps({
+            "approved_by": "Mason Morris", "approved_at_utc": now.isoformat(),
+            "approval_scope": "A shorter follow-up to the compact-state bench: 200 calls on the same 40 contexts "
+                              "(null-string x1, reorder x2, format-only x2), expected about $0.13.",
+            "approval_source": "Conversation 2026-10-31: 'can you run a shorter follow-up?', after a ~600-call, "
+                               "~$0.35 follow-up was proposed.",
+            "max_calls": sum(calls.values()),
+            "max_cost_usd": round(sum(a["max_cost_usd"] for a in arms.values()), 6),
+            "arms": arms,
+            "unverified_balance_override": {"approved_by_user": True, "reason": (
+                "Liquid exposes no balance API here; the bench an hour earlier billed normally, and the run stops "
+                "at the first 402.")}}, indent=1), encoding="utf-8")
+    approved = json.loads(approval_path.read_text(encoding="utf-8"))
+    replay.validate_approval(approved, list(bounds))
+    ledgers = {name: call_budget.Ledger(run_dir, approved, name) for name in bounds}
+    ctxs = load_contexts(Path(args.night_dir), keys)
+    for key in keys:  # free check: each rebuilt night request is the one the night run sent
+        if digest(canonical(night_request(ctxs[key]))) != ctxs[key]["night_sha"]:
+            raise SystemExit(f"{key}: the rebuilt night request does not match the recorded hash")
+    load_credentials(Path(args.env_file))
+    pacer = Pacer(args.tpm)
+    jobs = [(key, arm, rep) for key in keys for arm, n in FOLLOWUP.items() for rep in range(n)]
+    random.Random(SEED + 1).shuffle(jobs)
+    out = run_dir / "followup.jsonl"
+    done = {(r["key"], r["arm"], r["repeat"]) for r in rows(out)}
+    failures = 0
+    for index, (key, arm, rep) in enumerate(jobs):
+        if (key, arm, rep) in done:
+            continue
+        expected = pred[key]["night"]
+        await pacer.wait(expected)
+        body = variant(night_request(ctxs[key]), arm)
+        row = {"phase": "followup", "job": index, "key": key, "arm": arm, "repeat": rep,
+               "night_tokens": ctxs[key]["night_tokens"],
+               **await direct(ledgers[arm], body, 2001 + index, ctxs[key]["payload"]["as_of"]["seq"])}
+        pacer.add(row["input_tokens"] or expected)
+        append(out, row)
+        failures = 0 if row["status"] == 200 and row["choice"] else failures + 1
+        if index % 25 == 0:
+            print(f"{index + 1}/{len(jobs)} {arm} {key} status={row['status']} tokens={row['input_tokens']}",
+                  flush=True)
+        if stop_reason(row) or failures >= 3:
+            print("STOP:", stop_reason(row) or "three consecutive failures", flush=True)
+            return 2
+    return followup_summary(run_dir, Path(args.bench_dir))
+
+
+def followup_summary(run_dir: Path, bench_dir: Path) -> int:
+    bench = [r for r in rows(bench_dir / "results.jsonl") if r["arm"] == "night" and r["status"] == 200 and r["choice"]]
+    by = collections.defaultdict(list)
+    for r in bench:
+        by[r["key"]].append(r)
+    night_modal = {k: collections.Counter(r["choice"] for r in v).most_common(1)[0][0] for k, v in by.items()}
+    night_dist = {k: mean_dist([r["distribution"] for r in v if r.get("distribution")]) for k, v in by.items()}
+    margins = {k: (lambda d: d[0] - d[1])(sorted(night_dist[k].values(), reverse=True)) for k in night_dist}
+    data = [r for r in rows(run_dir / "followup.jsonl") if r["status"] == 200 and r["choice"]]
+    out: dict[str, Any] = {"calls": len(rows(run_dir / "followup.jsonl")), "ok": len(data), "arms": {}}
+    for arm in FOLLOWUP:
+        mine = [r for r in data if r["arm"] == arm]
+        agree = [r["choice"] == night_modal[r["key"]] for r in mine]
+        near = [r["choice"] == night_modal[r["key"]] for r in mine if margins[r["key"]] < 0.08]
+        far = [r["choice"] == night_modal[r["key"]] for r in mine if margins[r["key"]] >= 0.08]
+        per_key = collections.defaultdict(list)
+        for r in mine:
+            per_key[r["key"]].append(r)
+        tvs = [tv(mean_dist([r["distribution"] for r in v if r.get("distribution")]), night_dist[k])
+               for k, v in per_key.items() if any(r.get("distribution") for r in v)]
+        exact_tokens = sum(r["input_tokens"] == r["night_tokens"] for r in mine)
+        billed = sum(r["input_tokens"] or 0 for r in mine)
+        night_billed = sum(r["night_tokens"] or 0 for r in mine)
+        lat = sorted(r["latency_ms"] for r in mine if r.get("latency_ms") is not None)
+        out["arms"][arm] = {
+            "calls_ok": len(mine),
+            "per_call_agreement_with_night_modal": round(sum(agree) / len(agree), 4) if agree else None,
+            "agreement_on_near_ties_margin_lt_0.08": f"{sum(near)}/{len(near)}",
+            "agreement_elsewhere": f"{sum(far)}/{len(far)}",
+            "mean_tv_vs_night": round(statistics.mean(tvs), 4) if tvs else None,
+            "billed_vs_night": round(billed / night_billed - 1, 4) if night_billed else None,
+            "billed_equal_to_night": f"{exact_tokens}/{len(mine)}",
+            "cost_usd": round(sum(r["cost"] for r in mine if isinstance(r.get("cost"), (int, float))), 6),
+            "latency_ms_p50": lat[len(lat) // 2] if lat else None,
+        }
+    a = {arm: out["arms"][arm]["per_call_agreement_with_night_modal"] or 0 for arm in FOLLOWUP}
+    if a["null-string"] < 0.85:
+        reading = "void: the null arm does not reproduce the night arm (drift or a different string rendering)"
+    elif a["reorder"] <= 0.80:
+        reading = "any harmless change flips d1-ultra's near-ties: compaction is not special"
+    elif a["reorder"] >= 0.85 and a["format-only"] <= 0.80:
+        reading = "whitespace itself moves d1-ultra's choices"
+    elif a["reorder"] >= 0.85 and a["format-only"] >= 0.85:
+        reading = "the structure (tables, '=', '@', header) moves the choices; whitespace alone does not"
+    else:
+        reading = "inconclusive"
+    out["reading"] = reading
+    (run_dir / "followup-summary.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+    print(json.dumps(out, indent=1))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--phase", choices=["smoke", "gate", "bench", "summary"], required=True)
+    parser.add_argument("--phase", choices=["smoke", "gate", "bench", "summary", "followup"], required=True)
+    parser.add_argument("--bench-dir", default="runs/s1-opt-live", help="the bench whose night arm is the reference")
     parser.add_argument("--night-dir", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--pred", required=True)

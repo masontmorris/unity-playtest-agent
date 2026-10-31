@@ -11,8 +11,11 @@ paced floor per turn falls from 4.9 s and 4.3 s to 3.3 s and 2.7 s: about 1.5× 
 **But it is not a transparent optimization.** A live paired bench on 40 frozen night contexts (section 8)
 confirmed the savings, −29.0% billed and −15% p50 latency for `all`. It also found that the compact formats
 change d1-ultra's modal choice on 11–12 of 40 contexts, which the predeclared rule calls "changes S1's
-choices". The flips are near-ties. Whether the changed choices are better or worse is unmeasured, so the
-option stays off until a live play comparison decides.
+choices". The flips are near-ties. A 200-call follow-up traced the cause: Liquid renders a **string** state
+with a fixed extra ~158 tokens. The same content sent as an indented string shifts choices about as much
+as compaction does, so the shift belongs to the string path, not to compaction. Whether the changed choices
+are better or worse is unmeasured, so the option stays off. A lossless restructuring that stays on the
+object path saves about 13% of the state with no string wrapper, and is the next candidate (section 8).
 
 An earlier draft of this note fitted the full state, labels included, and concluded that option
 descriptions are not billed. That was wrong: the night runs sent labels only in the question.
@@ -191,16 +194,21 @@ How to read it:
 - **Escalation does not move significantly per context.** `finish` rose from 1 call to 4 and 6 of 200, too
   few to read.
 
-What follows:
-1. **Keep `--s1-compact-state` off by default.** It is a behaviour change, not a lossless optimization, even
-   though every byte of the payload is restorable.
-2. **Find the cause cheaply** (about 600 calls, about $0.35, needs approval):
-   - a format-only arm: the night's sent state as a compact string, no other rule;
-   - a structure-only arm: the `all` content rendered with `indent=2`;
-   - a null-perturbation control: the night state with its keys reordered.
+**Follow-up (200 calls, $0.136; full record in the probe note).** Sending the night's exact state as an
+indented string reproduced neither its tokens (+158, 0 of 40 equal) nor its choices. Against the night
+run's own choices, today's object-path calls agree 0.880 (no drift), and every string arm agrees
+0.68–0.75 whether compacted or not. **The string path itself moves the near-ties, and compaction adds no
+change this sample can separate from it.**
 
-   If the control also flips about a quarter of the near-ties, the sensitivity is d1-ultra's, not
-   compaction's.
-3. **Settle it on outcomes.** Run a live paired play comparison (`all` + batched against the night
-   configuration) and measure findings and progress per minute, not choice agreement. Faster decisions
-   could outweigh reshuffled near-ties, or not.
+What follows:
+1. **Keep `--s1-compact-state` off by default.** On this server a string state is a different prompt, and
+   whether it decides better or worse is unmeasured.
+2. **Next candidate: object-path compaction.** Apply the lossless rules but keep `state` an object, so the
+   server renders it as it does today, with the legend as a small key in the state (like the
+   `dup-state-ref/1` marker). Offline this saves 14.6% of the state at the median, about 12% per call. A
+   check of 40 contexts × 2 repeats against the object baseline is about 80 calls and $0.05. It needs
+   approval and a small code change.
+3. **Batching on the object path needs a layout fix first.** `dup-state-ref/1` only acts on single-question
+   bodies, so a batched body sends the labels twice.
+4. **The string path can only be settled on outcomes.** That means a live paired play comparison,
+   measuring findings and progress per minute.
