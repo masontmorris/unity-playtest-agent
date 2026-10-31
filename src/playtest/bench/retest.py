@@ -22,8 +22,9 @@ from typing import Any
 
 from playtest.bench import record as recording
 from playtest.bench import replay
-from playtest.bench.record import PASSES, context_for, digest
-from playtest.bench.replay import Send, accepted, parse_answer, request_body, send_systemone, validate_approval
+from playtest.bench.record import PASSES, digest, recorded_payload
+from playtest.bench.replay import (Send, accepted, parse_reply, provider_answer, request_body, send_systemone,
+                                   validate_approval)
 from playtest.core.context import canonical
 
 ARM = "mammoth-1"
@@ -89,7 +90,7 @@ def load_corpus(path: Path) -> tuple[dict[str, Any], str]:
             raise ValueError(f"pass {pass_no} is not shuffled")
         expected_actions = {f"c{ids[i]}": order[i] for i in range(CONTROLS)}
         for step, frame in enumerate(frames[(pass_no - 1) * (CONTROLS + 1):pass_no * (CONTROLS + 1)]):
-            if frame.get("pass") != pass_no or frame.get("payload_sha256") != digest(canonical(context_for(frame))):
+            if frame.get("pass") != pass_no or recorded_payload(frame) is None:
                 raise ValueError(f"context changed for {frame.get('id')}")
             offered = frame["choice_set"]["choices"]
             actions = {c["id"]: c.get("action") for c in offered if c.get("kind") == "action"}
@@ -238,7 +239,7 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
     completed = {row["slot"] for row in rows}
     made = 0
     for index, (frame, repeat) in enumerate(entries):
-        body = request_body(frame, replay.ARMS[arm][0])
+        body = request_body(frame, replay.ARMS[arm][0], arm)
         request_sha = digest(canonical(body))
         phase = "sweep" if repeat == 0 else "repeat"
         slot = digest(canonical({"phase": phase, "arm": arm, "frame": frame["id"], "repeat": repeat,
@@ -260,7 +261,8 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
         try:
             http_status, data, latency_ms, problem = send(arm, body)
             offered = {choice["id"] for choice in frame["choice_set"]["choices"]}
-            choice, distribution, answer_problem = parse_answer(data if http_status == 200 else None, offered)
+            choice, distribution, answer_problem = parse_reply(arm, body, data if http_status == 200 else None,
+                                                               offered)
             usage = (data or {}).get("usage")
             raw_cost = usage.get("cost") if isinstance(usage, dict) else None
             cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
@@ -268,7 +270,7 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
             row.update(status="finished", http_status=http_status, choice=choice, distribution=distribution,
                        problem=problem or answer_problem, latency_ms=latency_ms,
                        resolved_model=(data or {}).get("model"), usage=usage,
-                       provider_answer=((data or {}).get("answers") or {}).get("next_action"),
+                       provider_answer=provider_answer(arm, data),
                        billed=(cost > 0 if cost is not None else None), cost_usd=cost,
                        cost_bound_exceeded=(Decimal(str(cost)) > bound if cost is not None else False))
         except Exception as exc:  # Preserve the reservation when a transport adapter fails.

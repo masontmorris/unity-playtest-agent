@@ -12,8 +12,8 @@ file through UPA_SESSION_CATALOG and UPA_SESSION_CATALOG_SHA256; if it is absent
 client finds it is not the manifest's export, the run ends before any paid call. A session never falls back
 to the keyboard-only catalog the other bench modules use. -S1Arm picks S1's model, one of replay.ARMS
 (default liquid-d1-ultra). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
-arms, and LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms. The script checks them by name only and
-never prints them.
+arms, LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms, and SYSTEM_ZERO_API_KEY for the experimental
+system-zero arm. The script checks them by name only and never prints them.
 
 No paid call starts without an approval file and a call cap (-MaxCalls). Every call reserves its row in
 `<OutputDirectory>/calls` before it is sent. The output directory must be new and outside the Unity
@@ -100,6 +100,7 @@ if ([IO.Directory]::Exists($output)) { throw 'Choose a new output directory; exi
 $s1Credentials = @{
     'mammoth-1' = @('BASETEN_API_KEY'); 'elephant-1' = @('BASETEN_API_KEY')
     'liquid-d1.1' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL'); 'liquid-d1-ultra' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL')
+    'system-zero' = @('SYSTEM_ZERO_API_KEY')
 }
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."
