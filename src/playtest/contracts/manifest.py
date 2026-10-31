@@ -324,7 +324,7 @@ class PreflightManifest(Strict):
     discovery_caps: dict[str, InspectionCap]
     image: ManifestImage | None
     readers: list[ManifestReader] = Field(max_length=16)
-    actions: list[ManifestAction] = Field(max_length=14)
+    actions: list[ManifestAction] = Field(max_length=18)  # the stage-5 cap (roles.preflight.MAX_ACTIONS, #217)
     skills: list[ManifestSkill] = Field(max_length=6)
     progress: list[ManifestProgress] = Field(max_length=6)
     # Operator assertions about places, not model output. A default empty list keeps every manifest that

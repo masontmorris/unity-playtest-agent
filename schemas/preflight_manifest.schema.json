@@ -1757,7 +1757,7 @@
       "items": {
         "$ref": "#/$defs/ManifestAction"
       },
-      "maxItems": 14,
+      "maxItems": 18,
       "title": "Actions",
       "type": "array"
     },
