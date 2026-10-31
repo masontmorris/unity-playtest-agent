@@ -43,13 +43,15 @@ def context(version: int = 4) -> dict[str, Any]:
 
 
 class Meter:
-    """A token meter that keeps what the adapter reported: (tokens, estimated)."""
+    """A token meter that keeps what the adapter reported: (tokens, estimated), and each call's `sent_ago`."""
 
     def __init__(self) -> None:
         self.records: list[tuple[int, bool]] = []
+        self.sent_agos: list[float] = []
 
-    def record(self, tokens: int, *, estimated: bool = False) -> None:
+    def record(self, tokens: int, *, estimated: bool = False, sent_ago: float = 0.0) -> None:
         self.records.append((tokens, estimated))
+        self.sent_agos.append(sent_ago)
 
 
 def adapter(tmp_path: Path, *replies: Any, max_calls: int = 10, limit: int = 12,
@@ -231,6 +233,14 @@ def test_input_and_output_tokens_are_both_counted(tmp_path: Path):
                          budget=meter)
     decide(port, context())
     assert meter.records == [(2275, False)]
+
+
+def test_a_successful_call_reports_how_long_ago_it_was_sent_for_a_send_anchored_budget(tmp_path: Path):
+    meter = Meter()
+    port, _, _ = adapter(tmp_path, reply("next_action", "w", usage={"input_tokens": 2214}), budget=meter)
+    decide(port, context())
+    assert len(meter.sent_agos) == 1
+    assert 0.0 < meter.sent_agos[0] < 10.0                # the post, not the reply, is what it names
 
 
 def test_missing_usage_is_estimated_from_the_request_and_marked_as_an_estimate(tmp_path: Path):
