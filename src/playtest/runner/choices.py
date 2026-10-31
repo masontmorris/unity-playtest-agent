@@ -95,7 +95,7 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
 
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
                   finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
-                  point_turns: bool = False, capture_size=(640, 480),
+                  point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),
                   calibration: dict | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
@@ -104,10 +104,10 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
     """
     core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
     reserved = {choice.id for choice in core} | {RESTART_ID}
-    if turn_sizes and point_turns:
-        raise ValueError("--point-turns and --turn-sizes are mutually exclusive")
-    catalog = (export(manifest, point_turns=True, calibration=calibration, capture_size=capture_size)
-               if point_turns else export(manifest))
+    if sum((turn_sizes, point_turns, point_moves)) > 1:
+        raise ValueError("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
+    catalog = (export(manifest, point_turns=point_turns, point_moves=point_moves, calibration=calibration, capture_size=capture_size)
+               if point_turns or point_moves else export(manifest))
     choices: list[Choice] = []
     expected: dict[str, dict[str, Any] | None] = {}
     leases: dict[str, float] = {}
@@ -162,11 +162,13 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
             expected[choice.id] = None
         catalog = ActionCatalog(actions=declarations)
     point_fov = None
-    if point_turns:
+    if point_turns or point_moves:
         from .point_turns import measured_fov, pointing_turns
+        from .point_moves import pointing_moves
+        derive = pointing_moves if point_moves else pointing_turns
         point_fov = measured_fov(calibration)
         occupied = {c.id for c in choices} | reserved
-        for row in pointing_turns(manifest, calibration, capture_size):
+        for row in derive(manifest, calibration, capture_size):
             if row.choice.id in occupied:
                 raise ValueError(f"point choice id collision: {row.choice.id}")
             choices.append(row.choice)
