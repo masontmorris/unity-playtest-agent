@@ -27,6 +27,8 @@ from playtest.roles import frontier
 
 HYPOTHESIS_STATUSES = frozenset({"open", "supported", "contradicted", "withdrawn"})
 
+# A suspicion may carry at most this many measured attempts that followed it.
+MAX_FOLLOW_THROUGH = 8
 # The packet states this many suspicions, the most recent. A run can raise more (one Day 6 gate session raised 46);
 # the packet says how many it left out, so a cut is stated and never hidden.
 MAX_SUSPICIONS = 40
@@ -320,6 +322,12 @@ def _suspicions(values: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any
                 raise ValueError(f"{where} has an empty {key}")
             row[key] = text
         row["turn"] = _seq(value.get("turn"), f"{where}.turn")
+        followed = value.get("followed_by")
+        if followed is not None:
+            if (not isinstance(followed, (list, tuple)) or not followed or len(followed) > MAX_FOLLOW_THROUGH
+                    or not all(isinstance(line, str) and line.strip() for line in followed)):
+                raise ValueError(f"{where}.followed_by must be 1 to {MAX_FOLLOW_THROUGH} non-empty lines")
+            row["followed_by"] = list(followed)
         out.append(row)
         seen.add(suspicion_id)
     kept = out[-MAX_SUSPICIONS:]

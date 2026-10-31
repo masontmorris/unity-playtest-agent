@@ -566,3 +566,15 @@ def test_a_malformed_row_is_refused_even_when_the_cap_would_have_dropped_it():
     rows = [suspicion_row(1, statement=""), *(suspicion_row(n) for n in range(2, 50))]
     with pytest.raises(ValueError, match="empty statement"):
         build(suspicions=rows)
+
+
+def test_a_suspicion_may_carry_the_measured_attempts_that_followed_it():
+    from playtest.frontier.packet import MAX_FOLLOW_THROUGH
+
+    row = {"suspicion_id": "s1", "basis": "effect_mismatch", "subject": "a", "turn": 3, "statement": "short"}
+    packet = build(suspicions=[{**row, "followed_by": ["turn 4 a: moved 0.000", "turn 5 b: moved 0.5"]}])
+    assert packet.payload["suspicions"][0]["followed_by"] == ["turn 4 a: moved 0.000", "turn 5 b: moved 0.5"]
+    assert "followed_by" not in build(suspicions=[row]).payload["suspicions"][0]
+    for bad in ([], [""], ["x"] * (MAX_FOLLOW_THROUGH + 1), "turn 4", [3]):
+        with pytest.raises(ValueError, match="followed_by"):
+            build(suspicions=[{**row, "followed_by": bad}])
