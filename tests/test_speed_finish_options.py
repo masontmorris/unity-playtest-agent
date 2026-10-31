@@ -221,7 +221,7 @@ def test_the_cli_accepts_the_policy_two_instructions():
     assert parsed("--s1-instructions", "policy/2").s1_instructions == "policy/2"
     assert INSTRUCTIONS_VARIANTS["policy/2"] == INSTRUCTIONS_FINISH_ONLY_WHEN_MET
     with pytest.raises(SystemExit):
-        parsed("--s1-instructions", "policy/3")
+        parsed("--s1-instructions", "policy/99")
 
 
 class PlanFiles:

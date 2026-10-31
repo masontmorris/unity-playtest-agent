@@ -82,7 +82,7 @@ param(
     [ValidateSet('full', 'dup-state-ref/1')][string]$S1Layout = 'full',
     [ValidateSet('off', 'object', 'format', 'default', 'all')][string]$S1CompactState = 'off',
     [ValidateSet('follow_up', 'batched')][string]$S1PendingQuestion = 'follow_up',
-    [ValidateSet('policy/1', 'direct/1', 'policy/2')][string]$S1Instructions = 'policy/1',
+    [ValidateSet('policy/1', 'direct/1', 'policy/2', 'policy/3')][string]$S1Instructions = 'policy/1',
     [ValidateSet('plain', 'conditional')][string]$FinishLabel = 'plain',
     [ValidateRange(0.0, 1.0)][double]$PacingBurst = 0,
     [string]$UnityPath
