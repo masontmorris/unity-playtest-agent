@@ -137,12 +137,12 @@ def _parser() -> argparse.ArgumentParser:
                              "question first; docs/design/s1-opt-direct-instructions.md; also "
                              "UPA_RUN_S1_INSTRUCTIONS)")
     parser.add_argument("--s1-compact-state", default=_env("UPA_RUN_S1_COMPACT_STATE", str, "off"),
-                        choices=["off", "format", "default", "all"],
-                        help="send S1's state as compact text with lossless rules: off (default), format (compact "
-                             "JSON only), default (plus tables and references), all (plus choice labels by "
-                             "reference). About 29%% fewer billed tokens, but d1-ultra renders a string state "
-                             "differently and changes some near-tie choices; see docs/design/s1-token-budget.md "
-                             "(also UPA_RUN_S1_COMPACT_STATE)")
+                        choices=["off", "object", "format", "default", "all"],
+                        help="restructure S1's state with lossless rules: off (default); object (every rule, state "
+                             "kept a JSON object, about 13%% smaller); or as compact text: format, default, all "
+                             "(about 29%% fewer billed tokens, but d1-ultra renders a string state differently and "
+                             "changes some near-tie choices). Liquid arms only; use with --s1-layout full. See "
+                             "docs/design/s1-token-budget.md (also UPA_RUN_S1_COMPACT_STATE)")
     parser.add_argument("--s1-pending-question", default=_env("UPA_RUN_S1_PENDING_QUESTION", str, "follow_up"),
                         choices=["follow_up", "batched"],
                         help="ask while_pending in a second call after a help choice (follow_up, default) or beside "

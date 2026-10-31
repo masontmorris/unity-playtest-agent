@@ -80,6 +80,8 @@ param(
     [switch]$S1GameView,
     [switch]$CoverageFacts,
     [ValidateSet('full', 'dup-state-ref/1')][string]$S1Layout = 'full',
+    [ValidateSet('off', 'object', 'format', 'default', 'all')][string]$S1CompactState = 'off',
+    [ValidateSet('follow_up', 'batched')][string]$S1PendingQuestion = 'follow_up',
     [string]$UnityPath
 )
 
@@ -176,7 +178,8 @@ $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENC
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
-           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS')
+           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS',
+           'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 $recorder = $null
@@ -202,6 +205,8 @@ try {
     $env:UPA_RUN_S1_ARM = $S1Arm
     $env:UPA_RUN_S1_GAME_VIEW = if ($S1GameView) { '1' } else { '' }
     $env:UPA_RUN_S1_LAYOUT = $S1Layout
+    $env:UPA_RUN_S1_COMPACT_STATE = $S1CompactState
+    $env:UPA_RUN_S1_PENDING_QUESTION = $S1PendingQuestion
     $env:UPA_RUN_COVERAGE_FACTS = if ($CoverageFacts) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }
