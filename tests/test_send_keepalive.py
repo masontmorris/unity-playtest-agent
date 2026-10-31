@@ -1,6 +1,5 @@
 import socket
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -72,9 +71,10 @@ def test_reuse_and_responses(server):
 
 
 def test_idle_connection_replaced(server, monkeypatch):
-    monkeypatch.setattr(replay, "_KEEPALIVE_IDLE_SECONDS", 0)
+    # Negative, so the pooled connection is always past it: Windows' monotonic clock ticks in ~15.6 ms steps,
+    # so a short sleep against a zero threshold can measure no idle time at all.
+    monkeypatch.setattr(replay, "_KEEPALIVE_IDLE_SECONDS", -1.0)
     send()
-    time.sleep(0.01)
     send()
     assert len(server.connections) == 2
 
