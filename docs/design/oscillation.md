@@ -117,7 +117,7 @@ Two remedies follow, and both fit the rules:
   heading satisfies it.
 - **Shrink the step** with a calibrated finer turn (below).
 
-## Finer turns: already measured, being built
+## Finer turns: measured both ways and built (`--turn-sizes`)
 
 An earlier version of this note said a shorter mouse turn's angle could not be known without new
 calibration. That was wrong: manifest 2's calibration already measured both look controls.
@@ -129,10 +129,17 @@ calibration. That was wrong: manifest 2's calibration already measured both look
 What is missing is the other direction. Calibration measured only the declared sign (+x), so no left turn
 has a measured angle. The five-impulse skills' labels also tell S1 nothing about their size.
 
-A worker is building two things:
-- calibration of both signs;
-- an opt-in `--turn-sizes`: one choice per measured size and direction, each one quick input labelled with
-  its measured angle.
+Both are now built and validated in Unity (17feee5).
+- **Calibration of both signs** (`calibrate-preflight.ps1 -BothSigns`, run on FPSKit b01, 31 October). The
+  left measurements match the right within 0.2°: mouse impulse −7.68°; stick −18.2°, −36.2°, −72.2° and
+  −144.3°.
+- **Offline update.** `python -m playtest.preflight.update_calibration` updated manifest 2 to
+  `manifest-3.json`, with no model calls. As a result the stick's left look is now labelled with its measured
+  −36.2°.
+- **`--turn-sizes`** offers S1 ten measured turns: 7.7°, 18°, 36°, 72° and 144°, each left and right. Each is
+  one input, about 0.05–0.4 s, against 0.72 s for the five-impulse skill. A longer hold whose measured turn
+  is smaller than a shorter one's has wrapped past a full circle, and is not offered: the 1.2 s left hold
+  read 72.9°.
 
 With a 7.7° step the half-step is 3.8°, so no reasonable tolerance can hunt.
 
