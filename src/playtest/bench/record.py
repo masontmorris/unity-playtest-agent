@@ -84,6 +84,27 @@ def context_for(frame: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+# S1's instructions when the Day 3 FPSKit corpora were recorded, before #157 added the game-view sentence.
+RECORDED_INSTRUCTIONS = (
+    "This is one decision turn. Choose exactly one id from choices. Facts are measured; null means "
+    "unknown, never zero. Only the listed choices exist. On an escalate or delegate turn, also say "
+    "what to do while help is pending."
+)
+
+
+def recorded_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
+    """The exact payload a frame was recorded with, or `None` when it cannot be rebuilt byte for byte.
+
+    Today's build is tried first. Only if it misses is the build retried with the instructions in force when
+    the corpus was recorded, and it is used only when that reproduces the recorded hash exactly.
+    """
+    payload = context_for(frame)
+    if digest(canonical(payload)) == frame.get("payload_sha256"):
+        return payload
+    earlier = {**payload, "instructions": RECORDED_INSTRUCTIONS}
+    return earlier if digest(canonical(earlier)) == frame.get("payload_sha256") else None
+
+
 def _descriptor(action: dict[str, Any]) -> str:
     return canonical({"control": action["control"], "action": action["action"],
                       "bindings": action["bindings"], "resolution": action["resolution"]})

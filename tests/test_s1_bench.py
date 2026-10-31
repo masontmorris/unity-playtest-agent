@@ -10,13 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from playtest.bench.record import calibrated_choices, context_for, digest
+from playtest.bench.record import RECORDED_INSTRUCTIONS, calibrated_choices, context_for, digest, recorded_payload
 from playtest.bench.labels import make_sheet
-from playtest.bench.replay import accepted, load_inputs, parse_answer, run, score
+from playtest.bench.replay import accepted, load_inputs, parse_answer, request_body, run, score
 from playtest.contracts.bridge import Observation
 from playtest.contracts.common import ClockMode
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSet, ChoiceSource
-from playtest.core.context import canonical
+from playtest.core.context import INSTRUCTIONS, canonical
 
 
 def _save(path: Path, value: object) -> None:
@@ -372,3 +372,19 @@ def test_frozen_frame_reconstruction_uses_original_prompt(tmp_path: Path) -> Non
     assert payload["instructions"] == BENCH_INSTRUCTIONS != INSTRUCTIONS
     assert digest(canonical(payload)) == frame["payload_sha256"]
     assert digest(BENCH_INSTRUCTIONS) == "986c84239418754826075a794540835e994cbc1a26d9527f7b1f47dc1aa97b4b"
+
+
+def test_a_frame_recorded_before_157_rebuilds_with_its_own_instructions_and_nothing_else(tmp_path: Path):
+    corpus, _, _ = _inputs(tmp_path)
+    frame = json.loads(corpus.read_text(encoding="utf-8"))["frames"][0]
+    today = context_for(frame)
+    assert recorded_payload(frame) == today                       # a frame built today rebuilds as is
+    earlier = {**today, "instructions": RECORDED_INSTRUCTIONS}    # a Day 3 frame, recorded before #157 (#203)
+    frame["payload_sha256"] = digest(canonical(earlier))
+    assert recorded_payload(frame) == earlier and earlier["instructions"] != INSTRUCTIONS
+    body = request_body(frame, "model")
+    assert body["state"] == earlier and body["questions"]["next_action"]["instructions"] == RECORDED_INSTRUCTIONS
+    frame["payload_sha256"] = digest(canonical({**earlier, "facts": ["changed"]}))
+    assert recorded_payload(frame) is None                        # any other difference still refuses
+    with pytest.raises(ValueError, match="no longer matches"):
+        request_body(frame, "model")
