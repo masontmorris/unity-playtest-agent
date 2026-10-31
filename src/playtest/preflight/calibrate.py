@@ -265,6 +265,22 @@ def discover_actions(discovery: dict[str, Any]) -> tuple[list[dict[str, Any]], l
     return [actions[key] for key in sorted(actions)], unsupported
 
 
+def negated_view_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Plan the opposite value only after a valid trial measured a nonzero view turn."""
+    if action.get("x") is None or action.get("y") is None:
+        return None
+    if not any(t.get("valid") is True and isinstance(t.get("view_delta"), dict)
+               and any(abs(t["view_delta"].get(axis, 0)) > 0 for axis in ("yaw_deg", "pitch_deg"))
+               for t in trials):
+        return None
+    x, y = -action["x"] or 0.0, -action["y"] or 0.0  # a zero axis stays 0.0, never -0.0, in records and labels
+    try:
+        catalog_contract.InputBinding(device=action["device"], control=action["control_name"], x=x, y=y)
+    except ValueError:
+        return None
+    return {**action, "x": x, "y": y, "action": action["action"] + "_negated"}
+
+
 def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize measured displacements; untested or insufficient values remain null."""
     groups = []
@@ -791,7 +807,7 @@ async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str, *,
 
 
 async def measure(client: BridgeClient, selected: dict[str, Any], *,
-                  on_plan: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+                  on_plan: Callable[[dict[str, Any]], None] | None = None, both_signs: bool = False) -> dict[str, Any]:
     """Calibrate the selected entity's controls and return the local record.
 
     `on_plan` is called with the plan, budget included, once the controls are known and before the
@@ -833,7 +849,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
     actions, unsupported = discover_actions(discovery)
     cap = {"limit": MAX_ACTIONS, "observed": len(actions), "returned": min(len(actions), MAX_ACTIONS),
            "truncated": len(actions) > MAX_ACTIONS}
-    budget = measurement_budget(cap["returned"])
+    budget = measurement_budget(cap["returned"] * (2 if both_signs else 1))
     result: dict[str, Any] = {"schema_version": 1, "status": "inconclusive", "error": None,
         "entity_id": entity_id, "entity": entity, "coordinate_frame": "Unity world space",
         "units": "Unity world units", "physical_unit": None,
@@ -854,6 +870,10 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
     if cap["truncated"] or not actions:
         result["error"] = "action candidates are incomplete" if cap["truncated"] else "no drivable input controls"
         return result
+    if both_signs:
+        result["plan"]["both_signs"] = True
+        result["plan"]["negated_view_actions"] = []
+    measured_actions = list(actions)
     if on_plan is not None:
         on_plan(result["plan"])
     started = time.perf_counter()
@@ -869,7 +889,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
             previous_trial: dict[str, Any] | None = None
             for hold in HOLD_S:
                 for repeat in range(FIELD_REPEATS if hold == HOLD_S[-1] else REPEATS):
-                    for action in actions:
+                    for action in measured_actions:
                         if action["control"] in unsupported_controls:
                             continue
                         quiet = await _quiet_window(client, entity_id)
@@ -896,6 +916,8 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                             continue
                         observation = await client.observe_once()
                         action_id = f"calibration-{action['control']}-{hold}-{repeat + 1}"
+                        if both_signs:
+                            action_id += f"-{action['x']}-{action['y']}"
                         kwargs = {"action_id": action_id, "choice_id": action_id, "action": action["action"],
                                   "based_on_seq": observation.seq, "max_age_s": 2.0, "lease_s": hold}
                         result["trials"].append({"control": action["control"], "requested_hold_s": hold,
@@ -931,6 +953,13 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                             trial["valid"] = False
                             trial["error"] = "game errors were logged during or shortly after this input"
                             unsupported_controls.add(action["control"])
+                        if both_signs:
+                            trial.update(declared_x=action.get("x"), declared_y=action.get("y"))
+                            if not action["action"].endswith("_negated"):
+                                opposite = negated_view_action(action, [trial])
+                                if opposite is not None and not any(a["action"] == opposite["action"] for a in measured_actions):
+                                    measured_actions.append(opposite)
+                                    result["plan"]["negated_view_actions"].append(dict(opposite))
                         result["trials"][-1] = trial
                         previous_trial = trial
                         if hold == HOLD_S[-1]:
@@ -973,7 +1002,9 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                 input_controls=[segment["control"] for segment in segments],
                 later_idle_windows=result["later_idle_windows"])
             result["action_summaries"] = [summarize_action(action,
-                [trial for trial in result["trials"] if trial["control"] == action["control"]]) for action in actions]
+                [trial for trial in result["trials"] if trial["control"] == action["control"] and (not both_signs or
+                 (trial.get("declared_x"), trial.get("declared_y")) == (action.get("x"), action.get("y")))])
+                 for action in measured_actions]
             if not any(trial.get("valid") is True for trial in result["trials"]):
                 result["error"] = "no action produced a valid measurement"
             elif not any(len(segment["samples"]) >= 3 for segment in result["input_field_segments"]):
@@ -996,11 +1027,11 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
     return result
 
 
-async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None = None) -> dict[str, Any]:
+async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None = None, both_signs: bool = False) -> dict[str, Any]:
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
         publish = None if plan_output is None else (lambda plan: write_plan(plan_output, plan))
-        result = await measure(client, selected, on_plan=publish)
+        result = await measure(client, selected, on_plan=publish, both_signs=both_signs)
     finally:
         stop = await client.aclose()
     result["stop"] = stop.model_dump(mode="json") if stop is not None else None
@@ -1017,6 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-output", type=Path,
                         help="new file outside the Unity project that receives the wall-clock plan before the first "
                              "trial, so the hosting Editor can size its own timeout from it")
+    parser.add_argument("--both-signs", action="store_true", default=os.environ.get("UPA_CALIBRATION_BOTH_SIGNS") == "1")
     args = parser.parse_args(argv)
     project, output = args.project.resolve(), args.output.resolve()
     plan_output = args.plan_output.resolve() if args.plan_output is not None else None
@@ -1029,7 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--plan-output must be a new file outside the Unity project, different from --output")
     try:
         selected = json.loads(args.entity.read_text(encoding="utf-8"))
-        result = asyncio.run(_run(project, selected, plan_output))
+        result = asyncio.run(_run(project, selected, plan_output, args.both_signs))
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)

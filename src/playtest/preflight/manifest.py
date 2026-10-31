@@ -183,6 +183,16 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
     return result["gaps"]["coverage"]
 
 
+def calibration_for(rows: list[dict], control: str, x, y) -> dict:
+    candidates = [row for row in rows if row["control"] == control]
+    matched = [row for row in candidates if (row.get("declared_x"), row.get("declared_y")) == (x, y)]
+    if len(matched) > 1:
+        raise ValueError("duplicate calibration value")
+    if not candidates:
+        raise ValueError(f"no calibration for {control}")
+    return matched[0] if matched else candidates[0]
+
+
 def _summaries_for(packet: Packet) -> dict[str, dict]:
     data = json.loads(packet.text)
     return {row["control"]: row for row in data["calibration"]["control_summaries"]}
@@ -297,7 +307,8 @@ def assemble(packet: Packet, result: RunResult) -> PreflightManifest:
     evidence_records = tuple(packet.execution_evidence)
     for action in a5.actions:
         ids = [item.control_id for item in action.inputs]
-        measured = [summaries[control] for control in ids]
+        measured = [calibration_for(data["calibration"]["control_summaries"], item.control_id, item.x, item.y)
+                    for item in action.inputs]
         tap = measured[0]["lowest_tested_effective_requested_hold_s"] if action.hold_s is None and len(ids) == 1 else None
         if tap is not None and tap <= 0:
             tap = None
@@ -445,11 +456,11 @@ def validate_evidence(manifest: PreflightManifest, packet: Packet) -> list[str]:
             problems.append(f"readers[{index}]: freshness evidence differs from the packet")
     for index, action in enumerate(manifest.actions):
         for calibration in action.calibrations:
-            if summaries.get(calibration.control) != calibration.model_dump(mode="json"):
+            if calibration.model_dump(mode="json") not in data["calibration"]["control_summaries"]:
                 problems.append(f"actions[{index}]: calibration differs from the packet")
     for index, skill in enumerate(manifest.skills):
         for calibration in skill.calibrations:
-            if summaries.get(calibration.control) != calibration.model_dump(mode="json"):
+            if calibration.model_dump(mode="json") not in data["calibration"]["control_summaries"]:
                 problems.append(f"skills[{index}]: calibration differs from the packet")
     if manifest.entity_id != data["calibration"]["entity_id"] or manifest.entity != data["calibration"]["entity"]:
         problems.append("the calibrated entity differs from the packet")

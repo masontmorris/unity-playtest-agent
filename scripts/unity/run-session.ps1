@@ -80,6 +80,7 @@ param(
     [switch]$S1GameView,
     [switch]$CoverageFacts,
     [switch]$PatternFacts,
+    [switch]$TurnSizes,
     [ValidateSet('full', 'dup-state-ref/1')][string]$S1Layout = 'full',
     [ValidateSet('off', 'object', 'format', 'default', 'all')][string]$S1CompactState = 'off',
     [ValidateSet('follow_up', 'batched')][string]$S1PendingQuestion = 'follow_up',
@@ -150,7 +151,11 @@ New-Item -ItemType Directory -Path $output | Out-Null
 # declarations with exact release-verified execution evidence. Its digest is pinned for the host and the client.
 $catalogFile = Join-Path $output 'catalog.json'
 Push-Location $repoRoot
-try { & $python -m playtest.preflight.catalog --manifest $manifestFile --output $catalogFile }
+try {
+    $catalogArgs = @()
+    if ($TurnSizes) { $catalogArgs += @('--turn-sizes', '--calibration', $calibration) }
+    & $python -m playtest.preflight.catalog --manifest $manifestFile --output $catalogFile @catalogArgs
+}
 finally { Pop-Location }
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($catalogFile)) {
     throw 'Could not export the manifest catalog, so there is nothing for the host to serve. Fix the manifest and choose a new output directory.'
@@ -184,7 +189,7 @@ $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENC
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
-           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS',
+           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TURN_SIZES',
            'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS',
            'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT')
 $previous = @{}
@@ -219,6 +224,7 @@ try {
     $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
     $env:UPA_RUN_PACING_BURST = $PacingBurst.ToString($invariant)
     $env:UPA_RUN_PACING_ANCHOR = $PacingAnchor
+    $env:UPA_RUN_TURN_SIZES = if ($TurnSizes) { '1' } else { '' }
     $env:UPA_RUN_PATTERN_FACTS = if ($PatternFacts) { '1' } else { '' }
     $env:UPA_RUN_COVERAGE_FACTS = if ($CoverageFacts) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }

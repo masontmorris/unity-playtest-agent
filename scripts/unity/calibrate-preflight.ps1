@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ProjectPath,
     [Parameter(Mandatory = $true)][string]$EntityPath,
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
-    [string]$UnityPath
+    [string]$UnityPath,
+    [switch]$BothSigns
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,10 +32,11 @@ $python = (& uv run --directory $repoRoot python -c 'import sys; print(sys.execu
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($python)) { throw 'Could not locate the repository Python executable.' }
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
-$names = @('UPA_CALIBRATION_OUTPUT', 'UPA_CALIBRATION_PYTHON', 'UPA_CALIBRATION_ENTITY', 'UPA_CALIBRATION_RESET_OUTPUT')
+$names = @('UPA_CALIBRATION_BOTH_SIGNS', 'UPA_CALIBRATION_OUTPUT', 'UPA_CALIBRATION_PYTHON', 'UPA_CALIBRATION_ENTITY', 'UPA_CALIBRATION_RESET_OUTPUT')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
+    $env:UPA_CALIBRATION_BOTH_SIGNS = if ($BothSigns) { '1' } else { '' }
     $env:UPA_CALIBRATION_OUTPUT = $calibration
     $env:UPA_CALIBRATION_PYTHON = $python
     $env:UPA_CALIBRATION_ENTITY = $entity
