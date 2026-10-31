@@ -724,6 +724,23 @@ def test_system_prompt_lines_s1_up_on_a_part_while_moving():
         assert needle in frontier.SYSTEM
 
 
+def test_system_prompt_does_not_turn_s1_back_and_forth_to_centre_a_part():
+    """Session 9 spent 155 of its 185 turns alternating two turns that undid each other.
+
+    Beside the stairs, S1 was told to centre the part. A coarse step overshot and the coarse step
+    back undershot, so yaw sat between 7.7° and 46.1° for 155 turns with no move. The guidance now
+    says the steps are fixed sizes, that the nearest one is near enough, and that cancelling turns
+    leave S1 where it started. Prompt guidance only: S1 still decides.
+    """
+    for needle in (
+        "Turn steps have fixed sizes and need not land on the centre",
+        "when one step overshoots it and the step back undershoots it",
+        "take the smaller step that lands nearest and move then",
+        "two turns that undo each other leave S1 where it started",
+    ):
+        assert needle in frontier.SYSTEM
+
+
 def test_exploration_answer_passes_review(manifest, refs):
     """A hypothesis about an untried part plus a go-try directive needs no contract change."""
     body = answer(
