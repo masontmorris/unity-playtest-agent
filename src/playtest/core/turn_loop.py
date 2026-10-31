@@ -191,6 +191,7 @@ class TurnLoop:
         time_left: Callable[[], float | None] | None = None,
         continuous_input: bool = False,
         continuous_choices: Sequence[str] = (),
+        continuous_labels: Callable[[float | None, float | None], Sequence[Choice]] | None = None,
         instructions: str = INSTRUCTIONS,
     ) -> None:
         if continuous_input and clock_mode is not ClockMode.realtime:
@@ -201,6 +202,7 @@ class TurnLoop:
             raise ValueError("a loop with a restart port must offer the restart choice")
         self._continuous = continuous_input
         self._continuous_choices = frozenset(continuous_choices)
+        self._continuous_labels = continuous_labels
         self._active = None
         self._continuous_lease = None
         self._last_started = None
@@ -367,10 +369,9 @@ class TurnLoop:
             if records[-1].status in TERMINAL_STATUSES:
                 await self._collect_active()
         offered_choices = self._choices
-        if self._continuous and self._continuous_lease is not None:
-            offered_choices = [c.model_copy(update={"label":
-                f"{c.label} Continuous: held up to {self._continuous_lease:.1f} s while the next decision runs."})
-                if c.id in self._continuous_choices else c for c in self._choices]
+        if self._continuous and self._continuous_labels is not None:
+            offered_choices = list(self._continuous_labels(
+                self._intervals[-1] if self._intervals else None, self._continuous_lease))
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
@@ -390,7 +391,7 @@ class TurnLoop:
             if self._continuous:
                 facts.append("Continuous input mode: wait, finish, invalid/stale answers and pending-help "
                              "wait release input. Only the selected action (or while_pending action) starts input. "
-                             "Effects against short-hold calibration are unknown in this mode.")
+                             "Held-choice effects against short-hold calibration are unknown; bounded choices retain effect measurement.")
                 if self._active is not None:
                     request = self._active[0]
                     receipt = self._client.action_records(request["action_id"])[-1]
@@ -787,7 +788,7 @@ class TurnLoop:
         """Send one chosen input, bound to the observation its set was built from, and measure its effect."""
         lease = (self._continuous_lease if self._continuous and choice.id in self._continuous_choices else None)
         request = self._executor.request_for(choice, based_on_seq=observation.seq, lease_s=lease)
-        if self._continuous and choice.id in self._continuous_choices and lease is not None:
+        if self._continuous and choice.id in self._continuous_choices:
             try:
                 records = await self._client.start_act(**request)
             except BaseException:
@@ -807,6 +808,9 @@ class TurnLoop:
             return Executed(purpose=purpose, choice=choice, execution=execution, effect=None), None, None
         if self._continuous:
             await self._release_active("user")
+            # Exclude movement during the decision and verified release from the bounded effect.
+            if self._effects is not None:
+                await self._effects.before_turn(turn)
         try:
             execution = await self._executor.send(request)
         except BaseException:
@@ -830,7 +834,7 @@ class TurnLoop:
         effect = None
         measured = None
         try:
-            if not self._continuous and not execution.rejected and self._effects is not None:
+            if not execution.rejected and self._effects is not None:
                 effect = await self._effects.measure(choice, execution)
                 if effect is not None:
                     measured = self._emit(

@@ -45,7 +45,7 @@ from playtest.core.ports import (
 from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
-from .choices import ManifestChoices
+from .choices import ManifestChoices, held_choice_labels, with_held_choices
 from .pacing import PacingFacts, PacingStats, TokenBudget
 from .resources import SessionFacts
 
@@ -139,13 +139,18 @@ async def run_session(
     resources = SessionFacts(started=started, wall_limit_s=wall_limit_s, clock=clock,
                              s1=s1, s1_call_cap=s1_call_cap, help=help, inner=facts)
     paced = PacingFacts(inner=resources) if budget is not None else None
+    eligible = continuous_choice_ids(built) if continuous_input else []
+    configured = with_held_choices(built, eligible) if continuous_input else built
+    held_ids = [f"{name}.held" for name in eligible]
     loop = TurnLoop(
-        client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
+        client, choices=configured.choices, max_age_s=max_age_s, leases=configured.leases,
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
         restart=restart, generation=generation, time_left=lambda: deadline - clock(),
         continuous_input=continuous_input,
-        continuous_choices=continuous_choice_ids(built),
+        continuous_choices=held_ids,
+        continuous_labels=(lambda interval, lease: held_choice_labels(configured, held_ids, interval, lease))
+        if continuous_input else None,
         instructions=instructions,
     )
     bind = getattr(probe, "bind_observation_source", None)
