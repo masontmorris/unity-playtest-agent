@@ -233,3 +233,36 @@ def test_unsupported_combinations_are_refused(tmp_path: Path, arm, options, matc
     ledger = call_budget.Ledger(tmp_path, limits, arm)
     with pytest.raises(ValueError, match=match):
         SystemOneS1(ledger, max_calls=1, arm=arm, **{"compact_state": "default", **options})
+
+
+def test_a_game_view_travels_beside_the_compact_state(tmp_path: Path):
+    """The image is the body's own `images` array; the compact state still restores the context, view fields included."""
+    import base64
+    raw = b"jpeg bytes"
+    ctx = built_context()
+    ctx.update(game_view="The attached image is the current game view, 640x480 pixels.",
+               game_view_sha256=digest(raw), game_view_status="sent")
+    port, send, ledger = _liquid(tmp_path, reply("next_action", "h"), reply("while_pending", "c2"),
+                                 compact_state="default", game_view=True)
+    got = asyncio.run(port.decide(ctx, image=raw))
+    url = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+    assert len(send.bodies) == 2 and port.view_counts == {"enabled": True, "sent": 2, "omitted": 0, "stale": 0}
+    for body, call in zip(send.bodies, got.calls):
+        asked = next(iter(body["questions"].values()))
+        assert body["images"] == [url] and isinstance(body["state"], str)
+        assert url not in body["state"]                                   # the image is never inside the text
+        restored = C.decode(body["state"], instructions=asked["instructions"], criteria=asked["criteria"])
+        assert canonical(restored) == canonical(ctx)                      # game_view, its digest and status too
+        assert call.request_sha256 == digest(canonical(body))            # the hash covers the image and the text
+
+
+def test_a_stale_view_sends_no_image_and_the_compact_state_says_so(tmp_path: Path):
+    ctx = built_context()
+    ctx.update(game_view="too old", game_view_sha256=None, game_view_status="stale")
+    port, send, _ = _liquid(tmp_path, reply("next_action", "c1"), compact_state="default", game_view=True)
+    asyncio.run(port.decide(ctx))
+    body = send.bodies[0]
+    asked = body["questions"]["next_action"]
+    assert "images" not in body
+    assert C.decode(body["state"], instructions=asked["instructions"], criteria=asked["criteria"])[
+        "game_view_status"] == "stale"
