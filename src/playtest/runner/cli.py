@@ -136,6 +136,16 @@ def _parser() -> argparse.ArgumentParser:
                         help="the S1 question text: policy/1 (default, today's paragraph) or direct/1 (one direct "
                              "question first; docs/design/s1-opt-direct-instructions.md; also "
                              "UPA_RUN_S1_INSTRUCTIONS)")
+    parser.add_argument("--s1-compact-state", default=_env("UPA_RUN_S1_COMPACT_STATE", str, "off"),
+                        choices=["off", "format", "default", "all"],
+                        help="send S1's state as compact text with lossless rules: off (default), format (compact "
+                             "JSON only), default (plus tables and references), all (plus choice labels by "
+                             "reference); docs/design/s1-token-budget.md (also UPA_RUN_S1_COMPACT_STATE)")
+    parser.add_argument("--s1-pending-question", default=_env("UPA_RUN_S1_PENDING_QUESTION", str, "follow_up"),
+                        choices=["follow_up", "batched"],
+                        help="ask while_pending in a second call after a help choice (follow_up, default) or beside "
+                             "next_action in the same call (batched; docs/design/s1-opt-batch-pending.md; also "
+                             "UPA_RUN_S1_PENDING_QUESTION)")
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
@@ -295,6 +305,10 @@ def main(argv: list[str] | None = None) -> int:
         plan["s1_layout"] = args.s1_layout
         if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT:
             plan["s1_instructions"] = args.s1_instructions  # only a non-default variant adds bytes
+        if args.s1_compact_state != "off":
+            plan["s1_compact_state"] = args.s1_compact_state
+        if args.s1_pending_question != "follow_up":
+            plan["s1_pending_question"] = args.s1_pending_question
         plan["coverage_facts"] = args.coverage_facts
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
@@ -361,7 +375,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True)
         instructions = INSTRUCTIONS_VARIANTS[args.s1_instructions]
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
-                          game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions)
+                          game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
+                          compact_state=args.s1_compact_state, pending_question=args.s1_pending_question)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)
@@ -410,7 +425,10 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
                        "calls": s1.calls_reserved, "call_cap": args.max_calls,
                        **({"instructions": args.s1_instructions}
-                          if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT else {})},
+                          if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT else {}),
+                       **({"compact_state": s1.compact_state} if s1.compact_state is not None else {}),
+                       **({"pending_question": args.s1_pending_question}
+                          if args.s1_pending_question != "follow_up" else {})},
                 "s1_game_view": s1.view_counts,
                 "frontier": {"enabled": args.frontier, "model": frontier_provider.MODEL if args.frontier else None,
                              "calls": help_port.calls if help_port is not None else 0,
