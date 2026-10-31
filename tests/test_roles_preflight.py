@@ -384,7 +384,7 @@ def test_action_selection_prompt_asks_for_useful_steps_and_opposite_axis_directi
         assert "One-way controls such as triggers do not need an opposite" in text
 
 
-def test_action_selection_prompt_asks_for_a_coarse_turn_in_each_direction_of_every_look_axis():
+def test_action_selection_prompt_asks_for_a_coarse_turn_in_each_direction_on_one_look_device():
     for stage in ("actions", "all"):
         text = preflight.STAGE_PROMPTS[stage]
         assert "mean_view_turn" in text and "how many degrees the game view turned per apply" in text
@@ -392,7 +392,7 @@ def test_action_selection_prompt_asks_for_a_coarse_turn_in_each_direction_of_eve
         assert "with its trial count and spread_deg, how far its trials disagree" in text
         assert "A turn of 180 degrees or more in one apply wraps and is read as a smaller one" in text
         assert "a large spread_deg means the mean is not a turn to rely on" in text
-        assert "at least one coarse turn step, roughly 30 to 60 degrees, in each direction of every look axis" in text
+        assert "at least one coarse turn step, roughly 30 to 60 degrees, in each direction of each look axis on one look device" in text
         assert "(a vector control such as mouse delta or a stick whose mean_view_turn shows the view turning)" in text
         assert "fine steps may stay beside it" in text
         assert "A held control's turn can be scaled through its value or hold" in text

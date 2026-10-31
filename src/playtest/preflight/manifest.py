@@ -162,7 +162,7 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
     if any(r["descriptor"].get("value_state") == "null" for r in readers):
         coverage.append("one or more selected readers were null during discovery; their value kind is unknown")
     if any(a["hold_effect"] is None for a in actions):
-        coverage.append("some selected action holds have no established effective response")
+        coverage.append("some selected action holds have no established repeated entity-displacement response")
     if any(a["hold_effect"] is False for a in actions):
         coverage.append("some tested holds did not meet the repeated entity-displacement threshold")
     coverage.extend(_axis_coverage_gaps(actions, skills))

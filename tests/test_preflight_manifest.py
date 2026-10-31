@@ -41,7 +41,7 @@ def test_manifest_preserves_selections_gaps_and_unknown_evidence():
     assert result.actions[0].inputs[0].control_id == "w"
     assert result.actions[0].hold_s == 0.2 and result.actions[0].max_hold_s is None
     assert result.actions[0].hold_effect is None
-    assert any("no established effective response" in gap for gap in result.gaps.coverage)
+    assert any("no established repeated entity-displacement response" in gap for gap in result.gaps.coverage)
     assert result.gaps.unobservable == ["missing state"]
     assert result.gaps.uncontrollable == ["missing input"]
     assert result.gaps.unjudgeable == ["missing objective"]

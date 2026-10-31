@@ -39,7 +39,7 @@ Stage = Literal["readers", "actions", "progress", "all"]
 
 NAME = r"^[a-z][a-z0-9_]{0,39}$"
 MAX_READERS = 16
-MAX_ACTIONS = 14
+MAX_ACTIONS = 18
 MAX_SKILLS = 6
 MAX_INPUTS = 3
 MAX_STEPS = 8
@@ -173,7 +173,14 @@ _BODY = {
         "playtester needs that no chosen field covers."
     ),
     "actions": (
-        "Stage 5, actions and skills. Compose up to 14 actions from the discovered controls only. An action holds "
+        "Stage 5, actions and skills. Compose up to 18 actions from the discovered controls only. "
+        "Cover distinct verbs the input code reads before adding a second device for the same verb; "
+        "use one device per verb unless the source shows devices behave differently. Calibration measures what a "
+        "control changes in reader fields and the view, not only displacement; a control that changes game state "
+        "without moving the entity is still an action a playtester needs. Compose modifier chords, with a control "
+        "held together with a movement control when the source reads them together, and verbs held during a state: "
+        "a control held together with the control that begins another state, such as being airborne or moving, so "
+        "the verb is also tried in that state. Their effects are unknown until measured. An action holds "
         "one to three physical inputs together: give each vector control x and y in [-1, 1] (y = 0 for a "
         "one-dimensional axis) and each keyboard or device button null x and y, plus the hold time in seconds. "
         "An action or skill step with any input that takes x and y (a stick, dpad, trigger, one-dimensional axis "
@@ -190,8 +197,9 @@ _BODY = {
         "positive turns right, pitch positive looks down), with its trial count and spread_deg, how far its trials "
         "disagree. A turn of 180 degrees or more in one apply wraps and is read as a smaller one, so a large "
         "spread_deg means the mean is not a turn to rely on. Use it to choose steps that turn the view a useful "
-        "amount: declare at least one coarse turn step, roughly 30 to 60 degrees, in each direction of every look "
-        "axis (a vector control such as mouse delta or a stick whose mean_view_turn shows the view turning); fine "
+        "amount: declare at least one coarse turn step, roughly 30 to 60 degrees, in each direction of each look "
+        "axis on one look device (a vector control such as mouse delta or a stick whose mean_view_turn shows the "
+        "view turning); fine "
         "steps may stay beside it. A held control's turn can be scaled through its value or hold, but "
         "a relative impulse such as mouse delta cannot exceed 1, so reach a coarse turn by repeating the impulse "
         "as ordered skill steps. A turn you work out for a different value, hold or skill is your estimate, not a "
