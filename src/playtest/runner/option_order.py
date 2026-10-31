@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 from playtest.core.context import canonical
+from playtest.runner.wire import render
 
 
 class OptionOrder(str, Enum):
@@ -25,16 +26,5 @@ def ordered_ids(criteria: dict[str, str], mode: OptionOrder, seed: int | None, e
 
 
 def serialize(body: dict[str, Any], orders: dict[str, list[str]]) -> str:
-    """Canonical JSON except for the explicitly ordered question criteria maps."""
-    def encode(value: Any, path: tuple[str, ...]) -> str:
-        if isinstance(value, dict):
-            keys = sorted(value)
-            if len(path) == 3 and path[0] == 'questions' and path[2] == 'criteria':
-                keys = orders[path[1]]
-                if len(keys) != len(value) or set(keys) != set(value):
-                    raise ValueError('criteria order must contain each id exactly once')
-            return '{' + ','.join(canonical(k) + ':' + encode(value[k], path + (k,)) for k in keys) + '}'
-        if isinstance(value, (list, tuple)):
-            return '[' + ','.join(encode(v, path + ('[]',)) for v in value) + ']'
-        return canonical(value)
-    return encode(body, ())
+    """Canonical JSON except for the explicitly ordered question criteria maps (`playtest.runner.wire.render`)."""
+    return render(body, criteria=orders)

@@ -18,6 +18,11 @@ payload must carry that same text, and `prompt_sha256` hashes exactly the texts 
 Every call that was sent also reports its tokens to an injected meter (`playtest.runner.pacing`
 paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
 it gave them, else an estimate from the request body, reported as an estimate.
+
+`state_order` is opt-in and off by default: `canonical` sends the body exactly as this adapter always
+has, and `stable-first/1` (`playtest.runner.state_order`) sends the same values with `state`'s
+top-level keys in a declared stable-first order. Only that serialization changes; the context record,
+the payload and every value are untouched, and the Meta arm keeps its own stable-first text.
 """
 
 from __future__ import annotations
@@ -34,8 +39,10 @@ from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
 from playtest.core.context import INSTRUCTIONS, canonical
 from playtest.core.ports import S1Answer, S1Call
-from playtest.runner.option_order import OptionOrder, ordered_ids, serialize
+from playtest.runner.option_order import OptionOrder, ordered_ids
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
+from playtest.runner.state_order import StateOrder, state_keys
+from playtest.runner.wire import render
 from playtest.frontier.provider import _cost as meta_cost
 
 # The default S1 arm since #100 (29 October): Liquid's d1-ultra matched mammoth-1 on both S1 benches and kept every
@@ -164,6 +171,7 @@ class SystemOneS1:
         pending_question: str = "follow_up",
         option_order: OptionOrder | str = OptionOrder.sorted,
         order_seed: int | None = None,
+        state_order: StateOrder | str = StateOrder.canonical,
     ) -> None:
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
@@ -182,6 +190,15 @@ class SystemOneS1:
             self._layout = RequestLayout(layout)
         except ValueError:
             raise ValueError(f"unknown S1 request layout {layout!r}") from None
+        try:
+            self._state_order = StateOrder(state_order)
+        except ValueError:
+            raise ValueError(f"unknown S1 state order {state_order!r}") from None
+        if self._state_order is not StateOrder.canonical and arm == "meta-muse-spark-s1":
+            # That arm already renders its own turn-stable-first user text (`_stable_first`); a second
+            # order over the same state would be a different experiment wearing this one's name.
+            raise ValueError(f"S1 arm {arm!r} sends its own stable-first text; the "
+                             f"{self._state_order.value!r} state order does not apply to it")
         if self._layout is not RequestLayout.full and IMAGE_TRANSPORT.get(arm) != "images":
             # That arm wraps `state` in a message, so the body it sends would not be reconstructible
             # from its own bytes. Fail here rather than send a layout marker that does not bind.
@@ -231,6 +248,11 @@ class SystemOneS1:
     def layout(self) -> str:
         """The body layout this adapter sends. `full` renders the context unchanged, byte for byte."""
         return self._layout.value
+
+    @property
+    def state_order(self) -> str:
+        """How the request's state keys are ordered on the wire. `canonical` sorts them, as before."""
+        return self._state_order.value
 
     @property
     def calls_reserved(self) -> int:
@@ -323,8 +345,11 @@ class SystemOneS1:
                                         turn, name)
                       for name, asked in (body.get("questions") or {}).items()}
             presented = orders.get(question)
-            request_text = (canonical(body) if self._option_order is OptionOrder.sorted
-                            else serialize(body, orders))
+            # The default sends `canonical(body)`; an opt-in order renders and sends its own exact text.
+            ordered = self._option_order is not OptionOrder.sorted or self._state_order is not StateOrder.canonical
+            request_text = (render(body, criteria=orders if self._option_order is not OptionOrder.sorted else None,
+                                   state=state_keys if self._state_order is not StateOrder.canonical else None)
+                            if ordered else canonical(body))
             request_sha = digest(request_text)
         except ValueError:
             return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
@@ -350,11 +375,10 @@ class SystemOneS1:
                 self._view_omitted += 1
                 self._view_stale += int(context.get("game_view_status") == "stale")
         try:
-            if self._option_order is OptionOrder.sorted:
-                status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, body)
-            else:
-                status, data, latency_ms, problem = await asyncio.to_thread(
-                    self._send, self._arm, body, wire_text=request_text)
+            # An opt-in order sends the very text it hashed, so the ledger row cannot describe bytes other
+            # than the ones on the wire. The default keeps handing the body to the sender.
+            wire: dict[str, Any] | str = request_text if ordered else body
+            status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, wire)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
             note = f"adapter error: {type(exc).__name__}"
             self._count_tokens(None, estimate_text, image is not None)  # the request may have reached the provider

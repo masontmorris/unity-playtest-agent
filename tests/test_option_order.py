@@ -27,9 +27,10 @@ def test_serialization_and_shuffle():
 def test_adapter_order_and_selection(tmp_path, mode):
     ledger = call_budget.Ledger(tmp_path, approval(), 'mammoth-1')
     seen = []
-    def send(arm, body, **kwargs):
-        seen.append((body, kwargs.get('wire_text', canonical(body))))
-        return reply('next_action', 'c1', favoured='c2')(body)
+    def send(arm, body):
+        text = body if isinstance(body, str) else canonical(body)  # an opt-in order hands over its exact text
+        seen.append((json.loads(text), text))
+        return reply('next_action', 'c1', favoured='c2')(json.loads(text))
     port = SystemOneS1(ledger, max_calls=3, arm='mammoth-1', send=send, option_order=mode, order_seed=7)
     ctx = context()
     ctx['choices'] = list(reversed(ctx['choices']))
@@ -56,3 +57,26 @@ def test_invalid_modes(tmp_path):
     with pytest.raises(ValueError, match='full request layout'):
         SystemOneS1(ledger, max_calls=1, option_order='manifest', layout='dup-state-ref/1')
 
+
+
+def test_every_opt_in_combines_in_one_request(tmp_path):
+    """Batched pending question, shuffled options and stable-first state together: one call, exact bytes."""
+    from playtest.runner.state_order import state_keys
+    from playtest.runner.wire import render
+    ledger = call_budget.Ledger(tmp_path, approval(), 'mammoth-1')
+    seen = []
+    def send(arm, body):
+        assert isinstance(body, str)
+        seen.append(body)
+        return 200, {'answers': {'next_action': {'type': 'choice', 'choice': 'h'},
+                                 'while_pending': {'type': 'choice', 'choice': 'c2'}}}, 10, None
+    port = SystemOneS1(ledger, max_calls=3, arm='mammoth-1', send=send, pending_question='batched',
+                       option_order='shuffled', order_seed=3, state_order='stable-first/1')
+    result = asyncio.run(port.decide(context()))
+    row = ledger.arm_rows()[0]
+    assert len(seen) == 1 and result.answer['while_pending'] == {'mode': 'continue', 'choice_id': 'c2'}
+    assert set(row['presented_ids_by_question']) == {'next_action', 'while_pending'}
+    body = json.loads(seen[0])
+    assert seen[0] == render(body, criteria=row['presented_ids_by_question'], state=state_keys)
+    assert digest(seen[0]) == row['request_sha256'] == result.calls[0].request_sha256
+    assert list(body['state'])[0] == 'instructions'

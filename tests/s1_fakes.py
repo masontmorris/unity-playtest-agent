@@ -33,16 +33,24 @@ def reply(question: str, choice: str, favoured: str | None = None, usage: dict[s
 
 
 class Send:
-    """A fake `send`: scripted replies, with what the adapter did around each call recorded."""
+    """A fake `send`: scripted replies, with what the adapter did around each call recorded.
+
+    `bodies` holds the body as the adapter handed it over, parsed when it was the exact request text
+    (the state-order option sends text rather than a body); `texts` holds that text, or `None` when the
+    adapter handed over a body for the sender to serialize.
+    """
 
     def __init__(self, directory: Path, *replies: Any) -> None:
         self._directory = directory
         self._replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
+        self.texts: list[str | None] = []
         self.threads: list[int] = []
         self.reserved: list[list[str]] = []
 
-    def __call__(self, arm: str, body: dict[str, Any]):
+    def __call__(self, arm: str, body: dict[str, Any] | str):
+        self.texts.append(body if isinstance(body, str) else None)
+        body = json.loads(body) if isinstance(body, str) else body
         self.bodies.append(body)
         self.threads.append(threading.get_ident())
         rows = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((self._directory / "calls").glob("*.json"))]
