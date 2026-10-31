@@ -58,6 +58,7 @@ from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
 from .probe import DisplacementProbe, make_snapshot
 from .progress import ProgressFacts, ProgressProbe
 from .readers import FieldReaders
+from .request_layout import RequestLayout
 from .s1 import ARM, IMAGE_TOKENS, IMAGE_TRANSPORT, SystemOneS1
 from .session import MAX_AGE_S, MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
 from .session_control import (
@@ -120,6 +121,10 @@ def _parser() -> argparse.ArgumentParser:
                         help=f"the S1 model arm, one of replay.ARMS (default {ARM}; also UPA_RUN_S1_ARM)")
     parser.add_argument("--s1-game-view", action="store_true", default=_env("UPA_RUN_S1_GAME_VIEW", switch, False),
                         help="send a fresh bridge frame to a verified image-capable S1 arm (also UPA_RUN_S1_GAME_VIEW=1)")
+    parser.add_argument("--s1-layout", default=_env("UPA_RUN_S1_LAYOUT", str, RequestLayout.full.value),
+                        choices=[layout.value for layout in RequestLayout],
+                        help="the S1 request body layout: full (default), or the lossless layout that sends each "
+                             "duplicated text once (also UPA_RUN_S1_LAYOUT)")
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
@@ -268,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
                 "offered": [c.id for c in built.choices], "not_offered": built.not_offered,
                 "budget_assumptions": {"balance_override": approval.get("unverified_balance_override")}}
         plan["s1_game_view"] = args.s1_game_view
+        plan["s1_layout"] = args.s1_layout
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
@@ -330,9 +336,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
         per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
-        budget = TokenBudget(per_minute, initial_estimate=first_call)
+        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True)
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
-                          game_view=args.s1_game_view)
+                          game_view=args.s1_game_view, layout=args.s1_layout)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)

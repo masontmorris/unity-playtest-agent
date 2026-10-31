@@ -753,7 +753,7 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
         files = Project(tmp_path, thread.port, git=True)
         send = Send(files.out, reply("next_action", "move"), reply("next_action", "look"), reply("next_action", "finish"))
         with_fake_send(monkeypatch, send)
-        assert cli.main(files.args(tokens_per_minute=60000)) == 0
+        assert cli.main(files.args(tokens_per_minute=600_000_000)) == 0   # far above three calls: spacing waits ~0
         assert thread.game.applied() == ["move", "look"]            # the host ran the declarations S1 named
     summary = json.loads(files.summary.read_text(encoding="utf-8"))
     assert (summary["status"], summary["ending"], summary["turns"]) == ("complete", "finish", 3)
@@ -789,9 +789,10 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
     assert plan["max_calls"] == 6 and plan["offered"][:2] == ["move", "look"] and plan["catalog_sha256"] == files.catalog_sha
     # Pacing: the rate is in the plan and the summary, and a short run never waited. The fake replies carry
     # no input token count, so every call was counted as an estimate.
-    assert plan["tokens_per_minute"] == summary["settings"]["tokens_per_minute"] == 60000
-    assert summary["pacing"] == {"waited_s": 0.0, "longest_wait_s": 0.0, "turns_waited": 0,
-                                 "calls_counted": 3, "calls_estimated": 3}
+    assert plan["tokens_per_minute"] == summary["settings"]["tokens_per_minute"] == 600_000_000
+    pacing = summary["pacing"]
+    assert pacing["waited_s"] < 0.1 and pacing["longest_wait_s"] < 0.1    # spacing at this rate is sub-millisecond
+    assert (pacing["calls_counted"], pacing["calls_estimated"]) == (3, 3)
     everything = "".join(p.read_text(encoding="utf-8") for p in files.out.rglob("*") if p.is_file())
     assert "sk-test-cli-key-0001" not in everything and "sk-test-cli-key-0001" not in capsys.readouterr().out
 
@@ -1122,7 +1123,8 @@ def test_cli_image_mode_sends_bridge_frames_and_replays_without_image_bytes(tmp_
         thread.game.frame_path = files.project / FRAME_SUBDIR
         send = Send(files.out, reply("next_action", "move"), reply("next_action", "finish"))
         with_fake_send(monkeypatch, send)
-        assert cli.main([*files.args(), "--s1-game-view"]) == 0
+        # A high rate keeps pacing's spacing near zero: the fake game writes a frame only when it acts.
+        assert cli.main([*files.args(tokens_per_minute=600_000_000), "--s1-game-view"]) == 0
         assert thread.game.applied() == ["move"]
     summary = json.loads(files.summary.read_text(encoding="utf-8"))
     assert summary["s1_game_view"] == {"enabled": True, "sent": 2, "omitted": 0, "stale": 0}
