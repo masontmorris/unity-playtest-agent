@@ -173,13 +173,12 @@ staircase as built; what they do show is that its risers are walkable from the f
 Session 10 was aimed at the flights where that reading says `b04` should show, and navigation failed in a new
 way. S1 crossed 60 units of open ground, found the structures, and pressed against the north face of the 2-unit
 flight at x ≈ 27 — roughly halfway up its slope, where its surface is about 1.1 units above the floor — for turns
-62–160. Its pushes into that face
-measured 0.01–0.14 units against the calibrated 2.003, and its `jump`s reached camera y 2.09 above the floor and
-came back down, because the ground beside the face is open and the face runs past it. It never went round to
-x < 18, where the flight begins at floor level with 0.25 risers and 2.0 treads. The frontier answered every
-block with the same directive ("jump then move_forward to step up onto the lowest step"), used all 15 of its
-calls on 38 effect-mismatch suspicions, and produced no candidate finding. So `b04` is still neither evidenced
-nor excluded, and the low ends of the four side flights remain unsampled.
+62–160. Its pushes into that face measured 0.01–0.14 units against the calibrated 2.003, and its `jump`s reached
+camera y 2.09 above the floor and came back down, because the ground beside the face is open and the face runs
+past it. It never went round to x < 18, where the flight begins at floor level with 0.25 risers and 2.0 treads.
+The frontier answered every block with the same directive ("jump then move_forward to step up onto the lowest
+step"), used all 15 of its calls on 38 effect-mismatch suspicions, and produced no candidate finding. So `b04`
+is still neither evidenced nor excluded, and the low ends of the four side flights remain unsampled.
 
 | Measure | Session 1 | Session 2 | Session 3 | Session 4 | Session 5 | Session 6 | Session 7 | Session 8 | Session 9 | Session 10 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
