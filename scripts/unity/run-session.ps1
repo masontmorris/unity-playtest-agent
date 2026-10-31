@@ -202,6 +202,7 @@ try {
                     '-ProjectPath', $project, '-ControlDirectory', $controlDirectory,
                     '-PythonPath', $python, '-ClientModule', 'playtest.runner.cli',
                     '-ClientProject', $project, '-ClientEntity', $entity, '-ClientCalibration', $calibration,
+                    '-ClientOutput', $env:UPA_BENCH_OUTPUT,
                     '-InitialReadyTimeoutSeconds', '300', '-ShutdownTimeoutSeconds', '180')
     if ($UnityPath) { $runnerArgs += @('-UnityPath', $UnityPath) }
     if ($RecordFrames) {
