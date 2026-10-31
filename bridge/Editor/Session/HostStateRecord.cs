@@ -44,7 +44,7 @@ namespace Playtest.Bridge.Editor.Session
 
         public string ScenePath { get; set; }
 
-        public int? SceneHandle { get; set; }
+        public long? SceneHandle { get; set; }
 
         public DateTime? ReadyUtc { get; set; }
 
@@ -91,7 +91,7 @@ namespace Playtest.Bridge.Editor.Session
                 Phase = ParsePhase(SessionRecordJson.RequireString(obj, "phase", "host-state.json")),
                 Generation = SessionRecordJson.OptionalUuid(obj, "generation", "host-state.json"),
                 ScenePath = SessionRecordJson.OptionalString(obj, "scene_path", "host-state.json"),
-                SceneHandle = SessionRecordJson.OptionalInteger(obj, "scene_handle", "host-state.json"),
+                SceneHandle = SessionRecordJson.OptionalLong(obj, "scene_handle", "host-state.json"),
                 ReadyUtc = SessionRecordJson.OptionalTimestampUtc(obj, "ready_utc", "host-state.json"),
                 Error = SessionRecordJson.OptionalString(obj, "error", "host-state.json"),
                 Capabilities = capabilities,

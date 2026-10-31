@@ -90,7 +90,7 @@ namespace Playtest.Bridge.Editor.Session
                     SessionRecordJson.RequireString(obj, "host_phase", "session state")),
                 Generation = SessionRecordJson.OptionalUuid(obj, "generation", "session state"),
                 ScenePath = SessionRecordJson.OptionalString(obj, "scene_path", "session state"),
-                SceneHandle = SessionRecordJson.OptionalInteger(obj, "scene_handle", "session state"),
+                SceneHandle = SessionRecordJson.OptionalLong(obj, "scene_handle", "session state"),
                 ReadyUtc = SessionRecordJson.OptionalTimestampUtc(obj, "ready_utc", "session state"),
                 Error = SessionRecordJson.OptionalString(obj, "error", "session state"),
             };

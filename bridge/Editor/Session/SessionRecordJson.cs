@@ -192,6 +192,29 @@ namespace Playtest.Bridge.Editor.Session
             return (int)token;
         }
 
+        public static long? OptionalLong(JObject obj, string key, string what)
+        {
+            JToken token = obj[key];
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return null;
+            }
+
+            if (token.Type != JTokenType.Integer)
+            {
+                throw new SessionRecordException(what + "." + key + " must be an integer or null");
+            }
+
+            try
+            {
+                return (long)token;
+            }
+            catch (OverflowException)
+            {
+                throw new SessionRecordException(what + "." + key + " must fit a signed 64-bit integer");
+            }
+        }
+
         public static string RequireUuid(JObject obj, string key, string what)
         {
             string value = RequireString(obj, key, what);
@@ -319,6 +342,11 @@ namespace Playtest.Bridge.Editor.Session
         }
 
         public static JToken Nullable(int? value)
+        {
+            return value.HasValue ? new JValue(value.Value) : JValue.CreateNull();
+        }
+
+        public static JToken Nullable(long? value)
         {
             return value.HasValue ? new JValue(value.Value) : JValue.CreateNull();
         }

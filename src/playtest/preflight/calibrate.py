@@ -323,12 +323,35 @@ def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> di
             "sensitivity_reason": "sensitivity is unknown: one declared value per control was measured, not a response curve"}
 
 
+_SCENE_INDEXED_ID = re.compile(r"^(scene:.+)@(\d+)(::.+)$")
+
+
+def _same_object_other_scene_index(rows: dict[str, dict[str, Any]], entity_id: str) -> dict[str, Any] | None:
+    """The same scene path and hierarchy coordinates under a different loaded-scene index, if exactly one exists.
+
+    A scene id carries its position among loaded scenes. A Play Mode test host loads its own scene first, so the
+    game's scene is `@1` there and `@0` under the Editor-owned session host; the object itself is unchanged. Only a
+    unique match counts. Zero or several candidates leave the entity missing, never guessed.
+    """
+    wanted = _SCENE_INDEXED_ID.match(entity_id)
+    if wanted is None:
+        return None
+    matches = []
+    for row_id, row in rows.items():
+        found = _SCENE_INDEXED_ID.match(row_id)
+        if found is not None and found.group(1) == wanted.group(1) and found.group(3) == wanted.group(3):
+            matches.append(row)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _entity_snapshot(response: Any, entity_id: str) -> dict[str, Any]:
     data = _complete(response, "transforms")
     rows = _objects(data)
-    if entity_id not in rows:
+    row = rows.get(entity_id)
+    if row is None:
+        row = _same_object_other_scene_index(rows, entity_id)
+    if row is None:
         raise ValueError("the selected entity is missing from the transform snapshot")
-    row = rows[entity_id]
     forward = _vector(row.get("world_forward"))
     basis = row.get("basis_state")
     yaw = pitch = None

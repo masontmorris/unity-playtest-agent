@@ -463,10 +463,12 @@ namespace Playtest.Bridge.Editor
             return true;
         }
 
-        private static int RawSceneHandle(Scene scene)
+        private static long RawSceneHandle(Scene scene)
         {
 #if UNITY_6000_5_OR_NEWER
-            return scene.handle.GetRawData();
+            // Unity 6.5 exposes the raw handle as a ulong that need not fit an int. It is only an identity check,
+            // so its 64 bits are kept exactly, reinterpreted as a signed long so JSON and Python read it unchanged.
+            return unchecked((long)scene.handle.GetRawData());
 #else
             return scene.handle;
 #endif

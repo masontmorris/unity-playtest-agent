@@ -90,7 +90,7 @@ namespace Playtest.Bridge.Tests
                 Phase = PlayModeSessionPhase.Ready,
                 Generation = SessionTestSupport.Generation,
                 ScenePath = SessionTestSupport.ScenePath,
-                SceneHandle = 4,
+                SceneHandle = 0x7FFF_FFFF_0000_0004L, // Unity 6.5 raw handles need not fit an int
                 ReadyUtc = SessionTestSupport.T0,
                 Capabilities = new[] { HostStateRecord.RestartCapability },
             };
@@ -99,7 +99,7 @@ namespace Playtest.Bridge.Tests
             Assert.That(control.TryReadText(control.HostStatePath, out string text), Is.True);
             HostStateRecord read = HostStateRecord.Parse(text);
             Assert.That(read.Generation, Is.EqualTo(SessionTestSupport.Generation));
-            Assert.That(read.SceneHandle, Is.EqualTo(4));
+            Assert.That(read.SceneHandle, Is.EqualTo(0x7FFF_FFFF_0000_0004L));
 
             string[] files = Directory.GetFiles(_root);
             Assert.That(files.Select(Path.GetFileName), Is.EquivalentTo(new[] { "host-state.json" }),

@@ -52,7 +52,7 @@ namespace Playtest.Bridge.Editor.Session
 
         public string ScenePath { get; internal set; }
 
-        public int? SceneHandle { get; internal set; }
+        public long? SceneHandle { get; internal set; }
 
         public string FailureReason { get; internal set; }
 
@@ -121,7 +121,7 @@ namespace Playtest.Bridge.Editor.Session
 
         public string ScenePath { get; internal set; }
 
-        public int? SceneHandle { get; internal set; }
+        public long? SceneHandle { get; internal set; }
 
         public DateTime? ReadyUtc { get; internal set; }
 
@@ -330,7 +330,7 @@ namespace Playtest.Bridge.Editor.Session
         }
 
         /// <summary>Records the fresh play-mode scene instance. Not mailbox-visible until ready.</summary>
-        public bool MarkSceneLoaded(string scenePath, int sceneHandle)
+        public bool MarkSceneLoaded(string scenePath, long sceneHandle)
         {
             if (Ticket == null || Ticket.IsTerminal)
             {
@@ -353,7 +353,7 @@ namespace Playtest.Bridge.Editor.Session
         }
 
         /// <summary>Records the same fresh scene for the initial start, where no ticket exists but the same rule holds.</summary>
-        public bool MarkInitialSceneLoaded(string scenePath, int sceneHandle)
+        public bool MarkInitialSceneLoaded(string scenePath, long sceneHandle)
         {
             if (Ticket != null && !Ticket.IsTerminal)
             {

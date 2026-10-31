@@ -155,7 +155,7 @@ namespace Playtest.Bridge.Editor.Session
 
         public string ScenePath { get; set; }
 
-        public int? SceneHandle { get; set; }
+        public long? SceneHandle { get; set; }
 
         public string FailureReason { get; set; }
 
@@ -327,7 +327,7 @@ namespace Playtest.Bridge.Editor.Session
                     obj, "entered_play_mode_utc", "result.json"),
                 ReadyUtc = SessionRecordJson.OptionalTimestampUtc(obj, "ready_utc", "result.json"),
                 ScenePath = SessionRecordJson.OptionalString(obj, "scene_path", "result.json"),
-                SceneHandle = SessionRecordJson.OptionalInteger(obj, "scene_handle", "result.json"),
+                SceneHandle = SessionRecordJson.OptionalLong(obj, "scene_handle", "result.json"),
                 FailureReason = SessionRecordJson.OptionalString(obj, "failure_reason", "result.json"),
             };
             result.Validate();
