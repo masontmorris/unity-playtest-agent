@@ -158,6 +158,9 @@ class EffectComparison:
     spread: float
     allowed: float
     basis: str
+    # What the probe measured around the entity at the observation the action was bound to, as the probe
+    # wrote it; carried verbatim into the suspicion so it outlives the recent-rows window. None when unmeasured.
+    context: str | None = None
 
 
 @dataclass(frozen=True)

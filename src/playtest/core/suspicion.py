@@ -298,9 +298,12 @@ class ReaderWatch:
                      f"{fmt(comparison.expected)}{unit}; the difference {fmt(difference)}{unit} is more than the "
                      f"{fmt(comparison.allowed)}{unit} the calibration's recorded spread allows "
                      f"({comparison.basis}).")
+        if comparison.context:
+            statement += f" At the observation the action was bound to: {comparison.context}."
         detail = {"choice_id": choice.id, "metric": comparison.metric, "unit": comparison.unit,
                   "expected": comparison.expected, "observed": comparison.observed, "difference": difference,
-                  "spread": comparison.spread, "allowed": comparison.allowed, "basis": comparison.basis}
+                  "spread": comparison.spread, "allowed": comparison.allowed, "basis": comparison.basis,
+                  "context": comparison.context}
         return [self._suspicion(SuspicionBasis.effect_mismatch, turn, choice.id, statement, detail, trace_seqs)]
 
     # --- the pieces -----------------------------------------------------------------------------

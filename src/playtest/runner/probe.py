@@ -25,6 +25,45 @@ from playtest.preflight.verify import MEASUREMENT_TOLERANCE
 from .choices import UNIT
 
 METRIC = "net displacement"
+# The bridge's measured geometry around the controlled entity (#195): casts and samples, never judged.
+SURROUNDINGS_FIELD = "probe"
+
+
+def _num(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+def describe_surroundings(probe: Any) -> str | None:
+    """The measured surroundings as one line: forward casts low and high, and how far the ground ahead rises.
+
+    Raw measurements only, nothing labelled passable or blocked beyond what a cast reported. A part that was not
+    measured says unknown; no readings at all gives None.
+    """
+    if not isinstance(probe, Mapping):
+        return None
+    parts = []
+    for cast in probe.get("blockers") or []:
+        if not isinstance(cast, Mapping):
+            continue
+        height, distance = _num(cast.get("height")), _num(cast.get("distance"))
+        label = f"forward cast {height:g} up" if height is not None else "forward cast at unknown height"
+        if cast.get("hit") is True:
+            parts.append(f"{label} hit at {distance:.2f}" if distance is not None else f"{label} hit at unknown distance")
+        elif cast.get("hit") is False:
+            reach = _num(cast.get("max_distance"))
+            parts.append(f"{label} clear" + (f" to {reach:g}" if reach is not None else ""))
+    rows: dict[float, list[float | None]] = {}
+    for sample in probe.get("samples") or []:
+        if isinstance(sample, Mapping) and _num(sample.get("forward")) is not None:
+            rows.setdefault(_num(sample["forward"]), []).append(_num(sample.get("delta_y")))
+    if rows:
+        rises = []
+        for forward in sorted(rows):
+            known = [v for v in rows[forward] if v is not None]
+            rises.append(f"{max(known):.2f} at {forward:g}" if known else f"unknown at {forward:g}")
+        parts.append("ground ahead rises " + ", ".join(rises))
+    return "; ".join(parts) if parts else None
+
 
 Snapshot = Callable[[], Awaitable[dict[str, Any]]]
 
@@ -60,6 +99,7 @@ class DisplacementProbe:
         self._snapshot_for = snapshot_for
         self._before: dict[str, Any] | None = None
         self._before_problem: str | None = None
+        self._bound_observation: Callable[[], Any] | None = None
 
     def rebind(self, *, client: BridgeClient | None = None, observation: Any = None,
                generation: str | None = None) -> None:
@@ -67,6 +107,10 @@ class DisplacementProbe:
         if client is not None and self._snapshot_for is not None:
             self._snapshot = self._snapshot_for(client)
         self._before, self._before_problem = None, None
+
+    def bind_observation_source(self, source: Callable[[], Any]) -> None:
+        """Where to read the observation the measured action was bound to (its measured surroundings)."""
+        self._bound_observation = source
 
     async def before_turn(self, turn: int) -> None:
         self._before, self._before_problem = await self._read()
@@ -77,24 +121,45 @@ class DisplacementProbe:
         expected = self._expected.get(choice.id)
         problem = before_problem or after_problem
         observed = displacement_between(before, after)
+        context = self._surroundings()
         if observed is not None:
             problem = problem or (None if observed["net_displacement"] is not None else "a position was unknown")
             observed["applied_duration_s"] = execution.terminal.applied_duration_s
         return EffectReport(
             expected=dict(expected) if expected is not None else None,
             observed=observed,
-            fact=self._fact(choice, expected, observed, problem),
-            comparison=_comparison(expected, observed),
+            fact=self._fact(choice, expected, observed, problem, context),
+            comparison=_comparison(expected, observed, context),
         )
 
     async def _read(self) -> tuple[dict[str, Any] | None, str | None]:
         return await read_snapshot(self._snapshot)
 
+    def _surroundings(self) -> str | None:
+        if self._bound_observation is None:
+            return None
+        try:
+            observation = self._bound_observation()
+        except Exception:  # noqa: BLE001 - no observation to read is unmeasured surroundings, never a failure
+            return None
+        public = getattr(observation, "public", None)
+        return describe_surroundings(public.get(SURROUNDINGS_FIELD) if isinstance(public, Mapping) else None)
+
     @staticmethod
     def _fact(choice: Choice, expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None,
-              problem: str | None) -> str:
+              problem: str | None, context: str | None = None) -> str:
         if observed is None or observed["net_displacement"] is None:
             return f"{choice.id}: net displacement was not measured ({problem or 'no reading'})."
+        return DisplacementProbe._measured_fact(choice, expected, observed, context)
+
+    @staticmethod
+    def _measured_fact(choice: Choice, expected: Mapping[str, Any] | None, observed: Mapping[str, Any],
+                       context: str | None) -> str:
+        tail = f" Before the action: {context}." if context else ""
+        return DisplacementProbe._displacement_fact(choice, expected, observed) + tail
+
+    @staticmethod
+    def _displacement_fact(choice: Choice, expected: Mapping[str, Any] | None, observed: Mapping[str, Any]) -> str:
         text = (f"{choice.id}: net displacement between inspection seq {observed['from_inspection_seq']} "
                 f"and {observed['to_inspection_seq']}: {observed['net_displacement']:.3f} {UNIT}")
         if expected is None:
@@ -141,7 +206,8 @@ def allowance(expected: Mapping[str, Any] | None) -> tuple[float, float] | None:
     return spread, spread + MEASUREMENT_TOLERANCE
 
 
-def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None) -> EffectComparison | None:
+def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] | None,
+                context: str | None = None) -> EffectComparison | None:
     """The observed displacement against the calibrated one, with how far apart they may be before the
     calibration's recorded spread no longer accounts for it (`allowance`).
 
@@ -158,7 +224,8 @@ def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] 
     return EffectComparison(
         metric=METRIC, unit=UNIT, expected=float(expected["net_displacement"]), observed=float(seen),
         spread=spread, allowed=allowed,
-        basis=f"the calibration's spread {spread:.4g} plus a measurement allowance of {MEASUREMENT_TOLERANCE:g}")
+        basis=f"the calibration's spread {spread:.4g} plus a measurement allowance of {MEASUREMENT_TOLERANCE:g}",
+        context=context)
 
 
 def _gap(start: Any, end: Any) -> float | None:

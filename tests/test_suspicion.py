@@ -354,3 +354,17 @@ def test_the_drift_threshold_must_be_a_positive_integer():
     for bad in (0, -1, True, 2.5):
         with pytest.raises(ValueError, match="drift_readings"):
             ReaderWatch({"r": "number"}, drift_readings=bad)
+
+
+def test_measured_surroundings_ride_on_the_shortfall_suspicion_verbatim():
+    watch = ReaderWatch({})
+    move = Choice(id="move_forward", kind="action", label="Move", action="move_forward", source="manifest")
+    base = comparison(0.0)
+    report = EffectReport(comparison=EffectComparison(
+        metric=base.metric, unit=base.unit, expected=base.expected, observed=base.observed, spread=base.spread,
+        allowed=base.allowed, basis=base.basis, context="low cast hit at 0.38; high cast clear"))
+    (s,) = watch.effect(move, report, turn=7, trace_seqs=[40])
+    assert s.statement.endswith("At the observation the action was bound to: low cast hit at 0.38; high cast clear.")
+    assert s.detail["context"] == "low cast hit at 0.38; high cast clear"
+    (plain,) = watch.effect(move, EffectReport(comparison=base), turn=8, trace_seqs=[41])
+    assert "bound to" not in plain.statement and plain.detail["context"] is None

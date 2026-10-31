@@ -121,6 +121,9 @@ async def run_session(
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
         restart=restart, generation=generation, time_left=lambda: deadline - clock(),
     )
+    bind = getattr(probe, "bind_observation_source", None)
+    if bind is not None:  # the probe states the surroundings of the observation each action was bound to
+        bind(lambda: loop.store.latest())
     restarts: list[OperationOutcome] = []
     failures = total_failures = 0
     waited_s = longest_s = 0.0
