@@ -87,10 +87,21 @@ _FINISH_NEW = ("Finish only when the objective's completion conditions are met; 
                "until the session ends by itself.")
 assert INSTRUCTIONS.count(_FINISH_OLD) == 1
 INSTRUCTIONS_FINISH_ONLY_WHEN_MET = INSTRUCTIONS.replace(_FINISH_OLD, _FINISH_NEW)
+# `policy/3` is `policy/2` with one sentence added about pending help. A helper never sends game input, and
+# its answer can take tens of seconds while a real-time game keeps running, so S1 is told to keep playing
+# unless continuing would spoil what it asked about. Waiting stays an offered choice; nothing enforces this.
+INSTRUCTIONS_PENDING_VARIANT = "policy/3"
+_PENDING_SENTENCE = "On an escalate or delegate turn, also say what to do while help is pending."
+KEEP_PLAYING = ("While help is pending, keep playing: its answer can take tens of seconds, and a wait sends no "
+                "input. Choose wait only when continuing would spoil what you asked about.")
+assert INSTRUCTIONS_FINISH_ONLY_WHEN_MET.count(_PENDING_SENTENCE) == 1
+INSTRUCTIONS_KEEP_PLAYING = INSTRUCTIONS_FINISH_ONLY_WHEN_MET.replace(
+    _PENDING_SENTENCE, f"{_PENDING_SENTENCE} {KEEP_PLAYING}")
 INSTRUCTIONS_VARIANTS = {
     INSTRUCTIONS_POLICY_VARIANT: INSTRUCTIONS,
     INSTRUCTIONS_DIRECT_VARIANT: INSTRUCTIONS_DIRECT,
     INSTRUCTIONS_FINISH_VARIANT: INSTRUCTIONS_FINISH_ONLY_WHEN_MET,
+    INSTRUCTIONS_PENDING_VARIANT: INSTRUCTIONS_KEEP_PLAYING,
 }
 
 

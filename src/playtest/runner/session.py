@@ -77,6 +77,25 @@ class SessionResult:
     restart_history: tuple[OperationOutcome, ...] = ()  # every selected host operation and its outcome
 
 
+# A held input is continued only where its calibration measured movement over a sustained hold: a tap (a
+# jump), a toggle, or an input that moved nothing would change meaning if held for seconds.
+_SUSTAINED_HOLD_S = 0.2
+
+
+def continuous_choice_ids(built: ManifestChoices) -> list[str]:
+    """Keyboard-only, non-skill actions whose calibrated hold was sustained and moved the controlled entity."""
+    ids = []
+    for name, declaration in built.catalog.actions.items():
+        expected = built.expected.get(name) or {}
+        moved, hold = expected.get("net_displacement"), expected.get("requested_hold_s")
+        if (not declaration.is_skill and declaration.inputs
+                and all(binding.device == "Keyboard" for binding in declaration.inputs)
+                and isinstance(moved, (int, float)) and moved > 0
+                and isinstance(hold, (int, float)) and hold > _SUSTAINED_HOLD_S):
+            ids.append(name)
+    return ids
+
+
 async def run_session(
     client: BridgeClient,
     built: ManifestChoices,
@@ -99,6 +118,7 @@ async def run_session(
     s1_call_cap: int | None = None,
     restart: RestartPort | None = None,
     generation: str | None = None,
+    continuous_input: bool = False,
     instructions: str = INSTRUCTIONS,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
@@ -124,6 +144,8 @@ async def run_session(
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
         restart=restart, generation=generation, time_left=lambda: deadline - clock(),
+        continuous_input=continuous_input,
+        continuous_choices=continuous_choice_ids(built),
         instructions=instructions,
     )
     bind = getattr(probe, "bind_observation_source", None)

@@ -168,6 +168,9 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_TOKENS_PER_MINUTE", int, None),
                         help="the most S1 tokens the runner lets one minute use; it waits before a turn to stay "
                              "under it (default: the selected arm's own rate; also UPA_RUN_TOKENS_PER_MINUTE)")
+    parser.add_argument("--continuous-input", action="store_true",
+                        default=_env("UPA_RUN_CONTINUOUS_INPUT", switch, False),
+                        help="Decide while explicitly selected keyboard holds run (opt in)")
     parser.add_argument("--pacing-burst", type=float, default=_env("UPA_RUN_PACING_BURST", float, 0.0),
                         help="the share of the per-minute token budget S1's calls may use before pacing spaces "
                              "them; 0 (default) spaces every call, 0.5 lets a session run unspaced until half the "
@@ -322,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["s1_compact_state"] = args.s1_compact_state
         if args.s1_pending_question != "follow_up":
             plan["s1_pending_question"] = args.s1_pending_question
+        if args.continuous_input:
+            plan["continuous_input"] = True
         if args.pacing_burst:
             plan["pacing_burst"] = args.pacing_burst
         if args.finish_label != "plain":
@@ -431,7 +436,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
                 facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,
-                instructions=instructions)
+                continuous_input=args.continuous_input, instructions=instructions)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {

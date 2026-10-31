@@ -45,7 +45,7 @@ from typing import Any, Protocol
 from playtest.bench import call_budget, replay
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
-from playtest.core.context import INSTRUCTIONS, canonical
+from playtest.core.context import INSTRUCTIONS, INSTRUCTIONS_KEEP_PLAYING, canonical
 from playtest.core.ports import S1Answer, S1Call
 from playtest.runner.option_order import OptionOrder, ordered_ids
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
@@ -65,6 +65,22 @@ FOLLOW_UP_INSTRUCTIONS = (
     "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
     "When an image is present, it is the current game view."
 )
+# The follow-up's wording when the primary text is `policy/3`: the same rules, plus that the answer can take
+# tens of seconds and the input should keep playing unless that would spoil what was asked about.
+FOLLOW_UP_KEEP_PLAYING = (
+    "Help has been requested and is pending; its answer can take tens of seconds. Choose exactly one id from "
+    "the listed choices to say what happens to the game's input while it is pending: keep playing unless "
+    "continuing would spoil what you asked about. A wait choice sends no input; any other listed choice is "
+    "executed exactly as chosen. Facts are measured; null means unknown, never zero. When an image is "
+    "present, it is the current game view."
+)
+
+
+def follow_up_for(instructions: str) -> str:
+    """The follow-up question's text that goes with a primary instruction text."""
+    return FOLLOW_UP_KEEP_PLAYING if instructions == INSTRUCTIONS_KEEP_PLAYING else FOLLOW_UP_INSTRUCTIONS
+
+
 # Asked beside `next_action` in the opt-in batched mode. The questions are answered independently, so this one is
 # conditional: it is applied only when the primary answer requests help on a real-time turn.
 BATCH_INSTRUCTIONS = (
@@ -81,7 +97,7 @@ def prompts(instructions: str = INSTRUCTIONS, *, batched: bool = False) -> dict[
     The follow-up question keeps its own fixed text: it already asks one direct question, it is never
     duplicated in `state` (which carries the primary text), and a run should vary one prompt at a time.
     """
-    texts = {PRIMARY: instructions, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
+    texts = {PRIMARY: instructions, FOLLOW_UP: follow_up_for(instructions)}
     return {**texts, "batched_while_pending": BATCH_INSTRUCTIONS} if batched else texts
 
 
@@ -340,7 +356,8 @@ class SystemOneS1:
         if not batch and kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
             criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
             if criteria:
-                second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn, image)
+                second = await self._call(FOLLOW_UP, follow_up_for(self._instructions), criteria, context, turn,
+                                          image)
                 calls.append(second.call)
                 halt = second.halt
                 if second.choice is not None:
