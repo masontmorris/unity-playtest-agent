@@ -292,3 +292,29 @@ is `approval-trial-tolerance-half-send.json`. The run completed.
 
 **Totals:** S1 100 calls, $0.0481; frontier 3 calls, $0.0731. The recording is `recording/session.mp4`,
 with a key-moments sheet.
+
+## Measured turn sizes with the original "centre" wording (`climb-turn-sizes-01`, 180 s)
+
+Settings: as `climb-tolerance-send-01`, but with `--turn-sizes` and manifest 3 (manifest 2 with
+calibrations refreshed by a both-signs calibration), and the *original* objective ("in the centre of the
+view"), so that any change could be put down to the turn sizes. The code was 191fb8f, and the approval is
+`approval-trial-turn-sizes.json`. The run completed.
+
+- **Speed: the fastest yet.** 113 turns in 179 s (37.5 decisions a minute), with S1's p50 at 344 ms and
+  only 3 stale rejections. The single-input turns are quick.
+- **Hunting: finer, not gone, and worse in share.** 99 of 109 executed choices were turns, against
+  62–70% before.
+  - S1 used the 18° stick turn 79 times, 36° 12 times, 72° 7 times and 144° once. It **never chose the
+    7.7° mouse turn**.
+  - For most of the run it swung between headings about 18° apart (21↔39°, 32↔50°, 24↔42°, 41↔59°)
+    around the staircase near 27–40°.
+  - The longest cycle was 19 turns. At cycle points it continued 33 times and broke 10.
+- **Climb: none.** At 163 s it finally walked at 40.7°, and ten held walks carried it from the spawn past
+  the staircase to x 49, z 41. It chose `finish` on the last turn. There were no escalations.
+
+**Totals:** S1 113 calls, $0.0495; no frontier calls.
+
+**What it shows.** Finer actuators alone do not stop hunting. S1 hunts with the step it actually uses (18°),
+and "centre of the view" asks for a tolerance tighter than half of that (9°). Offering ten turn options
+against four also pulled S1's choices toward turning. By the deadband rule, the next check is turn sizes
+with the "middle half" wording, whose ±20° covers half of the 18° step with room to spare.
