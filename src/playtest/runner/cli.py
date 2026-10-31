@@ -152,6 +152,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
+    parser.add_argument("--turn-sizes", action="store_true", default=_env("UPA_RUN_TURN_SIZES", switch, False))
     parser.add_argument("--pattern-facts", action="store_true", default=_env("UPA_RUN_PATTERN_FACTS", switch, False))
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
@@ -301,8 +302,10 @@ def main(argv: list[str] | None = None) -> int:
         session_host = _host_session(project)
         built = build_choices(manifest, restart_play_mode=session_host is not None
                               and session_host.advertises_restart,
-                              finish_label=FINISH_LABELS[args.finish_label])
-        host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
+                              finish_label=FINISH_LABELS[args.finish_label],
+                              turn_sizes=args.turn_sizes, calibration=calibration if args.turn_sizes else None)
+        host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256,
+                                   turn_sizes=args.turn_sizes, calibration=calibration if args.turn_sizes else None)  # before any call or contact with the bridge
         if session_host is not None:
             # The host must serve the very catalog this run verified, or its scene is a different session.
             if (Path(session_host.config.catalog_path).resolve() != args.catalog.resolve()
@@ -344,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.finish_label != "plain":
             plan["finish_label"] = args.finish_label
         plan["coverage_facts"] = args.coverage_facts
+        if args.turn_sizes:
+            plan["turn_sizes"] = True
         if args.pattern_facts:
             plan["pattern_facts"] = True
         plan["frontier"] = {"enabled": args.frontier,

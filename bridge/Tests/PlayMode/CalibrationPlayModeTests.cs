@@ -269,6 +269,12 @@ namespace Playtest.Bridge.Tests
                     Inputs = { new BridgeInputBinding(device, control, x, y) },
                     DefaultLeaseS = 0.4,
                 });
+                if (Environment.GetEnvironmentVariable("UPA_CALIBRATION_BOTH_SIGNS") == "1")
+                {
+                    var opposite = CalibrationInputProbes.Negated(
+                        "preflight_" + device.ToLowerInvariant() + "_" + control.ToLowerInvariant(), device, control, x, y);
+                    if (opposite != null) definitions.Add(opposite);
+                }
             }
         }
 

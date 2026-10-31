@@ -34,7 +34,7 @@ class HostCatalog:
     catalog: ActionCatalog
 
 
-def verify_host_catalog(manifest: PreflightManifest, path: Path | None, sha256: str | None) -> HostCatalog:
+def verify_host_catalog(manifest: PreflightManifest, path: Path | None, sha256: str | None, *, turn_sizes: bool = False, calibration: dict | None = None) -> HostCatalog:
     """Return the host's catalog if, and only if, it is exactly what `manifest` exports.
 
     Raises `ValueError` for an absent path or digest, an unreadable file, a digest that differs from the
@@ -61,7 +61,7 @@ def verify_host_catalog(manifest: PreflightManifest, path: Path | None, sha256: 
         served = ActionCatalog.model_validate_json(raw, strict=True)
     except ValueError as exc:  # pydantic's ValidationError is one
         raise ValueError(f"the session catalog is not a valid action catalog: {exc}") from exc
-    problems = differences(export(manifest), served)
+    problems = differences(export(manifest, turn_sizes=turn_sizes, calibration=calibration), served)
     if problems:
         raise ValueError("the session catalog is not the manifest's export: " + "; ".join(problems))
     return HostCatalog(sha256=actual, catalog=served)

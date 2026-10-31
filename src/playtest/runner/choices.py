@@ -93,7 +93,8 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
 
 
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
-                  finish_label: str = FINISH_LABELS["plain"]) -> ManifestChoices:
+                  finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
+                  calibration: dict | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
@@ -144,6 +145,17 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
         ))
         expected[skill.name] = None  # calibration measured no ordered sequence; nothing stands in for one
         # No lease: the declaration's own steps and max_s bound a skill.
+    if turn_sizes:
+        from .turn_sizes import measured_turns
+        declarations = dict(catalog.actions)
+        for choice, definition in measured_turns(manifest, calibration):
+            if choice.action in declarations or choice.id in reserved:
+                raise ValueError(f"turn choice id collision: {choice.id}")
+            declarations[choice.action] = definition
+            choices.append(choice)
+            leases[choice.id] = definition.default_lease_s
+            expected[choice.id] = None
+        catalog = ActionCatalog(actions=declarations)
     return ManifestChoices(choices=[*choices, *core], expected=expected, leases=leases,
                            not_offered=not_offered, catalog=catalog)
 
