@@ -38,6 +38,7 @@ from playtest.bench import call_budget, replay
 from playtest.bench import record as recording
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
+from playtest.contracts.loop import ChoiceKind
 from playtest.frontier import media
 from playtest.contracts.investigation import Budget, ModelRef
 from playtest.contracts.manifest import PreflightManifest
@@ -53,6 +54,7 @@ from playtest.runner.frontier_help import FrontierHelp, action_effects
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
+from .coverage import CoverageFacts
 from .declared import declared_configuration
 from .game_view import BridgeView
 from .output import secret_values
@@ -128,6 +130,9 @@ def _parser() -> argparse.ArgumentParser:
                         choices=[layout.value for layout in RequestLayout],
                         help="the S1 request body layout: full (default), or the lossless layout that sends each "
                              "duplicated text once (also UPA_RUN_S1_LAYOUT)")
+    parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
+                        help="state each turn how many inputs each choice has sent this run and which offered "
+                             "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
@@ -282,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
             plan["declared_configuration_count"] = len(declared["values"]) if declared else 0
         plan["s1_game_view"] = args.s1_game_view
         plan["s1_layout"] = args.s1_layout
+        plan["coverage_facts"] = args.coverage_facts
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
@@ -366,6 +372,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         progress_probe = ProgressProbe(manifest.reach_regions)
         tracker = DirectiveTracker(writer, derived=progress_probe.derived if progress_probe.regions else None)
         facts = ProgressFacts(tracker, progress_probe) if progress_probe.regions else tracker
+        if args.coverage_facts:
+            facts = CoverageFacts(facts, [c.id for c in built.choices if c.kind in (ChoiceKind.action, ChoiceKind.skill)])
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
