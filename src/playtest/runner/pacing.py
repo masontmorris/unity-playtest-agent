@@ -35,7 +35,8 @@ TOKENS_PER_MINUTE = 85_000  # the shared fallback: Baseten's 100,000 less 15% he
 # environment variable overrides it, and run-session.ps1 passes nothing unless -TokensPerMinute is given.
 # d1-ultra: 80% of the minimum completed 60 s window in the 100-call paced probe, rounded down.
 # This is an operating setting, not the unpublished provider limit. See docs/probes/2026-10-30-liquid-d1-ultra-rate.md.
-TOKENS_PER_MINUTE_BY_ARM = {"liquid-d1-ultra": 280_000}
+# Meta's limit is unpublished; no 429 has been seen.
+TOKENS_PER_MINUTE_BY_ARM = {"liquid-d1-ultra": 280_000, "meta-muse-spark-s1": 2_000_000}
 INITIAL_ESTIMATE = 3000  # what the first call is expected to use, before any call has been counted
 _EPSILON = 1e-9  # a call whose tokens leave the window within this many seconds has left it
 

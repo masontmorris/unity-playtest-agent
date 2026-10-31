@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import math
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -31,6 +32,7 @@ from playtest.contracts.common import ClockMode
 from playtest.core.context import INSTRUCTIONS, canonical
 from playtest.core.ports import S1Answer, S1Call
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
+from playtest.frontier.provider import _cost as meta_cost
 
 # The default S1 arm since #100 (29 October): Liquid's d1-ultra matched mammoth-1 on both S1 benches and kept every
 # live action fresh where Baseten's latency did not (docs/design/s1-model.md). `--s1-arm` picks any other arm.
@@ -49,8 +51,8 @@ _PENDING_KINDS = ("wait", "action", "skill")
 # Day 1 exercised the Baseten and d1.1 combinations. d1-ultra took the same `images` array in its
 # 30 October probe: a 640x480 JPEG added 450 input tokens, the Day 1 image cost scaled by pixel count.
 IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images",
-                   "liquid-d1-ultra": "images"}
-IMAGE_TOKENS = {"messages": 1000, "images": 1400}  # Day 1 1280x720 measurements
+                   "liquid-d1-ultra": "images", "meta-muse-spark-s1": "meta"}
+IMAGE_TOKENS = {"messages": 1000, "images": 1400, "meta": 1400}  # fallback estimate
 CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
 
 
@@ -68,10 +70,10 @@ def _tokens(usage: Any) -> int | None:
     """Input plus output tokens when the provider reported input tokens; `None` when it did not."""
     if not isinstance(usage, dict):
         return None
-    used = _count(usage.get("input_tokens"))
+    used = _count(usage.get("input_tokens", usage.get("prompt_tokens")))
     if used is None:
         return None
-    return used + (_count(usage.get("output_tokens")) or 0)
+    return used + (_count(usage.get("output_tokens", usage.get("completion_tokens"))) or 0)
 
 
 def _without_image(value: Any, image: bytes | None) -> Any:
@@ -206,13 +208,26 @@ class SystemOneS1:
         body = {"model": model,
                 "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
                 "state": context}
+        if self._arm == "meta-muse-spark-s1":
+            try:
+                content: Any = canonical({"state": context, "criteria": criteria})
+            except ValueError:
+                return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
+            if image is not None:
+                url = "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
+                content = [{"type": "text", "text": content}, {"type": "image_url", "image_url": {"url": url}}]
+            body = {"model": model, "reasoning_effort": "minimal", "max_tokens": 512,
+                    "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}],
+                    "response_format": {"type": "json_schema", "json_schema": {"name": "s1_choice", "strict": True,
+                        "schema": {"type": "object", "additionalProperties": False, "required": ["choice"],
+                                   "properties": {"choice": {"type": "string", "enum": list(criteria)}}}}}}
         if self._layout is not RequestLayout.full:
             # After the question is built: only a text this same request already states verbatim is moved
             # to one copy. The context passed in is untouched, and `full` never reaches this branch.
             body = encode_request_body(body)
         try:
-            estimate_text = canonical(body)  # the sent bytes; excludes base64, image tokens are counted separately
-            if image is not None:
+            estimate_text = canonical(_without_image(body, image))  # image tokens are counted separately
+            if image is not None and self._arm != "meta-muse-spark-s1":
                 url = "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
                 if IMAGE_TRANSPORT[self._arm] == "messages":
                     body["state"] = {"messages": [{"role": "user", "content": [
@@ -248,13 +263,18 @@ class SystemOneS1:
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
                                resolved_model=None, usage=None, cost_usd=None)
             return _Reply(self._record(question, request_sha, None, None, None, note, None), failure=note)
-        choice, distribution, answer_problem = replay.parse_answer(
-            self._as_next_action(data if status == 200 else None, question), set(criteria))
+        if self._arm == "meta-muse-spark-s1":
+            choice, distribution, answer_problem = self._parse_meta(data if status == 200 else None, set(criteria))
+        else:
+            choice, distribution, answer_problem = replay.parse_answer(
+                self._as_next_action(data if status == 200 else None, question), set(criteria))
         usage = _without_image((data or {}).get("usage"), image)
         self._count_tokens(usage, estimate_text, image is not None)
         raw_cost = usage.get("cost") if isinstance(usage, dict) else None
         cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0 else None)
+        if self._arm == "meta-muse-spark-s1":
+            cost = meta_cost(usage)
         note = _without_image(problem or answer_problem, image)
         resolved = _without_image((data or {}).get("model"), image)
         row = reservation.finish(http_status=status, choice=choice, distribution=distribution, problem=note,
@@ -280,6 +300,20 @@ class SystemOneS1:
         reserve = getattr(self._budget, "reserve_next_image", None)
         if reserve is not None and self._game_view:
             reserve(0 if has_image else IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]])
+
+    @staticmethod
+    def _parse_meta(data: Any, offered: set[str]) -> tuple[str | None, None, str | None]:
+        try:
+            item = data["choices"][0]
+            message = item["message"]
+            if data.get("error") or item.get("finish_reason") != "stop" or message.get("refusal"):
+                raise ValueError
+            answer = json.loads(message["content"])
+            if not isinstance(answer, dict) or set(answer) != {"choice"} or not isinstance(answer["choice"], str) or answer["choice"] not in offered:
+                raise ValueError
+            return answer["choice"], None, None
+        except (TypeError, KeyError, IndexError, ValueError):
+            return None, None, "invalid Meta answer"
 
     @staticmethod
     def _as_next_action(data: dict[str, Any] | None, question: str) -> dict[str, Any] | None:
