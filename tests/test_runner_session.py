@@ -1185,3 +1185,21 @@ def test_cli_omitted_views_preserve_choices_and_invalid_answer_replays(tmp_path,
     assert all("images" not in body and "choices" in body["state"] for body in send.bodies)
     entries = read_trace(files.out / "trace.jsonl")
     assert replay(entries) == [] and summary["adherence"]["violations"] == []
+
+
+def test_a_discovery_file_records_its_hash_and_declared_count_in_the_plan(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0001")
+    discovery = {"data": {"game_objects": [{"id": "entity", "parent_id": None, "path": "Body"}],
+                          "fields": [{"object_id": "entity", "declaring_type": "Game.Body", "name": "speed",
+                                      "serialized": True, "hide_in_inspector": False, "value_state": "present",
+                                      "value_kind": "number", "value": 5.0}]}}
+    with GameThread(CatalogGame, catalog=export(two_actions()), effects={"move": (6.0, 0.0, 0.0)}) as thread:
+        files = Project(tmp_path, thread.port, git=True)
+        path = tmp_path / "discovery.json"
+        path.write_bytes(json.dumps(discovery).encode("utf-8"))
+        send = Send(files.out, reply("next_action", "finish"))
+        with_fake_send(monkeypatch, send)
+        assert cli.main([*files.args(tokens_per_minute=600_000_000), "--discovery", str(path)]) == 0
+    plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
+    assert plan["discovery_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert plan["declared_configuration_count"] == 1

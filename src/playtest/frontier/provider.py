@@ -173,7 +173,7 @@ def build_request(
         packet_content: Any = text
     else:
         packet_content = [{"type": "text", "text": text}, video]
-    system = frontier.SYSTEM + (frontier.PROGRESS_SYSTEM if manifest.progress else "")
+    system = frontier.SYSTEM + (frontier.PROGRESS_SYSTEM if manifest.progress else "") + (frontier.DECLARED_SYSTEM if manifest.declared is not None else "")
     return {
         "model": MODEL,
         "messages": [

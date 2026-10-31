@@ -87,6 +87,7 @@ def build_packet(
     findings: Sequence[Mapping[str, Any]] = (),
     suspicions: Sequence[Mapping[str, Any]] = (),
     progress: Sequence[Mapping[str, Any]] = (),
+    declared: Mapping[str, Any] | None = None,
 ) -> Packet:
     """Build one packet without changing what S1 saw or chose.
 
@@ -147,6 +148,8 @@ def build_packet(
         "clip": clip_row,
         "clip_unavailable_reason": reason,
     }
+    if declared is not None:
+        payload["declared_configuration"] = copy.deepcopy(declared)
     if progress_rows:
         # Only a manifest that declared reach regions carries this section or any derived field.
         payload["progress"] = progress_rows
