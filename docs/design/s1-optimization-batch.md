@@ -7,7 +7,7 @@ cost and risk. Each says what evidence would settle it.
 
 | Branch | Option | What it does | Verdict |
 |---|---|---|---|
-| `feat/s1-opt-batch-pending` | `pending_question="batched"` | asks `while_pending` in the same request as `next_action` | **keep; bench first**: the only change with a measured latency lever |
+| `feat/s1-opt-batch-pending` | `pending_question="batched"` | asks `while_pending` in the same request as `next_action` | **keep; bench first**: a latency lever, and on d1-ultra an 18–22% token saving (`s1-token-budget.md`) |
 | `feat/s1-opt-option-order` | `option_order=sorted\|manifest\|shuffled` | chooses the order the options are presented in | **keep as an instrument**, not as an optimization |
 | `feat/s1-opt-state-order` | `state_order="stable-first/1"` | sends turn-stable state first and the turn's news last | **keep; one probe decides whether it can matter at all** |
 | `feat/s1-opt-direct-instructions` | `--s1-instructions direct/1` | a shorter primary question text | **keep, but split before benching**: two variables in one arm |
@@ -76,6 +76,12 @@ show.
   before the question. That is the worst place for noise.
 - **Direct instructions + state order**: stable-first moves `state.instructions` to the very front, away
   from the question. The question carries its own copy, so S1 still reads the text next to the options.
+
+**Correction (token study, `s1-token-budget.md`).** The hosted d1-ultra bills the state, not the option
+text, so the 2,600-token cost charged to batching above is wrong. On d1-ultra the batched question costs
+about 90 billed tokens, and batching saves 18–22% of billed tokens per turn. The same study adds the
+missing density lever: a lossless compact state (`--s1-compact-state`), −30% alone and −42–46% with
+batching.
 
 **The batch does not touch the dominant cost.** The night traces' mean S1 state was 30–51k characters
 (12–20k tokens): recent history about 11k characters, guidance up to 14k, choices about 9k, facts about 4k.

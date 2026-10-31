@@ -19,6 +19,10 @@ Every call that was sent also reports its tokens to an injected meter (`playtest
 paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
 it gave them, else an estimate from the request body, reported as an estimate.
 
+`compact_state` is opt-in and off by default: on a Liquid arm it sends `state` as one string, a header naming
+the lossless rules applied and then compact JSON (`playtest.runner.state_codec`), because the server would
+otherwise bill the state as indented JSON. The body alone restores the exact context (`state_codec.decode`).
+
 `state_order` is opt-in and off by default: `canonical` sends the body exactly as this adapter always
 has, and `stable-first/1` (`playtest.runner.state_order`) sends the same values with `state`'s
 top-level keys in a declared stable-first order. Only that serialization changes; the context record,
@@ -31,7 +35,7 @@ import asyncio
 import base64
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 from playtest.bench import call_budget, replay
@@ -41,6 +45,7 @@ from playtest.core.context import INSTRUCTIONS, canonical
 from playtest.core.ports import S1Answer, S1Call
 from playtest.runner.option_order import OptionOrder, ordered_ids
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
+from playtest.runner import state_codec
 from playtest.runner.state_order import StateOrder, state_keys
 from playtest.runner.wire import render
 from playtest.frontier.provider import _cost as meta_cost
@@ -139,6 +144,21 @@ def _without_image(value: Any, image: bytes | None) -> Any:
     return clean(value)
 
 
+def _compact_rules(value: str | Sequence[str] | None) -> tuple[state_codec.Rule, ...] | None:
+    """`None`/`"off"`: send `state` as built. `"format"`: compact text only. `"default"`/`"all"`: those rule sets."""
+    if value is None or value == "off":
+        return None
+    named = {"format": (), "default": state_codec.DEFAULT_RULES, "all": state_codec.ALL_RULES}
+    if isinstance(value, str):
+        if value not in named:
+            raise ValueError(f"unknown compact-state setting {value!r}")
+        return named[value]
+    try:
+        return tuple(state_codec.Rule(rule) for rule in value)
+    except ValueError:
+        raise ValueError(f"unknown compact-state rule in {list(value)!r}") from None
+
+
 class _Reply:
     """One call's outcome: its `s1_call` record, the choice it named, and why there is none.
 
@@ -172,6 +192,7 @@ class SystemOneS1:
         option_order: OptionOrder | str = OptionOrder.sorted,
         order_seed: int | None = None,
         state_order: StateOrder | str = StateOrder.canonical,
+        compact_state: str | Sequence[str] | None = None,
     ) -> None:
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
@@ -212,6 +233,14 @@ class SystemOneS1:
         if self._option_order is not OptionOrder.sorted and self._layout is not RequestLayout.full:
             raise ValueError("option ordering requires the full request layout")
         self._order_seed = order_seed
+        self._compact = _compact_rules(compact_state)
+        if self._compact is not None:
+            if IMAGE_TRANSPORT.get(arm) != "images":
+                # The compact state is a string `state`; only an arm that sends the image beside it keeps one.
+                raise ValueError(f"S1 arm {arm!r} has no plain `state` to send compactly")
+            if self._layout is not RequestLayout.full:
+                raise ValueError("the compact state already sends one copy of each duplicated text; "
+                                 "use it with the full layout")
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._instructions = instructions
@@ -248,6 +277,13 @@ class SystemOneS1:
     def layout(self) -> str:
         """The body layout this adapter sends. `full` renders the context unchanged, byte for byte."""
         return self._layout.value
+
+    @property
+    def compact_state(self) -> str | None:
+        """The compact-state rules this adapter may apply, or `None` when `state` is sent as built."""
+        if self._compact is None:
+            return None
+        return f"{state_codec.VERSION}:{','.join(rule.value for rule in self._compact) or 'format'}"
 
     @property
     def state_order(self) -> str:
@@ -330,6 +366,16 @@ class SystemOneS1:
             # After the question is built: only a text this same request already states verbatim is moved
             # to one copy. The context passed in is untouched, and `full` never reaches this branch.
             body = encode_request_body(body)
+        compacted: list[str] | None = None
+        if self._compact is not None:
+            # The traced context stays as built: only this request's copy of it is rendered compactly, and
+            # every rule points at this body's own question, so the body alone restores it exactly.
+            try:
+                body["state"], compacted = state_codec.encode(
+                    context, instructions=instructions, criteria=criteria, rules=self._compact,
+                    key_order=state_keys(context) if self._state_order is not StateOrder.canonical else None)
+            except state_codec.CodecError:
+                return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
         try:
             estimate_text = canonical(_without_image(body, image))  # image tokens are counted separately
             if image is not None and self._arm != "meta-muse-spark-s1":
@@ -362,6 +408,8 @@ class SystemOneS1:
                 extra.update(option_order=self._option_order.value, order_seed=self._order_seed, presented_ids=presented)
                 if len(orders) > 1:
                     extra["presented_ids_by_question"] = orders
+            if compacted is not None:
+                extra.update(state_codec=state_codec.VERSION, state_rules=compacted)
             reservation = self._ledger.reserve(
                 episode=self._episode, turn=turn, based_on_seq=context["as_of"]["seq"],
                 request_sha256=request_sha, requested_model=model, extra=extra)
