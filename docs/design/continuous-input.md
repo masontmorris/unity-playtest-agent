@@ -3,6 +3,28 @@
 Status: implemented for review; Python fake-peer validation only. No Unity run, provider call,
 commit or push was performed. C# compilation, shared-fixture parity and live continuity remain unverified.
 
+## Distance and decision cadence: step versus held movement
+
+Distance per decision = speed * decision interval. Using the supplied trial's 2.03 units per
+0.4 s gives 5.075 units/s; at a measured 1.7 s cadence the calibrated product is 8.6275 units.
+That estimate explains why an input held throughout deliberation can cross a narrow alignment
+region before another correction. A bounded step remains about 2.03 calibrated units, followed by
+an idle decision period. These are diagnostic quantities, not evidence of task success.
+
+A held walk can reduce idle gaps while crossing open ground. Steps can retain precision when
+lining up with a narrow target, approaching an edge or making a small correction. Only S1 sees
+the scene and objective and chooses which trade is appropriate; there is no distance threshold,
+geometry heuristic, score or timer that selects a form or asks for help. S1 needs the bounded
+step's calibration and duration, held rate, recent interval/product, lease limit, current receipt
+and the scene evidence to judge clearance. Missing timing is explicitly unknown.
+
+Cadence depends on the token budget and payload size as well as provider latency, pacing waits,
+observation/view work and blocking action/skill execution time. More options also consume tokens.
+A faster inner decision loop would shorten held travel between corrections and make the precision
+trade less severe, while lease expiry and supersession gaps would still apply. It would not
+establish improved task performance without a separately approved evaluation. This implementation
+makes no improvement claim and runs no paid comparison.
+
 ## Current model and alternatives
 
 An executable choice sends one observation-bound ActRequest and waits for its terminal receipt.
@@ -35,18 +57,28 @@ is its strict boolean environment equivalent. Default-off labels, requests, cont
 are unchanged. Deterministic fake measurements test exact serialized payload/trace equality, including a SHA-256
 golden independently computed with the original HEAD TurnLoop and identical fixed inputs/clocks.
 
-The first turn has no timing sample and retains the original bounded execution. At each later
-turn start, perf_counter measures the preceding start-to-start interval, including external pacing,
-readings and decision/execution time. The safety lease is twice the largest interval observed in
-this generation, capped at 10 s. The factor two is an explicit safety/latency allowance, not a
-claim about an observed percentile. No initial model latency is invented. The cap bounds risk;
-a slower call or longer pacing stall permits expiry and a stop. A restart resets timing history.
+Every eligible original choice remains an unchanged bounded step (0.4 s in manifest 2),
+blocking until its terminal receipt and measured against its original calibration. Continuous mode
+adds one action-kind variant with id `<original>.held`, the same manifest action and params.
+Choice ids are opaque nonempty strings and must be unique (contracts/loop.py); suffix collisions
+fail construction rather than renaming an original. Only keyboard-only, non-skill declarations with
+positive measured displacement over a requested hold > 0.2 s qualify. Eligibility is runner-side.
+Manifest 2 therefore grows from 27 to 31 options. Liquid d1 already codes options beyond 26 as
+`00`, `01`, and so on; no renderer change is required.
 
-Each eligible offered label retains the declaration and historical calibration text, then explicitly
-states the exact new lease, that input runs during the next decision, that supersession releases
-and reapplies, and that the short-hold calibration is not comparable. The very lease shown in this
-choice set is bound to the selected request. Noneligible declarations keep their normal semantics.
-The eligible set is host catalog data, never derived by the name-blind core.
+At each turn start, perf_counter measures the preceding start-to-start interval, including external
+pacing, readings and decision/execution time. The safety lease is twice the slowest of the last
+three intervals, capped at 10 s. After a slow turn leaves that window the lease can shrink again.
+Before the first interval a held selection uses its original calibrated lease, asynchronously;
+its distance per decision is unknown. Restart resets timing history. No latency is invented.
+
+Runner-side held labels state calibrated net displacement / requested hold (units/s), the latest
+measured start-to-start interval, their product as expected distance per decision, and the lease.
+This product is a calibration-based estimate, not measured future travel or a guarantee: obstacles,
+acceleration and lease expiry can change it. The latest interval describes the recent cadence;
+the three-interval maximum serves only the safety lease. Labels reach both the ordinary choice
+set and the while_pending follow-up. The core gets opaque ids, leases and a runner label callback;
+it does not infer movement semantics or select a form on S1's behalf.
 
 Context facts state release semantics and, for an outstanding selection, action and choice id,
 latest bridge receipt status, input_start_wall_s, age since acknowledged input start, receipt age and requested lease. The original
@@ -57,15 +89,26 @@ Terminal applied_duration_s and per-input receipts remain the evidence for actua
 Missing timestamps remain null. A terminal receipt collected before context removes the outstanding
 selection. Input may expire while a context/decision is in flight; that context is time-stamped evidence.
 
+## Offline manifest 2 example
+
+Computed from local `runs/s1-trial/inputs/manifest-2.json`, with an illustrative measured interval
+of 1.70 s and lease 3.40 s (no new live measurement):
+
+* Step `move_forward`: `walk forward to explore: request a 0.4-second hold of w; calibrated net displacement 2.032 world units (sample variance 0.001862, n=2); calibrated view turn yaw 0.000 degrees, pitch 0.000 degrees (spread 0.000 degrees, n=2).`
+* Held `move_forward.held`: `move_forward: keeps input held until next decision or lease ends (lease 3.40 s); calibrated rate 5.08 world units/s; decision interval 1.70 s; expected distance/decision 5.08 world units/s * 1.70 s = 8.64 world units`
+
+The eligible declarations are `move_forward`, `move_back`, `strafe_left`, and `move_right`.
+Displayed numbers are rounded; the product uses unrounded calibration and interval values.
+
 ## Effects and trace evidence
 
-In continuous mode the per-action effect probe's calibrated comparison is disabled for the whole
-session, including its initial bounded turn. The context explicitly calls those effects unknown.
-Before-turn snapshots may still run but are never scored against the 0.4 s calibration. No zero,
-match or mismatch is synthesized and no linear speed assumption rescales calibration.
-Observation positions/readers remain measured facts. Future interval displacement can use two
-stamped inspections with all overlapping action ids and a measured window, without attributing it
-to a single action or comparing it with short-hold calibration; that richer probe is deferred.
+Only held variants skip calibrated effect comparison: their execution window differs from the
+short calibration. Bounded originals retain the existing probe and calibration. Before a bounded
+execution, the loop first releases and verifies any outstanding hold, then takes a fresh probe
+baseline so held travel during deliberation is not attributed to the step. The act remains bound
+to its original observation; a stale request rejects without repair. Other bounded declarations
+also retain their ordinary effect measurements. Held effects remain unknown; no zero, match or
+mismatch is synthesized. Richer interval displacement attribution remains deferred.
 
 A started asynchronous execution is returned to turn memory with its running receipt, not a fake
 terminal receipt. Its complete execution trace entry is deferred until terminal collection, retaining
@@ -92,12 +135,12 @@ orchestrator must compile and execute. No replay or reconnect path is added.
 
 | Branch | Input and execution | Authorizing rule / implementation |
 |---|---|---|
-| Same eligible action | New request only after that selection; previous released/reapplied | S1 actuator ownership; TurnLoop._send |
-| Different eligible action | Supersede with exactly selected declaration | S1 actuator ownership; _send |
+| Selected held variant (including same action) | New leased asynchronous request only for the selected held id; previous released/reapplied | S1 actuator ownership; TurnLoop._send |
+| Selected original step | Release/verify previous hold, refresh probe baseline, run original bounded lease and measure effect | S1 actuator ownership; _send |
 | Noneligible action/skill | Release previous; execute selected bounded declaration | Selected choice only; _send |
 | wait | Release previous, no act, then existing wait duration | Explicit no-input wait; run_turn / _release_active |
 | finish | Release previous, no act; session stops normally | Explicit finish; run_turn / stop |
-| escalate/delegate + continue | Only named executable while_pending choice starts input | S1 pending selection; run_turn / _send |
+| escalate/delegate + continue | Both step and held variants are offered; only the named form executes, with its own release/probe semantics | S1 pending selection; run_turn / _send |
 | escalate/delegate + wait, continue targeting wait, or default | Release previous, no act; helper semantics unchanged | Existing recorded pending-wait default; run_turn |
 | Invalid answer/provider failure | Release previous, record rejection, send no act | Invalid answers never repaired; run_turn |
 | Stale/rejected request | Record rejection; release old hold; no substitute/retry | Freshness binding and fail closed; _send |
@@ -112,7 +155,7 @@ for replay. Core remains name-blind. No threshold selects help, an action or a s
 ## Risks and live check
 
 A held selection moves during observation, image acquisition and decision latency; corrections can
-overshoot. Long pacing waits can expire the lease. High-water timing and a two-interval allowance
+overshoot. Long pacing waits can expire the lease. A three-interval maximum and a two-interval allowance
 trade larger safety exposure for fewer gaps; no improvement claim is supported without live evidence.
 S1 can select wait or another action at each turn. Generic keyboard inputs can have semantics for
 which a long hold is inappropriate; S1 sees the explicit duration and retains that decision.
@@ -142,3 +185,23 @@ Compare recordings only after collecting those measured facts; staircase improve
 
 Validation logs stay local under `runs/continuous-input-validation/`. The full Python suite and
 specified acceptance set are run separately. C# test execution and live-trace replay remain pending.
+
+
+## Step/held revision validation
+
+The requested targeted acceptance command passed 225 tests; `uv run pytest -q` passed 2,458 tests
+(exit 0). Logs: `runs/continuous-input-validation/acceptance-final.log` and `full-final.log`.
+The full suite emitted a fake-peer request-handler exception notice but reported no failed tests.
+New fake-peer tests cover first-turn selected holds, verified release before a primary or pending
+step, fresh probe baselines, original leases, exact choice/action binding, runner flag gating,
+label arithmetic and unknown timing, and id collisions. The original default-off serialized
+payload/trace SHA-256 golden still passes. Ownership audit: pass for implementation and fake
+paths; live evidence for this revision remains unverified. No paid/provider call, Unity launch,
+commit, push or branch creation was performed.
+
+Live acceptance should check that S1 uses steps for alignment and holds for open travel, with no
+claim of improved performance until measured. Check both forms in the pending-help follow-up,
+31-option rendering, current interval/rate/product labels, bounded-step effects after a verified
+release, every existing fail-closed release route, and expiry under a delayed decision. The extra
+post-release probe reading can age the bound observation; confirm stale-rejection counts without
+adding a retry or replacement action.

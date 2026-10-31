@@ -197,3 +197,89 @@ def test_only_calibrated_sustained_movement_holds_are_continuous():
                 "routine": {"net_displacement": 2.0, "requested_hold_s": 0.4}}
     built = SimpleNamespace(catalog=SimpleNamespace(actions=actions), expected=expected)
     assert continuous_choice_ids(built) == ["walk"]
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_step_after_held_releases_rebaselines_and_measures_only_step(pending):
+    async def run():
+        options = choices()
+        step = next(c for c in options if c.id == 'c3')
+        options.append(step.model_copy(update={'id': 'c3.held'}))
+        answer = ({'choice_id': 'h', 'while_pending': {'mode': 'continue', 'choice_id': 'c3'}}
+                  if pending else 'c3')
+        r = await rig('c3.held', answer, choices=options, continuous_input=True,
+                      continuous_choices=['c3.held'], leases={'c3': 0.08, 'c3.held': 0.5},
+                      probe=True, game={'action_run_s': 0.08, 'lease_terminals': True})
+        try:
+            first = await r.loop.run_turn()  # held selection works even without an interval
+            assert first.executed_action == 'c3.held'
+            assert r.game._held
+            assert not r.loop._effects.measured
+            second = await r.loop.run_turn()
+            assert second.executed_action == 'c3'
+            assert not r.game._held
+            assert r.loop._effects.measured == ['c3']
+            assert r.loop._effects.turns == [0, 1, 1]  # fresh baseline after release
+            requests = [row['body']['request'] for row in r.sink.of_kind('execution')]
+            assert [(q['choice_id'], q['action'], q['lease_s']) for q in requests] == [
+                ('c3.held', 'hold', 0.5), ('c3', 'hold', 0.08)]
+            assert not check_adherence(r.loop.turns)
+        finally:
+            await r.close()
+    asyncio.run(run())
+
+
+def test_runner_held_variants_preserve_steps_and_report_calibrated_product():
+    from runner_manifest import action, hold, manifest
+    from playtest.runner.choices import build_choices, with_held_choices, held_choice_labels
+    from playtest.runner.session import continuous_choice_ids
+    built = build_choices(manifest(action('move', 'w', hold_s=0.4, holds=[hold(0.4, mean=2.03)])))
+    original = [c.model_dump_json() for c in built.choices]
+    configured = with_held_choices(built, continuous_choice_ids(built))
+    assert [c.model_dump_json() for c in configured.choices[:-1]] == original
+    assert [c.model_dump_json() for c in built.choices] == original
+    assert configured.choices[-1].id == 'move.held'
+    assert configured.choices[-1].action == 'move'
+    assert configured.choices[-1].params == {}
+    assert configured.leases == {'move': 0.4, 'move.held': 0.4}
+    initial = held_choice_labels(configured, ['move.held'], None, None)[-1]
+    assert 'distance/decision unknown' in initial.label
+    assert '5.07 world units/s' in initial.label
+    measured = held_choice_labels(configured, ['move.held'], 1.7, 3.4)[-1]
+    assert '5.07 world units/s * 1.70 s = 8.63 world units' in measured.label
+    assert 'lease 3.40 s' in measured.label
+    with pytest.raises(ValueError, match='collision'):
+        with_held_choices(configured, ['move'])
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_session_offers_both_forms_only_when_enabled(enabled):
+    from runner_manifest import action, hold, manifest
+    from playtest.runner.choices import build_choices
+    from playtest.runner.session import run_session
+    async def run():
+        built = build_choices(manifest(action('hold', 'w', hold_s=0.4, holds=[hold(0.4)])))
+        r = await rig(game={'action_run_s': 0.08, 'lease_terminals': True})
+        s1 = FakeS1(*(['hold', 'hold.held', 'finish'] if enabled else ['hold', 'finish']))
+        try:
+            result = await run_session(r.client, built, s1=s1, objective='Exercise controls.',
+                                       sink=r.sink, continuous_input=enabled)
+            assert result.status == 'complete', result.error
+            sets = [row['body']['choices'] for row in r.sink.of_kind('choice_set')]
+            for offered in sets:
+                assert offered[:len(built.choices)] == [c.model_dump(mode='json') for c in built.choices]
+                assert len(offered) == len(built.choices) + int(enabled)
+            if enabled:
+                assert 'distance/decision unknown' in sets[0][-1]['label']
+                assert 'distance/decision unknown' not in sets[1][-1]['label']
+            executions = [row['body']['request'] for row in r.sink.of_kind('execution')]
+            assert executions[0]['choice_id'] == 'hold'
+            assert executions[0]['lease_s'] == 0.4
+            if enabled:
+                assert executions[1]['choice_id'] == 'hold.held'
+                assert executions[1]['action'] == 'hold'
+                assert executions[1]['lease_s'] != 0.4
+            assert not result.adherence
+        finally:
+            await r.close()
+    asyncio.run(run())

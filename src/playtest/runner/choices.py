@@ -284,3 +284,46 @@ def _precondition(check: ManifestCheck) -> str:
     if check.op in (Comparator.changed, Comparator.unchanged):
         return f"{check.field} {check.op.value}"
     return f"{check.field} {check.op.value} {json.dumps(check.value)}"
+
+
+def with_held_choices(built: ManifestChoices, eligible: list[str]) -> ManifestChoices:
+    """Append explicit held variants; originals and their bounded leases remain unchanged.
+
+    Choice ids are opaque unique strings (contracts.loop); reject suffix collisions rather than
+    renaming a manifest choice. The bridge still receives exactly the original action and params.
+    """
+    occupied = {c.id for c in built.choices}
+    variants = []
+    leases = dict(built.leases)
+    for choice in built.choices:
+        if choice.id not in eligible:
+            continue
+        held_id = f"{choice.id}.held"
+        if held_id in occupied:
+            raise ValueError(f"held choice id collision: {held_id}")
+        occupied.add(held_id)
+        variants.append(choice.model_copy(update={"id": held_id}))
+        leases[held_id] = built.leases[choice.id]
+    return ManifestChoices(choices=[*built.choices, *variants], expected=built.expected,
+                           leases=leases, not_offered=built.not_offered, catalog=built.catalog)
+
+
+def held_choice_labels(built: ManifestChoices, held_ids: list[str], interval_s: float | None,
+                       lease_s: float | None) -> list[Choice]:
+    """Runner-side calibration arithmetic, never a measured prediction of future movement."""
+    offered = []
+    for choice in built.choices:
+        if choice.id not in held_ids:
+            offered.append(choice)
+            continue
+        expected = built.expected[choice.action]
+        rate = expected["net_displacement"] / expected["requested_hold_s"]
+        unit = expected.get("unit", UNIT)
+        timing = ("decision interval unknown; expected distance/decision unknown" if interval_s is None else
+                  f"decision interval {interval_s:.2f} s; expected distance/decision "
+                  f"{rate:.2f} {unit}/s * {interval_s:.2f} s = {rate * interval_s:.2f} {unit}")
+        bound = lease_s if lease_s is not None else built.leases[choice.id]
+        label = (f"{choice.action}: keeps input held until next decision or lease ends "
+                 f"(lease {bound:.2f} s); calibrated rate {rate:.2f} {unit}/s; {timing}")
+        offered.append(choice.model_copy(update={"label": label}))
+    return offered
