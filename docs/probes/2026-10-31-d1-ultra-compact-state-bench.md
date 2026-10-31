@@ -72,3 +72,41 @@ The quick-try calls served as the balance check.
 Artifacts are local under `runs/s1-opt-live/`: `plan.json`, `approval.json`, `results.jsonl`, `summary.json`,
 `smoke.jsonl`, `gate.jsonl` and `calls/`. The script is `scripts/probes/probe_s1_compact_live.py`, and the
 offline billing model is in `docs/design/s1-token-budget.md`.
+
+## Follow-up (200 calls, $0.136): the string path, not compaction, moves the choices
+
+The follow-up took the same 40 contexts and built three single-change arms directly from the night's exact
+request. Each request hash covers the text posted, and all 40 rebuilt night requests matched the night's
+recorded hashes before any call. The arms:
+- `null-string` (×1): the night's sent state as the indented text the server renders from an object.
+- `reorder` (×2): the same text with the state's keys reordered.
+- `format-only` (×2): the night's state as compact JSON, with no header and no rules.
+
+The plan is in `runs/s1-opt-live-2/followup-plan.json`.
+
+**The predeclared reading is void.** `null-string` agreed with the night modal on 0.775 of calls, below the
+0.85 the rule required. The reason is a finding in itself: **a string state is not rendered like the same
+content sent as an object.** With identical content, every string call billed 98–172 tokens more than the
+night's object call (median 158; 0 of 40 equal). The compact gate calls showed the same offset (+163).
+
+d1-ultra did not drift. Today's object-path calls agree with the choices the night run made 12+ hours
+earlier 0.880 of the time, 0.890 in the bench's first half and 0.870 in its second. Every string arm falls
+into one band:
+
+| Sent as | Agreement with the night run's own choice |
+|---|---:|
+| object (night layout), 200 calls today | **0.880** |
+| string, identical indented content | 0.750 |
+| string, keys reordered | 0.713 |
+| string, whitespace removed only (billed −20.9%) | 0.700 |
+| string, compact `default` | 0.735 |
+| string, compact `all` | 0.680 |
+
+So the choice changes come from sending `state` as a string at all. Removing whitespace or restructuring
+adds no change this sample can separate from it. On this server, the token savings of a string state
+cannot be had without that shift.
+
+**Object-path alternative (offline).** The lossless `all` rules applied but kept as an object, which the
+server indents as usual, shrink the state by 14.6% at the median (−13.1% in total; about −12% per billed
+call), with no string wrapper. A legend for the tables, `=` and `@` would then have to ride inside the
+state as a small key, as the `dup-state-ref/1` marker does. It is untested live.

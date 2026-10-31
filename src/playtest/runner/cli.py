@@ -140,7 +140,9 @@ def _parser() -> argparse.ArgumentParser:
                         choices=["off", "format", "default", "all"],
                         help="send S1's state as compact text with lossless rules: off (default), format (compact "
                              "JSON only), default (plus tables and references), all (plus choice labels by "
-                             "reference); docs/design/s1-token-budget.md (also UPA_RUN_S1_COMPACT_STATE)")
+                             "reference). About 29%% fewer billed tokens, but d1-ultra renders a string state "
+                             "differently and changes some near-tie choices; see docs/design/s1-token-budget.md "
+                             "(also UPA_RUN_S1_COMPACT_STATE)")
     parser.add_argument("--s1-pending-question", default=_env("UPA_RUN_S1_PENDING_QUESTION", str, "follow_up"),
                         choices=["follow_up", "batched"],
                         help="ask while_pending in a second call after a help choice (follow_up, default) or beside "
