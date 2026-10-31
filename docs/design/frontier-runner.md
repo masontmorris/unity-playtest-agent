@@ -303,6 +303,24 @@ decides whether to follow the directive. Whether the frontier proposes such
 targets, and whether S1 follows them, is untested — no model call was made for
 this change — and any claim about findings needs a paired evaluation.
 
+## Exact request artifacts
+
+Before reserving or dispatching a frontier call, the helper writes the canonical UTF-8 JSON body to
+`<run>/requests/frontier/<request_sha256>.json`. The artifact includes the full inline clip, packet, manifest
+message, system prompt and answer schema. HTTP headers and transport credentials are not part of the body.
+The ledger records the same hash and a relative `request_body_path`, so later review can verify the exact
+request without reconstructing transient helper state. These full artifacts stay local under `runs/`.
+
+Identical bodies reuse their content-addressed artifact; each authorized call still reserves and dispatches
+normally. An existing artifact whose bytes disagree with its hash is refused. A storage failure prevents
+reservation and dispatch and is reported through the helper error path. A body may remain when a later budget
+check refuses the call; an artifact alone does not prove dispatch. This capture applies to future calls and
+does not establish the contents of earlier calls whose bodies were not retained.
+
+`tests/test_frontier_request_archive.py` checks the actual helper request, inline media, ledger linkage, absence
+of a supplied transport credential, exact serialization, damaged-artifact refusal and storage failure before
+dispatch. These are offline fake-provider checks, not evidence from a new paid run.
+
 ## S1 ownership and evidence audit
 
 | Branch | Runtime behavior | Evidence |
@@ -314,6 +332,7 @@ this change — and any claim about findings needs a paired evaluation.
 | Pending help | Executes exactly S1's valid `while_pending` continuation; otherwise waits under the existing default. | `core/turn_loop.py:343`; `tests/test_turn_loop.py`. |
 | Helper adoption | A result ready at turn entry is adopted once after the fresh observation's epoch check; prior-epoch help is discarded. | `core/turn_loop.py` (`run_turn`, `_adopt_finished_help`); end-to-end tests in `tests/test_loop_help_publication.py`. |
 | Directive scoring | Reads the current observation and shared comparator result to write a fact and trace outcome; it cannot call the help port or choose input. | `runner/directives.py:45-71`; all terminal outcomes covered in `tests/test_frontier_help.py`. |
+| Directive view | After a facts source's `facts` for the observation, the loop asks it for the directives it tracks and states them in `directive`, `directive_history` and `directive_provenance` (`turn-loop.md`, "The context"). It reads only what `adopt_result` already published, so it cannot show an unadopted, replaced or prior-epoch pending result. A previously adopted directive invalidated at a boundary remains in the closed history. It chooses no input, opens no help, drops no choice or directive, and compares no age with a limit; a source that is absent, silent or faulty leaves the context as it was. | `TurnLoop._directive_view`; `DirectiveTracker.directive_view`; `tests/test_directive_context.py` (serialized contexts; a run with and without the view differs only in those keys). |
 | Guidance layout | Lays out results already adopted. The loop sends the layout only if `restore_guidance` returns the adopted list exactly, else the list. No choice, help request, default or adoption is read or changed, and no count, score or timer is involved. | `TurnLoop._guidance_view`; `runner/guidance_codec.py`; `tests/test_guidance_codec.py`, `tests/test_loop_guidance_layout.py`. |
 | Reader notes | Labels each recorded note an unverified preflight-model inference in the frontier's manifest message. Every note is sent as written; no code filters, ranks, or acts on one, and the answer schema, packet and choices do not change. | `provider.manifest_message`, `FrontierHelp.reader_notes`; `tests/test_frontier_provider.py` and `tests/test_frontier_help.py` (actual request). |
 | Exploration targets | Prompt text invites a hypothesis plus a go-try directive about a clip-shown part no recorded action tried. Advice only: no branch chooses, escalates, or substitutes, and the directive is scored like any other. | `roles/frontier.py` SYSTEM; `tests/test_roles_frontier.py` (prompt needles, review acceptance). |

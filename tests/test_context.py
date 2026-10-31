@@ -140,7 +140,7 @@ def test_recent_history_is_optional_and_independently_copied():
     plain = build_context(**kwargs)
     assert "recent_history" not in plain
     assert canonical(plain) == canonical(build_context(**kwargs, recent_history=None))
-    assert sha256(canonical(plain).encode("utf-8")).hexdigest() == "b88c8e7b32fb34401b3d4e4ca20a06d7aac5e3fb306e63511f0fa3b109ef6c5d"
+    assert sha256(canonical(plain).encode("utf-8")).hexdigest() == "d7ab2d84312f19970bd40acc0564dcec207c3978b12db8e55d8cbf02a94550f6"
 
     supplied = {"turns": {"items": [{"outcome": {"value": "original"}}]}}
     payload = build_context(**kwargs, recent_history=supplied)

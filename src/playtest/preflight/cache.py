@@ -483,6 +483,9 @@ def replay_selections(manifest_value: PreflightManifest, original: InspectResult
         "unjudgeable": manifest_value.gaps.unjudgeable}})
     run = stages.RunResult(stages.StageResult(a4, ()), stages.StageResult(a5, ()), stages.StageResult(a6, ()))
     value = manifest.assemble(current_packet, run)
+    # Reach regions are operator assertions, not part of the model's answer, so assemble never invents them.
+    # The cached selection's declarations carry over unchanged; the current scene binding is not rewritten.
+    value = value.model_copy(update={"reach_regions": list(manifest_value.reach_regions)})
     if undriven_axes(value):
         raise ValueError("the selection is incomplete: offered analog axes have no executable action")
     return value, {"entity_id": entity_id, "reader_ids": reader_ids, "controls": controls, "model_calls": 0}

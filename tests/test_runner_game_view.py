@@ -4,6 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import hashlib
 import os
+import uuid
+
+import pytest
 
 from playtest.contracts.bridge import Observation
 from playtest.contracts.common import ClockMode
@@ -22,8 +25,8 @@ def observation(at=NOW):
                        scene="a", playing=True, paused=False, time_scale=1.0, frame=1)
 
 
-def write_frame(project: Path, name: str, when: datetime, data=JPEG):
-    directory = project / media.FRAME_SUBDIR
+def write_frame(project: Path, name: str, when: datetime, data=JPEG, generation: str | None = None):
+    directory = media.frame_directory(project, generation)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
     path.write_bytes(data)
@@ -61,3 +64,25 @@ def test_bound_is_inclusive_and_previous_run_is_excluded(tmp_path):
     write_frame(tmp_path, "f-000001.jpg", NOW - timedelta(seconds=1))
     assert BridgeView(tmp_path, STATUS, started_utc=NOW - timedelta(seconds=5)).sample(observation()).status == "sent"
     assert BridgeView(tmp_path, STATUS, started_utc=NOW - timedelta(seconds=.5)).sample(observation()).status == "missing"
+
+
+def test_a_generation_reads_only_its_own_frames_and_rebind_drops_the_old_ones(tmp_path):
+    old, current, restarted = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    write_frame(tmp_path, "f-000001.jpg", NOW - timedelta(seconds=.2), generation=old)
+    write_frame(tmp_path, "f-000002.jpg", NOW - timedelta(seconds=.1))          # a legacy flat frame
+    # A generation-scoped view never falls back to the flat window or another play instance's frames.
+    assert BridgeView(tmp_path, STATUS, started_utc=NOW - timedelta(seconds=5),
+                      generation=current).sample(observation()).status == "missing"
+    write_frame(tmp_path, "f-000003.jpg", NOW - timedelta(seconds=.1), generation=current)
+    source = BridgeView(tmp_path, STATUS, started_utc=NOW - timedelta(seconds=5), generation=current)
+    assert source.sample(observation()).status == "sent"
+    # A rebind starts the new epoch at the first new observation; the previous generation's recent frame is not a candidate.
+    first = observation(at=NOW + timedelta(seconds=1))
+    source.rebind(generation=restarted, observation=first)
+    assert source.sample(observation(at=NOW + timedelta(seconds=1.2))).status == "missing"
+    write_frame(tmp_path, "f-000004.jpg", NOW + timedelta(seconds=1.1), generation=restarted)
+    assert source.sample(observation(at=NOW + timedelta(seconds=1.2))).status == "sent"
+    with pytest.raises(ValueError):
+        source.rebind(observation=first)                                    # a restart needs the new generation
+    with pytest.raises(ValueError):
+        source.rebind(generation=restarted, observation=observation().model_copy(update={"wall_utc": None}))

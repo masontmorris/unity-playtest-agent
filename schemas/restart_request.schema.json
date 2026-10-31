@@ -1,0 +1,48 @@
+{
+  "$id": "upa/restart_request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`request.json`: one explicit S1-selected restart, dispatched after a verified release.",
+  "properties": {
+    "deadline_utc": {
+      "format": "date-time",
+      "title": "Deadline Utc",
+      "type": "string"
+    },
+    "from_generation": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "From Generation",
+      "type": "string"
+    },
+    "operation": {
+      "const": "restart_play_mode",
+      "title": "Operation",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "ticket_id": {
+      "minLength": 1,
+      "title": "Ticket Id",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "run_id",
+    "ticket_id",
+    "operation",
+    "from_generation",
+    "deadline_utc"
+  ],
+  "title": "RestartRequest",
+  "type": "object"
+}

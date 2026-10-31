@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using Playtest.Bridge.Transport;
 using UnityEngine;
 using UnityEngine.UI;
 #if UNITY_EDITOR
@@ -27,6 +28,27 @@ namespace Playtest.Bridge.Unity
         public const string Unknown = "unknown";
         public const string Passed = "passed";
         public const string Failed = "failed";
+
+        /// <summary>
+        /// The frame directory for one play instance: <c>&lt;framesRoot&gt;/&lt;generation&gt;</c>.
+        /// The generation is a canonical UUID, so each instance writes into its own directory and
+        /// clearing one instance's frames can never delete another's.
+        /// </summary>
+        public static string GenerationDirectory(string framesRoot, string generation)
+        {
+            return BridgeGeneration.Directory(framesRoot, generation);
+        }
+
+        /// <summary>A capture for one play instance. The legacy constructor, with no generation, is unchanged.</summary>
+        public static UnityCapture ForGeneration(
+            string framesRoot,
+            string generation,
+            int width = DefaultWidth,
+            int rateHz = DefaultRateHz,
+            int windowSize = DefaultWindowSize)
+        {
+            return new UnityCapture(GenerationDirectory(framesRoot, generation), width, rateHz, windowSize);
+        }
 
         private const int DefaultWidth = 640;
         private const int DefaultRateHz = 10;

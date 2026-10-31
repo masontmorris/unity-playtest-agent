@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "run_id": "run-1",
+  "phase": "failed",
+  "generation": null,
+  "scene_path": null,
+  "scene_handle": null,
+  "ready_utc": null,
+  "error": null,
+  "capabilities": []
+}

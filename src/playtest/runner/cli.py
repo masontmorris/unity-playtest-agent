@@ -55,9 +55,17 @@ from .game_view import BridgeView
 from .output import secret_values
 from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
 from .probe import DisplacementProbe, make_snapshot
+from .progress import ProgressFacts, ProgressProbe
 from .readers import FieldReaders
 from .s1 import ARM, IMAGE_TOKENS, IMAGE_TRANSPORT, SystemOneS1
 from .session import MAX_AGE_S, MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
+from .session_control import (
+    HostSession,
+    SessionControl,
+    SessionControlError,
+    control_directory,
+    load_host_session,
+)
 
 DEFAULT_OBJECTIVE = (
     "Play the game for the time allowed, using only the offered choices. Try the available controls and "
@@ -163,6 +171,17 @@ def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0, arm: st
         raise ValueError("the approved call or cost envelope is smaller than the call cap")
 
 
+def _host_session(project: Path) -> HostSession | None:
+    """The validated Editor-owned host session this runner was started under, or `None` for a bench run."""
+    directory = control_directory()
+    if directory is None:
+        return None
+    try:
+        return load_host_session(directory, project=project)
+    except SessionControlError as exc:
+        raise ValueError(f"the session control directory is not usable: {exc}") from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -217,8 +236,15 @@ def main(argv: list[str] | None = None) -> int:
         arms = [args.s1_arm, frontier_provider.MODEL] if args.frontier else [args.s1_arm]
         replay.validate_approval(approval, arms)
         _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0, args.s1_arm)
-        built = build_choices(manifest)
+        session_host = _host_session(project)
+        built = build_choices(manifest, restart_play_mode=session_host is not None
+                              and session_host.advertises_restart)
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
+        if session_host is not None:
+            # The host must serve the very catalog this run verified, or its scene is a different session.
+            if (Path(session_host.config.catalog_path).resolve() != args.catalog.resolve()
+                    or session_host.config.catalog_sha256 != host.sha256):
+                raise ValueError("the session control directory names a different catalog than this run serves")
         if not any(c.source.value == "manifest" for c in built.choices):
             raise ValueError("the manifest offers no executable action")
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -239,12 +265,18 @@ def main(argv: list[str] | None = None) -> int:
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
+        plan["session_control"] = None if session_host is None else {
+            "run_id": session_host.run_id, "generation": session_host.generation,
+            "capabilities": list(session_host.capabilities),
+            "advertises_restart": session_host.advertises_restart,
+            "restart_offered": any(c.id == "restart_play_mode" for c in built.choices),
+        }
         replay._write(run_dir / "plan.json", plan, exclusive=True)
         # The frontier helper shares this folder and runs while S1 keeps choosing, so in-flight calls block per arm.
         ledger = call_budget.Ledger(run_dir, approval, args.s1_arm, concurrent_arms=True)
         before = recording._game_worktree(project)
         summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256,
-                                   calibration=calibration))
+                                   calibration=calibration, session_host=session_host))
         after = recording._game_worktree(project)
         summary["game_worktree_changed"] = None if before is None or after is None else before != after
         if summary["game_worktree_changed"] is True and summary["status"] == "complete":
@@ -274,9 +306,13 @@ def _suspicions(raised: list[Any], min_readings: int, drift_readings: int | None
 
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
-               manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None) -> dict[str, Any]:
+               manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None,
+               session_host: HostSession | None = None) -> dict[str, Any]:
     run_dir = args.output.resolve().parent
     started_utc = dt.datetime.now(dt.timezone.utc)
+    generation = session_host.generation if session_host is not None else None
+    restart = (SessionControl(session_host, project=project)
+               if session_host is not None and session_host.advertises_restart else None)
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
         snapshot = make_snapshot(client, manifest.entity_id)
@@ -292,7 +328,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
                           game_view=args.s1_game_view)
         status = client.status
-        view = BridgeView(project, status, started_utc=started_utc) if args.s1_game_view else None
+        view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
+                if args.s1_game_view else None)
         record = await asyncio.to_thread(  # it runs git; keep the bridge connection serviced meanwhile
             build_run_record,
             game_project=project, status=status, scene=scene, manifest_fingerprint=manifest_sha,
@@ -304,21 +341,26 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             objective=objective,
             budget=Budget(max_wall_s=args.wall_limit_s, max_usd=float(approval["max_cost_usd"]),
                           max_frontier_calls=args.max_frontier_calls if args.frontier else 0),
-            reset_method="none")  # this runner never resets the game
+            reset_method="restart_play_mode" if session_host is not None else "none")  # this runner only resets through the host
         writer = TraceWriter(run_dir / TRACE_FILE, record, secrets=secret_values())
-        tracker = DirectiveTracker(writer)
+        progress_probe = ProgressProbe(manifest.reach_regions)
+        tracker = DirectiveTracker(writer, derived=progress_probe.derived if progress_probe.regions else None)
+        facts = ProgressFacts(tracker, progress_probe) if progress_probe.regions else tracker
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
-                                  effects=action_effects(built.expected))
+                                  effects=action_effects(built.expected), generation=generation,
+                                  session=getattr(client, "session", None), progress=progress_probe)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(
-                client, built, s1=s1, objective=objective, view=view, probe=DisplacementProbe(snapshot, built.expected),
+                client, built, s1=s1, objective=objective, view=view,
+                probe=DisplacementProbe(snapshot, built.expected,
+                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id)),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
-                facts=tracker, s1_call_cap=args.max_calls)
+                facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {
@@ -345,6 +387,14 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                              "tokens_per_minute": args.tokens_per_minute},
                 "pacing": {**dataclasses.asdict(result.pacing), "calls_counted": budget.recorded,
                            "calls_estimated": budget.estimated},
+                "session_control": None if session_host is None else {
+                    "run_id": session_host.run_id,
+                    "generation": result.loop.generation,
+                    "capabilities": list(session_host.capabilities),
+                    "advertises_restart": session_host.advertises_restart,
+                    "restarts": [operation.model_dump(mode="json")
+                                 for operation in result.restart_history],
+                },
                 "trace": TRACE_FILE,
             }
         except BaseException as exc:  # the loop has stopped and released its inputs; the trace still gets its end

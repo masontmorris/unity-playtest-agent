@@ -1,0 +1,48 @@
+{
+  "$id": "upa/session_control_config.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`config.json`: what run this control directory belongs to and how long it may last.",
+  "properties": {
+    "catalog_path": {
+      "minLength": 1,
+      "title": "Catalog Path",
+      "type": "string"
+    },
+    "catalog_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Catalog Sha256",
+      "type": "string"
+    },
+    "deadline_utc": {
+      "format": "date-time",
+      "title": "Deadline Utc",
+      "type": "string"
+    },
+    "project_path": {
+      "minLength": 1,
+      "title": "Project Path",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "run_id",
+    "project_path",
+    "catalog_path",
+    "catalog_sha256",
+    "deadline_utc"
+  ],
+  "title": "SessionControlConfig",
+  "type": "object"
+}

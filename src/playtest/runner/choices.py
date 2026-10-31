@@ -42,6 +42,7 @@ from playtest.preflight.catalog import export
 
 UNIT = "world units"  # the unit of the entity positions that calibration and the effect probe measure
 WAIT_GAME_S = 0.5  # what the wait choice waits: game seconds with no input
+RESTART_ID = "restart_play_mode"  # reserved whether or not this host offers it
 
 
 @dataclass(frozen=True)
@@ -58,25 +59,38 @@ class ManifestChoices:
     catalog: ActionCatalog = field(default_factory=ActionCatalog)
 
 
-def core_choices() -> list[Choice]:
-    """The choices every game has.
+def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
+    """The choices every game has, plus an explicit host restart only when this host advertises it.
 
     Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
+    The restart choice is a primary choice selected by S1 alone: it is never a `while_pending` input and
+    no detector, score or timer selects it.
     """
-    return [
+    choices = [
         Choice(id="wait", kind=ChoiceKind.wait, label=f"Wait {WAIT_GAME_S:g} s with no input",
                params={"duration_game_s": WAIT_GAME_S}, source=ChoiceSource.core),
         Choice(id="escalate", kind=ChoiceKind.escalate, label="Ask the frontier model for help",
                role="frontier", source=ChoiceSource.core),
         Choice(id="delegate", kind=ChoiceKind.delegate, label="Hand a bounded task to a helper",
                role="helper", source=ChoiceSource.core),
-        Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.core),
     ]
+    if restart_play_mode:
+        choices.append(Choice(
+            id=RESTART_ID, kind=ChoiceKind.restart_play_mode,
+            label="Restart Play Mode: stop the play session and start it again from the beginning",
+            source=ChoiceSource.core))
+    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.core))
+    return choices
 
 
-def build_choices(manifest: PreflightManifest) -> ManifestChoices:
-    core = core_choices()
-    reserved = {choice.id for choice in core}
+def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False) -> ManifestChoices:
+    """The manifest's supported declarations then the core choices.
+
+    `restart_play_mode` is set only when the configured host advertises the operation for this run; the
+    default leaves every choice, its order and its wording exactly as before.
+    """
+    core = core_choices(restart_play_mode=restart_play_mode)
+    reserved = {choice.id for choice in core} | {RESTART_ID}
     catalog = export(manifest)
     choices: list[Choice] = []
     expected: dict[str, dict[str, Any] | None] = {}

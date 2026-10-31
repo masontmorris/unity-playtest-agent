@@ -115,3 +115,15 @@ def test_the_folds_read_a_trace_file_the_same_as_a_memory_sink(tmp_path):
     assert latest_findings(entries)["f1"].finding.state is FindingState.candidate
     assert latest_findings(entries)["f1"].trace_seq == 3
     assert observation_entries(entries) == {1842: 1}
+
+
+def test_a_bridge_sequence_seen_in_two_sessions_is_not_citable():
+    """A restart reuses the bridge counter: a `seq` two sessions both recorded names no one entry."""
+    sink = MemorySink()
+    sink.append(TraceKind.run, {"run_id": "r"}, author=TraceAuthor.harness)
+    sink.append(TraceKind.observation, {"seq": 3, "session": "before"}, author=TraceAuthor.bridge, turn=0)
+    sink.append(TraceKind.observation, {"seq": 7, "session": "before"}, author=TraceAuthor.bridge, turn=0)
+    sink.append(TraceKind.observation, {"seq": 7, "session": "after"}, author=TraceAuthor.bridge, turn=0)
+
+    # The unique pre-restart sequence stays citable; the reused one is dropped rather than guessed.
+    assert observation_entries(sink.entries) == {3: 1}

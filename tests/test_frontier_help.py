@@ -29,7 +29,8 @@ from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
 from playtest.preflight.verify import MEASUREMENT_TOLERANCE
 from playtest.runner.frontier_help import (FrontierHelp, action_effects, reader_calibration, reader_notes,
-                                           recorded_suspicions, _evidence_snapshot, _finding_evidence)
+                                           recorded_suspicions, _evidence_snapshot, _finding_evidence,
+                                           _observation_ref)
 from playtest.runner.choices import build_choices
 
 
@@ -969,3 +970,50 @@ def test_the_request_sent_labels_a_readers_note_an_unverified_inference_beside_i
         assert helper.calls == 1
 
     asyncio.run(main())
+
+
+def test_a_restart_withdraws_open_hypotheses_and_discards_staged_results(tmp_path: Path):
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=MemorySink(), tracker=DirectiveTracker(MemorySink()),
+                          started_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1,
+                          session="before", generation="g-1")
+    helper.hypotheses = {"hyp-1": {"id": "hyp-1", "status": "open", "statement": "Still open."},
+                         "hyp-2": {"id": "hyp-2", "status": "refuted", "statement": "Already refuted."}}
+    helper._staged[0] = object()       # noqa: SLF001 - a result the helper still held
+    helper._adopted[3] = (object(), object())  # noqa: SLF001 - guidance already handed to S1
+    after = Observation(session="after", seq=20, game_s=1.0, wall_utc=datetime.now(timezone.utc),
+                        clock_mode="realtime", scene="scene", playing=True, paused=False, time_scale=1.0, frame=20)
+
+    helper.rebind(client=SimpleNamespace(session="after"), observation=after, generation="g-2")
+
+    # The helper follows the new session and generation, and its clock is the new observation's.
+    assert (helper.session, helper.generation) == ("after", "g-2")
+    assert helper.started_utc == after.wall_utc
+    # An open hypothesis is withdrawn with its reason and generation; a closed one is left as it was.
+    assert helper.hypotheses["hyp-1"]["status"] == "withdrawn"
+    assert helper.hypotheses["hyp-1"]["invalidated_reason"] == "the play session restarted"
+    assert helper.hypotheses["hyp-1"]["invalidated_generation"] == "g-2"
+    assert helper.hypotheses["hyp-2"]["status"] == "refuted"
+    # Nothing held for the earlier generation can still be adopted or staged.
+    assert helper._staged == {} and helper._adopted == {}   # noqa: SLF001
+    assert {0, 3} <= helper._discarded                     # noqa: SLF001
+
+
+def test_a_reused_bridge_sequence_resolves_to_the_current_sessions_observation():
+    """A restart may count its bridge seq from the same numbers again; a citation must name its own session."""
+    sink = MemorySink()
+    sink.append(TraceKind.observation, {"seq": 7, "session": "before"}, author=TraceAuthor.bridge, turn=0)
+    sink.append(TraceKind.observation, {"seq": 7, "session": "after"}, author=TraceAuthor.bridge, turn=0)
+    sink.append(TraceKind.observation, {"seq": 9, "session": "before"}, author=TraceAuthor.bridge, turn=0)
+
+    reused = _evidence_snapshot(sink, None, 7)
+    assert _observation_ref(reused, 7, "after") == 1       # the current session's entry wins
+    assert _observation_ref(reused, 7, "before") == 0
+    assert _observation_ref(reused, 7) is None             # without a session the reused seq is ambiguous
+
+    unique_old = _evidence_snapshot(sink, None, 9)
+    assert _observation_ref(unique_old, 9, "after") == 2   # a seq only one session recorded stays citable

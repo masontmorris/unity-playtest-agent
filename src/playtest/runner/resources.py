@@ -9,7 +9,7 @@ from typing import Any
 
 from playtest.contracts.bridge import Observation
 from playtest.core.facts import RecordFacts
-from playtest.core.ports import FactsSource, TurnReport
+from playtest.core.ports import DirectiveView, FactsSource, TurnReport
 
 PREFIX = "Session resources: "
 
@@ -56,3 +56,15 @@ class SessionFacts:
         lines = list(await self._inner.facts(reports, observation))
         lines.append(PREFIX + json.dumps(self.snapshot(), sort_keys=True, separators=(",", ":"), allow_nan=False))
         return lines
+
+    def directive_view(self, observation: Observation) -> DirectiveView | None:
+        """The wrapped source's directives, unchanged; `None` when it tracks none."""
+        view = getattr(self._inner, "directive_view", None)
+        return view(observation) if view is not None else None
+
+    def rebind(self, *, client: Any = None, observation: Observation | None = None,
+               generation: str | None = None) -> None:
+        """Forward a play-session boundary to the wrapped source; a source without the hook changes nothing."""
+        rebind = getattr(self._inner, "rebind", None)
+        if rebind is not None:
+            rebind(client=client, observation=observation, generation=generation)

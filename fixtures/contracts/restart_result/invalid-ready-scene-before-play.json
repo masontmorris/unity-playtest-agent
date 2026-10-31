@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "run_id": "run-1",
+  "ticket_id": "ticket-1",
+  "phase": "ready",
+  "from_generation": "11111111-1111-4111-8111-111111111111",
+  "to_generation": "22222222-2222-4222-8222-222222222222",
+  "entered_edit_mode_utc": "2026-10-31T11:00:05+00:00",
+  "entered_play_mode_utc": "2026-10-31T11:00:09+00:00",
+  "ready_utc": "2026-10-31T11:00:08+00:00",
+  "scene_path": "Assets/Scenes/Main.unity",
+  "scene_handle": 8,
+  "failure_reason": null
+}

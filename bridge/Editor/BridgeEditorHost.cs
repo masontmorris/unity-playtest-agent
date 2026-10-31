@@ -33,6 +33,7 @@ namespace Playtest.Bridge.Editor
         private static EditorInspectionSource _inspection;
         private static BridgeLockFile _lock;
         private static string _lastError;
+        private static string _generation;
         private static int _lockOwnerPid;
 
         static BridgeEditorHost()
@@ -41,7 +42,12 @@ namespace Playtest.Bridge.Editor
             EditorApplication.quitting += Stop;
             SceneManager.activeSceneChanged += OnActiveSceneChanged;
 
-            if (!Application.isBatchMode)
+            // A supervised live session owns the bridge's lifetime through PlayModeSessionHost: it
+            // registers the pinned manifest catalog and a generation-scoped capture. The unattended
+            // auto-start would race that host and serve whatever catalog happens to be on disk, so it
+            // stays off whenever a session control directory is set, batch mode or not.
+            if (!Application.isBatchMode
+                && string.IsNullOrEmpty(Environment.GetEnvironmentVariable(PlayModeSessionHost.ControlDirectoryVariable)))
             {
                 EditorApplication.delayCall += AutoStart;
             }
@@ -90,6 +96,21 @@ namespace Playtest.Bridge.Editor
             get { return _lockOwnerPid; }
         }
 
+        /// <summary>
+        /// The canonical UUID of the play instance this bridge serves, or null for a legacy bench or
+        /// preflight session that reads the shared, unversioned capture directory.
+        /// </summary>
+        public static string Generation
+        {
+            get { return _generation; }
+        }
+
+        /// <summary>The shared frame root: <c>&lt;project&gt;/Temp/playtest-bridge-frames</c>.</summary>
+        public static string CaptureRoot
+        {
+            get { return Path.Combine(Path.GetDirectoryName(Application.dataPath), "Temp", BridgeGeneration.FramesDirectoryName); }
+        }
+
         /// <summary><c>&lt;project&gt;/Temp/playtest-bridge.lock</c>.</summary>
         public static string LockPath
         {
@@ -115,7 +136,7 @@ namespace Playtest.Bridge.Editor
         /// <summary>Idempotent. Never throws: a failure is reported through <see cref="LastError"/>.</summary>
         public static void Start()
         {
-            StartCore(null);
+            StartCore(null, null);
         }
 
         /// <summary>
@@ -124,12 +145,24 @@ namespace Playtest.Bridge.Editor
         /// </summary>
         public static void StartForPreflight(BridgeActionCatalog actions)
         {
-            if (actions == null) throw new ArgumentNullException(nameof(actions));
-            if (IsRunning) throw new InvalidOperationException("the bridge is already running");
-            StartCore(actions);
+            StartForPreflight(actions, null);
         }
 
-        private static void StartCore(BridgeActionCatalog preflightActions)
+        /// <summary>
+        /// Start a new session for one play instance. <paramref name="generation"/> is the instance's
+        /// canonical UUID and scopes its captured frames to <c>Temp/playtest-bridge-frames/&lt;generation&gt;</c>;
+        /// null keeps the legacy shared directory that bench and preflight hosts read. A token and a
+        /// project lock are created fresh on every start, never reused from a previous instance.
+        /// </summary>
+        public static void StartForPreflight(BridgeActionCatalog actions, string generation)
+        {
+            if (actions == null) throw new ArgumentNullException(nameof(actions));
+            if (generation != null) BridgeGeneration.Validate(generation, nameof(generation));
+            if (IsRunning) throw new InvalidOperationException("the bridge is already running");
+            StartCore(actions, generation);
+        }
+
+        private static void StartCore(BridgeActionCatalog preflightActions, string generation)
         {
             if (IsRunning)
             {
@@ -153,7 +186,11 @@ namespace Playtest.Bridge.Editor
                 ownerPid = CurrentProcessId();
                 string projectRoot = Path.GetDirectoryName(Application.dataPath);
                 var status = new UnityStatusSource(ownerPid);
-                capture = new UnityCapture(Path.Combine(projectRoot, "Temp", "playtest-bridge-frames"));
+                string captureDirectory = generation == null
+                    ? Path.Combine(projectRoot, "Temp", BridgeGeneration.FramesDirectoryName)
+                    : BridgeGeneration.Directory(
+                        Path.Combine(projectRoot, "Temp", BridgeGeneration.FramesDirectoryName), generation);
+                capture = new UnityCapture(captureDirectory);
                 status.Capture = capture.Available;
                 status.CaptureSelfTest = capture.SelfTest;
                 clock = new UnityClockController();
@@ -220,6 +257,7 @@ namespace Playtest.Bridge.Editor
                 StopClock(clock);
                 StopCapture(capture);
                 _lockOwnerPid = busyOwnerPid;
+                _generation = null;
                 SetError("the project lock is already held by " + owner, token);
                 return;
             }
@@ -231,6 +269,7 @@ namespace Playtest.Bridge.Editor
                 StopInput(input);
                 StopClock(clock);
                 StopCapture(capture);
+                _generation = null;
                 SetError("could not start: " + ex.GetType().Name + ": " + ex.Message, token);
                 return;
             }
@@ -243,6 +282,7 @@ namespace Playtest.Bridge.Editor
             _inspection = inspection;
             _lock = acquired;
             _lockOwnerPid = ownerPid;
+            _generation = generation;
             _lastError = null;
             Log("listening on 127.0.0.1:" + server.Port + "; lock " + LockPath);
         }
@@ -267,6 +307,7 @@ namespace Playtest.Bridge.Editor
             _inspection = null;
             _lock = null;
             _lockOwnerPid = 0;
+            _generation = null;
             _lastError = null;
 
             StopInspection(inspection);

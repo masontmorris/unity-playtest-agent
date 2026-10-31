@@ -87,7 +87,10 @@ def rebuild(payload, guidance):
         directive=Directive.model_validate(payload["directive"]) if payload["directive"] else None,
         directive_history=[Directive.model_validate(d) for d in payload["directive_history"]],
         pending_help=payload["pending_help"], age_s=as_of["age_s"], sample_gap_s=as_of["sample_gap_s"],
-        game_view=payload["game_view"], guidance=guidance, recent_history=payload.get("recent_history"))
+        game_view=payload["game_view"], guidance=guidance, recent_history=payload.get("recent_history"),
+        directive_provenance=payload.get("directive_provenance"))
+    # Reconstruct the recorded request, including its original prompt, rather than applying today's policy.
+    built["instructions"] = payload["instructions"]
     for key in ("game_view_sha256", "game_view_status"):  # the loop adds these after the builder
         if key in payload:
             built[key] = payload[key]

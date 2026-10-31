@@ -9,14 +9,16 @@ gave. Anything a port did not measure is `None`, never zero, success or failure.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from playtest.contracts.bridge import Observation
-from playtest.contracts.investigation import Suspicion
-from playtest.contracts.loop import Choice, TurnRecord
+from playtest.contracts.investigation import Directive, DirectiveOutcome, Suspicion
+from playtest.contracts.loop import Choice, OperationStatus, TurnRecord
 
+from .bridge_client import BridgeClient
 from .execution import Execution
 
 
@@ -209,7 +211,51 @@ class TurnReport:
         return self.failure is not None
 
 
+@dataclass(frozen=True)
+class DirectiveView:
+    """The directives a facts source tracks, as of the observation a turn decided on.
+
+    `current` is the one still open, `closed` are the ones that ended (oldest first), each with the outcome it
+    ended with: an open directive is never listed as closed, nor a closed one as current. `provenance` is what
+    the source measured about each directive, by directive id: a mapping of JSON values, `None` where the source
+    did not measure it. A directive is a helper's advice, not a measurement and not S1's own commitment; a
+    source reports it and the loop shows it, and neither picks an action or opens help from it.
+    """
+
+    current: Directive | None = None
+    closed: tuple[Directive, ...] = ()
+    provenance: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "closed", tuple(self.closed))
+        if self.current is not None and self.current.outcome is not DirectiveOutcome.open:
+            raise ValueError(f"directive {self.current.directive_id} is {self.current.outcome.value}, not open")
+        reopened = [item.directive_id for item in self.closed if item.outcome is DirectiveOutcome.open]
+        if reopened:
+            raise ValueError(f"closed directives cannot be open: {reopened}")
+        ids = [item.directive_id for item in (*([self.current] if self.current is not None else []), *self.closed)]
+        if len(set(ids)) != len(ids):
+            raise ValueError("a directive id is listed twice")
+        orphans = [key for key in self.provenance if key not in ids]
+        if orphans:
+            raise ValueError(f"provenance names directives the view does not list: {orphans}")
+        try:
+            json.dumps({key: dict(value) for key, value in self.provenance.items()}, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"provenance is not finite JSON: {exc}") from None
+
+
 class FactsSource(Protocol):
+    """States measurements for a turn.
+
+    A source that also tracks directives may implement ``directive_view(observation) -> DirectiveView | None``.
+    The loop calls it once per context, right after ``facts`` for that same observation, so what it reports has
+    been evaluated against that observation. It returns ``None`` when it tracks nothing or has not evaluated
+    ``observation``; a context built without a view keeps its exact bytes. A view that is malformed or raises
+    gives S1 no directive section for that turn, and changes nothing else. A wrapper that forwards ``facts``
+    forwards this too, unchanged.
+    """
+
     async def facts(self, reports: Sequence[TurnReport], observation: Observation) -> Sequence[str]:
         """Measured fact strings for the decision about `observation`. Measurements and counts, never advice."""
         ...
@@ -261,4 +307,53 @@ class Watch(Protocol):
     def effect(self, choice: Choice, report: EffectReport, *, turn: int,
                trace_seqs: Sequence[int]) -> Sequence[Suspicion]:
         """Read one measured effect. `trace_seqs` are the execution and effect entries it rests on."""
+        ...
+
+
+# --- host operations ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RestartOutcome:
+    """What one explicit host restart operation measured, and the connection it produced.
+
+    A `ready` outcome means every condition the host protocol requires was measured: verified input
+    release, a terminal ready record for this ticket, a ready host state at a distinct new generation,
+    a fresh bridge endpoint and a valid first observation. Any other status fails the run closed.
+    `client` and `observation` are present only on `ready`; the loop adopts them and closes a client it
+    does not adopt.
+    """
+
+    status: OperationStatus
+    ticket_id: str
+    from_generation: str | None
+    to_generation: str | None = None
+    reason: str | None = None
+    checks: int = 0
+    waited_s: float | None = None
+    release_verified: bool | None = None
+    client: BridgeClient | None = None
+    observation: Observation | None = None
+    scene_path: str | None = None
+
+
+class RestartPort(Protocol):
+    async def restart(
+        self,
+        *,
+        ticket_id: str,
+        from_generation: str,
+        previous_endpoint: Any | None,
+        deadline_s: float,
+        release_verified: bool | None,
+        previous_session: str | None = None,
+    ) -> RestartOutcome:
+        """Run one host restart outside decision turns; no model call is made while it waits.
+
+        The port writes one request, awaits one terminal result, verifies the fresh endpoint and returns
+        a new connected client with a valid first observation, or a non-ready status with a reason. It
+        never retries, reconnects outside this explicit operation or accepts a late result as success.
+        `previous_session` is the pre-restart bridge session, so the port can refuse a new client that
+        reuses it; `None` means the caller did not measure one.
+        """
         ...

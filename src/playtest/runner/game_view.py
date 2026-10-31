@@ -52,14 +52,34 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
 
 
 class BridgeView:
-    """Use file completion time, not an invented capture time, to align a frame with an observation."""
+    """Use file completion time, not an invented capture time, to align a frame with an observation.
 
-    def __init__(self, project: Path, status: Any, *, started_utc: datetime) -> None:
+    With a play generation the source is that generation's own frame directory; a frame from an earlier
+    play instance can never be presented as the current view, whatever its timestamp says. A restart
+    rebinds the source and the start time, so the old generation's frames are not candidates at all.
+    """
+
+    def __init__(self, project: Path, status: Any, *, started_utc: datetime,
+                 generation: str | None = None) -> None:
         if started_utc.tzinfo is None or started_utc.utcoffset() is None:
             raise ValueError("view source requires a timezone-aware start")
-        self._source = project / media.FRAME_SUBDIR
+        self._project = project
         self._status = status
         self._started_ns = int(started_utc.timestamp() * 1_000_000_000)
+        self._generation = generation
+        self._source = media.frame_directory(project, generation)
+
+    def rebind(self, *, client: Any = None, observation: Observation | None = None,
+               generation: str | None = None) -> None:
+        """Point at the restarted play instance's frames, starting now; earlier frames stop being candidates."""
+        if generation is None:
+            raise ValueError("a restarted view needs the new play generation")
+        self._generation = generation
+        self._source = media.frame_directory(self._project, generation)
+        started = observation.wall_utc if observation is not None else None
+        if started is None or started.tzinfo is None or started.utcoffset() is None:
+            raise ValueError("a restarted view needs a timezone-aware first observation")
+        self._started_ns = int(started.timestamp() * 1_000_000_000)
 
     def sample(self, observation: Observation) -> ViewSample:
         wall = observation.wall_utc

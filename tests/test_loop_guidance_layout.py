@@ -25,7 +25,7 @@ from test_decision_memory import Bridge, S1, WALL, choices, observation
 from test_frontier_publication import _answer_for, _helper, _reply
 from test_loop_help_publication import live_choices
 
-GOLDEN = "b88c8e7b32fb34401b3d4e4ca20a06d7aac5e3fb306e63511f0fa3b109ef6c5d"
+GOLDEN = "d7ab2d84312f19970bd40acc0564dcec207c3978b12db8e55d8cbf02a94550f6"
 ADVICE = {"advice": "try the other control"}
 ADOPTED = {"source": "fake-helper", "kind": "escalate", "choice_id": "h", "requested_turn": 0, "adopted_turn": 1,
            "age_s": 0.0, "waited_s": 0.0, "result": ADVICE}

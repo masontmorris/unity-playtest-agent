@@ -1,14 +1,16 @@
 """Runner-side directive scoring and S1-facing status facts."""
 from __future__ import annotations
 
+import copy
+import math
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from playtest.contracts.bridge import TERMINAL_STATUSES, ExecStatus, Observation
-from playtest.contracts.investigation import Comparator, DirectiveWindow
+from playtest.contracts.investigation import Comparator, Directive, DirectiveWindow
 from playtest.contracts.loop import ChoiceKind, TurnOutcome
-from playtest.core.ports import FactsSource, TurnReport
+from playtest.core.ports import DirectiveView, FactsSource, TurnReport
 from playtest.core.trace_sink import TraceSink
 from playtest.roles import checks
 from playtest.roles.checks import field_value
@@ -17,7 +19,7 @@ _REASONS = {
     "met": "the measured reader value satisfied the setpoint",
     "not_met": "the deadline passed and the measured reader value did not satisfy the setpoint",
     "expired": "the deadline passed without a scoreable reader value",
-    "invalidated": "the scene changed or the measured game clock reset",
+    "invalidated": "the session or scene changed or the measured game clock or frame reset",
     "unknown": "the directive had no scoreable postcondition",
 }
 # `unchanged` is a hold: the first change misses it, and only lasting to the deadline meets it.
@@ -78,6 +80,22 @@ def _op(item: Mapping[str, Any]) -> Comparator | None:
     return Comparator(expected["op"]) if isinstance(expected, Mapping) else None
 
 
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _seconds(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+def _game_age(now: float | None, then: float | None) -> float | None:
+    """Game seconds from `then` to `now`; unknown when either clock is unknown or `now` is earlier. Never wall time."""
+    if now is None or then is None:
+        return None
+    elapsed = now - then
+    return elapsed if math.isfinite(elapsed) and elapsed >= 0 else None
+
+
 class DirectiveTracker(FactsSource):
     """Tracks frontier directives, one open at a time. It reports measurements and never selects actions.
 
@@ -89,19 +107,39 @@ class DirectiveTracker(FactsSource):
     met on the first reading that differs from its baseline, and `unchanged` is a hold: every scored reading
     from the first statement to the deadline must equal the baseline. Both baselines are the value at the
     observation that first states the directive to S1.
+
+    `directive_view` states the same directives as typed records for S1's context, after `facts` has evaluated
+    the observation it is asked about. An outcome scores a setpoint over a reader and nothing else: the tracker
+    never reads a directive's text, so no outcome here says a goal was reached.
     """
-    def __init__(self, sink: TraceSink | None = None) -> None:
+    def __init__(self, sink: TraceSink | None = None, *,
+                 derived: Callable[[Observation], Mapping[str, Any]] | None = None) -> None:
         self.sink = sink
         self.active: dict[str, Any] | None = None
         self.history: list[dict[str, Any]] = []
+        self._evaluated: tuple[str, int] | None = None  # the observation `facts` last evaluated
+        # Derived setpoint readings at an observation, by field path (declared progress distances). None
+        # when the manifest declared none; an absent path is unmeasured, so it scores unknown.
+        self._derived = derived
+
+    def _reading(self, field: str, observation: Observation) -> Any:
+        """One setpoint field's value at this observation: a declared derived reading, or the public one."""
+        if field.startswith("progress."):
+            return None if self._derived is None else self._derived(observation).get(field)
+        return field_value(observation.public, field.removeprefix("public."))
 
     def adopt(self, directive: Mapping[str, Any] | None, *, request_turn: int,
               based_on_seq: int, evidence_trace_seq: int | None = None) -> None:
         if directive is None:
             return
+        self._evaluated = None  # what `facts` last evaluated no longer includes this directive
         if self.active is not None:
+            superseded = self.active
             self._close("invalidated", request_turn, based_on_seq, evidence_trace_seq,
                         "superseded by a later directive")
+            # Set after the close so the outcome entry already written is what it always was.
+            superseded["superseded_by"] = directive.get("directive_id") or (
+                directive.get("directive") or {}).get("directive_id")
         item = dict(directive)
         item["status"] = "open"
         item["request_turn"] = request_turn
@@ -119,18 +157,100 @@ class DirectiveTracker(FactsSource):
             if item.get("first_turn") is None:
                 item["first_turn"] = len(reports)  # this turn's context is the first to state it
                 item["first_game_s"] = observation.game_s
+                item["first_seq"] = observation.seq  # a bridge observation seq, never a trace entry
+                item["first_session"] = observation.session
                 self._anchor_deadline(item, observation.game_s)
                 self._anchor_baseline(item, observation)
             item["window"] = window_counts(reports, item["first_turn"], item.get("first_game_s"))
         outcome = self._evaluate(item, observation) if item is not None else None
         if item is not None and outcome is not None:
-            observation_trace = (self.sink.trace_seq_for_observation(observation.seq)
+            observation_trace = (self.sink.trace_seq_for_observation(observation.seq, observation.session)
                                  if self.sink is not None and hasattr(self.sink, "trace_seq_for_observation") else None)
             self._close(outcome, len(reports), observation.seq, observation_trace, self._reason(item, outcome))
         # Every directive stays in S1's context with its outcome, not only on the turn it closed
         # (build bible law 4). The open one, if any, is the last line.
         lines.extend(self._fact_line(entry) for entry in self.history)
+        self._evaluated = (observation.session, observation.seq)
         return lines
+
+    def rebind(self, *, client: Any = None, observation: Observation | None = None,
+               generation: str | None = None) -> None:
+        """Invalidate the open directive at a play-session boundary, keeping it as attributed history.
+
+        A directive is advice about one scene and one session. After a restart its setpoint, deadline and
+        baseline describe a play instance that no longer exists, so it is closed as `invalidated` at once —
+        not left current until some later facts call — and its earlier measurements stay in the history
+        with that outcome. No new directive is created, no action or help is selected, and `directive_view`
+        states nothing until the next facts call evaluates the new generation's observation.
+        """
+        self._evaluated = None
+        if self.active is None:
+            return
+        if observation is None:
+            raise ValueError("invalidating a directive at a play boundary needs the first new observation")
+        item = self.active
+        if generation is not None:
+            item["invalidated_generation"] = generation
+        evidence = (self.sink.trace_seq_for_observation(observation.seq, observation.session)
+                    if self.sink is not None and hasattr(self.sink, "trace_seq_for_observation") else None)
+        self._close("invalidated", int(item.get("request_turn") or 0), observation.seq, evidence,
+                    "the play session restarted; the directive was bound to the earlier session")
+
+    def directive_view(self, observation: Observation) -> DirectiveView | None:
+        """The tracked directives as of `observation`, or `None` when none exist or `facts` has not evaluated it.
+
+        Call this after `facts` for the same observation: only then has the open directive's deadline and baseline
+        been taken from the observation that first states it, and has the directive been scored against it. Every
+        directive is rebuilt from the tracker's record into a new `Directive`, so a later update cannot change a view
+        already handed out. The open one is `current`; the rest are `closed`, oldest first, each with the outcome
+        it ended with.
+
+        `provenance` is measured per directive id, with `null` for anything unmeasured and no wall-time stand-in:
+        - `requested`: the turn the help was asked on, the bridge observation `seq` the answer was composed
+          against, and that observation's game time. A bridge `seq`, never a trace sequence number.
+        - `first_stated`: the same three for the first context that stated the directive to S1.
+        - `age_game_s` (the open directive only): game seconds from each of the above to this observation.
+          It is a measurement. No age is compared with a limit here, and none hides or ranks a directive.
+        - `scored_on`: `reader_setpoint` when the directive has a setpoint, else `null`. The outcome says only
+          whether a measured reader value satisfied that setpoint.
+        - `baseline` (`changed` and `unchanged` setpoints): the reader value they compare with and where it was taken.
+        - `superseded_by`: the directive that replaced it, when one did.
+        """
+        if not self.history or self._evaluated != (observation.session, observation.seq):
+            return None
+        current: Directive | None = None
+        closed: list[Directive] = []
+        provenance: dict[str, dict[str, Any]] = {}
+        for item in self.history:
+            directive = Directive.model_validate(item["directive"]).model_copy(deep=True)
+            is_current = item is self.active
+            provenance[directive.directive_id] = self._provenance(item, directive, observation, current=is_current)
+            if is_current:
+                current = directive
+            else:
+                closed.append(directive)
+        return DirectiveView(current=current, closed=tuple(closed), provenance=copy.deepcopy(provenance))
+
+    @staticmethod
+    def _provenance(item: Mapping[str, Any], directive: Directive, observation: Observation,
+                    *, current: bool) -> dict[str, Any]:
+        def stamp(turn: Any, seq: Any, game_s: Any) -> dict[str, Any]:
+            return {"turn": _count(turn), "seq": _count(seq), "game_s": _seconds(game_s)}
+
+        requested = stamp(item.get("request_turn"), item.get("based_on_seq"), item.get("requested_game_s"))
+        stated = stamp(item.get("first_turn"), item.get("first_seq"), item.get("first_game_s"))
+        origin: dict[str, Any] = {"requested": requested, "first_stated": stated}
+        if current:
+            origin["age_game_s"] = {"since_requested": _game_age(observation.game_s, requested["game_s"]),
+                                    "since_first_stated": _game_age(observation.game_s, stated["game_s"])}
+        setpoint = directive.expected
+        origin["scored_on"] = "reader_setpoint" if setpoint is not None else None
+        if setpoint is not None and setpoint.op in checks.CHANGE:
+            source = item.get("baseline_source")
+            origin["baseline"] = {"value": item.get("baseline") if source is not None else None, "source": source}
+        if item.get("superseded_by") is not None:
+            origin["superseded_by"] = item["superseded_by"]
+        return origin
 
     @staticmethod
     def _anchor_deadline(item: dict[str, Any], stated_game_s: float | None) -> None:
@@ -150,8 +270,7 @@ class DirectiveTracker(FactsSource):
         directive["deadline_game_s"] = anchored
         item["deadline_game_s"] = anchored
 
-    @staticmethod
-    def _anchor_baseline(item: dict[str, Any], observation: Observation) -> None:
+    def _anchor_baseline(self, item: dict[str, Any], observation: Observation) -> None:
         """Take a changed/unchanged baseline from the observation that first states the directive to S1.
 
         The frontier is told to compare with the value when S1 receives the directive. Like the deadline, that
@@ -163,7 +282,7 @@ class DirectiveTracker(FactsSource):
         expected = item.get("expected")
         if _op(item) not in checks.CHANGE:
             return
-        stated = field_value(observation.public, expected["field"].removeprefix("public."))
+        stated = self._reading(expected["field"], observation)
         if stated is not None:
             item["baseline"], item["baseline_source"] = stated, "first_statement"
         else:
@@ -182,7 +301,8 @@ class DirectiveTracker(FactsSource):
             self._close("unknown", turn, based_on_seq, evidence_trace_seq, "session ended before scoring")
 
     def _evaluate(self, item: Mapping[str, Any], observation: Observation) -> str | None:
-        if observation.scene != item.get("scene"):
+        if (observation.scene != item.get("scene")
+                or observation.session != item.get("first_session", observation.session)):
             return "invalidated"
         old_frame, old_game = item.get("last_frame"), item.get("last_game_s")
         if ((old_frame is not None and observation.frame < old_frame)
@@ -195,7 +315,7 @@ class DirectiveTracker(FactsSource):
         if expected is None:
             return "unknown" if due else None
         op = Comparator(expected["op"])
-        value = field_value(observation.public, expected["field"].removeprefix("public."))
+        value = self._reading(expected["field"], observation)
         scored = checks.evaluate(value, kind=item["kind"], op=op, expected=expected.get("value"),
                                  baseline=item.get("baseline"), tolerance=item.get("tolerance"))
         if op is Comparator.unchanged:

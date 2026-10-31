@@ -3,8 +3,12 @@
 Runs S1 in the production turn loop on a wired Unity game, driven by a preflight manifest.
 
 .DESCRIPTION
-Hosts the bridge in the PlayMode bench host (`BenchRecordingPlayModeTests`, the same host as
-`run-live-s1.ps1`) and starts `playtest.runner.cli` against it. The script first exports the manifest's
+Hosts the bridge in the Editor-owned live session host (`PlayModeSessionHost`, started by
+`play-session-supervisor.ps1` with `-executeMethod`) and starts `playtest.runner.cli` against it
+once the host reports its measured initial readiness. The host owns Play Mode, so an S1-selected
+restart can stop and start it without killing the client process; the old bench host
+(`BenchRecordingPlayModeTests`, used by `run-live-s1.ps1`) stays the host for the bench protocols.
+The script first exports the manifest's
 catalog with `playtest-export-catalog` (written to `<OutputDirectory>/catalog.json`) and pins its SHA-256.
 For this client module the host registers exactly that file, under each declaration's own name, so every
 supported chord, stick or mouse value, and skill runs as declared. The host and the client both read the
@@ -21,8 +25,10 @@ project, and the game must be wired to this checkout (`wire-fpskit.ps1`). The ru
 `<OutputDirectory>/run.json`; the trace is `trace.jsonl` beside it. Run one session at a time: only one
 Editor may own a game project, and the bridge test runner serializes them.
 
-The host stops a client after -WallLimitSeconds plus a margin, and accepts at most 1800 seconds, so the
-wall limit is capped at 1500. Every environment variable the script sets is restored when it exits.
+The host's own wall deadline is -WallLimitSeconds plus a 180-second margin, and it accepts at most
+1830 seconds, so the wall limit is capped at 1500. The supervisor publishes the out-of-band
+`shutdown` marker when the client ends and waits boundedly for the host to leave Play Mode and exit.
+Every environment variable the script sets is restored when it exits.
 
 S1's calls are paced to -TokensPerMinute when you give it; without it the runner uses the selected arm's
 own default from `playtest.runner.pacing`, so the wrapper never substitutes another arm's rate. The runner
@@ -41,8 +47,11 @@ Without -Frontier the runner has no frontier helper, exactly as before.
 The default d1-ultra is not verified for images; choose a supported arm explicitly.
 
 -RecordFrames records the whole session's play view. A separate process copies every frame the bridge writes into
-its rolling capture window, then encodes them into <OutputDirectory>/recording/session.mp4 after Unity exits, with
-recording.json beside it. It never talks to the bridge or the runner, and nothing in the session reads what it
+its rolling capture window, then encodes them after Unity exits, with recording.json beside them. Each play instance
+writes into its own generation directory under `Temp/playtest-bridge-frames/<generation>/`, so a restart never mixes
+two instances' frames; a video never spans a generation boundary. One generation is encoded as
+<OutputDirectory>/recording/session.mp4, and two or more as session-<generation>.mp4 each. It never talks to the
+bridge or the runner, and nothing in the session reads what it
 writes. The frames are game footage: keep them local.
 #>
 [CmdletBinding()]
@@ -141,6 +150,23 @@ elseif ($Objective) {
     [IO.File]::WriteAllText($objectiveFile, $Objective, (New-Object Text.UTF8Encoding($false)))
 }
 $invariant = [Globalization.CultureInfo]::InvariantCulture
+# The Editor owns Play Mode for this run. `play-session-supervisor.ps1` launches it with
+# -executeMethod Playtest.Bridge.Editor.PlayModeSessionHost.Start, waits for the host's measured
+# initial readiness, and only then starts the client. The mailbox lives outside the game project.
+$controlDirectory = Join-Path $output 'control'
+New-Item -ItemType Directory -Path $controlDirectory | Out-Null
+$runId = [guid]::NewGuid().ToString('D')
+$hostDeadlineUtc = [DateTime]::UtcNow.AddSeconds($WallLimitSeconds + 180)
+$sessionConfig = [ordered]@{
+    version        = 1
+    run_id         = $runId
+    project_path   = $project
+    catalog_path   = $catalogFile
+    catalog_sha256 = $catalogSha
+    deadline_utc   = $hostDeadlineUtc.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", $invariant)
+}
+[IO.File]::WriteAllText((Join-Path $controlDirectory 'config.json'), ($sessionConfig | ConvertTo-Json -Compress),
+    (New-Object Text.UTF8Encoding($false)))
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
@@ -171,17 +197,21 @@ try {
     $env:UPA_RUN_S1_GAME_VIEW = if ($S1GameView) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }
-    $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
-    $runnerArgs = @('-ExecutionPolicy', 'Bypass', '-File', $runner, '-ProjectPath', $project,
-                    '-TestPlatform', 'PlayMode', '-TestFilter', 'Playtest.Bridge.Tests.BenchRecordingPlayModeTests',
-                    '-ResultsPath', (Join-Path $output 'playmode-results.xml'), '-LogPath', (Join-Path $output 'playmode.log'))
+    $runner = Join-Path $PSScriptRoot 'play-session-supervisor.ps1'
+    $runnerArgs = @('-ExecutionPolicy', 'Bypass', '-File', $runner,
+                    '-ProjectPath', $project, '-ControlDirectory', $controlDirectory,
+                    '-PythonPath', $python, '-ClientModule', 'playtest.runner.cli',
+                    '-ClientProject', $project, '-ClientEntity', $entity, '-ClientCalibration', $calibration,
+                    '-InitialReadyTimeoutSeconds', '300', '-ShutdownTimeoutSeconds', '180')
     if ($UnityPath) { $runnerArgs += @('-UnityPath', $UnityPath) }
     if ($RecordFrames) {
-        # Started before Unity so the first frame is caught; it ignores any frame older than its own start.
+        # Started before Unity so the first generation is caught; it follows the host's published ready
+        # generations and reads each play instance's own frame directory, never the legacy flat window.
         $recordDir = Join-Path $output 'recording'
         $recordStop = Join-Path $output 'recording.stop'
         $recordArgs = '-m playtest.runner.session_video --project "' + $project + '" --output "' + $recordDir +
-                      '" --stop-file "' + $recordStop + '" --max-wall-s ' + [string]($WallLimitSeconds + 900)
+                      '" --stop-file "' + $recordStop + '" --control-directory "' + $controlDirectory +
+                      '" --max-wall-s ' + [string]($WallLimitSeconds + 900)
         $recorder = Start-Process -FilePath $python -ArgumentList $recordArgs -WorkingDirectory $repoRoot -NoNewWindow `
             -PassThru -RedirectStandardOutput (Join-Path $output 'recording.out.log') `
             -RedirectStandardError (Join-Path $output 'recording.err.log')

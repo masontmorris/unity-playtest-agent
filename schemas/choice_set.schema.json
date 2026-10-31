@@ -101,7 +101,8 @@
         "delegate",
         "escalate",
         "wait",
-        "finish"
+        "finish",
+        "restart_play_mode"
       ],
       "title": "ChoiceKind",
       "type": "string"

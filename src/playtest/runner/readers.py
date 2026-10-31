@@ -82,6 +82,15 @@ class FieldReaders:
     async def read(self) -> ReaderSample:
         return await self._take()
 
+    async def rebind(self, *, client: BridgeClient | None = None, observation: Any = None,
+                     generation: str | None = None) -> None:
+        """Re-verify the manifest's readers in the restarted scene; a scene none of them resolve in fails closed."""
+        if client is None:
+            raise ValueError("rebinding the field readers needs the new bridge client")
+        self._client = client
+        self.installed = None
+        await self.install()
+
     async def _take(self) -> ReaderSample:
         response = await self._client.inspect("fields")
         sample = self._sample(response)

@@ -17,7 +17,8 @@ import hashlib
 import json
 import os
 import subprocess
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -793,6 +794,63 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
                                  "calls_counted": 3, "calls_estimated": 3}
     everything = "".join(p.read_text(encoding="utf-8") for p in files.out.rglob("*") if p.is_file())
     assert "sk-test-cli-key-0001" not in everything and "sk-test-cli-key-0001" not in capsys.readouterr().out
+
+
+def test_a_hosted_cli_offers_the_advertised_restart_and_records_the_host_session(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0012")
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
+        files = Project(tmp_path, thread.port)
+        generation = str(uuid.uuid4())
+        ready = datetime.now(timezone.utc)
+        control = tmp_path / "control"
+        control.mkdir()
+        (control / "config.json").write_text(json.dumps({
+            "version": 1, "run_id": "hosted-run", "project_path": str(files.project),
+            "catalog_path": str(files.catalog), "catalog_sha256": files.catalog_sha,
+            "deadline_utc": (ready + timedelta(hours=1)).isoformat()}), encoding="utf-8")
+        (control / "host-state.json").write_text(json.dumps({
+            "version": 1, "run_id": "hosted-run", "phase": "ready", "generation": generation,
+            "scene_path": "Assets/Scenes/main.unity", "scene_handle": 7,
+            "ready_utc": ready.isoformat(), "capabilities": ["restart_play_mode"]}), encoding="utf-8")
+        monkeypatch.setenv("UPA_SESSION_CONTROL_DIRECTORY", str(control))
+        with_fake_send(monkeypatch, Send(files.out, reply("next_action", "finish")))
+        assert cli.main(files.args()) == 0
+        assert thread.game.applied() == []
+    plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
+    summary = json.loads(files.summary.read_text(encoding="utf-8"))
+    assert (summary["status"], summary["ending"], summary["turns"]) == ("complete", "finish", 1)
+    expected = {"run_id": "hosted-run", "generation": generation, "capabilities": ["restart_play_mode"],
+                "advertises_restart": True, "restart_offered": True}
+    assert {key: plan["session_control"][key] for key in expected} == expected
+    assert plan["offered"][-2:] == ["restart_play_mode", "finish"]
+    assert summary["manifest"]["offered"][-2:] == ["restart_play_mode", "finish"]
+    assert summary["session_control"]["restarts"] == [] and summary["session_control"]["generation"] == generation
+    record = RunRecord.model_validate(read_trace(files.out / "trace.jsonl")[0].body)
+    assert record.reset_method == "restart_play_mode"
+
+
+def test_a_hosted_cli_without_the_restart_capability_offers_the_old_choices(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0013")
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
+        files = Project(tmp_path, thread.port)
+        ready = datetime.now(timezone.utc)
+        control = tmp_path / "control"
+        control.mkdir()
+        (control / "config.json").write_text(json.dumps({
+            "version": 1, "run_id": "hosted-run", "project_path": str(files.project),
+            "catalog_path": str(files.catalog), "catalog_sha256": files.catalog_sha,
+            "deadline_utc": (ready + timedelta(hours=1)).isoformat()}), encoding="utf-8")
+        (control / "host-state.json").write_text(json.dumps({
+            "version": 1, "run_id": "hosted-run", "phase": "ready", "generation": str(uuid.uuid4()),
+            "scene_path": "Assets/Scenes/main.unity", "scene_handle": 7,
+            "ready_utc": ready.isoformat(), "capabilities": []}), encoding="utf-8")
+        monkeypatch.setenv("UPA_SESSION_CONTROL_DIRECTORY", str(control))
+        with_fake_send(monkeypatch, Send(files.out, reply("next_action", "finish")))
+        assert cli.main(files.args()) == 0
+    plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
+    assert plan["session_control"]["advertises_restart"] is False
+    assert plan["session_control"]["restart_offered"] is False
+    assert "restart_play_mode" not in plan["offered"]
 
 
 def test_the_cli_stops_after_consecutive_provider_failures_and_exits_non_zero(tmp_path: Path, monkeypatch):

@@ -30,6 +30,7 @@ from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
 from playtest.core.context import INSTRUCTIONS, canonical
 from playtest.core.ports import S1Answer, S1Call
+from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
 
 # The default S1 arm since #100 (29 October): Liquid's d1-ultra matched mammoth-1 on both S1 benches and kept every
 # live action fresh where Baseten's latency did not (docs/design/s1-model.md). `--s1-arm` picks any other arm.
@@ -113,6 +114,7 @@ class SystemOneS1:
         episode: int = 1,
         budget: TokenMeter | None = None,
         game_view: bool = False,
+        layout: RequestLayout | str = RequestLayout.full,
     ) -> None:
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
@@ -120,6 +122,15 @@ class SystemOneS1:
             raise ValueError("the call cap must be a positive integer")
         if game_view and arm not in IMAGE_TRANSPORT:
             raise ValueError(f"S1 arm {arm!r} has no verified image transport")
+        try:
+            self._layout = RequestLayout(layout)
+        except ValueError:
+            raise ValueError(f"unknown S1 request layout {layout!r}") from None
+        if self._layout is not RequestLayout.full and IMAGE_TRANSPORT.get(arm) != "images":
+            # That arm wraps `state` in a message, so the body it sends would not be reconstructible
+            # from its own bytes. Fail here rather than send a layout marker that does not bind.
+            raise ValueError(f"S1 arm {arm!r} sends `state` inside a message; the "
+                             f"{self._layout.value!r} layout needs a plain `state`")
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._ledger = ledger
@@ -144,6 +155,11 @@ class SystemOneS1:
     def prompt_sha256(self) -> str:
         """SHA-256 of every prompt text this adapter can send: the context instructions and the follow-up wording."""
         return digest(canonical(PROMPTS))
+
+    @property
+    def layout(self) -> str:
+        """The body layout this adapter sends. `full` renders the context unchanged, byte for byte."""
+        return self._layout.value
 
     @property
     def calls_reserved(self) -> int:
@@ -190,8 +206,12 @@ class SystemOneS1:
         body = {"model": model,
                 "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
                 "state": context}
+        if self._layout is not RequestLayout.full:
+            # After the question is built: only a text this same request already states verbatim is moved
+            # to one copy. The context passed in is untouched, and `full` never reaches this branch.
+            body = encode_request_body(body)
         try:
-            estimate_text = canonical(body)  # excludes base64; image tokens are counted separately
+            estimate_text = canonical(body)  # the sent bytes; excludes base64, image tokens are counted separately
             if image is not None:
                 url = "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
                 if IMAGE_TRANSPORT[self._arm] == "messages":

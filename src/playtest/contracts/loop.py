@@ -17,12 +17,13 @@ class ChoiceKind(str, Enum):
     escalate = "escalate"
     wait = "wait"
     finish = "finish"
+    restart_play_mode = "restart_play_mode"  # an explicit host operation, offered only by a capable host
 
 
 class ChoiceSource(str, Enum):
     manifest = "manifest"
     frontier = "frontier"
-    core = "core"  # wait, escalate, delegate and finish exist in every game
+    core = "core"  # wait, escalate, delegate, finish and a capable host's restart exist for every game
 
 
 class Choice(Strict):
@@ -51,6 +52,8 @@ class Choice(Strict):
                 raise ValueError(f"'{name}' is {'required' if name in need else 'not allowed'} for kind '{self.kind.value}'")
         if self.source is ChoiceSource.frontier and self.kind not in (ChoiceKind.action, ChoiceKind.skill):
             raise ValueError("the frontier may only add choices that instantiate a manifest action or skill")
+        if self.kind is ChoiceKind.restart_play_mode and self.source is not ChoiceSource.core:
+            raise ValueError("only the core offers a host restart choice")
         return self
 
 
@@ -98,6 +101,30 @@ class TurnOutcome(str, Enum):
     escalated = "escalated"
     delegated = "delegated"
     finished = "finished"
+    restarted = "restarted"  # S1 selected the host operation; its outcome is recorded separately
+
+
+class OperationStatus(str, Enum):
+    ready = "ready"
+    failed = "failed"
+    cancelled = "cancelled"
+    timeout = "timeout"
+
+
+class OperationOutcome(Strict):
+    """What a selected host operation did. It never stands in for an action's execution outcome.
+
+    A ready status means every measured condition the host protocol requires held: a verified release,
+    a terminal ready result for this ticket, an observed host ready state at a distinct new generation,
+    a fresh bridge endpoint and a valid first observation. Any other status fails the run closed.
+    """
+
+    kind: Literal["restart_play_mode"]
+    status: OperationStatus
+    ticket_id: str | None = None
+    from_generation: str | None = None
+    to_generation: str | None = None
+    reason: str | None = None
 
 
 class TurnRecord(Strict):
@@ -114,3 +141,13 @@ class TurnRecord(Strict):
     while_pending: WhilePending | None = None
     policy_default: bool = Field(False, description="while_pending was missing or invalid and defaulted to wait")
     latency_ms: float | None = Field(None, ge=0)
+    operation: OperationOutcome | None = Field(
+        None, description="The selected host operation's explicit outcome; null for every other turn")
+
+    @model_validator(mode="after")
+    def _operation_fields(self) -> "TurnRecord":
+        if (self.outcome is TurnOutcome.restarted) != (self.operation is not None):
+            raise ValueError("'operation' is required exactly for a restarted turn")
+        if self.outcome is TurnOutcome.restarted and self.executed_action is not None:
+            raise ValueError("a restarted turn sends no gameplay input")
+        return self

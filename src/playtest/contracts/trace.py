@@ -27,6 +27,7 @@ class TraceKind(str, Enum):
     execution = "execution"
     effect = "effect"
     help = "help"
+    restart = "restart"
     investigation = "investigation"
     turn = "turn"
     stop = "stop"
@@ -106,6 +107,8 @@ class TraceEntry(Strict):
                 TraceKind.execution: {"purpose", "request", "records"},
                 TraceKind.effect: {"choice_id", "action", "expected", "observed"},
                 TraceKind.help: {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
+                TraceKind.restart: {"event", "ticket_id", "from_generation", "to_generation", "status",
+                                    "reason", "release_verified", "checks", "waited_s"},
                 TraceKind.investigation: {"event", "request_turn", "based_on_seq", "hypothesis", "directive",
                                          "outcome", "outcome_seq", "evidence_trace_seq", "reason"},
                 TraceKind.stop: {"reason", "result", "error"},
@@ -153,6 +156,41 @@ class TraceEntry(Strict):
                     value = self.body[key]
                     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                         raise ValueError(f"end {key} must be a non-negative integer")
+            if self.kind is TraceKind.restart:
+                from .session_control import is_generation
+
+                body = self.body
+                if body["event"] not in ("request", "completed", "failed"):
+                    raise ValueError("unknown restart event")
+                if not isinstance(body["ticket_id"], str) or not body["ticket_id"].strip():
+                    raise ValueError("restart ticket_id must be a non-empty string")
+                for name in ("from_generation", "to_generation"):
+                    if body[name] is not None and not is_generation(body[name]):
+                        raise ValueError(f"restart {name} must be a canonical generation or null")
+                if body["status"] not in ("requested", "ready", "failed", "cancelled", "timeout"):
+                    raise ValueError("unknown restart status")
+                if body["event"] == "request" and body["status"] != "requested":
+                    raise ValueError("a restart request must be recorded as requested")
+                if body["event"] == "completed" and body["status"] != "ready":
+                    raise ValueError("a completed restart must be ready")
+                if body["event"] == "failed" and body["status"] == "ready":
+                    raise ValueError("a failed restart cannot be ready")
+                if body["status"] == "ready" and (body["to_generation"] is None
+                                                  or body["to_generation"] == body["from_generation"]):
+                    raise ValueError("a ready restart needs a distinct new generation")
+                if body["status"] in ("failed", "cancelled", "timeout") and not (
+                        isinstance(body["reason"], str) and body["reason"].strip()):
+                    raise ValueError("a failed restart needs a non-empty reason")
+                release = body["release_verified"]
+                if release is not None and not isinstance(release, bool):
+                    raise ValueError("restart release_verified must be a boolean or null")
+                checks = body["checks"]
+                if isinstance(checks, bool) or not isinstance(checks, int) or checks < 0:
+                    raise ValueError("restart checks must be a non-negative integer")
+                waited = body["waited_s"]
+                if waited is not None and (isinstance(waited, bool) or not isinstance(waited, (int, float))
+                                           or waited < 0):
+                    raise ValueError("restart waited_s must be a non-negative number or null")
             if self.kind is TraceKind.help:
                 if self.body["event"] not in ("opened", "repeat", "adopted", "cancelled"):
                     raise ValueError("unknown help event")

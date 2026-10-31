@@ -1,0 +1,36 @@
+{
+  "$id": "upa/restart_cancel.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`cancel.json`: fail closed for one ticket; a late transition can never publish success for it.",
+  "properties": {
+    "operation": {
+      "const": "cancel_restart",
+      "title": "Operation",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "ticket_id": {
+      "minLength": 1,
+      "title": "Ticket Id",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "run_id",
+    "ticket_id",
+    "operation"
+  ],
+  "title": "RestartCancel",
+  "type": "object"
+}

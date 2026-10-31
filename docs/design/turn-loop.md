@@ -13,10 +13,12 @@ here claims one.
 2. **Observe** once (`observation`). No other reading is taken between this and the act.
 3. **Bind.** The choice set is built from the manifest's choices, versioned, and bound to this
    observation's `seq` (`choice_set`). `set_version` increases every turn.
-4. **State the facts** the loop can measure from its own records (`playtest.core.facts.RecordFacts`).
+4. **State the facts** the loop can measure from its own records (`playtest.core.facts.RecordFacts`). A facts
+   source that tracks directives is then asked for them (`directive_view`, see "The context"), once, for this
+   same observation: after the epoch check, after any adoption, and after its `facts` scored the open directive.
 5. **Build the context** with `build_context` (`context`): the objective, `as_of` with the observation's
-   age and the gap since the previous observation, the facts, `pending_help`, any adopted `guidance`, the
-   choices. The hash in the trace is the hash of the exact payload S1 receives.
+   age and the gap since the previous observation, the facts, the directives, `pending_help`, any adopted
+   `guidance`, the choices. The hash in the trace is the hash of the exact payload S1 receives.
 6. **Ask S1** through the port (`s1_call`, one per provider call) and validate the answer with
    `parse_decision` (`decision`). An invalid answer, or a provider that gave none, rejects the turn:
    nothing is sent, repaired, retried or substituted.
@@ -63,7 +65,7 @@ All are in `playtest.core.ports`; each takes only what it needs and returns data
 |---|---|---|
 | S1 | `async decide(context) -> S1Answer(answer, calls, failure, halt)` | `answer` is exactly what `parse_decision` judges. `calls` are the `s1_call` bodies. `failure` is a provider failure. `halt` asks the harness to end the run (a spent budget). It receives only the context S1 sees, and a copy of it. |
 | Help | `async run(HelpRequest) -> HelpResult(source, result)` | Run as a task on escalate or delegate; cancelled on stop. No implementation exists yet. |
-| Facts | `async facts(reports, observation) -> list[str]` | `RecordFacts` is the default. Measurements and counts only. |
+| Facts | `async facts(reports, observation) -> list[str]`; optional `directive_view(observation) -> DirectiveView \| None` | `RecordFacts` is the default. Measurements and counts only. A source that tracks directives also implements the hook; a wrapper forwards it unchanged (`SessionFacts`, `PacingFacts`). |
 | Effect probe | `async before_turn(turn)`; `async measure(choice, execution) -> EffectReport(expected, observed, fact)` | Optional. `before_turn` runs before the observation; `measure` right after the terminal record. |
 | Trace | `append(kind, body, *, author, turn, refs) -> trace_seq` | `playtest.core.trace_sink`. None by default. |
 
@@ -100,6 +102,51 @@ tests never really wait.
   the result and its age. It stays in every later context with a growing age; the loop does not window it.
   A help port may lay the list out differently (`render_guidance` and `restore_guidance`, see `frontier-runner.md`).
   The loop sends that layout only if `restore_guidance` gives back exactly this list; otherwise it sends the list.
+- `directive`, `directive_history` and `directive_provenance` state the directives a facts source tracks (the live
+  runner's `DirectiveTracker`). Before this, `directive` was always `null` and `directive_history` always `[]`
+  although the facts carried every directive as prose.
+  - **When.** The loop asks for a `DirectiveView` once per context, straight after that source's `facts` for the same
+    observation. That is after the epoch check and any adoption, and after the tracker scored the open directive and
+    took its deadline and baseline from the observation that first states it. A source returns nothing for an
+    observation it has not evaluated, so nothing is stated early. Only `adopt_result` hands the tracker a
+    directive, so a pending result still running, finished but not adopted, replaced, cancelled, or from an earlier
+    epoch appears in none of the three keys. A previously adopted directive closes as invalidated when the
+    session or scene changes or the measured frame or game time regresses; its closed record stays in history.
+    A source with no hook, one that tracks nothing, and one that raises or
+    returns something malformed leave the context as it would have been.
+  - **What.** `directive` is the open directive, `null` when none is open. `directive_history` lists the closed ones,
+    oldest first, each with the outcome it ended with and the window of what S1's inputs did. Both are the
+    contract's `Directive` record, copied: a later update cannot change a payload already built or traced. A
+    directive replaced by a later one is `invalidated`, and its provenance names the one that replaced it. Text,
+    target and setpoint are the frontier's own; a target nobody gave is absent, not invented.
+  - **Provenance.** `directive_provenance` is keyed by directive id and is present only when something is tracked.
+    `requested` is the turn the help was asked on, the bridge observation `seq` the answer was composed against and
+    that observation's `game_s`; `first_stated` is the same three for the first context that stated it to S1 (the
+    adoption). Open directives only carry `age_game_s`: game seconds from each of those to this observation, so
+    the age of the advice and the time S1 has had it are told apart. `scored_on`, `baseline` and `superseded_by`
+    are described below. Anything unmeasured is `null`. A missing game time has no wall-time stand-in, a negative or
+    non-finite age is `null`, and no age is compared with a limit: an old directive stays, with its age.
+  - **Which number is which.** Every `seq` in the provenance is a bridge observation sequence number, comparable with
+    `as_of.seq`; a trace entry number never appears there. A closed directive's `evidence_seq` is the contract's own
+    citation of the trace entry that closed it, as for findings and suspicions, and is not comparable with `as_of.seq`.
+    The clip a request was answered from ends when the request started, a little after `requested`'s observation.
+  - **What an outcome means.** It scores one thing: whether a measured reader value satisfied the directive's setpoint
+    (`scored_on` is `reader_setpoint`, or `null` when it has none, and then nothing was scored). `changed` compares
+    with `baseline`, the reader value and where it was taken (`first_statement`, `escalation`, or `null` when it was
+    never read). A `met` can follow a change S1 did not cause (the window's `inputs_completed` shows how many of
+    S1's inputs finished); nothing reads the directive's text, so no field says a destination was reached or a task
+    was done. Elapsed time and a finished input are not completion either.
+  - **Advice, not fact.** The text is the frontier's advice about the observation it was composed against. It is
+    not a measurement and not a commitment S1 made, and it may disagree with what the current observation or image
+    shows; the provenance is what lets S1 compare them. The loop does not judge which is right.
+  - **Duplication.** The fact lines still carry one `Frontier directive ...` line per directive, with the status
+    reason that the typed record does not repeat, and the frontier's own packet is built from those facts, so they
+    stay. The typed record repeats the prose. Replaying the 155 contexts of the session 12 trace through the real
+    tracker (`runs/b04-hunt/session-12`, offline; the replayed directive lines equal the lines S1 received in
+    every context) adds a median of 4,837 and at most 8,489 characters (14% and 20% of the payload, which has a
+    median of 33,481). Characters, not tokens, and no latency was measured; #132 found that prompt growth raises
+    S1's latency and so the share of stale actions, so the next live validation should measure it before the fact
+    lines are dropped or the record is trimmed.
 
 ## Help
 
@@ -112,7 +159,8 @@ tests never really wait.
    discards the prior epoch's request, including completed, externally resolved or late results.
    The adopted result carries its source and age; S1 decides what to do with it. The frontier stages
    updates while its task runs, and the synchronous `adopt_result` hook publishes them at adoption.
-   A result that finishes during observation capture waits until a later eligible turn.
+   A result that finishes during observation capture waits until a later eligible turn. The directive
+   tracker is updated only by that hook, which is why `directive` cannot show a result before adoption.
 5. Stop cancels the helper and releases inputs. The optional `discard_result` hook clears unadopted
    state and prevents late completion from publishing after cancellation or invalidation.
 

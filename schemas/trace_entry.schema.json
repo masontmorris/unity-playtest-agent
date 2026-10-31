@@ -23,6 +23,7 @@
         "execution",
         "effect",
         "help",
+        "restart",
         "investigation",
         "turn",
         "stop",

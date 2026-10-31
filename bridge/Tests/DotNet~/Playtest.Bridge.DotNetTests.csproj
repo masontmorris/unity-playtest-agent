@@ -28,6 +28,8 @@
     <Compile Include="../../Runtime/Lock/**/*.cs" Link="Runtime/Lock/%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="../../Runtime/Actions/**/*.cs" Link="Runtime/Actions/%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="../../Runtime/Transport/**/*.cs" Link="Runtime/Transport/%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- The host's control-record DTOs, transition rules and resumable state are Unity-free by design. -->
+    <Compile Include="../../Editor/Session/**/*.cs" Link="Editor/Session/%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="../EditMode/*.cs" Exclude="../EditMode/Unity*.cs" Link="Tests/%(Filename)%(Extension)" />
   </ItemGroup>
 

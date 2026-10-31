@@ -11,6 +11,7 @@ import pytest
 
 from playtest.contracts.bridge import InspectResult
 from playtest.contracts.calibration import CalibrationRecord
+from playtest.contracts.manifest import ReachRegion
 from playtest.preflight import cache, cache_cli, calibrate, manifest, manifest_cli, packet, provider, stages, validate_cli
 from playtest.roles import strict
 from test_preflight_packet import cap, evidence
@@ -248,6 +249,25 @@ def test_replay_preserves_choices_and_uses_current_field_ids_and_calibration():
     assert replayed.actions[0].calibrations[0].holds[0].mean_delta == (0, 0, 2)
     assert replayed.packet_sha256 != hashlib.sha256(old_packet.text.encode("utf-8")).hexdigest()
     assert manifest.validate_evidence(replayed, current_packet) == []
+
+
+def test_replay_carries_operator_reach_regions_and_never_treats_them_as_model_output():
+    """A reach region is an operator's assertion: replay keeps it, and comparison ignores it."""
+    inventory, original, calibration = records()
+    built, value = assembled(inventory, original, calibration)
+    assert value.reach_regions == []
+    declared = value.model_copy(update={"reach_regions": [ReachRegion.model_validate({
+        "region_id": "entry_a", "label": "Entry A", "purpose": "An opaque test volume", "frame": "world",
+        "scene": "scene", "bounds": {"min": [-1.0, 0.0, 2.0], "max": [1.0, 2.0, 4.0]},
+        "pose": "probe_anchor", "author": "test operator", "source": "synthetic declaration for tests",
+        "verification": "operator_asserted"})]})
+    replayed, evidence = cache.replay_selections(declared, original, original, built)
+    assert evidence["model_calls"] == 0
+    assert replayed == declared and replayed.reach_regions == declared.reach_regions
+    assert manifest.validate_evidence(replayed, built) == []
+    stripped = manifest._without_proof(declared.model_dump(mode="json"))
+    assert "reach_regions" not in stripped
+    assert stripped == manifest._without_proof(value.model_dump(mode="json"))
 
 
 def test_replay_keeps_unsupported_and_unmeasured_declarations_exactly():

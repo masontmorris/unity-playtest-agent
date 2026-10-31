@@ -231,6 +231,20 @@ SYSTEM = (
     "Observations are measured; null means unknown, not zero."
 )
 
+# Added to the system prompt only when the manifest declares reach regions, so a manifest with none sends
+# exactly the prompt it always did.
+PROGRESS_SYSTEM = (
+    "\n- declared reach regions: a progress row is an operator's declaration of an entry volume, not a "
+    "measurement and not a verified target. Its author, source and verification status say where the "
+    "declaration came from; nothing has checked the place it describes. The run measures only the declared "
+    "pose source (the probe anchor's world position) at the packet's observation and derives "
+    "progress.<region_id>.distance in world units and progress.<region_id>.inside. Null means unknown, never "
+    "zero and never success. A small distance or membership does not show the objective was completed, that a "
+    "particular object was contacted, or that any ascent or defect test was performed. Only the distance of a "
+    "region this manifest declares is a setpoint field; inside is shown but is not a setpoint field, and a "
+    "region the manifest does not declare has no field at all."
+)
+
 
 # --- run and packet context ----------------------------------------------------------------------
 
@@ -255,6 +269,35 @@ class Effect:
 
 
 @dataclass(frozen=True)
+class ProgressRegion:
+    """One manifest-declared reach volume, as the frontier is shown it.
+
+    This is the operator's declaration, not a measurement. The run derives a distance from the declared
+    measured pose; the declaration's meaning and any task completion remain unverified.
+    """
+
+    region_id: str
+    label: str
+    purpose: str
+    frame: str
+    scene: str
+    minimum: tuple[float, float, float]
+    maximum: tuple[float, float, float]
+    pose: str
+    author: str
+    source: str
+    verification: str
+
+    @property
+    def distance_field(self) -> str:
+        return f"progress.{self.region_id}.distance"
+
+    @property
+    def inside_field(self) -> str:
+        return f"progress.{self.region_id}.inside"
+
+
+@dataclass(frozen=True)
 class Manifest:
     """What a run's frontier schema and checks need from the manifest. Stable for the whole run."""
 
@@ -271,6 +314,9 @@ class Manifest:
     # Action name -> its calibrated net displacement. Each is a repro_check field, `effect.<action>`; a directive
     # setpoint may not name one.
     effects: Mapping[str, Effect] = field(default_factory=dict)
+    # Region id -> its operator declaration. Only declarations the manifest actually contains reach the model,
+    # the schema's setpoint fields and the packet. Empty for a manifest that declared none.
+    progress: Mapping[str, ProgressRegion] = field(default_factory=dict, compare=False)
 
     def enums(self) -> dict[str, list[str]]:
         return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills],
@@ -289,6 +335,9 @@ class PacketRefs:
     # they already satisfy. None when the caller has none: nothing is then judged to hold. A mapping is not
     # hashable, so it stays out of the generated eq and hash.
     public: Mapping[str, Any] | None = field(default=None, compare=False)
+    # Derived readings at the request observation, by field path (`progress.<id>.distance`). A derived field
+    # absent here was not measured, so it cannot be judged to hold. Declared progress fields only.
+    derived: Mapping[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -359,9 +408,14 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
         Only a measured, scoreable reading counts: an unknown one (None) is not a reason to reject.
         """
         kind = manifest.fields.get(sp.field)
-        if refs.public is None or kind is None or sp.op in CHANGE:
+        if kind is None or sp.op in CHANGE:
             return False
-        value = field_value(refs.public, sp.field.removeprefix("public."))
+        if refs.derived is not None and sp.field in refs.derived:
+            value = refs.derived[sp.field]
+        elif refs.public is not None:
+            value = field_value(refs.public, sp.field.removeprefix("public."))
+        else:
+            return False
         return evaluate(value, kind=kind, op=sp.op, expected=sp.value, tolerance=sp.tolerance) is True
 
     def text(item: str, **values: str) -> None:

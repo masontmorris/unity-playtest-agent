@@ -28,7 +28,7 @@ from typing import Any
 
 from playtest.contracts.bridge import Observation
 from playtest.core.facts import RecordFacts
-from playtest.core.ports import FactsSource, TurnReport
+from playtest.core.ports import DirectiveView, FactsSource, TurnReport
 
 TOKENS_PER_MINUTE = 85_000  # the shared fallback: Baseten's 100,000 less 15% headroom
 # Per-arm operating settings. This is the one table: the CLI resolves a rate from it, an explicit flag or
@@ -191,3 +191,15 @@ class PacingFacts:
         if waited > 0:
             lines.append(wait_fact(waited))
         return lines
+
+    def directive_view(self, observation: Observation) -> DirectiveView | None:
+        """The wrapped source's directives, unchanged; `None` when it tracks none."""
+        view = getattr(self._inner, "directive_view", None)
+        return view(observation) if view is not None else None
+
+    def rebind(self, *, client: Any = None, observation: Observation | None = None,
+               generation: str | None = None) -> None:
+        """Forward a play-session boundary to the wrapped source; a source without the hook changes nothing."""
+        rebind = getattr(self._inner, "rebind", None)
+        if rebind is not None:
+            rebind(client=client, observation=observation, generation=generation)
