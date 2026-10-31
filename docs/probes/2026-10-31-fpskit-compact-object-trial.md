@@ -188,3 +188,42 @@ frames, none missed), joined as `recording/climb-continuous-01-full.mp4`, with a
 precision a task needs. At about one decision every 2 s it is right for traversal and wrong for lining
 up on a 2-unit-wide flight. A version where S1 chooses per move between a step and a held walk would keep
 both.
+
+## Step-or-held and pattern-fact trial (`climb-held-pattern-01`, 180 s)
+
+Settings: as `climb-continuous-01`, plus the per-move choice between a step and a held walk (part of
+`--continuous-input` from 36b25ea) and `--pattern-facts`. The code was 948cc0d, and the approval is
+`approval-trial-held-pattern.json`.
+
+- **Speed:** 97 turns in 179 s, which is 32.2 decisions a minute, with S1's p50 at 312 ms. The mean billed
+  input was 10,221 tokens, against 9,061 in `climb-continuous-01`, so 13% more: the four held variants and
+  their labels, plus the pattern line when it shows. The run ended at the wall limit, and S1 never chose
+  `finish`.
+- **Step or held: S1 uses both.** It chose 16 held walks and 9 steps.
+  - Held walks did the long runs. Eight in a row at yaw 0 covered 18 units in 5 s; decisions came about
+    every 0.6 s at the start, inside the burst.
+  - Steps did the precise part. Seven steps at yaw 37° took it from the spawn to the dark steps (feet 1.07
+    at x 9.7, z −8.5), and the next step took it off them.
+- **Pattern fact: shown, mostly not acted on.** It appeared on 22 turns. Where a cycle of four or more
+  stood, S1 continued it 16 times out of 20 (80%), against 32 of 36 (89%) without the fact. The longest
+  cycle fell from 29 to 13, and turns and looks fell from 70% to 62% of executed choices. The trajectories
+  differ and there were restarts, so this is an observation, not a test. It reads as no clear effect
+  (`docs/design/oscillation.md`).
+- **Climb: worse.** Feet height peaked at 1.07 on the dark steps. That compares with 2.08 in
+  `climb-continuous-01` and 5.32 in `climb-stairs-02` (stepped input, 60 s). The long grey flight was
+  never reached.
+  - S1 restarted the level 3 times, and each restart put it back into the turn cycle at the spawn.
+  - It ended with six running jumps in place at x 10, z −4.
+- **Help:** 3 escalations, with 2 answers adopted and 1 cancelled by a restart. The answers were bug
+  hypotheses about the readings (forces, and the yaw cycle), not directions.
+
+**Totals:** S1 101 calls, $0.0434; frontier 3 calls, $0.0423. The recording is 4 generations, joined as
+`recording/session.mp4`, with a key-moments sheet.
+
+**What it shows:**
+- The step-or-held choice works as designed, and S1 takes steps where precision counts.
+- Stating the cycle did not stop it. The objective asks S1 to centre the staircase's foot, and no
+  heading one choice from the spawn does. That tolerance is tighter than the 38.4° turn step, which is a
+  classic hunting condition.
+- The next cheap check is an objective with a deadband of at least half a step, such as "anywhere in the
+  middle half of the view". It changes no code.
