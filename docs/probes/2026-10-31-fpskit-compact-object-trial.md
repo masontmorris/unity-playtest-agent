@@ -124,3 +124,32 @@ With one run in each arm this is anecdotal. Three things hold in both arms:
 - The `finish` choice is labelled only "Finish".
 
 The early finish belongs to d1-ultra's decisions under this objective, not to the request format.
+
+## Staircase rerun with every change on (`climb-stairs-02`, 60 s)
+
+The same objective and settings as `climb-stairs-01`, plus:
+- `--pacing-burst 0.5`;
+- HTTPS connection reuse;
+- `--finish-label conditional` and `--s1-instructions policy/2`, which the finish-wording test supports.
+
+The approval is `approval-trial-stairs-2.json`.
+
+**It ran the whole minute. The ending was `wall_limit`, and `finish` never rose above 0.14.**
+- **Speed:** 43 turns in 59.8 s, **42.2 decisions a minute** against 30–31 before. S1 p50 latency was
+  297 ms (383–437 ms before), with 14.0 s of pacing.
+- **Climb:** turns 10–14 walked toward the flight. A running jump at turn 15 got onto the stairs (feet
+  2.28), and a second at turn 17 reached **feet height 5.32** at turn 18. That is about 20 risers, against
+  1.02 and 2.19 before; the top is about 7.3.
+- **Then:** still about 23° off the flight's axis, S1 walked off the side at turns 19–21. It escalated
+  twice, then chose `restart_play_mode` at turn 26.
+- **Stuck:** on the second approach it alternated `mouse_turn_left` and `mouse_turn_right` in place for 9
+  turns, as it had for its first 9 turns, then escalated and waited out the minute.
+- **Help:** both frontier requests were cancelled, one by the restart and one by the session's end, before
+  an answer arrived. Help cannot return within a 1-minute session.
+
+**Totals:** 46 S1 calls, $0.0176; 2 frontier calls cancelled, with no cost recorded. The recording has
+677 frames, none missed. Unity was closed afterwards.
+
+**What is left:** S1 never squares up to the staircase's axis, and it flips between left and right turns
+in place for 18 of 43 turns. Both are decision problems, not speed problems. A continuous-input design is
+in progress on a separate branch.
