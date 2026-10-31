@@ -3,7 +3,8 @@
 Each turn observes once, checks its epoch boundary, adopts a helper result that was already finished
 at turn entry, builds the `ChoiceSet` that answer must
 name (bound to that observation's `seq`), states the measured facts, builds S1's context (the
-observation's age, `pending_help`, the choices), asks the S1 port, and validates the answer with
+observation's age, `pending_help`, the choices, and the directives the facts source tracks, asked for
+straight after its facts), asks the S1 port, and validates the answer with
 `parse_decision`. The loop then executes only the chosen action, or on a help turn exactly the
 `while_pending` choice S1 named. Every step is written to the injected `TraceSink`
 (`playtest.core.trace_sink` defines the vocabulary); with no sink it records nothing.
@@ -43,8 +44,10 @@ import asyncio
 import copy
 import dataclasses
 import hashlib
+import inspect
 import math
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -58,6 +61,8 @@ from playtest.contracts.loop import (
     ChoiceKind,
     ChoiceSet,
     Decision,
+    OperationOutcome,
+    OperationStatus,
     TurnOutcome,
     TurnRecord,
     WhilePending,
@@ -73,6 +78,7 @@ from .facts import RecordFacts
 from .findings import RaisedSuspicion
 from .observations import ObservationStore
 from .ports import (
+    DirectiveView,
     EffectProbe,
     EffectReport,
     Executed,
@@ -82,6 +88,8 @@ from .ports import (
     HelpResult,
     ReaderPort,
     ReaderSample,
+    RestartOutcome,
+    RestartPort,
     S1Answer,
     S1Call,
     S1Port,
@@ -178,17 +186,23 @@ class TurnLoop:
         sink: TraceSink | None = None,
         clock: Callable[[], datetime] = _utcnow,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        restart: RestartPort | None = None,
+        generation: str | None = None,
+        time_left: Callable[[], float | None] | None = None,
     ) -> None:
         if s1 is not None and not (objective and objective.strip()):
             raise ValueError("a loop with an S1 port needs an objective")
+        if restart is not None and not any(choice.kind is ChoiceKind.restart_play_mode for choice in choices):
+            raise ValueError("a loop with a restart port must offer the restart choice")
         self._client = client
+        self._original_client = client  # the caller owns this one; adopted clients are closed here
         self._choices = list(choices)
         ChoiceSet(set_version=0, built_from_seq=0, choices=self._choices)  # fail now on duplicate ids
         self._clock_mode = clock_mode
         self._store = ObservationStore()
-        self._executor = ExecutionController(
-            client, max_age_s=max_age_s, lease_s=lease_s, leases=leases, depends_on=depends_on
-        )
+        self._executor_options = {"max_age_s": max_age_s, "lease_s": lease_s, "leases": leases,
+                                  "depends_on": depends_on}
+        self._executor = ExecutionController(client, **self._executor_options)
         self._objective = objective
         self._s1 = s1
         self._view = view
@@ -197,6 +211,10 @@ class TurnLoop:
         self._effects = effects
         self._readers = readers
         self._watch = watch
+        self._restart = restart
+        self._generation = generation
+        self._time_left = time_left
+        self._reset_summary: dict[str, Any] | None = None
         self._suspicions: list[RaisedSuspicion] = []
         self._unshown: list[RaisedSuspicion] = []  # raised since S1's last context, to be stated in the next one
         self._observation_entries: dict[int, int] = {}
@@ -223,8 +241,23 @@ class TurnLoop:
         return self._store
 
     @property
+    def client(self) -> BridgeClient:
+        """The client the loop currently acts through: the original, or the restarted session's new one."""
+        return self._client
+
+    @property
+    def generation(self) -> str | None:
+        """The play generation the current client belongs to; `None` outside an Editor-owned host."""
+        return self._generation
+
+    @property
     def turns(self) -> list[TurnRecord]:
         return list(self._turns)
+
+    @property
+    def restart_history(self) -> list[OperationOutcome]:
+        """Every selected host operation with its explicit outcome, in turn order."""
+        return [record.operation for record in self._turns if record.operation is not None]
 
     @property
     def reports(self) -> list[TurnReport]:
@@ -322,19 +355,25 @@ class TurnLoop:
             answer = S1Answer(answer=decide(choice_set, observation) if callable(decide) else decide)
         else:
             facts = [*await self._facts.facts(self._reports, observation), *noticed]
+            directives = self._directive_view(observation)  # right after the facts that evaluated this observation
             view = self._view.sample(observation) if self._view is not None else None
             now = self._clock()
+            reset_summary, self._reset_summary = self._reset_summary, None
             payload = build_context(
                 objective=self._objective or "",
                 observation=observation,
                 choices=choice_set,
                 facts=facts,
+                directive=directives.current if directives is not None else None,
+                directive_history=directives.closed if directives is not None else (),
+                directive_provenance=directives.provenance if directives is not None else None,
                 pending_help=self._pending_view(observation, now),
                 age_s=_elapsed_s(observation.wall_utc, now),
                 sample_gap_s=self._gap_s(observation),
                 guidance=self._guidance_view(now),
                 game_view=view.statement if view is not None else None,
                 recent_history=self._memory.snapshot() if self._memory.has_records else None,
+                reset_summary=reset_summary,
             )
             if view is not None:
                 payload["game_view_sha256"] = view.sha256
@@ -373,6 +412,8 @@ class TurnLoop:
         while_pending: WhilePending | None = None
         policy_default = False
         help_event: str | None = None
+        operation: OperationOutcome | None = None
+        restart_refs: list[int | None] = []
 
         if not parsed.valid or parsed.decision is None:
             outcome = TurnOutcome.rejected_invalid
@@ -380,7 +421,11 @@ class TurnLoop:
             decision = parsed.decision
             selected = choice_set.get(decision.choice_id)
             assert selected is not None
-            if selected.kind in _EXECUTABLE_KINDS:
+            if selected.kind is ChoiceKind.restart_play_mode:
+                operation, restart_entries = await self._restart_turn(selected, decided, turn)
+                restart_refs = restart_entries
+                outcome = TurnOutcome.restarted
+            elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
                     selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
                 sent.append(executed)
@@ -425,11 +470,12 @@ class TurnLoop:
             while_pending=while_pending,
             policy_default=policy_default,
             latency_ms=(time.perf_counter() - started) * 1000.0,
+            operation=operation,
         )
         self._turns.append(record)
         turn_entry = self._emit(
             TraceKind.turn, record.model_dump(mode="json"), TraceAuthor.core, turn,
-            [observed, offered, context, decided, *entries],
+            [observed, offered, context, decided, *entries, *restart_refs],
         )
         report = TurnReport(
             record=record,
@@ -442,9 +488,17 @@ class TurnLoop:
             halt=answer.halt,
         )
         self._reports.append(report)
-        self._memory.record(report, observation_trace_seq=observed, turn_trace_seq=turn_entry,
-                            execution_trace_seqs=entries, effect_trace_seqs=effect_entries)
-        self._previous = observation
+        if operation is not None and operation.status is OperationStatus.ready:
+            # The adopted first observation is the new epoch's only current reading. The pre-reset one must
+            # not enter the fresh memory, nor stand as `_previous` for the next gap or boundary check.
+            adopted = self._store.latest()
+            if adopted is not None:
+                self._previous = adopted
+                self._memory_previous = adopted
+        else:
+            self._memory.record(report, observation_trace_seq=observed, turn_trace_seq=turn_entry,
+                                execution_trace_seqs=entries, effect_trace_seqs=effect_entries)
+            self._previous = observation
         if answer.halt is not None:
             self._halt = answer.halt
         return record
@@ -479,6 +533,24 @@ class TurnLoop:
             return dataclasses.replace(got, failure="the provider gave no answer")
         return got
 
+    def _directive_view(self, observation: Observation) -> DirectiveView | None:
+        """The directives the facts source tracks, as of this observation, or `None` for no section.
+
+        Asked once per context, straight after that source's `facts` evaluated this observation, which is after
+        the epoch check and any adoption: it can state only what was adopted in this epoch, scored against this
+        reading. A source without the hook, one that tracks nothing, and one that raises or answers with
+        anything but a `DirectiveView` all give S1 the context it would have had. The directives still reach it as
+        facts, and nothing it may choose changes.
+        """
+        collect = getattr(self._facts, "directive_view", None)
+        if collect is None:
+            return None
+        try:
+            view = collect(observation)
+        except Exception:  # noqa: BLE001 - context only: a faulty source gives S1 less, never a different turn
+            return None
+        return view if isinstance(view, DirectiveView) else None
+
     def _gap_s(self, observation: Observation) -> float | None:
         """Wall seconds since the previous turn's observation; unknown on the first turn."""
         if self._previous is None:
@@ -504,6 +576,145 @@ class TurnLoop:
             return None
         seconds = duration / observation.time_scale
         return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+    # --- host restart -----------------------------------------------------------------------
+
+    def _operation_deadline_s(self) -> float:
+        """The smaller of the run's remaining wall time and the operation's 60-second bound."""
+        limit = 60.0
+        if self._time_left is not None:
+            left = self._time_left()
+            if left is not None and math.isfinite(left):
+                limit = min(limit, max(0.0, left))
+        return limit
+
+    async def _release_for_restart(self, turn: int) -> bool:
+        """Invalidate pending help, then release every held input; only a verified release permits dispatch."""
+        pending = self._pending
+        if pending is not None:
+            self._cancel_pending(pending, "restart", turn=turn)
+        self._memory.mark_boundary("reset")
+        result = await self._client.stop("reset")
+        self._stop_result = result
+        return result is not None and result.release_verified is True
+
+    async def _restart_turn(
+        self, choice: Choice, decided: int | None, turn: int,
+    ) -> tuple[OperationOutcome, list[int | None]]:
+        """Run one S1-selected host restart outside decision turns and record exactly one request and terminal entry."""
+        ticket = str(uuid.uuid4())
+        from_generation = self._generation
+        request_entry = self._emit(
+            TraceKind.restart,
+            {"event": "request", "ticket_id": ticket, "from_generation": from_generation,
+             "to_generation": None, "status": "requested", "reason": None,
+             "release_verified": None, "checks": 0, "waited_s": 0.0},
+            TraceAuthor.core, turn, [decided],
+        )
+        started = self._clock()
+        released: bool | None = None
+        outcome: RestartOutcome | None = None
+        if self._restart is None or from_generation is None:
+            reason = ("no host restart operation is configured" if self._restart is None
+                      else "the current play generation is unknown")
+            outcome = RestartOutcome(status=OperationStatus.failed, ticket_id=ticket,
+                                     from_generation=from_generation, reason=reason)
+        else:
+            try:
+                released = await self._release_for_restart(turn)
+            except Exception as exc:  # noqa: BLE001 - an unverified release fails closed, never retried
+                # Nothing was measured about the release: `null`, not a claimed `false`.
+                outcome = RestartOutcome(
+                    status=OperationStatus.failed, ticket_id=ticket, from_generation=from_generation,
+                    reason=f"input release failed: {type(exc).__name__}: {exc}")
+            if outcome is None and not released:
+                outcome = RestartOutcome(
+                    status=OperationStatus.failed, ticket_id=ticket, from_generation=from_generation,
+                    reason="input release was not verified")
+            if outcome is None:
+                try:
+                    outcome = await self._restart.restart(
+                        ticket_id=ticket, from_generation=from_generation,
+                        previous_endpoint=self._client.endpoint,
+                        previous_session=self._client.session,
+                        deadline_s=self._operation_deadline_s(), release_verified=released)
+                except Exception as exc:  # noqa: BLE001 - a failed operation leaves no usable session
+                    outcome = RestartOutcome(
+                        status=OperationStatus.failed, ticket_id=ticket, from_generation=from_generation,
+                        reason=f"host restart failed: {type(exc).__name__}: {exc}")
+        if outcome.status is OperationStatus.ready:
+            if outcome.client is None or outcome.observation is None:
+                outcome = dataclasses.replace(
+                    outcome, status=OperationStatus.failed, client=None, observation=None,
+                    reason="the host reported ready without a new client and first observation")
+            else:
+                try:
+                    await self._adopt_restart(outcome, turn)
+                except Exception as exc:  # noqa: BLE001 - keep the new client so the run can release it
+                    outcome = dataclasses.replace(
+                        outcome, status=OperationStatus.failed,
+                        reason=f"the restarted session could not be rebound: {type(exc).__name__}: {exc}")
+        waited = outcome.waited_s
+        if waited is None:
+            waited = max(0.0, (self._clock() - started).total_seconds())
+        terminal_entry = self._emit(
+            TraceKind.restart,
+            {"event": "completed" if outcome.status is OperationStatus.ready else "failed",
+             "ticket_id": ticket, "from_generation": from_generation,
+             "to_generation": outcome.to_generation,
+             "status": outcome.status.value, "reason": outcome.reason,
+             "release_verified": released,
+             "checks": outcome.checks, "waited_s": waited},
+            TraceAuthor.core, turn, [request_entry],
+        )
+        operation = OperationOutcome(
+            kind="restart_play_mode", status=outcome.status, ticket_id=ticket,
+            from_generation=from_generation, to_generation=outcome.to_generation, reason=outcome.reason)
+        return operation, [request_entry, terminal_entry]
+
+    async def _adopt_restart(self, outcome: RestartOutcome, turn: int) -> None:
+        """Adopt the new client and reset every scene-bound reading, keeping prior evidence as history.
+
+        A client this loop adopted for an earlier generation is closed here: the caller owns only the
+        client it passed in. The facts source is rebound too, so a directive or open hypothesis bound to
+        the previous session is invalidated now rather than lingering until some later facts call.
+        """
+        assert outcome.client is not None and outcome.observation is not None
+        assert outcome.to_generation is not None
+        previous_client = self._client
+        self._client = outcome.client
+        self._executor = ExecutionController(outcome.client, **self._executor_options)
+        self._store = ObservationStore()
+        self._store.add(outcome.observation)
+        self._observation_entries = {}
+        self._memory = DecisionMemory()
+        self._memory_previous = None
+        self._previous = None
+        self._guidance.clear()
+        self._unshown.clear()
+        self._pending = None
+        self._generation = outcome.to_generation
+        for port in (self._view, self._readers, self._watch, self._effects, self._help, self._facts):
+            rebind = getattr(port, "rebind", None)
+            if rebind is None:
+                continue
+            result = rebind(client=outcome.client, observation=outcome.observation,
+                            generation=outcome.to_generation)
+            if inspect.isawaitable(result):
+                await result
+        if previous_client is not self._original_client:
+            await _close_quietly(previous_client)
+        self._reset_summary = {
+            "turn": turn,
+            "from_generation": outcome.from_generation,
+            "to_generation": outcome.to_generation,
+            "observation_seq": outcome.observation.seq,
+            "scene_path": outcome.scene_path,
+            "waited_s": outcome.waited_s,
+            "checks": outcome.checks,
+            "invalidated": ("scene-bound guidance, directives, open hypotheses, readers and effect "
+                            "baselines; earlier evidence is historical"),
+        }
 
     # --- execution --------------------------------------------------------------------------
 
@@ -850,3 +1061,11 @@ class TurnLoop:
         if self._sink is None:
             return None
         return self._sink.append(kind, body, author=author, turn=turn, refs=[r for r in refs if r is not None])
+
+
+async def _close_quietly(client: BridgeClient) -> None:
+    """Close a client the loop no longer acts through; a cleanup failure never changes a decision."""
+    try:
+        await client.aclose()
+    except Exception:  # noqa: BLE001 - cleanup of an already released session
+        pass

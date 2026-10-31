@@ -34,6 +34,7 @@ bridge/
   Runtime/Transport/            TCP listener, JSONL framing, token, single session
   Runtime/Unity/                Unity status, observation, input, clock and capture sources
   Editor/                       Editor lifecycle and Tools/Playtest Bridge menu
+  Editor/Session/               supervised session mailbox, state machine, persistence
   Tests/EditMode/               EditMode tests (the acceptance check)
   Tests/DotNet~/                Unity-free fast tests; ignored by Unity
 ```
@@ -70,6 +71,58 @@ Stop, Editor quit and the Editor's before-reload callback all stop the server an
 lock, so a script recompile leaves no stale lock or leaked socket behind. If another process
 already holds the project lock, Start stops its own server and records a warning with the owner's
 pid and port instead of throwing; the message is available as `BridgeEditorHost.LastError`.
+
+## Supervised Play Mode session
+
+A live session can be hosted by the Editor instead of by a PlayMode test. The wrapper starts Unity
+with `-executeMethod Playtest.Bridge.Editor.PlayModeSessionHost.Start` and no `-runTests` or
+`-quit`; that class owns Play Mode from then on, so ending a play instance never kills the client
+process and the client never owns the Editor's lifetime. Python is the client and speaks to the
+bridge over the ordinary loopback transport. The old bench host
+(`Tests/PlayMode/BenchRecordingPlayModeTests.cs`) is unchanged and still serves the bench protocols.
+
+The host is inert unless `UPA_SESSION_CONTROL_DIRECTORY` is set, and while it is set
+`BridgeEditorHost`'s auto-start stays suppressed so nothing except the host starts a bridge. The
+control directory holds the mailbox, and the host never carries a token through it:
+
+| File | Written by | Meaning |
+|---|---|---|
+| `config.json` | the wrapper | run id, project path, catalog path and SHA-256, wall deadline |
+| `host-state.json` | the host | `phase`, `generation`, `scene_path`, `scene_handle`, `ready_utc`, `error`, `capabilities` |
+| `request.json` | the client | one restart ticket: run id, ticket id, `from_generation` |
+| `result.json` | the host | that ticket's `accepted`, `stopped`, `starting`, `ready`, `failed` or `cancelled` state |
+| `cancel.json` | the client | cancels the ticket in flight |
+| `shutdown` | the wrapper | out-of-band end of the session; not an S1 choice |
+
+`host-state.json` phases are `starting`, `ready`, `stopping`, `stopped` and `failed`. Records are
+read and written strictly: unknown members and wrong types are refused. A ticket from another run, one
+already answered and one still in flight are each logged once and left alone, because their result
+record is not this run's to overwrite. A ticket that is stale, premature (the host is not ready) or past
+the wall deadline is published as `failed` with the reason rather than silently dropped. A record that
+cannot be parsed at all is logged once and never acted on. Absent measurements stay `null`; nothing is
+defaulted to zero or to success.
+
+The host executes exactly the one ticket S1 selected and nothing else. It never invents a request,
+never retries a failed operation, and never reports readiness it did not observe. An accepted
+restart releases the bridge and its lock, leaves Play Mode, waits for `EnteredEditMode`, re-enters,
+waits for `EnteredPlayMode`, loads build scene 0 with an explicit single-mode load, re-validates the
+pinned catalog, mints one new generation and starts a new bridge with a new token and lock. Only
+then does `result.json` reach `ready`. Budgets and the wall deadline persist across a restart.
+The in-flight phase is written to `SessionState` before each transition and restored after the next
+domain load; the play-mode callback restores it before handling an event, because Unity can raise
+`EnteredEditMode` or `EnteredPlayMode` before the first Editor update.
+
+It fails closed, exiting non-zero, when it cannot prove the state it is in: a `failed` transition, a
+domain reload that resumes a `ready` machine (the bridge, token and lock died with the reload, so
+that is an accidental disconnect), `EnteredEditMode` during startup that no ticket asked for, a
+missing or altered catalog, or a scene that does not load. Cancelling publishes `cancelled` and then
+ends the run the same way, because a cancelled ticket's generation, scene and bridge are gone and no
+later phase can be reached.
+
+Each play instance mints one canonical lower-case UUID generation before its bridge starts, and the
+frames of that instance are written under `<project>/Temp/playtest-bridge-frames/<generation>/`, so
+a restart never mixes two instances' frames. An observation's `frame_ref` is always inside the
+generation directory of the instance that produced it.
 
 ## Inspecting a project
 

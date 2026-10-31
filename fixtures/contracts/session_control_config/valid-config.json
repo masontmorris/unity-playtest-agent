@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "run_id": "run-1",
+  "project_path": "C:/games/example",
+  "catalog_path": "C:/runs/run-1/catalog.json",
+  "catalog_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "deadline_utc": "2026-10-31T12:00:00+00:00"
+}

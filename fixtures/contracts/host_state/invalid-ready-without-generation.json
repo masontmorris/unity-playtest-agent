@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "run_id": "run-1",
+  "phase": "ready",
+  "generation": null,
+  "scene_path": "Assets/Scenes/Main.unity",
+  "scene_handle": 7,
+  "ready_utc": "2026-10-31T11:00:00+00:00",
+  "error": null,
+  "capabilities": ["restart_play_mode"]
+}

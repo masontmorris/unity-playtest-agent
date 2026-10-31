@@ -323,7 +323,7 @@ class LiveFrontier:
                                record: TurnRecord, observation: Observation,
                                reservation: call_budget.Reservation,
                                fields: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str, dict[str, Any] | None]:
-        """Adopt the directive only when it was not rejected; a null answer keeps the current one."""
+        """Adopt the directive only when it was not rejected; a null answer requests no replacement."""
         if answer.directive is None:
             return None, "kept_current", None
         if review.rejected("directive"):

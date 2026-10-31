@@ -29,7 +29,8 @@ from playtest.roles import frontier
 from playtest.runner.directives import DirectiveTracker
 from playtest.preflight.verify import MEASUREMENT_TOLERANCE
 from playtest.runner.frontier_help import (FrontierHelp, action_effects, reader_calibration, reader_notes,
-                                           recorded_suspicions, _evidence_snapshot, _finding_evidence)
+                                           recorded_suspicions, _evidence_snapshot, _finding_evidence,
+                                           _observation_ref)
 from playtest.runner.choices import build_choices
 
 
@@ -40,13 +41,17 @@ def _approval():
     return {"max_calls": 2, "max_cost_usd": 1.0, "arms": {provider.MODEL: limit}}
 
 
-def _answer_json(seq: int):
+def _answer_json(seq: int, objective: str = OBJECTIVE):
     return json.dumps({
         "add_choices": [], "candidate_finding": None,
         "directive": {"deadline_s": 10.0,
                       "expected": {"field": "public.counter", "op": ">=", "value": 1.0,
                                    "tolerance": None},
-                      "target": None, "tests": "hyp-0-0", "text": "Check whether the measured count reaches one."},
+                      "target": None, "tests": "hyp-0-0",
+                      "text": "Check whether the measured count reaches one.",
+                      "objective_quote": objective.strip()[:60],
+                      "continue_if": ["the measured count still moves toward the objective"],
+                      "replan_if": ["the measured count contradicts the objective"]},
         "hypotheses": [{"confirm_if": "The count reaches one.", "contradicting_seq": [],
                         "id": "hyp-0-0", "refute_if": "The count remains below one at the deadline.",
                         "statement": "The count may increase after the selected action.",
@@ -58,7 +63,8 @@ def _answer_json(seq: int):
 def _meta_reply(_body):
     packet = json.loads(_body["messages"][2]["content"])
     seq = packet["observation"]["seq"]
-    return 200, {"model": provider.MODEL, "choices": [{"finish_reason": "stop", "message": {"content": _answer_json(seq)}}],
+    return 200, {"model": provider.MODEL, "choices": [{"finish_reason": "stop", "message": {
+        "content": _answer_json(seq, packet["objective"])}}],
                  "usage": {"prompt_tokens": 5, "completion_tokens": 5,
                            "prompt_tokens_details": {"cached_tokens": 0}}}, 1.0, None
 
@@ -631,15 +637,15 @@ def test_the_fact_line_states_a_hold_as_a_hold_and_leaves_the_other_lines_alone(
         tracker.adopt(_watch("d-1", 5.0), request_turn=0, based_on_seq=0)
         assert (await tracker.facts([], _observation(1, 1.0, 0)))[-1] == (
             "Frontier directive d-1: goal Watch the counter (d-1).; setpoint public.counter unchanged until game_s 5.0; "
-            "status open.")
+            "4.0 game s left until deadline game_s 5.0; status open.")
         tracker.adopt(_watch("d-2", 6.0, op="changed"), request_turn=1, based_on_seq=1)
         assert (await tracker.facts([], _observation(2, 2.0, 0)))[-1] == (
             "Frontier directive d-2: goal Watch the counter (d-2).; setpoint public.counter changed null; "
-            "deadline game_s 6.0; status open.")
+            "deadline game_s 6.0; 4.0 game s left until deadline game_s 6.0; status open.")
         tracker.adopt(_directive("d-3", 7.0), request_turn=2, based_on_seq=2)
         assert (await tracker.facts([], _observation(3, 3.0, 0)))[-1] == (
             "Frontier directive d-3: goal Reach the setpoint (d-3).; setpoint public.counter >= 1; "
-            "deadline game_s 7.0; status open.")
+            "deadline game_s 7.0; 4.0 game s left until deadline game_s 7.0; status open.")
 
     asyncio.run(main())
 
@@ -969,3 +975,50 @@ def test_the_request_sent_labels_a_readers_note_an_unverified_inference_beside_i
         assert helper.calls == 1
 
     asyncio.run(main())
+
+
+def test_a_restart_withdraws_open_hypotheses_and_discards_staged_results(tmp_path: Path):
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=MemorySink(), tracker=DirectiveTracker(MemorySink()),
+                          started_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1,
+                          session="before", generation="g-1")
+    helper.hypotheses = {"hyp-1": {"id": "hyp-1", "status": "open", "statement": "Still open."},
+                         "hyp-2": {"id": "hyp-2", "status": "refuted", "statement": "Already refuted."}}
+    helper._staged[0] = object()       # noqa: SLF001 - a result the helper still held
+    helper._adopted[3] = (object(), object())  # noqa: SLF001 - guidance already handed to S1
+    after = Observation(session="after", seq=20, game_s=1.0, wall_utc=datetime.now(timezone.utc),
+                        clock_mode="realtime", scene="scene", playing=True, paused=False, time_scale=1.0, frame=20)
+
+    helper.rebind(client=SimpleNamespace(session="after"), observation=after, generation="g-2")
+
+    # The helper follows the new session and generation, and its clock is the new observation's.
+    assert (helper.session, helper.generation) == ("after", "g-2")
+    assert helper.started_utc == after.wall_utc
+    # An open hypothesis is withdrawn with its reason and generation; a closed one is left as it was.
+    assert helper.hypotheses["hyp-1"]["status"] == "withdrawn"
+    assert helper.hypotheses["hyp-1"]["invalidated_reason"] == "the play session restarted"
+    assert helper.hypotheses["hyp-1"]["invalidated_generation"] == "g-2"
+    assert helper.hypotheses["hyp-2"]["status"] == "refuted"
+    # Nothing held for the earlier generation can still be adopted or staged.
+    assert helper._staged == {} and helper._adopted == {}   # noqa: SLF001
+    assert {0, 3} <= helper._discarded                     # noqa: SLF001
+
+
+def test_a_reused_bridge_sequence_resolves_to_the_current_sessions_observation():
+    """A restart may count its bridge seq from the same numbers again; a citation must name its own session."""
+    sink = MemorySink()
+    sink.append(TraceKind.observation, {"seq": 7, "session": "before"}, author=TraceAuthor.bridge, turn=0)
+    sink.append(TraceKind.observation, {"seq": 7, "session": "after"}, author=TraceAuthor.bridge, turn=0)
+    sink.append(TraceKind.observation, {"seq": 9, "session": "before"}, author=TraceAuthor.bridge, turn=0)
+
+    reused = _evidence_snapshot(sink, None, 7)
+    assert _observation_ref(reused, 7, "after") == 1       # the current session's entry wins
+    assert _observation_ref(reused, 7, "before") == 0
+    assert _observation_ref(reused, 7) is None             # without a session the reused seq is ambiguous
+
+    unique_old = _evidence_snapshot(sink, None, 9)
+    assert _observation_ref(unique_old, 9, "after") == 2   # a seq only one session recorded stays citable

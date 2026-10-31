@@ -106,6 +106,28 @@ def test_calibration_view_turn_fixture_fails_for_its_intended_rule():
         CONTRACTS["calibration_record"].model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
+def test_session_control_invalid_fixtures_fail_for_their_intended_rule():
+    """The host's cross-field rules: a ready record is measured, and only a ready result names a new generation."""
+    cases = {
+        "host_state": {
+            "invalid-ready-missing-scene-handle": "scene_handle",
+        },
+        "restart_result": {
+            "invalid-ready-missing-scene-handle": "scene_handle",
+            "invalid-ready-missing-play-timestamp": "entered_play_mode_utc",
+            "invalid-ready-same-generation": "distinct from the one it restarted",
+            "invalid-ready-scene-before-play": "readiness before play mode",
+            "invalid-failed-carries-generation": "cannot carry a to_generation",
+        },
+    }
+    for contract, fixtures in cases.items():
+        for stem, reason in fixtures.items():
+            path = FIXTURES / contract / f"{stem}.json"
+            with pytest.raises(ValidationError) as excinfo:
+                CONTRACTS[contract].model_validate(json.loads(path.read_text(encoding="utf-8")))
+            assert reason in str(excinfo.value), f"{contract}/{stem} failed for the wrong reason"
+
+
 def test_manifest_rejects_an_effect_claim_for_an_unmeasured_axis_value():
     path = FIXTURES / "preflight_manifest" / "invalid-effect-unmeasured-axis-value.json"
     with pytest.raises(ValidationError, match="hold effect must reflect the matching calibration trials"):
@@ -194,6 +216,29 @@ def test_suspicion_invalid_fixtures_fail_for_their_intended_rule():
         with pytest.raises(ValidationError) as excinfo:
             CONTRACTS["suspicion"].model_validate(json.loads(path.read_text(encoding="utf-8")))
         assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_reach_region_invalid_fixtures_fail_for_their_intended_rule():
+    """A declared entry volume is finite and ordered, and names only a supported scene/frame/pose source."""
+    reasons = {
+        "invalid-reach-reversed-bounds": "reach bounds must be ordered",
+        "invalid-reach-nonfinite-bounds": "finite number",
+        "invalid-reach-duplicate-id": "reach region ids must be unique",
+        "invalid-reach-unsupported-pose": "'probe_anchor'",
+        "invalid-reach-unsupported-frame": "'world'",
+    }
+    for stem, reason in reasons.items():
+        path = FIXTURES / "preflight_manifest" / f"{stem}.json"
+        with pytest.raises(ValidationError) as excinfo:
+            CONTRACTS["preflight_manifest"].model_validate(json.loads(path.read_text(encoding="utf-8")))
+        assert reason in str(excinfo.value), f"{stem} failed for the wrong reason"
+
+
+def test_a_manifest_without_reach_regions_stays_valid_and_declares_none():
+    """The opt-in default: an old manifest validates unchanged and carries no declaration."""
+    body = json.loads((FIXTURES / "preflight_manifest" / "valid-basic.json").read_text(encoding="utf-8"))
+    assert "reach_regions" not in body
+    assert CONTRACTS["preflight_manifest"].model_validate(body).reach_regions == []
 
 
 def test_effect_check_invalid_fixtures_fail_for_their_intended_rule():

@@ -216,6 +216,22 @@
       "title": "Based On Seq",
       "type": "integer"
     },
+    "continue_if": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "What the frontier says to inspect to keep pursuing, authored as advice; null when unknown",
+      "title": "Continue If"
+    },
     "deadline_game_s": {
       "anyOf": [
         {
@@ -268,6 +284,20 @@
       "title": "Model",
       "type": "string"
     },
+    "objective_quote": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "A verbatim substring of the run objective this advice serves, as the frontier quoted it",
+      "title": "Objective Quote"
+    },
     "outcome": {
       "$ref": "#/$defs/DirectiveOutcome",
       "default": "open"
@@ -283,6 +313,22 @@
       ],
       "default": null,
       "title": "Parent"
+    },
+    "replan_if": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "What the frontier says to inspect to replan, authored as advice; null when unknown",
+      "title": "Replan If"
     },
     "source": {
       "const": "frontier",

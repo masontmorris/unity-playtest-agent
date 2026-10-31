@@ -86,5 +86,15 @@ def latest_findings(entries: Iterable[TraceEntry | Mapping[str, Any]]) -> dict[s
 
 
 def observation_entries(entries: Iterable[TraceEntry | Mapping[str, Any]]) -> dict[int, int]:
-    """Bridge observation `seq` to the `trace_seq` of its entry: the map from what a model cites to what a finding cites."""
-    return {int(body["seq"]): seq for seq, kind, body in _rows(entries) if kind == TraceKind.observation.value}
+    """Bridge observation `seq` to the `trace_seq` of its entry: the map from what a model cites to what a finding cites.
+
+    A restart gives the new play instance a new session, and its bridge counter may count from the same
+    sequence numbers again. A `seq` seen in more than one session therefore names no one entry and is left
+    out: a citation must be unambiguous. A `seq` seen in one session only stays citable, however old.
+    """
+    seen: dict[int, dict[str | None, int]] = {}
+    for seq, kind, body in _rows(entries):
+        if kind == TraceKind.observation.value:
+            seen.setdefault(int(body["seq"]), {}).setdefault(body.get("session"), seq)
+    return {seq: next(iter(by_session.values()))
+            for seq, by_session in seen.items() if len(by_session) == 1}

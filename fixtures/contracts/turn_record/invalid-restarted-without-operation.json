@@ -1,0 +1,10 @@
+{
+  "type": "turn",
+  "turn": 13,
+  "set_version": 58,
+  "based_on_seq": 3,
+  "raw_choice": "restart_play_mode",
+  "effective_choice": "restart_play_mode",
+  "executed_action": null,
+  "outcome": "restarted"
+}

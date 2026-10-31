@@ -28,10 +28,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from playtest.contracts.bridge import StopResult
-from playtest.contracts.loop import ChoiceKind
+from playtest.contracts.loop import ChoiceKind, OperationOutcome, OperationStatus
 from playtest.core.adherence import Violation, check_adherence
 from playtest.core.bridge_client import BridgeClient
-from playtest.core.ports import EffectProbe, FactsSource, HelpPort, ReaderPort, S1Port, ViewSource, Watch
+from playtest.core.ports import (
+    EffectProbe,
+    FactsSource,
+    HelpPort,
+    ReaderPort,
+    RestartPort,
+    S1Port,
+    ViewSource,
+    Watch,
+)
 from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
@@ -64,6 +73,7 @@ class SessionResult:
     adherence: list[Violation]
     loop: TurnLoop
     pacing: PacingStats | None = None  # `None` when the session ran without a token budget
+    restart_history: tuple[OperationOutcome, ...] = ()  # every selected host operation and its outcome
 
 
 async def run_session(
@@ -86,15 +96,22 @@ async def run_session(
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     facts: FactsSource | None = None,
     s1_call_cap: int | None = None,
+    restart: RestartPort | None = None,
+    generation: str | None = None,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
 
     `readers` installs the manifest's readers in every observation and `watch` states what they and the
     effects measured as facts and suspicions; neither stops the session, opens help or picks anything.
+
+    With `restart`, an S1-selected host operation runs outside decision turns under the smaller of the
+    remaining wall time and the operation's own bound. Its budgets, pacing and deadlines persist; a
+    non-ready outcome ends the run closed and is never retried or resumed.
     """
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
     started = clock()
+    deadline = started + wall_limit_s
     resources = SessionFacts(started=started, wall_limit_s=wall_limit_s, clock=clock,
                              s1=s1, s1_call_cap=s1_call_cap, help=help, inner=facts)
     paced = PacingFacts(inner=resources) if budget is not None else None
@@ -102,8 +119,9 @@ async def run_session(
         client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
+        restart=restart, generation=generation, time_left=lambda: deadline - clock(),
     )
-    deadline = started + wall_limit_s
+    restarts: list[OperationOutcome] = []
     failures = total_failures = 0
     waited_s = longest_s = 0.0
     turns_waited = 0
@@ -122,11 +140,17 @@ async def run_session(
                     if clock() >= deadline:  # the wait itself used up the time allowed
                         ending = "wall_limit"
                         break
-            await loop.run_turn()
+            record = await loop.run_turn()
             report = loop.last_report
             assert report is not None
             failures = failures + 1 if report.provider_failed else 0
             total_failures += 1 if report.provider_failed else 0
+            if record.operation is not None:
+                restarts.append(record.operation)
+                if record.operation.status is not OperationStatus.ready:
+                    reason = record.operation.reason or "no reason was recorded"
+                    ending, error = "error", f"restart_play_mode {record.operation.status.value}: {reason}"
+                    break
             if report.selected is not None and report.selected.kind is ChoiceKind.finish:
                 ending = "finish"
             elif loop.halt_reason is not None:
@@ -136,7 +160,10 @@ async def run_session(
     except Exception as exc:  # noqa: BLE001 - fail closed: record the cause, then release below
         ending, error = "error", f"{type(exc).__name__}: {exc}"
     except BaseException:
-        await loop.stop("error", error="interrupted")
+        try:
+            await loop.stop("error", error="interrupted")
+        finally:
+            await _close_adopted(loop, client)
         raise
 
     stop: StopResult | None = None
@@ -148,8 +175,9 @@ async def run_session(
     if facts is not None and hasattr(facts, "finish"):
         latest = loop.store.latest()
         if latest is not None:
+            # The bridge may reuse a seq in a new play session; cite only this reading's own session.
             facts.finish(turn=max(0, len(loop.turns) - 1), based_on_seq=latest.seq,
-                         evidence_trace_seq=(sink.trace_seq_for_observation(latest.seq)
+                         evidence_trace_seq=(sink.trace_seq_for_observation(latest.seq, latest.session)
                                              if sink is not None and hasattr(sink, "trace_seq_for_observation")
                                              else None))
     released = stop is not None and stop.release_verified is True
@@ -169,8 +197,25 @@ async def run_session(
         status = "inconclusive"
     turns = loop.turns
     outcomes: dict[str, Any] = dict(Counter(record.outcome.value for record in turns))
+    await _close_adopted(loop, client)
     return SessionResult(
         status=status, ending=ending or "error", error=error, turns=len(turns), outcomes=outcomes,
         provider_failures=total_failures, stop=stop, adherence=violations, loop=loop,
         pacing=PacingStats(waited_s, longest_s, turns_waited) if budget is not None else None,
+        restart_history=tuple(restarts),
     )
+
+
+async def _close_adopted(loop: TurnLoop, original: BridgeClient) -> None:
+    """Close the client a restart adopted; the caller owns the one it passed in.
+
+    The release already happened through `loop.stop`. A close failure here is cleanup noise, not evidence
+    that the release failed, so it is never folded into the run's status.
+    """
+    adopted = loop.client
+    if adopted is original:
+        return
+    try:
+        await adopted.aclose()
+    except Exception:  # noqa: BLE001 - cleanup of an already released session
+        pass

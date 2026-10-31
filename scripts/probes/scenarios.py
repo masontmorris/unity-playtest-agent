@@ -240,4 +240,4 @@ def refs(name: str) -> frontier.PacketRefs:
     p = SCENARIOS[name]
     return frontier.PacketRefs(seqs=citable(name), hypotheses=frozenset(h["id"] for h in p["hypotheses"]),
                                new_hypothesis_ids=tuple(p["new_hypothesis_ids"]),
-                               open_directive=p["directive"] is not None)
+                               open_directive=p["directive"] is not None, objective=OBJECTIVE)

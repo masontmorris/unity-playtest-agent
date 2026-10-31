@@ -129,8 +129,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                         or (has_epoch_memory and (observed is None or entry.trace_seq <= observed.trace_seq))):
                     issue("help adoption must follow the epoch check and precede choice assembly", entry, turn_no)
         rank = {TraceKind.observation: 0, TraceKind.choice_set: 1, TraceKind.context: 2,
-                TraceKind.s1_call: 3, TraceKind.decision: 4, TraceKind.execution: 5,
-                TraceKind.effect: 6, TraceKind.turn: 7}
+                TraceKind.s1_call: 3, TraceKind.decision: 4, TraceKind.restart: 5,
+                TraceKind.execution: 6, TraceKind.effect: 7, TraceKind.turn: 8}
         ordered = [rank[x.kind] for x in group if x.kind in rank]
         if ordered != sorted(ordered):
             issue("turn entries are out of documented order", group[-1], turn_no)
@@ -171,6 +171,21 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                     refs(x, {decrow.trace_seq}, "execution")
                 if x.kind is TraceKind.help and x.body.get("event") in ("opened", "repeat"):
                     refs(x, {decrow.trace_seq}, "help")
+                if x.kind is TraceKind.restart and x.body.get("event") == "request":
+                    refs(x, {decrow.trace_seq}, "restart request")
+        restart_rows = [x for x in group if x.kind is TraceKind.restart]
+        restart_request = next((x for x in restart_rows if x.body.get("event") == "request"), None)
+        restart_done = next((x for x in restart_rows if x.body.get("event") in ("completed", "failed")), None)
+        if restart_rows:
+            if len(restart_rows) != 2 or restart_request is None or restart_done is None:
+                issue("a restart turn traces exactly one request and one terminal entry", record_row, turn_no)
+            else:
+                if restart_done.refs != [restart_request.trace_seq]:
+                    issue("the restart terminal entry does not ref its request", restart_done, turn_no)
+                request_body, done_body = restart_request.body, restart_done.body
+                for field in ("ticket_id", "from_generation"):
+                    if request_body.get(field) != done_body.get(field):
+                        issue(f"restart terminal {field} differs from its request", restart_done, turn_no)
         for effect in (x for x in group if x.kind is TraceKind.effect):
             executions = [x for x in group if x.kind is TraceKind.execution and x.trace_seq in effect.refs]
             if not executions:
@@ -178,7 +193,7 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             elif any(effect.body.get("choice_id") != x.body.get("request", {}).get("choice_id") or
                      effect.body.get("action") != x.body.get("request", {}).get("action") for x in executions):
                 issue("effect differs from execution request", effect, turn_no)
-        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution)}, "turn")
+        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.restart)}, "turn")
         try:
             obs = Observation.model_validate(obsrow.body)
             choices = ChoiceSet.model_validate(setrow.body)
@@ -259,6 +274,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             outcome = TurnOutcome.escalated
         elif selected and selected.kind is ChoiceKind.delegate:
             outcome = TurnOutcome.delegated
+        elif selected and selected.kind is ChoiceKind.restart_play_mode:
+            outcome = TurnOutcome.restarted
         elif selected and selected.kind in (ChoiceKind.wait, ChoiceKind.finish):
             outcome = TurnOutcome.finished
         else:
@@ -294,6 +311,30 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                 expected = expected.value
             if got != expected:
                 issue(f"turn record {field} differs from entries", record_row, turn_no)
+        restarted = outcome is TurnOutcome.restarted
+        if restarted != bool(restart_rows):
+            issue("restart entries and a restarted turn record must agree", record_row, turn_no)
+        if restarted and exec_rows:
+            issue("a restarted turn must not send gameplay input", record_row, turn_no)
+        if restarted and restart_done is not None:
+            operation = record.operation
+            if operation is None:
+                issue("a restarted turn record needs its operation outcome", record_row, turn_no)
+            else:
+                done_body = restart_done.body
+                if done_body.get("event") == "completed" and done_body.get("status") != "ready":
+                    issue("a completed restart entry must be ready", restart_done, turn_no)
+                for name, expected_value in (
+                        ("kind", "restart_play_mode"), ("status", done_body.get("status")),
+                        ("ticket_id", done_body.get("ticket_id")),
+                        ("from_generation", done_body.get("from_generation")),
+                        ("to_generation", done_body.get("to_generation"))):
+                    actual = getattr(operation, name)
+                    actual = actual.value if hasattr(actual, "value") else actual
+                    if actual != expected_value:
+                        issue(f"turn record operation {name} differs from the restart entries", record_row, turn_no)
+        elif not restarted and record.operation is not None:
+            issue("a turn that did not select a host operation carries no operation outcome", record_row, turn_no)
     for violation in check_adherence(turn_records):
         issue(f"adherence: {violation.problem}", turn=violation.turn)
     return problems

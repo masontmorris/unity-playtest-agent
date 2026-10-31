@@ -1,5 +1,83 @@
 {
   "$defs": {
+    "OperationOutcome": {
+      "additionalProperties": false,
+      "description": "What a selected host operation did. It never stands in for an action's execution outcome.\n\nA ready status means every measured condition the host protocol requires held: a verified release,\na terminal ready result for this ticket, an observed host ready state at a distinct new generation,\na fresh bridge endpoint and a valid first observation. Any other status fails the run closed.",
+      "properties": {
+        "from_generation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Generation"
+        },
+        "kind": {
+          "const": "restart_play_mode",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "$ref": "#/$defs/OperationStatus"
+        },
+        "ticket_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ticket Id"
+        },
+        "to_generation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To Generation"
+        }
+      },
+      "required": [
+        "kind",
+        "status"
+      ],
+      "title": "OperationOutcome",
+      "type": "object"
+    },
+    "OperationStatus": {
+      "enum": [
+        "ready",
+        "failed",
+        "cancelled",
+        "timeout"
+      ],
+      "title": "OperationStatus",
+      "type": "string"
+    },
     "TurnOutcome": {
       "enum": [
         "executed",
@@ -7,7 +85,8 @@
         "rejected_stale",
         "escalated",
         "delegated",
-        "finished"
+        "finished",
+        "restarted"
       ],
       "title": "TurnOutcome",
       "type": "string"
@@ -89,6 +168,18 @@
       ],
       "default": null,
       "title": "Latency Ms"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OperationOutcome"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The selected host operation's explicit outcome; null for every other turn"
     },
     "outcome": {
       "$ref": "#/$defs/TurnOutcome"

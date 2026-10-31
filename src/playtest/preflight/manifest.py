@@ -468,6 +468,7 @@ def _without_proof(value: dict) -> dict:
     import copy
 
     result = copy.deepcopy(value)
+    result.pop("reach_regions", None)  # operator declarations, not the model's answer or its proof
     result["gaps"]["coverage"] = [item for item in result["gaps"]["coverage"]
                                   if item not in (ACTION_EXECUTION_GAP, SKILL_EXECUTION_GAP)]
     for action in result.get("actions", []):

@@ -23,6 +23,7 @@ from pydantic import Field
 from playtest.contracts.common import Strict
 from playtest.contracts.investigation import (
     EFFECT_PREFIX,
+    MAX_OBJECTIVE_QUOTE,
     Comparator,
     Directive,
     Expected,
@@ -84,6 +85,18 @@ class DirectiveOut(Strict):
     target: TargetOut | None
     tests: str | None = Field(description="Id of the hypothesis this tests, or null")
     text: str = Field(description="The controlled test, for S1, in one or two sentences")
+    objective_quote: str = Field(
+        max_length=MAX_OBJECTIVE_QUOTE,
+        description="A verbatim substring, at most 200 characters, copied exactly from the packet's objective: "
+                    "the part of it this advice serves. Not a paraphrase and not a target inferred from a reader")
+    continue_if: list[str] = Field(
+        description="What S1 can inspect that would show this advice still serves the objective. Each entry names "
+                    "an observable, not a code condition; write unknown and say what the packet does not show "
+                    "rather than invent one")
+    replan_if: list[str] = Field(
+        description="What S1 can inspect that would show this approach no longer serves the objective, so S1 may "
+                    "replan. Each entry names an observable, not a code condition; write unknown rather than "
+                    "invent one")
 
 
 class HypothesisOut(Strict):
@@ -132,7 +145,9 @@ class FrontierAnswer(Strict):
 
     add_choices: list[AddChoice] = Field(max_length=MAX_ADD)
     candidate_finding: FindingOut | None
-    directive: DirectiveOut | None = Field(description="null keeps the current directive")
+    directive: DirectiveOut | None = Field(
+        description="null requests no replacement: the current directive is neither renewed nor extended, and this "
+                    "answer may arrive after its deadline")
     hypotheses: list[HypothesisOut] = Field(max_length=MAX_HYPOTHESES)
     prune_choices: list[PruneChoice] = Field(max_length=MAX_PRUNE)
 
@@ -149,7 +164,11 @@ SYSTEM = (
     "record. Cite only sequence numbers that appear in the packet, and say what would confirm and what would "
     "refute each. The packet's suspicions are every suspicion raised so far in this run; account for each in a "
     "hypothesis (open, supported or contradicted) or a candidate_finding.\n"
-    "- directive: one controlled test for S1, or null to keep the current directive. Its expected setpoint must "
+    "- directive: one controlled test for S1, or null to request no replacement. null never renews, extends or "
+    "restarts the current directive: it keeps its own deadline, which may already have passed when your answer "
+    "arrives. The packet's directive row states expires_in_game_s, the game seconds left at as_of, so read it "
+    "before you decide to keep or replace; null there means the deadline or the clock is unknown, never zero. "
+    "Its expected setpoint must "
     "be checkable by code: a manifest field, an operator, and a value of that field's type. Every operator "
     "except changed and unchanged is met the first time a reading satisfies it, so the setpoint must not "
     "already hold in the packet's observation; one that does is rejected. changed and unchanged take value null "
@@ -157,6 +176,17 @@ SYSTEM = (
     "it. unchanged is met only if the value stays as it is until the deadline, and it needs deadline_s. A "
     "tolerance applies only to numeric == or !=. If no field can show the outcome, set expected to null; the "
     "directive is then scored unknown. deadline_s is game seconds S1 has after it receives the directive.\n"
+    "- objective attribution: every directive you write carries objective_quote, continue_if and replan_if. "
+    "objective_quote is copied verbatim, at most 200 characters, from the packet's objective: the part of it your "
+    "advice serves. It must be an exact substring of that objective string, not a paraphrase, not a target or "
+    "reader alias, and not a goal you infer from the evidence; a directive rejected for any other reason is not "
+    "salvaged by it. A prerequisite the objective needs first, such as recovering the play session, still quotes "
+    "the part of the objective it serves and explains that relationship in your text. continue_if and replan_if "
+    "list what S1 can inspect that would show the advice still serves the objective, or no longer does. Name "
+    "observables S1 and the packet can check, never a predicate code evaluates, and never a threshold, timer, "
+    "score or action to take. If the packet does not show what would settle it, write unknown and say what is "
+    "missing; do not invent a condition. These fields are your advice, shown to S1 as written: no code branch "
+    "acts on them, they never extend the deadline or request help, and S1 alone decides what to do.\n"
     "- add_choices: manifest actions or skills S1 should be able to pick during this directive, optionally with "
     "a hold or axis override for an action. prune_choices: manifest actions or skills to hide during this "
     "directive. Both end when the directive closes. S1 always has wait, escalate and finish; they are not manifest "
@@ -231,6 +261,20 @@ SYSTEM = (
     "Observations are measured; null means unknown, not zero."
 )
 
+# Added to the system prompt only when the manifest declares reach regions, so a manifest with none sends
+# exactly the prompt it always did.
+PROGRESS_SYSTEM = (
+    "\n- declared reach regions: a progress row is an operator's declaration of an entry volume, not a "
+    "measurement and not a verified target. Its author, source and verification status say where the "
+    "declaration came from; nothing has checked the place it describes. The run measures only the declared "
+    "pose source (the probe anchor's world position) at the packet's observation and derives "
+    "progress.<region_id>.distance in world units and progress.<region_id>.inside. Null means unknown, never "
+    "zero and never success. A small distance or membership does not show the objective was completed, that a "
+    "particular object was contacted, or that any ascent or defect test was performed. Only the distance of a "
+    "region this manifest declares is a setpoint field; inside is shown but is not a setpoint field, and a "
+    "region the manifest does not declare has no field at all."
+)
+
 
 # --- run and packet context ----------------------------------------------------------------------
 
@@ -255,6 +299,35 @@ class Effect:
 
 
 @dataclass(frozen=True)
+class ProgressRegion:
+    """One manifest-declared reach volume, as the frontier is shown it.
+
+    This is the operator's declaration, not a measurement. The run derives a distance from the declared
+    measured pose; the declaration's meaning and any task completion remain unverified.
+    """
+
+    region_id: str
+    label: str
+    purpose: str
+    frame: str
+    scene: str
+    minimum: tuple[float, float, float]
+    maximum: tuple[float, float, float]
+    pose: str
+    author: str
+    source: str
+    verification: str
+
+    @property
+    def distance_field(self) -> str:
+        return f"progress.{self.region_id}.distance"
+
+    @property
+    def inside_field(self) -> str:
+        return f"progress.{self.region_id}.inside"
+
+
+@dataclass(frozen=True)
 class Manifest:
     """What a run's frontier schema and checks need from the manifest. Stable for the whole run."""
 
@@ -271,6 +344,9 @@ class Manifest:
     # Action name -> its calibrated net displacement. Each is a repro_check field, `effect.<action>`; a directive
     # setpoint may not name one.
     effects: Mapping[str, Effect] = field(default_factory=dict)
+    # Region id -> its operator declaration. Only declarations the manifest actually contains reach the model,
+    # the schema's setpoint fields and the packet. Empty for a manifest that declared none.
+    progress: Mapping[str, ProgressRegion] = field(default_factory=dict, compare=False)
 
     def enums(self) -> dict[str, list[str]]:
         return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills],
@@ -279,9 +355,14 @@ class Manifest:
 
 @dataclass(frozen=True)
 class PacketRefs:
-    """What one escalation packet makes citable. Changes every call, so it is never in the schema."""
+    """What one escalation packet makes citable. Changes every call, so it is never in the schema.
+
+    `objective` is the exact objective string the packet carried. `review` checks a directive's
+    objective_quote against it character for character; the check never rewrites the quote or the objective.
+    """
 
     seqs: frozenset[int]
+    objective: str
     hypotheses: frozenset[str] = frozenset()
     new_hypothesis_ids: tuple[str, ...] = ()
     open_directive: bool = False
@@ -289,6 +370,9 @@ class PacketRefs:
     # they already satisfy. None when the caller has none: nothing is then judged to hold. A mapping is not
     # hashable, so it stays out of the generated eq and hash.
     public: Mapping[str, Any] | None = field(default=None, compare=False)
+    # Derived readings at the request observation, by field path (`progress.<id>.distance`). A derived field
+    # absent here was not measured, so it cannot be judged to hold. Declared progress fields only.
+    derived: Mapping[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -359,15 +443,42 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
         Only a measured, scoreable reading counts: an unknown one (None) is not a reason to reject.
         """
         kind = manifest.fields.get(sp.field)
-        if refs.public is None or kind is None or sp.op in CHANGE:
+        if kind is None or sp.op in CHANGE:
             return False
-        value = field_value(refs.public, sp.field.removeprefix("public."))
+        if refs.derived is not None and sp.field in refs.derived:
+            value = refs.derived[sp.field]
+        elif refs.public is not None:
+            value = field_value(refs.public, sp.field.removeprefix("public."))
+        else:
+            return False
         return evaluate(value, kind=kind, op=sp.op, expected=sp.value, tolerance=sp.tolerance) is True
 
     def text(item: str, **values: str) -> None:
         for name, value in values.items():
             if not value.strip():
                 bad(item, f"{name} is empty")
+
+    def attribution(item: str, d: DirectiveOut) -> None:
+        """The frontier's own objective attribution, checked against this packet's exact objective.
+
+        A quote that is not a substring is rejected as written: it is never trimmed, repaired, matched
+        loosely or replaced with a target. The conditions are only checked for being present and non-empty;
+        their meaning is advice for S1, so no code reads them, ranks them or turns one into a condition it
+        evaluates. "unknown" is an accepted entry precisely because a condition the packet cannot support
+        must stay unknown rather than be invented.
+        """
+        quote = d.objective_quote
+        if not quote.strip():
+            bad(item, "objective_quote is empty")
+        elif len(quote) > MAX_OBJECTIVE_QUOTE:
+            bad(item, f"objective_quote is {len(quote)} characters; the limit is {MAX_OBJECTIVE_QUOTE}")
+        elif quote not in refs.objective:
+            bad(item, "objective_quote is not a verbatim substring of the packet's objective")
+        for name, conditions in (("continue_if", d.continue_if), ("replan_if", d.replan_if)):
+            if not conditions:
+                bad(item, f"{name} is empty; say unknown explicitly instead of omitting it")
+            elif any(not condition.strip() for condition in conditions):
+                bad(item, f"{name} has an empty entry")
 
     ids: set[str] = set()
     new_left = list(refs.new_hypothesis_ids)
@@ -391,6 +502,7 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
     d = answer.directive
     if d is not None:
         text("directive", text=d.text)
+        attribution("directive", d)
         if d.deadline_s is not None and d.deadline_s <= 0:
             bad("directive", "deadline_s must be positive")
         if d.target is not None and not d.target.ref.strip():
@@ -477,8 +589,12 @@ def to_directive(d: DirectiveOut, *, directive_id: str, parent: str | None, mode
     if d.deadline_s is not None and received_game_s is not None:
         deadline = received_game_s + d.deadline_s
     target = Target(kind=d.target.kind, ref=d.target.ref) if d.target is not None else None
+    # The attribution is carried exactly as the frontier wrote it. Nothing here fills in a missing quote or
+    # condition, and nothing derives one from the target, the reader or the evidence.
     return Directive(directive_id=directive_id, parent=parent, model=model, based_on_seq=based_on_seq, text=d.text,
-                     target=target, expected=expected, tolerance=tolerance, deadline_game_s=deadline)
+                     target=target, expected=expected, tolerance=tolerance, deadline_game_s=deadline,
+                     objective_quote=d.objective_quote, continue_if=list(d.continue_if),
+                     replan_if=list(d.replan_if))
 
 
 def to_choices(adds: Sequence[AddChoice], manifest: Manifest, *, ids: Sequence[str],

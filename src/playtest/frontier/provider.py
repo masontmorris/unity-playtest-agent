@@ -64,6 +64,19 @@ _EFFECT_NOTE = (
     "measurement may differ from it before calibration's recorded spread no longer accounts for it; null means "
     "calibration recorded no spread. Only a repro_check may name an effects path; a directive setpoint may not."
 )
+# Added to the note only when the manifest declares reach regions, so a manifest without any is worded as
+# it always was.
+_PROGRESS_NOTE = (
+    " A progress row is an operator's declaration of an entry volume, not a measurement and not a verified "
+    "target. It names the author, source and verification status of the assertion, the frame and scene its "
+    "bounds are declared in, and the single pose source the run measures. progress.<region_id>.distance is "
+    "the finite distance, in world units, from that measured pose to the declared volume at the packet's "
+    "observation; progress.<region_id>.inside says whether that pose is inside it. Either is null with a "
+    "stated reason when the pose was not measured. Neither shows that the objective was completed, that a "
+    "particular object was contacted, or that any test was performed. Only a declared region's distance is "
+    "a setpoint field; inside is shown but is not a setpoint field, and a region this manifest does not "
+    "declare has no field at all."
+)
 # Preflight's freshness classes (`preflight.freshness`), worded for the model. A field without one is unknown.
 CALIBRATION_LABELS = {
     "input": "changed only while a control was held",
@@ -119,13 +132,26 @@ def manifest_message(manifest: frontier.Manifest) -> str:
     ]
     skills = sorted(manifest.skills)
     message: dict[str, Any] = {"fields": fields, "actions": actions, "skills": skills, "notes": _MANIFEST_NOTE}
+    if manifest.progress:
+        message["progress"] = [
+            {"path": region.distance_field, "kind": "number", "inside_path": region.inside_field,
+             "region_id": region_id, "label": region.label, "purpose": region.purpose, "frame": region.frame,
+             "scene": region.scene, "bounds": {"min": list(region.minimum), "max": list(region.maximum)},
+             "pose": region.pose, "author": region.author, "source": region.source,
+             "verification": region.verification}
+            for region_id, region in sorted(manifest.progress.items())
+        ]
+    notes = _MANIFEST_NOTE
     if manifest.effects:
         message["effects"] = [
             {"path": f"{EFFECT_PREFIX}{name}", "kind": "number", "unit": effect.unit, "expected": effect.expected,
              "allowance": effect.allowance}
             for name, effect in sorted(manifest.effects.items())
         ]
-        message["notes"] = _MANIFEST_NOTE + _EFFECT_NOTE
+        notes += _EFFECT_NOTE
+    if manifest.progress:
+        notes += _PROGRESS_NOTE
+    message["notes"] = notes
     return canonical(message)
 
 
@@ -147,10 +173,11 @@ def build_request(
         packet_content: Any = text
     else:
         packet_content = [{"type": "text", "text": text}, video]
+    system = frontier.SYSTEM + (frontier.PROGRESS_SYSTEM if manifest.progress else "")
     return {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": frontier.SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": manifest_message(manifest)},
             {"role": "user", "content": packet_content},
         ],

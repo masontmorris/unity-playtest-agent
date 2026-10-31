@@ -13,10 +13,13 @@ from typing import get_args
 
 import jsonschema
 import pytest
+from pydantic import ValidationError
 
 from playtest.contracts.investigation import Comparator, ExpectedSource, FindingState
 from playtest.contracts.loop import ChoiceKind, ChoiceSource
 from playtest.roles import frontier, strict
+
+OBJECTIVE = "Try each control once and note what it does."
 
 
 @pytest.fixture
@@ -40,6 +43,7 @@ def refs():
         hypotheses=frozenset({"h1"}),
         new_hypothesis_ids=("h2", "h3"),
         open_directive=True,
+        objective=OBJECTIVE,
     )
 
 
@@ -66,6 +70,9 @@ def directive(tests="h1", expected=None, deadline_s=20.0, text="try the controll
         "target": None,
         "expected": setpoint("public.item_held", Comparator.eq, True) if expected is None else expected,
         "deadline_s": deadline_s,
+        "objective_quote": "note what it does",
+        "continue_if": ["the recorded response still follows the objective"],
+        "replan_if": ["the recorded response contradicts the objective"],
     }
 
 
@@ -134,6 +141,59 @@ def test_directive_conversion_puts_the_deadline_in_game_time(manifest, refs):
         a.directive, directive_id="d1", parent=None, model="m", based_on_seq=12, received_game_s=None
     )
     assert no_clock.deadline_game_s is None
+
+
+def test_directive_conversion_carries_the_objective_attribution_verbatim(manifest, refs):
+    """The quote and the conditions reach the record exactly as the frontier wrote them: never trimmed or mapped."""
+    out = frontier.DirectiveOut.model_validate(
+        directive() | {"continue_if": ["unknown"], "replan_if": ["  keep inspecting the saved counter  "]})
+    received = frontier.to_directive(out, directive_id="d1", parent=None, model="m", based_on_seq=12,
+                                     received_game_s=40.0)
+    assert received.objective_quote == "note what it does"
+    assert received.continue_if == ["unknown"]
+    assert received.replan_if == ["  keep inspecting the saved counter  "]
+
+
+def test_the_response_schema_requires_the_three_attribution_fields(manifest):
+    schema = frontier.schema(manifest)
+    out = schema["$defs"]["DirectiveOut"]
+    assert {"objective_quote", "continue_if", "replan_if"} <= set(out["required"])
+
+
+@pytest.mark.parametrize("quote", ["note what it does!", "Note what it does",
+                                   "note  what it does", "note what it does "])
+def test_a_quote_that_is_not_a_verbatim_substring_is_rejected_as_written(manifest, refs, quote):
+    a = answer(directive=directive() | {"objective_quote": quote})
+    review = frontier.review(a, manifest, refs)
+    assert [p.item for p in review.problems] == ["directive"]
+    assert "not a verbatim substring" in review.problems[0].reason
+    assert a.directive.objective_quote == quote                       # never trimmed or repaired to pass
+
+
+def test_a_quote_over_the_length_limit_never_parses(manifest, refs):
+    long_refs = replace(refs, objective="x" * 250)
+    with pytest.raises(ValidationError):
+        answer(directive=directive() | {"objective_quote": "x" * 201})
+    # At the limit it parses; review then checks it against this packet's objective like any other quote.
+    assert frontier.review(answer(directive=directive() | {"objective_quote": "x" * 200}), manifest, long_refs).clean
+
+
+@pytest.mark.parametrize(("field", "conditions"), [
+    ("continue_if", []),
+    ("replan_if", []),
+    ("continue_if", ["the response shows it", "  "]),
+    ("replan_if", [""]),
+])
+def test_the_conditions_are_checked_for_presence_and_never_for_meaning(manifest, refs, field, conditions):
+    a = answer(directive=directive() | {field: conditions})
+    review = frontier.review(a, manifest, refs)
+    assert [p.item for p in review.problems] == ["directive"]
+    assert field in review.problems[0].reason
+
+
+def test_unknown_is_an_accepted_condition_because_silence_must_not_be_invented(manifest, refs):
+    a = answer(directive=directive() | {"continue_if": ["unknown"], "replan_if": ["unknown"]})
+    assert frontier.review(a, manifest, refs).clean
 
 
 def test_choices_instantiate_manifest_actions_and_skills(manifest, refs):
@@ -781,6 +841,9 @@ def test_exploration_answer_passes_review(manifest, refs):
             "target": {"kind": "location", "ref": "in view, left of centre"},
             "expected": None,
             "deadline_s": 60.0,
+            "objective_quote": "Try each control once",
+            "continue_if": ["the recorded positions still move toward the part"],
+            "replan_if": ["the recorded positions stop moving toward the part"],
         },
     )
     assert frontier.review(body, manifest, refs).clean

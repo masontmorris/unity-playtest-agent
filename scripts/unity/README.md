@@ -452,8 +452,12 @@ not full game-state restoration, save/load and checkpoints are not exercised, an
 ## Run a manifest session (the real-time turn loop)
 
 `run-session.ps1` puts S1 in the production turn loop on a wired game, in real time, driven by a
-saved preflight manifest. It hosts the bridge in the same PlayMode bench host as `run-live-s1.ps1` and
-starts `playtest.runner.cli` (`playtest-run`) against it. Before the host starts, the script exports the
+saved preflight manifest. It hosts the bridge in the Editor-owned live session host
+(`PlayModeSessionHost`) through `play-session-supervisor.ps1`, and starts `playtest.runner.cli`
+(`playtest-run`) against it once the host reports its measured initial readiness. Because the
+Editor owns Play Mode, an S1-selected restart can stop and start a play instance without killing
+the client process; `run-live-s1.ps1` keeps using the PlayMode bench host
+(`BenchRecordingPlayModeTests`) for the bench protocols. Before the host starts, the script exports the
 manifest's catalog with `playtest-export-catalog` into `<OutputDirectory>/catalog.json` and pins its SHA-256;
 for this client module the host registers exactly that file, under each declaration's own name, so every
 supported chord, stick, trigger, dpad or mouse value, and skill runs as declared (the other bench modules keep
@@ -462,6 +466,11 @@ their one-action-per-key catalog). The host and the client read the file through
 the host throws before the scene loads; if it is not exactly the manifest's export, the client ends the run
 before any paid call. There is no fallback to the keyboard catalog. The stage 7 host runs exactly one action
 and one module, so it cannot host a session. See `docs/design/turn-loop.md`.
+
+The script also writes the session's `config.json` into `<OutputDirectory>/control/` (run id, project,
+catalog and its digest, the host's wall deadline) and leaves the mailbox to the host and the client. The
+control directory records the run's `host-state.json`, `request.json`, `result.json` and `cancel.json`; the
+supervisor publishes the out-of-band `shutdown` marker. Keep them with the run's other evidence.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
@@ -481,7 +490,8 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
 - **`-RecordFrames`.** Records the whole play view. `playtest.runner.session_video` runs beside the session
   and copies every frame the bridge writes into its rolling capture window. After Unity exits it encodes
   them, in the bridge's counter order, into `<OutputDirectory>/recording/session.mp4`, with `recording.json`
-  beside it.
+  beside it. Each play instance writes into `Temp/playtest-bridge-frames/<generation>/`, so a restart never
+  mixes two instances' frames and a clip never spans a generation boundary.
   - That summary gives the frames copied, the frames missed (gaps in the counter, never filled in), the
     write-time basis of each frame's duration, and the video's hash.
   - The recorder never talks to the bridge or the runner.
@@ -502,3 +512,82 @@ The wrapper exports a rate only
 when `-TokensPerMinute` is given, so an unset parameter never overrides the runner's choice; an explicit
 parameter or `UPA_RUN_TOKENS_PER_MINUTE` still wins. The runner waits before a turn when the last minute's
 tokens plus the next call's would pass it, and states the wait to S1 as a measured fact.
+
+## Supervise an Editor-owned session
+
+`play-session-supervisor.ps1` is the shared launcher behind `run-session.ps1` and
+`test-session-restart.ps1`. The caller has already written `config.json` into a new control directory and
+set the catalog the host must serve; the supervisor then:
+
+1. Refuses to start when `<ProjectPath>/Temp/UnityLockfile` exists (an Editor owns the project), the
+   control directory is missing, its `config.json` is absent, or its `project_path` is not the project
+   being launched. It also refuses a control directory that already holds a `host-state.json`, so a new
+   run always starts from a clean mailbox. It takes the same machine-wide mutex as the bridge test
+   runner (`-MutexTimeoutMinutes`, default 15) and re-checks the project lock while holding it, so a
+   session and a test run never own one project at the same time.
+2. Exports `UPA_SESSION_CONTROL_DIRECTORY` for both children and starts Unity in batch mode with
+   `-executeMethod Playtest.Bridge.Editor.PlayModeSessionHost.Start` and `-logFile <ControlDirectory>/unity.log`.
+   It passes neither `-runTests` nor `-quit`, either of which would end the host before the session does.
+3. Reads `deadline_utc` from `config.json` as an absolute instant with `Z` or an explicit offset. A
+   missing, naive or malformed value, or one that has already passed, is a setup error. The deadline
+   bounds both the initial readiness wait and the client's whole lifetime.
+4. Waits for the host's initial `ready` in `host-state.json`, and refuses one that lacks a generation,
+   scene path, scene handle or a timezone-aware ready time. A host `failed` phase, or Unity exiting
+   first, ends the run. The wait is the smaller of `-InitialReadyTimeoutSeconds` and the deadline.
+5. Starts the Python client in the background with `-m <ClientModule> --project <ClientProject>` plus
+   `--entity`, `--calibration`, `--manifest` and `--output` when given. Everything else the client
+   needs comes from the environment the caller set. Its stdout and stderr are kept beside the control
+   records as `client.stdout.log` and `client.stderr.log`; a failing run prints only a bounded tail.
+6. While the client runs, watches the host process and its `host-state.json` phase as well as the
+   deadline. If the host exits or fails first, or the deadline passes, it stops only the client it
+   started and fails the run. A host that exits before the client completes is a failure even when
+   both processes eventually report exit code 0.
+7. After the client ends, publishes the `shutdown` marker, waits up to `-ShutdownTimeoutSeconds`
+   (never past the deadline) for the host to leave Play Mode and exit, and stops only that host
+   process if it does not.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/play-session-supervisor.ps1 `
+  -ProjectPath "C:\path\to\game" -ControlDirectory "C:\path\outside\game\session-01\control" `
+  -PythonPath "C:\path\to\python.exe" -ClientModule playtest.runner.cli -ClientProject "C:\path\to\game" `
+  [-ClientEntity <file>] [-ClientCalibration <file>] [-ClientManifest <file>] [-ClientOutput <file>] `
+  [-UnityPath <Unity.exe>] [-LogPath <file>] `
+  [-InitialReadyTimeoutSeconds 300] [-ShutdownTimeoutSeconds 120] [-MutexTimeoutMinutes 15] [-NoGraphics]
+```
+
+The wait, the client call and the shutdown marker are supervision of the process, not S1's choices: the
+supervisor never selects a restart, retries an operation, edits a control record or invents a ticket. The
+`shutdown` marker is the one out-of-band end of a session, and it is written only after the client ended.
+Client stdout/stderr, the Unity log and the control records stay in the run's own directory.
+
+| Code | Meaning |
+|---|---|
+| `0` | the client and the host both finished cleanly |
+| `1` | the client failed, or the host failed, exited early, timed out or had to be killed |
+| `2` | setup failed (including an invalid deadline) and Unity was not started |
+
+`test-play-session-supervisor.ps1` checks this contract with fake Unity and Python processes: normal
+completion, a hung client bounded by the deadline, the host exiting first, invalid deadlines, paths with
+spaces, cleanup of only this run's processes, and a host that ignores the shutdown marker. It launches no
+Editor and makes no model call.
+
+Only one Editor may own the project, so run one session at a time.
+
+## Validate the restart path without a model
+
+`test-session-restart.ps1` is the free check that the session host can actually do a restart: one
+Editor-owned session, `playtest.runner.restart_smoke` as the client, no model call and no approval file.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/unity/test-session-restart.ps1 `
+  -ProjectPath "C:\path\to\game" -EntityPath "C:\path\outside\game\entity.json" `
+  -CalibrationPath "C:\path\outside\game\record.json" -ManifestPath "C:\path\outside\game\manifest.json" `
+  -OutputDirectory "C:\path\outside\game\restart-01" [-WallLimitSeconds 300]
+```
+
+It exports the manifest's catalog exactly as `run-session.ps1` does, pins its SHA-256, writes the session's
+`config.json`, and hands the run to `play-session-supervisor.ps1`. The client selects each restart itself
+through the mailbox; the script never invents a request, retries an operation or reads a control record. The
+output directory must be new and outside the game, and the catalog, control records and the client's
+`restart.json` stay there. Exit codes are the supervisor's: `0` clean, `1` failed or had to be killed, `2`
+setup failed before Unity started.

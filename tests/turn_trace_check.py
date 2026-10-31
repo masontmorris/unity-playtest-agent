@@ -21,7 +21,7 @@ from playtest.core.decisions import parse_decision
 
 AUTHORS = {
     "run": "harness", "observation": "bridge", "choice_set": "core", "context": "core", "s1_call": "s1",
-    "decision": "core", "execution": "bridge", "effect": "core", "help": "core",
+    "decision": "core", "execution": "bridge", "effect": "core", "help": "core", "restart": "core",
     "investigation": "frontier", "suspicion": "core", "turn": "core",
     "stop": "core", "end": "harness", "finding": "core",
 }
@@ -35,16 +35,18 @@ BODY_KEYS = {
     "execution": {"purpose", "request", "records"},
     "effect": {"choice_id", "action", "expected", "observed"},
     "help": {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
+    "restart": {"event", "ticket_id", "from_generation", "to_generation", "status", "reason",
+                "release_verified", "checks", "waited_s"},
     "investigation": {"event", "request_turn", "based_on_seq", "outcome_seq", "hypothesis", "directive",
-                       "outcome", "evidence_trace_seq", "reason"},
+                       "keep", "outcome", "evidence_trace_seq", "reason"},
     "stop": {"reason", "result", "error"},
     "end": {"status", "error", "turns", "redactions"},
 }
 REQUEST_KEYS = {"action_id", "choice_id", "action", "params", "based_on_seq", "max_age_s", "depends_on", "lease_s"}
 TOKENS = {"observation": "O", "choice_set": "S", "context": "C", "s1_call": "1", "decision": "D",
-          "execution": "X", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F"}
+          "execution": "X", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F", "restart": "R"}
 # New traces check the observation epoch before adoption/cancellation; historical traces may resolve first.
-ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1*DH?(X(EP*)?){0,2}T$")
+ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1*D(?:H?(?:X(?:EP*)?){0,2}|RR)T$")
 
 
 def problems(entries: list[dict[str, Any]]) -> list[str]:
@@ -116,6 +118,7 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     context, decision = _one(group, "context"), _one(group, "decision")
     turn_entry = _one(group, "turn")
     calls, executions = _all(group, "s1_call"), _all(group, "execution")
+    restarts = _all(group, "restart")
     refs = {
         "observation": ([], obs), "choice_set": ([obs["trace_seq"]], offered),
         "context": ([obs["trace_seq"], offered["trace_seq"]], context),
@@ -137,8 +140,18 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     for event in _all(group, "help"):
         if event["body"]["event"] in ("opened", "repeat") and event["refs"] != [decision["trace_seq"]]:
             found.append(f"turn {number}: help {event['body']['event']} refs {event['refs']}")
+    if restarts:
+        request, done = restarts
+        if request["body"]["event"] != "request" or done["body"]["event"] not in ("completed", "failed"):
+            found.append(f"turn {number}: restart entries are not one request and one terminal entry")
+        if request["refs"] != [decision["trace_seq"]]:
+            found.append(f"turn {number}: restart request refs {request['refs']}")
+        if done["refs"] != [request["trace_seq"]]:
+            found.append(f"turn {number}: restart terminal entry refs {done['refs']}")
+        if executions:
+            found.append(f"turn {number}: a restarted turn sent gameplay input")
     expected_turn_refs = [obs["trace_seq"], offered["trace_seq"], context["trace_seq"], decision["trace_seq"],
-                          *[e["trace_seq"] for e in executions]]
+                          *[e["trace_seq"] for e in executions], *[r["trace_seq"] for r in restarts]]
     if turn_entry["refs"] != expected_turn_refs:
         found.append(f"turn {number}: turn refs {turn_entry['refs']}, expected {expected_turn_refs}")
 
@@ -188,10 +201,27 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
         expected_outcome = "escalated"
     elif selected.kind is ChoiceKind.delegate:
         expected_outcome = "delegated"
+    elif selected.kind is ChoiceKind.restart_play_mode:
+        expected_outcome = "restarted"
     else:
         expected_outcome = "finished"
     if record.outcome.value != expected_outcome:
         found.append(f"turn {number}: outcome {record.outcome.value}, entries say {expected_outcome}")
+    if restarts:
+        done = restarts[1]["body"]
+        operation = record.operation
+        if operation is None:
+            found.append(f"turn {number}: a restarted turn has no operation outcome")
+        else:
+            expected_operation = {
+                "kind": "restart_play_mode", "status": done["status"], "ticket_id": done["ticket_id"],
+                "from_generation": done["from_generation"], "to_generation": done["to_generation"],
+            }
+            actual = operation.model_dump(mode="json")
+            if {key: actual.get(key) for key in expected_operation} != expected_operation:
+                found.append(f"turn {number}: operation outcome differs from the restart entries")
+    elif record.operation is not None:
+        found.append(f"turn {number}: a non-restart turn carries an operation outcome")
     return found
 
 

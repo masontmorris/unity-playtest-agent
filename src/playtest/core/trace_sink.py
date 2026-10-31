@@ -32,6 +32,14 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
 - `effect` (core; refs the execution and any measurement it cites): one per execution whose effect
   was measured, after that execution and before the turn entry:
   `{"choice_id", "action", "expected": <object or null>, "observed": <object or null>}`.
+- `restart` (core; refs the decision): exactly two entries for one S1-selected host restart, and no
+  per-check entries. `request` follows the decision and refs it:
+  `{"event": "request", "ticket_id", "from_generation", "to_generation": null, "status": "requested",
+  "reason": null, "release_verified": null, "checks": 0, "waited_s": 0.0}`. The single terminal
+  `completed` or `failed` entry refs the request and repeats the ticket and generations, carrying the
+  operation status, reason, the measured release verification, check count and waited time. A
+  restarted turn sends no gameplay input, has no `execution`, and its `TurnRecord` carries the
+  `operation` outcome; it records the host operation, not a new answer from S1.
 - `help` (core): `{"event": "opened" | "repeat" | "adopted" | "cancelled", "choice_id", "kind":
   "escalate" | "delegate", "opened_turn", "source", "result", "reason"}`. `opened` and `repeat`
   follow the decision and ref it; `adopted` follows the fresh observation's epoch check and precedes
@@ -71,6 +79,9 @@ A replay (#30) re-derives every turn from these entries and fails on any differe
   answer's `choice_id` when it is a string), `effective_choice`, `executed_action` (the choice id
   of the execution the bridge did not reject) and `outcome`.
 - `check_adherence` over all turn records finds nothing.
+- A restarted turn has exactly one restart request and one terminal entry, the terminal entry refs
+  the request and repeats its ticket and generations, and the turn record's `operation` agrees with
+  them. A non-restarted turn has no restart entries and no operation outcome.
 - At most one help request is open at a time, and each is adopted or cancelled at most once.
 - Every `suspicion_id` appears once, and a suspicion entry sits after the observation of its turn.
 - A turn whose entries stop before its `turn` entry is reported, not skipped.
@@ -106,9 +117,16 @@ class MemorySink:
     def __init__(self) -> None:
         self.entries: list[dict[str, Any]] = []
 
-    def trace_seq_for_observation(self, seq: int) -> int | None:
+    def trace_seq_for_observation(self, seq: int, session: str | None = None) -> int | None:
+        """The trace entry for one bridge observation.
+
+        A bridge may reuse `seq` in a new play session after a restart, so a caller that measured the
+        session asks for that session's entry and never receives another session's. Without a session the
+        first matching entry is returned, exactly as before.
+        """
         return next((row["trace_seq"] for row in self.entries
-                     if row["kind"] == "observation" and row["body"].get("seq") == seq), None)
+                     if row["kind"] == "observation" and row["body"].get("seq") == seq
+                     and (session is None or row["body"].get("session") == session)), None)
 
     def append(
         self,

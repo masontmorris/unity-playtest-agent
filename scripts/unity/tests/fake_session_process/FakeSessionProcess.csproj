@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A fake pair of session children for the supervisor's process tests. It is a real executable,
+    not a stub script, so Start-Process, exit codes, redirection and Stop-Process behave exactly as
+    they do for Unity.exe and python.exe. The test harness copies this folder to a temporary
+    directory before building, so no bin/ or obj/ output lands in the repository.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>fake-session-process</AssemblyName>
+    <RootNamespace>FakeSessionProcess</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

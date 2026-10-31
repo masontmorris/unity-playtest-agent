@@ -14,7 +14,9 @@ up. S1's selected `while_pending` choice remains owned by the core loop.
 
 Accepted hypotheses and directives are written as `investigation` trace entries. Directive scoring
 runs in a runner facts source against the manifest's reader aliases using the shared `roles.checks`
-evaluator. The directive goal, setpoint, deadline and current status are shown to S1 as measured facts.
+evaluator. The directive goal, setpoint, deadline, current status and, while it is open, the exact game
+seconds left are shown to S1 as measured facts; the frontier's objective quote and inspectable conditions
+travel with the record unchanged (see "Objective attribution" below).
 The background request stages updates; the loop publishes them through `adopt_result` only at its
 adoption boundary, after checking the fresh observation's epoch. A completion during observation
 capture cannot start that turn's scoring window, and a result from the prior epoch is discarded.
@@ -110,6 +112,53 @@ until game_s 12.0". Other setpoints keep the line they had.
 **Not covered.** A reach setpoint that does not hold at the request observation can still hold at the
 observation that first states the directive, because the game keeps running while the frontier thinks. It is then
 met on that turn; its window shows whether S1 sent any input.
+
+## Objective attribution, exact time left, and keep requests (#91)
+
+A directive now says which part of the objective it serves and what S1 can inspect to keep pursuing or
+replan. This is provenance, not policy: no code reads the quote or the conditions, and none of them can
+choose, request help, extend a deadline or finish.
+
+**The fields.** `objective_quote`, `continue_if` and `replan_if` are required on the frontier's answer
+(`DirectiveOut`) and all-or-none on the `Directive` record. A record written before they existed has all
+three null and stays readable; nothing is backfilled.
+- `objective_quote` is a verbatim substring of the packet's exact objective, at most 200 characters.
+  `PacketRefs` carries that objective, and `review` rejects a quote that is not a character-for-character
+  substring, one over the limit, or a blank one. It is never trimmed, repaired, matched loosely, or replaced
+  with a target or reader alias. A directive rejected for another reason is not salvaged by its quote.
+- `continue_if` and `replan_if` list observables S1 can inspect. `review` checks only that each list is
+  present, non-empty and has no blank entry; `"unknown"` is an accepted entry precisely because a condition
+  the packet cannot support must stay unknown rather than be invented. No predicate, threshold, timer or
+  action is derived from them.
+
+Both reach S1 unchanged in `directive` and `directive_history`, and the next frontier packet's history
+carries the same record. The frontier's system prompt asks for the verbatim quote, a written relationship
+for a prerequisite such as recovering the play session, and conditions it can ground in the packet.
+
+**Time left.** For the open directive only, `directive_provenance` states `expires_in_game_s`:
+`deadline_game_s` minus this observation's `game_s`, one subtraction with no rounding or clamp. It is null
+when the record has no deadline or the clock is unknown. The packet's `directive` row carries the same
+number. A closed directive keeps its outcome and reason and states no countdown. Nothing compares this
+number with a limit, extends a deadline, or turns it into a help request.
+
+**A null directive is not a renewal.** The answer's `directive` may be null: that asks for no replacement,
+and the open directive keeps its id, deadline and outcome. A response may arrive after the directive's
+deadline has already closed it. When an adopted answer asks for no replacement while a directive is open,
+`FrontierHelp` records a `keep` row from the request it replied to and the directive it saw: the directive
+id, that request's turn, bridge seq and game time, its deadline, the exact `expires_in_game_s` then, and the
+adoption turn. The tracker writes it beside the directive, states it in the fact line, and includes it in
+`directive_provenance[id]["keep"]` and in the trace's `keep` investigation entry.
+
+Once the tracker measures the close, the keep row also states `closed_at_game_s`, `closed_by_deadline`
+(whether the deadline is what ended it) and `request_before_deadline`. Until then, or without a clock or a
+deadline, those stay `null`: the row never claims what would have happened. A keep that arrives after the
+directive closed stays beside the outcome and reopens nothing. The frontier packet does not yet carry keep
+rows; S1 reads them from the tracker's provenance.
+
+**Not implemented: an S1 intent field (review idea C).** S1 is not asked for a categorical reason and no new
+intent field is added, so S1's internal reason for continuing, replanning or finishing remains unobserved.
+These records state only what the frontier wrote and what the tracker measured. Nothing here shows that
+attribution improves navigation or explains S1's intent.
 
 ## Candidate findings (#38)
 
@@ -303,6 +352,24 @@ decides whether to follow the directive. Whether the frontier proposes such
 targets, and whether S1 follows them, is untested — no model call was made for
 this change — and any claim about findings needs a paired evaluation.
 
+## Exact request artifacts
+
+Before reserving or dispatching a frontier call, the helper writes the canonical UTF-8 JSON body to
+`<run>/requests/frontier/<request_sha256>.json`. The artifact includes the full inline clip, packet, manifest
+message, system prompt and answer schema. HTTP headers and transport credentials are not part of the body.
+The ledger records the same hash and a relative `request_body_path`, so later review can verify the exact
+request without reconstructing transient helper state. These full artifacts stay local under `runs/`.
+
+Identical bodies reuse their content-addressed artifact; each authorized call still reserves and dispatches
+normally. An existing artifact whose bytes disagree with its hash is refused. A storage failure prevents
+reservation and dispatch and is reported through the helper error path. A body may remain when a later budget
+check refuses the call; an artifact alone does not prove dispatch. This capture applies to future calls and
+does not establish the contents of earlier calls whose bodies were not retained.
+
+`tests/test_frontier_request_archive.py` checks the actual helper request, inline media, ledger linkage, absence
+of a supplied transport credential, exact serialization, damaged-artifact refusal and storage failure before
+dispatch. These are offline fake-provider checks, not evidence from a new paid run.
+
 ## S1 ownership and evidence audit
 
 | Branch | Runtime behavior | Evidence |
@@ -314,6 +381,7 @@ this change — and any claim about findings needs a paired evaluation.
 | Pending help | Executes exactly S1's valid `while_pending` continuation; otherwise waits under the existing default. | `core/turn_loop.py:343`; `tests/test_turn_loop.py`. |
 | Helper adoption | A result ready at turn entry is adopted once after the fresh observation's epoch check; prior-epoch help is discarded. | `core/turn_loop.py` (`run_turn`, `_adopt_finished_help`); end-to-end tests in `tests/test_loop_help_publication.py`. |
 | Directive scoring | Reads the current observation and shared comparator result to write a fact and trace outcome; it cannot call the help port or choose input. | `runner/directives.py:45-71`; all terminal outcomes covered in `tests/test_frontier_help.py`. |
+| Directive view | After a facts source's `facts` for the observation, the loop asks it for the directives it tracks and states them in `directive`, `directive_history` and `directive_provenance` (`turn-loop.md`, "The context"). It reads only what `adopt_result` already published, so it cannot show an unadopted, replaced or prior-epoch pending result. A previously adopted directive invalidated at a boundary remains in the closed history. For the open one it states the exact `expires_in_game_s`, and a keep row when an adopted answer asked for no replacement; neither is compared with a limit or turned into action. It chooses no input, opens no help, drops no choice or directive; a source that is absent, silent or faulty leaves the context as it was. | `TurnLoop._directive_view`; `DirectiveTracker.directive_view`; `tests/test_directive_context.py` (serialized contexts; a run with and without the view differs only in those keys); `tests/test_frontier_publication.py` (keep staging and measured close). |
 | Guidance layout | Lays out results already adopted. The loop sends the layout only if `restore_guidance` returns the adopted list exactly, else the list. No choice, help request, default or adoption is read or changed, and no count, score or timer is involved. | `TurnLoop._guidance_view`; `runner/guidance_codec.py`; `tests/test_guidance_codec.py`, `tests/test_loop_guidance_layout.py`. |
 | Reader notes | Labels each recorded note an unverified preflight-model inference in the frontier's manifest message. Every note is sent as written; no code filters, ranks, or acts on one, and the answer schema, packet and choices do not change. | `provider.manifest_message`, `FrontierHelp.reader_notes`; `tests/test_frontier_provider.py` and `tests/test_frontier_help.py` (actual request). |
 | Exploration targets | Prompt text invites a hypothesis plus a go-try directive about a clip-shown part no recorded action tried. Advice only: no branch chooses, escalates, or substitutes, and the directive is scored like any other. | `roles/frontier.py` SYSTEM; `tests/test_roles_frontier.py` (prompt needles, review acceptance). |

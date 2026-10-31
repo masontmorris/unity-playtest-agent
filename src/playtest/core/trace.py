@@ -21,7 +21,8 @@ class TraceWriter:
         self.turns = 0
         self._closed = False
         self._seq = 0
-        self._observation_trace: dict[int, int] = {}
+        self._observation_trace: dict[tuple[str | None, int], int] = {}
+        self._first_observation: dict[int, int] = {}
         self._file = self.path.open("x", encoding="utf-8", newline="\n")
         try:
             self.append(TraceKind.run, run.model_dump(mode="json"), author=TraceAuthor.harness)
@@ -68,11 +69,19 @@ class TraceWriter:
         if kind is TraceKind.turn:
             self.turns += 1
         elif kind is TraceKind.observation:
-            self._observation_trace[body["seq"]] = seq
+            self._observation_trace[(body.get("session"), body["seq"])] = seq
+            self._first_observation.setdefault(body["seq"], seq)
         return seq
 
-    def trace_seq_for_observation(self, seq: int) -> int | None:
-        return self._observation_trace.get(seq)
+    def trace_seq_for_observation(self, seq: int, session: str | None = None) -> int | None:
+        """The trace entry for one bridge observation, by session when the caller measured one.
+
+        A restart may reuse a bridge `seq`; a session-less lookup still returns the first entry for it,
+        but a caller that knows the session never receives another session's observation.
+        """
+        if session is None:
+            return self._first_observation.get(seq)
+        return self._observation_trace.get((session, seq))
 
     def close(self, status: str = "complete", error: str | None = None) -> None:
         if self._closed:

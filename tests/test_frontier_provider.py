@@ -260,7 +260,10 @@ def test_a_decoded_effect_check_reviews_clean_for_a_calibrated_action_and_is_rep
 
 def test_a_directive_that_names_an_effect_field_is_reported_on_the_directive():
     directive = {"deadline_s": 5.0, "expected": {"field": "effect.move", "op": "<", "tolerance": None, "value": 1.5},
-                 "target": None, "tests": None, "text": "Move once."}
+                 "target": None, "tests": None, "text": "Move once.",
+                 "objective_quote": "Find a state that disagrees",
+                 "continue_if": ["the measured displacement still follows the move"],
+                 "replan_if": ["the measured displacement contradicts the move"]}
     known = with_effects(move=frontier.Effect(expected=6.04, allowance=0.06))
     result = provider.decode_response(response(json.dumps({**EMPTY_ANSWER, "directive": directive})), known, sample())
     assert [p.item for p in result.review.problems] == ["directive"]
@@ -604,6 +607,9 @@ def test_semantic_problems_are_isolated_on_their_items_and_returned():
                 "target": None,
                 "expected": {"field": "public.not_a_field", "op": "==", "value": True, "tolerance": None},
                 "deadline_s": 5.0,
+                "objective_quote": "Find a state that disagrees",
+                "continue_if": ["the flag reading still follows the action"],
+                "replan_if": ["the flag reading contradicts the action"],
             },
             "hypotheses": [
                 {
@@ -684,6 +690,9 @@ def test_a_nonfinite_answer_is_rejected_as_invalid_json():
                     "tolerance": None,
                 },
                 "deadline_s": 5.0,
+                "objective_quote": "Find a state that disagrees",
+                "continue_if": ["the counter reading still follows the action"],
+                "replan_if": ["the counter reading contradicts the action"],
             }
         }
     )

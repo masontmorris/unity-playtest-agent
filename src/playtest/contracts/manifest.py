@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -257,6 +257,48 @@ class ManifestImage(Strict):
     capture_game_s: float | None = Field(ge=0, allow_inf_nan=False)
 
 
+class ReachBounds(Strict):
+    """One explicit axis-aligned entry volume, in the frame its region declares.
+
+    All six coordinates are finite and each axis is ordered `min < max`. Malformed geometry is rejected,
+    never repaired or clamped: a volume the author did not state is not a volume this run may measure.
+    """
+
+    min: list[Annotated[float, Field(allow_inf_nan=False)]] = Field(
+        min_length=3, max_length=3, description="Lower corner [x, y, z]")
+    max: list[Annotated[float, Field(allow_inf_nan=False)]] = Field(
+        min_length=3, max_length=3, description="Upper corner [x, y, z]")
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "ReachBounds":
+        if any(low >= high for low, high in zip(self.min, self.max, strict=True)):
+            raise ValueError("reach bounds must be ordered min < max on every axis")
+        return self
+
+
+class ReachRegion(Strict):
+    """An operator's declaration of a place, and the one measured pose its distance derives from.
+
+    The declaration is an assertion about the game, not a measurement and not a verified target. It names
+    its author, source and verification status; no value here is produced by the preflight model. The run
+    measures only the declared pose source, in the declared frame and scene, and derives distance and
+    membership from it. Neither result says the objective was completed.
+    """
+
+    region_id: str = Field(pattern=NAME, description="Unique id; also names this region's derived fields")
+    label: str = Field(min_length=1)
+    purpose: str = Field(min_length=1, description="What this place is for, as the author asserts it")
+    frame: Literal["world"] = Field(description="The coordinate frame the bounds are stated in")
+    scene: str = Field(min_length=1, description="The scene this volume is declared in")
+    bounds: ReachBounds
+    pose: Literal["probe_anchor"] = Field(
+        description="The measured pose the distance is derived from; the bridge probe anchor's world position")
+    author: str = Field(min_length=1, description="Who declared this place")
+    source: str = Field(min_length=1, description="Where the declared geometry came from")
+    verification: Literal["unverified", "operator_asserted"] = Field(
+        description="Whether the author asserts the place; neither value is a measurement by this run")
+
+
 class SelectionCoverage(Strict):
     offered_fields: list[dict[str, Any]]
     unselected_field_ids: list[str]
@@ -285,6 +327,9 @@ class PreflightManifest(Strict):
     actions: list[ManifestAction] = Field(max_length=14)
     skills: list[ManifestSkill] = Field(max_length=6)
     progress: list[ManifestProgress] = Field(max_length=6)
+    # Operator assertions about places, not model output. A default empty list keeps every manifest that
+    # declared none valid and gives it exactly the behavior and request sections it had before.
+    reach_regions: list[ReachRegion] = Field(default_factory=list, max_length=8)
     invariants: list[ManifestInvariant] = Field(max_length=12)
     gaps: ManifestGaps
     selection: SelectionCoverage
@@ -306,6 +351,9 @@ class PreflightManifest(Strict):
             raise ValueError("reader aliases, selection ids and field ids must be unique")
         if len(names) != len(set(names)):
             raise ValueError("action and skill names must be unique")
+        region_ids = [region.region_id for region in self.reach_regions]
+        if len(region_ids) != len(set(region_ids)):
+            raise ValueError("reach region ids must be unique")
         offered = [f.get("id") for f in self.selection.offered_fields]
         if (any(not isinstance(x, str) or not x for x in offered) or
                 len(offered) != len(set(offered)) or not set(selections) <= set(offered)):

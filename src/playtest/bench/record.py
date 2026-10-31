@@ -20,9 +20,16 @@ from playtest.contracts.bridge import Observation
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSet, ChoiceSource
 from playtest.core.bridge_client import BridgeClient, BridgeError
 from playtest.core.bridge_lock import BridgeLockError
-from playtest.core.context import INSTRUCTIONS, build_context, canonical
+from playtest.core.context import build_context, canonical
 from playtest.preflight.calibrate import _entity_snapshot, _new_runtime_errors, discover_actions
 from playtest.preflight.entity import _complete, _norm, _sub, _vector
+
+# Frozen bench frames predate the live decision policy. Keep their reconstructed requests byte-exact.
+BENCH_INSTRUCTIONS = (
+    "This is one decision turn. Choose exactly one id from choices. Facts are measured; null means "
+    "unknown, never zero. Only the listed choices exist. On an escalate or delegate turn, also say "
+    "what to do while help is pending. When an image is present, it is the current game view."
+)
 
 HOLD_S = 1.2
 PASSES = 5
@@ -64,7 +71,7 @@ def digest(value: str | bytes) -> str:
 
 def context_for(frame: dict[str, Any]) -> dict[str, Any]:
     """Rebuild the actual payload, rejecting a frame bound to another observation."""
-    return build_context(
+    payload = build_context(
         objective=frame["objective"],
         observation=Observation.model_validate(frame["observation"]),
         choices=ChoiceSet.model_validate(frame["choice_set"]),
@@ -73,6 +80,8 @@ def context_for(frame: dict[str, Any]) -> dict[str, Any]:
         sample_gap_s=frame.get("sample_gap_s"),
         game_view=frame.get("game_view"),
     )
+    payload["instructions"] = BENCH_INSTRUCTIONS
+    return payload
 
 
 # S1's instructions when the Day 3 FPSKit corpora were recorded, before #157 added the game-view sentence.
@@ -373,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             "bridge_source_sha256": _source_hash(repo / "bridge", {".cs", ".asmdef", ".json"}),
             "python_source_sha256": _source_hash(repo / "src" / "playtest", {".py"}),
             "entity_sha256": digest(entity_bytes), "calibration_sha256": digest(calibration_bytes),
-            "instructions_sha256": digest(INSTRUCTIONS), "objective_sha256": digest(OBJECTIVE),
+            "instructions_sha256": digest(BENCH_INSTRUCTIONS), "objective_sha256": digest(OBJECTIVE),
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(), "input_mode": "input_system",
             "clock_mode": "realtime", "reset": "one scene load; no reset between passes",
             "requested_hold_s": HOLD_S, "controller_lease_s": HOLD_S, "frames": [],

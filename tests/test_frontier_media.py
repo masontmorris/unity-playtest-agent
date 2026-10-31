@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,17 @@ def _stamp(path: Path, when: datetime) -> None:
 
 def _frames(tmp_path: Path) -> Path:
     return tmp_path / "game" / media.FRAME_SUBDIR
+
+
+def _generation_frames(tmp_path: Path, generation: str) -> Path:
+    return media.frame_directory(tmp_path / "game", generation)
+
+
+def _raw_frame(path: Path, when: datetime) -> None:
+    """A listed JPEG-shaped file enough for selection tests that never encode a clip."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xd8stub")
+    _stamp(path, when)
 
 
 def _capture(tmp_path: Path, *, since: datetime, until: datetime, ffmpeg: str = "ffmpeg",
@@ -300,3 +312,45 @@ def test_a_second_capture_into_the_same_folder_never_overwrites_it(tmp_path: Pat
     assert first.descriptor is not None
     again = _capture(tmp_path, since=since, until=since + timedelta(seconds=1))
     assert again.descriptor is None and "already exists" in (again.reason or "")
+
+
+def test_a_generation_reads_only_its_own_frame_directory(tmp_path: Path) -> None:
+    since = datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc)
+    current, prior = str(uuid.uuid4()), str(uuid.uuid4())
+    _raw_frame(_frames(tmp_path) / "f-000001.jpg", since)
+    _raw_frame(_frames(tmp_path) / "f-000002.jpg", since + timedelta(seconds=0.1))
+    _raw_frame(_generation_frames(tmp_path, prior) / "f-000003.jpg", since)
+    _raw_frame(_generation_frames(tmp_path, prior) / "f-000004.jpg", since + timedelta(seconds=0.1))
+    _raw_frame(_generation_frames(tmp_path, current) / "f-000005.jpg", since)
+    only_one = media.capture_clip(project=tmp_path / "game", status=STATUS, since_utc=since,
+                                  until_utc=since + timedelta(seconds=1), output_dir=tmp_path / "one",
+                                  generation=current)
+    assert only_one.descriptor is None and "fewer than two" in (only_one.reason or "")
+    assert not (tmp_path / "one").exists()
+    missing = media.capture_clip(project=tmp_path / "game", status=STATUS, since_utc=since,
+                                 until_utc=since + timedelta(seconds=1), output_dir=tmp_path / "missing",
+                                 generation=str(uuid.uuid4()))
+    assert missing.descriptor is None and "frame folder is unavailable" in (missing.reason or "")
+    malformed = media.capture_clip(project=tmp_path / "game", status=STATUS, since_utc=since,
+                                   until_utc=since + timedelta(seconds=1), output_dir=tmp_path / "bad",
+                                   generation="not-a-generation")
+    assert malformed.descriptor is None and "canonical UUID" in (malformed.reason or "")
+    assert media.frame_directory(tmp_path / "game", current) == tmp_path / "game" / media.FRAME_SUBDIR / current
+
+
+@needs_ffmpeg
+def test_a_generation_clip_records_the_generation_and_that_instances_frames(tmp_path: Path) -> None:
+    since = datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc)
+    generation = str(uuid.uuid4())
+    frames = _generation_frames(tmp_path, generation)
+    _jpeg(frames / "f-000001.jpg", "red")
+    _jpeg(frames / "f-000002.jpg", "green")
+    _stamp(frames / "f-000001.jpg", since)
+    _stamp(frames / "f-000002.jpg", since + timedelta(seconds=0.1))
+    clip = media.capture_clip(project=tmp_path / "game", status=STATUS, since_utc=since,
+                              until_utc=since + timedelta(seconds=1), output_dir=tmp_path / "generation",
+                              generation=generation)
+    assert clip.descriptor is not None and clip.manifest is not None
+    assert clip.descriptor["generation"] == generation
+    assert clip.manifest["source_directory"] == (media.FRAME_SUBDIR / generation).as_posix()
+    assert [frame["source"] for frame in clip.manifest["frames"]] == ["f-000001.jpg", "f-000002.jpg"]

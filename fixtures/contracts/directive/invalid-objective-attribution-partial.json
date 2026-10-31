@@ -1,0 +1,10 @@
+{
+  "directive_id": "d-92",
+  "model": "muse-spark-1.3",
+  "based_on_seq": 12,
+  "text": "Try the save control once and watch the loaded counter.",
+  "objective_quote": "Explore the item and save systems",
+  "continue_if": [
+    "the loaded counter still changes after the save"
+  ]
+}

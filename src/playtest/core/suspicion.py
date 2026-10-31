@@ -239,6 +239,16 @@ class ReaderWatch:
     def drift_readings(self) -> int:
         return self._drift
 
+    def rebind(self, *, client: Any = None, observation: Observation | None = None,
+               generation: str | None = None) -> None:
+        """Drop every scene-bound baseline after a restart; suspicions already raised stay historical."""
+        self._tracks = {alias: _Track(alias) for alias in self._kinds}
+        self._before = None
+        self._before_seq = None
+        self._violated = {}
+        self._seq = None
+        self._game_s = None
+
     def observe(self, observation: Observation, sample: ReaderSample | None, *, turn: int,
                 trace_seq: int | None) -> Noticed:
         self._seq, self._game_s = observation.seq, observation.game_s

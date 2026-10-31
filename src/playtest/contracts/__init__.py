@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from . import action_catalog, bridge, calibration, investigation, loop, manifest, trace
+from . import action_catalog, bridge, calibration, investigation, loop, manifest, session_control, trace
 from .common import PROTOCOL, ClockMode, Envelope
 
 # Every contract with an exported JSON Schema, by schema file stem.
@@ -32,6 +32,11 @@ CONTRACTS: dict[str, type[BaseModel]] = {
     "suspicion": investigation.Suspicion,
     "run_record": investigation.RunRecord,
     "trace_entry": trace.TraceEntry,
+    "session_control_config": session_control.SessionControlConfig,
+    "host_state": session_control.HostState,
+    "restart_request": session_control.RestartRequest,
+    "restart_result": session_control.RestartResult,
+    "restart_cancel": session_control.RestartCancel,
 }
 
 __all__ = [
@@ -43,5 +48,6 @@ __all__ = [
     "bridge",
     "investigation",
     "loop",
+    "session_control",
     "trace",
 ]

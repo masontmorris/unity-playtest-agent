@@ -1,0 +1,21 @@
+# S1 decision policy
+
+The live primary instructions give priority to an explicit destination or test in the supplied objective. Control exploration and investigation support that task; an objective that asks for broad exploration remains exploration-first. The suggested orient, approach, interaction and evidence-check cycle is advice for S1, not a required sequence. S1 may reassess, ask for help, wait or finish as it judges appropriate. The host executes the valid selected choice; it does not derive a plan or rationale from the categorical answer, force escalation, or suppress finish.
+
+Objective template for a destination/test hunt: “Reach [destination] and test [interaction]. Use control exploration and investigation as needed. Completion is observable when [specific evidence of the interaction and its result] is seen.” For example: “Reach the marked chamber and test its switch; finish after observing the switch response and any resulting change.”
+
+Exploration-first counterexample: “Survey the accessible area and exercise the available controls; finish after recording the observed effects of each accessible control, or when no useful attempt remains.” These are authoring examples, not automatic rewrites or game knowledge embedded in the core.
+
+For the current hunt, a task-specific objective can state: “Locate the four tall stepped structures, reach an accessible approach to one, and test walking up it. Observe and record the response, including a blocked attempt. Use other controls and ask for help as needed to complete that test.” This is an objective-authoring example; historical run objectives remain unchanged.
+
+The prompt also identifies directive text as attributed frontier advice from an earlier observation. When supplied, `directive_provenance` identifies its source and age. S1 weighs that advice against the current observation and image; the host neither enforces the advice nor decides that it is wrong. A reader setpoint marked met does not establish task completion.
+
+The live context and primary question carry the same instructions; the run's prompt hash identifies the primary and pending-help texts. Frozen S1 bench frame reconstruction deliberately uses its original instructions, including for new recordings made by that bench protocol; load tests and live contexts use the current default. Existing corpora and outcomes are unchanged. Historical plans that pin source hashes still require their original sources for scoring.
+
+Offline tests check payload delivery and choice ownership, not model performance or game outcomes. A performance comparison requires a separately designed, approved evaluation with frozen inputs and a stated budget.
+
+Integration ownership review: **pass** for the implemented prompt and presentation paths. `core/context.py` supplies the primary instruction text; `runner/s1.py` sends that text with the original objective and offered criteria and preserves the selected ID. The optional `FactsSource.directive_view` is read after the fresh observation, epoch handling, adoption and directive scoring; `runner/directives.py` supplies the open record, closed history and source/first-statement provenance. This path selects no input and opens no help. Invalid answers, stale rejections, pending-input defaults, waits and finish retain their existing execution paths. The tests inspect serialized payloads, selected-choice fidelity, cancellation, supersession and observation-boundary cases.
+
+Parent verification after combining the changes: **2,090 tests passed**, 23 exported schemas unchanged, whitespace checks clean, and all 155 session-12 historical context hashes reconstructed exactly with their original prompt. The recorded session-12 trace has zero adherence violations; it predates this change and does not validate new live decisions. Integration also added regressions for a mutable baseline escaping through the view and an open directive surviving a session-ID change.
+
+Residual risk: structured directive records currently repeat prose retained in facts. Request growth is documented in `turn-loop.md`; token usage, freshness and gameplay with this combined change are unmeasured. No live or paid evaluation was run. The guidance is attributed frontier advice, not an S1-authored persistent plan.

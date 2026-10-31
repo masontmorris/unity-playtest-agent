@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "run_id": "run-1",
+  "ticket_id": "ticket-1",
+  "operation": "cancel_restart"
+}

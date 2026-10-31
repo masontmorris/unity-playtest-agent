@@ -1491,6 +1491,117 @@
       "title": "ManifestSkillStep",
       "type": "object"
     },
+    "ReachBounds": {
+      "additionalProperties": false,
+      "description": "One explicit axis-aligned entry volume, in the frame its region declares.\n\nAll six coordinates are finite and each axis is ordered `min < max`. Malformed geometry is rejected,\nnever repaired or clamped: a volume the author did not state is not a volume this run may measure.",
+      "properties": {
+        "max": {
+          "description": "Upper corner [x, y, z]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Max",
+          "type": "array"
+        },
+        "min": {
+          "description": "Lower corner [x, y, z]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Min",
+          "type": "array"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "title": "ReachBounds",
+      "type": "object"
+    },
+    "ReachRegion": {
+      "additionalProperties": false,
+      "description": "An operator's declaration of a place, and the one measured pose its distance derives from.\n\nThe declaration is an assertion about the game, not a measurement and not a verified target. It names\nits author, source and verification status; no value here is produced by the preflight model. The run\nmeasures only the declared pose source, in the declared frame and scene, and derives distance and\nmembership from it. Neither result says the objective was completed.",
+      "properties": {
+        "author": {
+          "description": "Who declared this place",
+          "minLength": 1,
+          "title": "Author",
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/$defs/ReachBounds"
+        },
+        "frame": {
+          "const": "world",
+          "description": "The coordinate frame the bounds are stated in",
+          "title": "Frame",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "pose": {
+          "const": "probe_anchor",
+          "description": "The measured pose the distance is derived from; the bridge probe anchor's world position",
+          "title": "Pose",
+          "type": "string"
+        },
+        "purpose": {
+          "description": "What this place is for, as the author asserts it",
+          "minLength": 1,
+          "title": "Purpose",
+          "type": "string"
+        },
+        "region_id": {
+          "description": "Unique id; also names this region's derived fields",
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Region Id",
+          "type": "string"
+        },
+        "scene": {
+          "description": "The scene this volume is declared in",
+          "minLength": 1,
+          "title": "Scene",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the declared geometry came from",
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "verification": {
+          "description": "Whether the author asserts the place; neither value is a measurement by this run",
+          "enum": [
+            "unverified",
+            "operator_asserted"
+          ],
+          "title": "Verification",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region_id",
+        "label",
+        "purpose",
+        "frame",
+        "scene",
+        "bounds",
+        "pose",
+        "author",
+        "source",
+        "verification"
+      ],
+      "title": "ReachRegion",
+      "type": "object"
+    },
     "SelectionCoverage": {
       "additionalProperties": false,
       "properties": {
@@ -1703,6 +1814,14 @@
       },
       "maxItems": 6,
       "title": "Progress",
+      "type": "array"
+    },
+    "reach_regions": {
+      "items": {
+        "$ref": "#/$defs/ReachRegion"
+      },
+      "maxItems": 8,
+      "title": "Reach Regions",
       "type": "array"
     },
     "readers": {

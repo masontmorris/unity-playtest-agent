@@ -62,6 +62,7 @@ def _secondary(raw: Any, choices: ChoiceSet) -> WhilePending | None:
         return None
     if pending.mode == "continue":
         target = choices.get(pending.choice_id or "")
-        if target is None or target.kind in _HELP_KINDS or target.kind is ChoiceKind.finish:
+        if target is None or target.kind in _HELP_KINDS or target.kind in (ChoiceKind.finish,
+                                                                         ChoiceKind.restart_play_mode):
             return None
     return pending

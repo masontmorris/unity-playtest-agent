@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from playtest.contracts.loop import TurnOutcome, TurnRecord
 
-_NO_INPUT = (TurnOutcome.rejected_invalid, TurnOutcome.finished)
+_NO_INPUT = (TurnOutcome.rejected_invalid, TurnOutcome.finished, TurnOutcome.restarted)
 _HELP = (TurnOutcome.escalated, TurnOutcome.delegated)
 
 

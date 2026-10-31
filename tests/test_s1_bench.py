@@ -362,6 +362,18 @@ def test_calibrated_catalog_rejects_changed_descriptors() -> None:
         calibrated_choices(calibration, discovery)
 
 
+def test_frozen_frame_reconstruction_uses_original_prompt(tmp_path: Path) -> None:
+    from playtest.bench.record import BENCH_INSTRUCTIONS
+    from playtest.core.context import INSTRUCTIONS
+
+    corpus, _, _ = _inputs(tmp_path)
+    frame = json.loads(corpus.read_text(encoding="utf-8"))["frames"][0]
+    payload = context_for(frame)
+    assert payload["instructions"] == BENCH_INSTRUCTIONS != INSTRUCTIONS
+    assert digest(canonical(payload)) == frame["payload_sha256"]
+    assert digest(BENCH_INSTRUCTIONS) == "986c84239418754826075a794540835e994cbc1a26d9527f7b1f47dc1aa97b4b"
+
+
 def test_a_frame_recorded_before_157_rebuilds_with_its_own_instructions_and_nothing_else(tmp_path: Path):
     corpus, _, _ = _inputs(tmp_path)
     frame = json.loads(corpus.read_text(encoding="utf-8"))["frames"][0]

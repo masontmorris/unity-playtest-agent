@@ -28,8 +28,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from playtest.contracts.session_control import is_generation
+
 FRAME_SUBDIR = Path("Temp") / "playtest-bridge-frames"
 SELF_TEST_NAME = "self-test.jpg"
+
+
+def frame_directory(project: Path, generation: str | None = None) -> Path:
+    """The frame window for one play generation, or the legacy project-wide window.
+
+    An Editor-owned host writes each play instance's frames under `<generation>/`, so a clip or a view
+    can never mix two generations. A run without a host generation keeps the old flat directory exactly.
+    """
+    base = project / FRAME_SUBDIR
+    return base if generation is None else base / generation
 WINDOW_S = 4.0
 WINDOW_ATTEMPTS = 3
 NOMINAL_RATE_HZ = 10.0
@@ -60,12 +72,17 @@ def capture_clip(
     output_dir: Path,
     ffmpeg: str = "ffmpeg",
     timeout_s: float = 120.0,
+    generation: str | None = None,
 ) -> Clip:
     """Copy and encode the last `WINDOW_S` seconds of bridge frames, bounded by the run.
 
     `since_utc` is the run or episode start wall time and `until_utc` is the escalating
     observation's wall time. `output_dir` must be new; an existing folder is never overwritten.
+    With a `generation`, only that play instance's frame directory is read (never a prior one's);
+    without one the legacy project-wide window is used exactly as before.
     """
+    if generation is not None and not is_generation(generation):
+        return Clip(None, None, "the frame generation is not a canonical UUID", None)
     gated = _gate(status)
     if gated is not None:
         return Clip(None, None, gated, None)
@@ -75,7 +92,7 @@ def capture_clip(
     if until < since:
         return Clip(None, None, "the clip window ends before it starts", None)
     start = max(since, until - timedelta(seconds=WINDOW_S))
-    source = project / FRAME_SUBDIR
+    source = frame_directory(project, generation)
     if not source.is_dir():
         return Clip(None, None, "the bridge frame folder is unavailable", None)
     selected: list[tuple[datetime, Path]] = []
@@ -168,12 +185,14 @@ def capture_clip(
         "final_frame_hold_s": 1.0 / NOMINAL_RATE_HZ,
         "timestamp_basis": TIMESTAMP_BASIS,
         "frame_game_s": None,
+        "generation": generation,
         "caveat": CAVEAT,
     }
     manifest = {
         "timestamp_basis": TIMESTAMP_BASIS,
         "caveat": CAVEAT,
-        "source_directory": FRAME_SUBDIR.as_posix(),
+        "generation": generation,
+        "source_directory": (FRAME_SUBDIR / generation if generation is not None else FRAME_SUBDIR).as_posix(),
         "window": {"since_utc": since.isoformat(), "until_utc": until.isoformat(),
                    "selected_start_utc": start.isoformat()},
         "frames": frames,

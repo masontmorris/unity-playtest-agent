@@ -20,6 +20,7 @@ from playtest.core.ports import HelpResult
 from playtest.core.trace import read_trace
 from playtest.frontier import media, provider
 from playtest.frontier.packet import build_packet
+from playtest.frontier.request_archive import preserve_request
 from playtest.roles import frontier
 from playtest.roles.checks import field_value
 from playtest.runner import guidance_codec
@@ -27,6 +28,7 @@ from playtest.runner.choices import UNIT
 from playtest.runner.directives import DirectiveTracker
 from playtest.runner.frontier_history import recent_records
 from playtest.runner.probe import allowance
+from playtest.runner.progress import ProgressProbe, progress_rows
 
 
 def action_effects(expected: Mapping[str, Mapping[str, Any] | None]) -> dict[str, frontier.Effect]:
@@ -92,6 +94,23 @@ def reader_notes(readers: Any) -> dict[str, dict[str, str]]:
     return out
 
 
+def declared_progress(regions: Any) -> dict[str, frontier.ProgressRegion]:
+    """The manifest's reach declarations as the frontier is shown them, keyed by region id.
+
+    Nothing is measured here. The declaration is copied as authored: its label, purpose, frame, scene, bounds,
+    pose source, author, source and verification status. An empty manifest yields no rows, so the frontier
+    request keeps exactly its old fields and sections.
+    """
+    out: dict[str, frontier.ProgressRegion] = {}
+    for region in regions or ():
+        out[region.region_id] = frontier.ProgressRegion(
+            region_id=region.region_id, label=region.label, purpose=region.purpose, frame=region.frame,
+            scene=region.scene, minimum=tuple(float(value) for value in region.bounds.min),
+            maximum=tuple(float(value) for value in region.bounds.max), pose=region.pose,
+            author=region.author, source=region.source, verification=region.verification)
+    return out
+
+
 def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
     """Every suspicion the trace holds so far, oldest first, as rows for the packet.
 
@@ -129,8 +148,9 @@ def _evidence_snapshot(sink: Any, recent: list[dict[str, Any]] | None = None,
         if kind == "observation":
             if seqs is not None and body.get("seq") not in seqs:
                 continue
-            # The citation needs the bridge sequence and turn, not a copy of the observation's contents.
-            body = {"seq": body.get("seq")}
+            # The citation needs the bridge sequence, session and turn, not a copy of the observation's
+            # contents. A restart may reuse a `seq`, so the session is what tells the entries apart.
+            body = {"seq": body.get("seq"), "session": body.get("session")}
         elif kind in ("execution", "effect"):
             if refs is not None and trace_seq not in refs:
                 continue
@@ -141,9 +161,15 @@ def _evidence_snapshot(sink: Any, recent: list[dict[str, Any]] | None = None,
     return snapshot
 
 
-def _observation_ref(trace: Mapping[int, Mapping[str, Any]], seq: int) -> int | None:
+def _observation_ref(trace: Mapping[int, Mapping[str, Any]], seq: int,
+                     session: str | None = None) -> int | None:
+    """The entry that observed `seq`: the current session's when both observed it, else a unique one."""
     matches = [ref for ref, entry in trace.items()
                if entry["kind"] == "observation" and entry["body"].get("seq") == seq]
+    if session is not None:
+        current = [ref for ref in matches if trace[ref]["body"].get("session") == session]
+        if current:
+            return current[0] if len(current) == 1 else None
     return matches[0] if len(matches) == 1 else None
 
 
@@ -248,6 +274,7 @@ class _StagedResult:
     result: HelpResult
     payload: dict[str, Any]
     directive_row: dict[str, Any] | None
+    keep_row: dict[str, Any] | None
     based_on_seq: int
     evidence_trace_seq: int | None
     candidate: Any | None
@@ -260,7 +287,9 @@ class FrontierHelp:
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
                  capture: Callable[..., media.Clip] = media.capture_clip,
                  max_calls: int | None = None, calibration: Mapping[str, Any] | None = None,
-                 effects: Mapping[str, frontier.Effect] | None = None) -> None:
+                 effects: Mapping[str, frontier.Effect] | None = None,
+                 generation: str | None = None, session: str | None = None,
+                 progress: ProgressProbe | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
@@ -268,6 +297,8 @@ class FrontierHelp:
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
+        self.generation = generation
+        self.session = session
         # S1 keeps choosing while this request is pending, so the two arms' calls overlap by design.
         self.ledger = call_budget.Ledger(directory, approval, provider.MODEL, concurrent_arms=True)
         self.max_calls = max_calls if max_calls is not None else self.ledger.limit["max_calls"]
@@ -280,22 +311,54 @@ class FrontierHelp:
         self._adopted: dict[int, tuple[HelpResult, HelpResult]] = {}
         self._discarded: set[int] = set()  # also prevents a still-running request from staging later
         self.findings: list[dict[str, Any]] = []  # candidate findings written to the trace
+        self.progress = declared_progress(getattr(manifest, "reach_regions", ()))
+        self.progress_probe = (progress if progress is not None
+                               else ProgressProbe(getattr(manifest, "reach_regions", ())))
         fields = {f"public.{reader.alias}": reader.kind for reader in manifest.readers if reader.kind}
+        # A declared region's distance is the only derived field a setpoint or check may name; membership is
+        # shown in the packet but is not a field. Empty for a manifest that declared no region.
+        fields.update({region.distance_field: "number" for region in self.progress.values()})
         self.reader_fields = fields
         self.reader_calibration = reader_calibration(calibration, manifest.readers)
         self.reader_notes = reader_notes(manifest.readers)
         self.effects = dict(effects or {})  # run-stable: it names the effect checks a finding may propose
+
+    def rebind(self, *, client: Any = None, observation: Any = None, generation: str | None = None) -> None:
+        """Follow the restarted play instance: clips come only from its frames and its own start time.
+
+        Nothing staged or adopted for the earlier generation may become guidance later: every turn it holds
+        is marked discarded, so a request that outlives the boundary and finishes later cannot stage. An
+        open hypothesis was formed against the earlier session, so it is withdrawn here â€” kept, with the
+        reason and the generation, as attributed history rather than current direction. The directive
+        tracker is invalidated at once for the same reason.
+        """
+        if generation is None or observation is None:
+            raise ValueError("rebinding the frontier helper needs the new generation and first observation")
+        self.generation = generation
+        self.started_utc = observation.wall_utc
+        self.session = getattr(client, "session", self.session) if client is not None else self.session
+        for turn in (*self._staged, *self._adopted):
+            self._discarded.add(turn)
+        self._staged.clear()
+        self._adopted.clear()
+        self.tracker.rebind(client=client, observation=observation, generation=generation)
+        for row in self.hypotheses.values():
+            if row.get("status") == "open":
+                row["status"] = "withdrawn"
+                row["invalidated_reason"] = "the play session restarted"
+                row["invalidated_generation"] = generation
+        self._shown.clear()
 
     async def run(self, request: Any) -> Any:
         context = copy.deepcopy(request.context)
         as_of, raw_obs = context["as_of"], context["observation"]
         seq = int(as_of["seq"])
         if self.calls >= self.max_calls:
-            obs_trace = (self.sink.trace_seq_for_observation(seq)
+            obs_trace = (self.sink.trace_seq_for_observation(seq, self.session)
                          if hasattr(self.sink, "trace_seq_for_observation") else None)
             self.sink.append("investigation", {
                 "event": "not_called", "request_turn": request.turn, "based_on_seq": seq,
-                "outcome_seq": seq, "hypothesis": None, "directive": None,
+                "outcome_seq": seq, "hypothesis": None, "directive": None, "keep": None,
                 "outcome": "unknown", "evidence_trace_seq": obs_trace,
                 "reason": "the approved frontier call cap was reached",
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
@@ -305,7 +368,7 @@ class FrontierHelp:
         suspicions = recorded_suspicions(self.sink)
         recent = recent_records(context)
         evidence_snapshot = _evidence_snapshot(self.sink, recent, seq)
-        obs_trace = _observation_ref(evidence_snapshot, seq)
+        obs_trace = _observation_ref(evidence_snapshot, seq, self.session)
         now = dt.datetime.now(dt.timezone.utc)
         observation = Observation(
             session="runner", seq=seq, game_s=as_of.get("game_s"), wall_utc=now,
@@ -322,7 +385,8 @@ class FrontierHelp:
                           executed_action=None, outcome=TurnOutcome.escalated)
         folder = self.directory / "clips" / f"t{request.turn}"
         clip = await asyncio.to_thread(self.capture, project=self.project, status=self.status,
-                                       since_utc=self.started_utc, until_utc=now, output_dir=folder)
+                                       since_utc=self.started_utc, until_utc=now, output_dir=folder,
+                                       generation=self.generation)
         fact_rows = [{"text": text, "seqs": [seq]} for text in context.get("facts", []) if isinstance(text, str)]
         ids = [f"hyp-{request.turn}-{i}" for i in range(frontier.MAX_HYPOTHESES)]
         old_hypotheses = [row for row in self.hypotheses.values() if row.get("status") == "open"]
@@ -338,17 +402,21 @@ class FrontierHelp:
             clip=clip.descriptor, clip_unavailable_reason=clip.reason,
             findings=[{key: f[key] for key in ("finding_id", "title", "repro_check")} for f in self.findings],
             suspicions=suspicions,
+            progress=(progress_rows(self.progress_probe.regions, observation)
+                      if self.progress_probe.regions else ()),
         )
         # The live S1 context does not expose the bridge frame number. Do not send the
         # placeholder needed by Observation's local constructor as if it were measured.
         packet.payload["observation"].pop("frame", None)
         body = provider.build_request(role_manifest, packet, clip_path=clip.path)
-        from playtest.core.context import canonical
+        # Preserve the complete body before any POST. Keep disk I/O off the bridge/S1 event loop.
+        request_artifact = await asyncio.to_thread(preserve_request, self.directory, body)
         reservation = self.ledger.reserve(
-            episode=0, turn=request.turn, based_on_seq=seq, request_sha256=digest(canonical(body)),
+            episode=0, turn=request.turn, based_on_seq=seq, request_sha256=request_artifact.sha256,
             requested_model=provider.MODEL,
             extra={"role": "frontier", "request_turn": request.turn,
                    "packet_sha256": digest(packet.canonical()), "clip": clip.descriptor,
+                   "request_body_path": request_artifact.relative_path,
                    "clip_unavailable_reason": clip.reason},
         )
         self.calls += 1
@@ -364,7 +432,8 @@ class FrontierHelp:
                                          answer=None, parse_valid=False, **details)
                 self.sink.append("investigation", {
                     "event": "invalid_answer", "request_turn": request.turn, "based_on_seq": seq,
-                    "outcome_seq": seq, "hypothesis": None, "directive": None, "outcome": "unknown",
+                    "outcome_seq": seq, "hypothesis": None, "directive": None, "keep": None,
+                    "outcome": "unknown",
                     "evidence_trace_seq": obs_trace, "reason": details["error"],
                 }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
                 return HelpResult(source="frontier", result=details)
@@ -377,9 +446,21 @@ class FrontierHelp:
                     parent=current.directive_id if current is not None else None,
                     model=result.resolved_model or provider.MODEL,
                     based_on_seq=seq, received_game_s=observation.game_s)
+            # A null directive asks for no replacement; it never renews one. Record that request beside the
+            # open directive, with the exact time left, so a later measured close can be read against it.
+            keep_row = None
+            if answer.directive is None and current is not None:
+                deadline = current.deadline_game_s
+                keep_row = {"directive_id": current.directive_id,
+                            "requested": {"turn": request.turn, "seq": seq, "game_s": observation.game_s},
+                            "deadline_game_s": deadline,
+                            "expires_in_game_s": (deadline - observation.game_s
+                                                  if deadline is not None and observation.game_s is not None
+                                                  else None)}
             result_payload = {
                 "hypotheses": [h.model_dump(mode="json") for h in accepted],
                 "directive": directive.model_dump(mode="json") if directive is not None else None,
+                "keep": copy.deepcopy(keep_row),
                 "errors": list(result.errors),
                 "review": [{"item": p.item, "reason": p.reason} for p in review.problems],
             }
@@ -392,6 +473,7 @@ class FrontierHelp:
                 "event": "hypothesis_directive", "request_turn": request.turn, "based_on_seq": seq,
                 "outcome_seq": seq,
                 "hypothesis": result_payload["hypotheses"], "directive": result_payload["directive"],
+                "keep": None,
                 "outcome": "open" if directive is not None else "unknown", "evidence_trace_seq": obs_trace,
                 "reason": reason,
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
@@ -400,7 +482,7 @@ class FrontierHelp:
                 expected = directive.expected
                 kind = role_manifest.fields.get(expected.field) if expected else "other"
                 # Only the fallback: the tracker re-takes a changed/unchanged baseline when S1 first sees the directive.
-                baseline = field_value(observation.public, expected.field.removeprefix("public.")) if expected else None
+                baseline = self._reading(observation, expected.field) if expected else None
                 directive_row = {**directive.model_dump(mode="json"),
                                  "hypothesis": copy.deepcopy(result_payload["hypotheses"]),
                                  "kind": kind, "baseline": baseline, "scene": observation.scene,
@@ -418,6 +500,7 @@ class FrontierHelp:
             if request.turn not in self._discarded and request.turn not in self._adopted:
                 self._staged[request.turn] = _StagedResult(
                     result=completed, payload=copy.deepcopy(result_payload), directive_row=directive_row,
+                    keep_row=copy.deepcopy(keep_row),
                     based_on_seq=seq, evidence_trace_seq=obs_trace, candidate=candidate,
                     finding_evidence=finding_evidence)
             return completed
@@ -455,6 +538,8 @@ class FrontierHelp:
         if staged.directive_row is not None:
             self.tracker.adopt(staged.directive_row, request_turn=request_turn,
                                based_on_seq=staged.based_on_seq, evidence_trace_seq=staged.evidence_trace_seq)
+        if staged.keep_row is not None:
+            self.tracker.note_keep(staged.keep_row, adopted_turn=request_turn)
         payload = copy.deepcopy(staged.payload)
         if staged.candidate is not None and staged.finding_evidence is not None:
             payload["candidate_finding"] = self._record_finding(staged.candidate, request_turn,
@@ -548,4 +633,10 @@ class FrontierHelp:
                 skills.append(choice.skill)
         return frontier.Manifest(fields=self.reader_fields, actions=actions, skills=skills,
                                  calibration=self.reader_calibration, field_notes=self.reader_notes,
-                                 effects=self.effects)
+                                 effects=self.effects, progress=self.progress)
+
+    def _reading(self, observation: Observation, field: str) -> Any:
+        """One field's value at this observation, including a declared region's derived distance."""
+        if field.startswith("progress."):
+            return self.progress_probe.derived(observation).get(field)
+        return field_value(observation.public, field.removeprefix("public."))

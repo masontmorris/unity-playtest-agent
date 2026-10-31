@@ -396,3 +396,22 @@ def test_image_echo_is_removed_from_recorded_response(tmp_path):
     got = asyncio.run(port.decide(ctx, image=raw))
     assert encoded not in json.dumps(got.calls[0].body())
     assert encoded not in json.dumps(ledger.arm_rows())
+
+
+@pytest.mark.parametrize("selected", ["w", "f", "h", "c1"])
+def test_primary_policy_is_sent_and_does_not_override_selection(tmp_path: Path, selected: str):
+    port, send, _ = adapter(tmp_path, reply("next_action", selected), reply("while_pending", "w"))
+    ctx = context()
+    ctx["objective"] = "Reach the marked area and test its interaction."
+    before = json.loads(canonical(ctx))
+    got = decide(port, ctx)
+    body = send.bodies[0]
+    prompt = body["questions"]["next_action"]["instructions"]
+    assert prompt == INSTRUCTIONS == body["state"]["instructions"]
+    assert "primary task" in prompt and "inspect the next evidence" in prompt
+    assert "directive_provenance" in prompt and "description may be outdated" in prompt
+    assert body["state"] == before == ctx
+    assert body["questions"]["next_action"]["criteria"] == {c["id"]: c["label"] for c in before["choices"]}
+    assert port.prompt_sha256 == digest(canonical({"next_action": prompt, "while_pending": FOLLOW_UP_INSTRUCTIONS}))
+    assert got.calls[0].request_sha256 == digest(canonical(body))
+    assert got.answer["choice_id"] == selected

@@ -53,11 +53,20 @@ async def read_snapshot(snapshot: Snapshot) -> tuple[dict[str, Any] | None, str 
 
 
 class DisplacementProbe:
-    def __init__(self, snapshot: Snapshot, expected: Mapping[str, Mapping[str, Any] | None]) -> None:
+    def __init__(self, snapshot: Snapshot, expected: Mapping[str, Mapping[str, Any] | None],
+                 *, snapshot_for: Callable[[BridgeClient], Snapshot] | None = None) -> None:
         self._snapshot = snapshot
         self._expected = expected
+        self._snapshot_for = snapshot_for
         self._before: dict[str, Any] | None = None
         self._before_problem: str | None = None
+
+    def rebind(self, *, client: BridgeClient | None = None, observation: Any = None,
+               generation: str | None = None) -> None:
+        """Point at the restarted play instance; no pre-restart reading may be the 'before' of a new input."""
+        if client is not None and self._snapshot_for is not None:
+            self._snapshot = self._snapshot_for(client)
+        self._before, self._before_problem = None, None
 
     async def before_turn(self, turn: int) -> None:
         self._before, self._before_problem = await self._read()

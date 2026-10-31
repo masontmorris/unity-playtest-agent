@@ -108,8 +108,10 @@ recorded per item. A directive that is not rejected is converted with a receipt 
 by a fresh `observe_once` after the response; that observation is added to the loop store and the
 directive reaches S1's next payload. A superseded directive is kept in history with outcome
 `unknown` because no comparator scores it yet. A rejected directive is not replaced, and
-`directive: null` keeps the current one. Added choices, pruned choices, hypotheses and a candidate
-finding are recorded in the call row as `received_unapplied`; the offered choices are unchanged.
+`directive: null` asks for no replacement, so the current one stays with its own deadline (never
+renewed or extended); the answer may arrive after that deadline has passed. Added choices, pruned
+choices, hypotheses and a candidate finding are recorded in the call row as `received_unapplied`; the
+offered choices are unchanged.
 
 A refused, truncated, structurally undecodable or failed answer stops the run as a `ProviderStop` with
 no retry, no repair and no substitute answer. The turn that requested help remains in the trace.
