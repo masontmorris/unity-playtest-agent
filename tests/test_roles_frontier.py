@@ -745,15 +745,22 @@ def test_system_prompt_changes_approach_after_a_measured_failure():
     """Session 10 pressed one 1.1-unit face for 98 turns and the frontier repeated the approach.
 
     Every one of d-63/79/96/115/125/140/149 said align, then jump and move_forward at the same face,
-    although `directive_history` showed the earlier attempt had not produced its outcome. Repeated
-    attempts spend the run, so the prompt now requires a named difference, and keeps that bound on
-    the directive rather than on S1's choice.
+    although `directive_history` showed the earlier attempts. All ten of its directives set
+    `expected` to null, so they closed `unknown` - a rule keyed only on `not_met` would never have
+    fired. The prompt therefore treats a short measured effect and a plain repeat at the same part
+    as the trigger too, and says that `unknown` alone is not a failure.
     """
     assert "- repeated attempts:" in frontier.SYSTEM
     for needle in (
         "directive_history lists the directives that have closed",
-        "is a measured failure of the approach it asked for",
-        "make the next one differ in at least one way you can name",
+        "the recent rows carry each attempt's measured effect",
+        "an outcome of unknown only says no field could score the directive",
+        "a closed directive carries not_met or expired",
+        "its error_class says S1 could not attempt it as written",
+        "measured short of the expected displacement the manifest lists",
+        "or the change it tested never appeared",
+        "an earlier directive already asked for the same action at the same part",
+        "the next directive must differ in at least one way you can name",
         "Trying another part of the same structure is a different approach",
         "asking for more of the same action at the same place is not",
         "neither is restating the earlier text with a longer deadline",
