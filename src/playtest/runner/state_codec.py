@@ -1,20 +1,24 @@
-"""An opt-in, lossless compact rendering of S1's `state`: the same payload in far fewer billed tokens.
+"""Opt-in, lossless compact forms of S1's `state`: the same payload in fewer billed tokens.
 
 A System One decision server renders an object `state` itself. Liquid's open d1 code writes it with
-`json.dumps(state, indent=2)`, and the input tokens hosted `d1-ultra` reported for every call of the 31
-October night sessions match that indented rendering (slope 1.001 against the d1 tokenizer; the compact
-bytes we post fit at 1.30). A string `state` is written verbatim. So the indentation is paid on every
-call, and so is every key name repeated in a list of records. This module renders the state as one
-string instead: a header naming the rules applied, then compact JSON. The measured effect is in
-`docs/design/s1-token-budget.md`.
+`json.dumps(state, indent=2)`, and hosted `d1-ultra` bills that rendering: the 31 October night requests,
+rebuilt exactly, fit at slope 0.998 with the d1 tokenizer. Two forms carry the same rules:
 
-Every rule is lossless: `decode` rebuilds the exact payload from the sent text and the question it was
-asked with, and reads nothing else (no file, no trace, no original context). A rule that could not be
-undone exactly for this payload is not applied, and the header lists only the rules that were applied:
+* **Object form** (`encode_object`, `compact-object/1`). `state` stays a JSON object, so the server renders
+  it exactly as it renders any state. The rules restructure it, and a `_s1_compact` key in it names the rules
+  and carries a one-line legend, as the `dup-state-ref/1` marker does. About −13% of the state.
+* **Text form** (`encode`, `compact-state/1`). `state` is sent as one string: a header naming the rules
+  applied, then compact JSON. About −29% billed. But Liquid renders a string state with about 158 more
+  tokens, and on 40 frozen night contexts any string state, compacted or not, changed d1-ultra's choice at
+  near-ties (`docs/probes/2026-10-31-d1-ultra-compact-state-bench.md`).
+
+Every rule is lossless. `decode` and `decode_object` rebuild the exact payload from what was sent and the
+question it was asked with, and read nothing else: no file, no trace, no original context. A rule that
+could not be undone exactly for this payload is not applied, and only the rules applied are named:
 
 * `instructions-ref`: `state.instructions` is omitted when it is the primary question's instructions.
-* `labels-ref`: a choice's `label` is omitted when it is that question's `criteria` text for its id
-  (off by default: whether the hosted renderer shows criteria descriptions is unverified).
+* `labels-ref`: a choice's `label` is omitted when it is that question's `criteria` text for its id, which
+  is where `dup-state-ref/1` puts it. Hosted d1-ultra bills and renders option descriptions.
 * `history-tables`: `recent_history.turns.items`, `recent_history.action_attempts.items` and the probe's
   `samples` are written as `{"columns": [...], "rows": [[...], ...]}`, when every row has the same keys.
 * `same-as-raw`: in the history tables, `"="` stands for the row's `raw_choice` in `effective_choice`,
@@ -40,6 +44,8 @@ from typing import Any
 from playtest.runner.probe import DisplacementProbe
 
 VERSION = "compact-state/1"
+OBJECT_VERSION = "compact-object/1"
+MARKER = "_s1_compact"  # the object form's key inside `state`, naming its rules
 
 
 class Rule(str, Enum):
@@ -84,12 +90,8 @@ def encode(state: Mapping[str, Any], *, instructions: str | None, criteria: Mapp
     point at. `key_order` lays out the state's top-level keys (the rest follow, in the payload's order);
     `None` keeps the payload's order. Raises `CodecError` for a state that is not finite JSON.
     """
-    wanted = [Rule(rule) for rule in rules]
     state = copy.deepcopy(dict(state))
-    applied: list[Rule] = []
-    for rule in ALL_RULES:  # a fixed order, so the header and the decoder agree whatever the caller passed
-        if rule in wanted and _APPLY[rule](state, instructions, criteria):
-            applied.append(rule)
+    applied = _apply(state, instructions, criteria, rules)
     order = [k for k in (key_order or ()) if k in state] + [k for k in state if k not in (key_order or ())]
     try:
         body = json.dumps({k: state[k] for k in order}, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -99,6 +101,39 @@ def encode(state: Mapping[str, Any], *, instructions: str | None, criteria: Mapp
     legend = " ".join(_LEGEND[rule] for rule in applied)
     header = f"{VERSION} rules={','.join(names) or 'none'}." + (f" {legend}" if legend else "")
     return f"{header}\n{body}", names
+
+
+def encode_object(state: Mapping[str, Any], *, instructions: str | None, criteria: Mapping[str, Any] | None,
+                  rules: Sequence[Rule | str] = ALL_RULES) -> tuple[dict[str, Any], list[str]]:
+    """The object form: the state still a JSON object, restructured by the rules, plus a `_s1_compact` key.
+
+    The key names the rules applied and carries their legend. With no rule applied, the state is returned
+    unchanged and unmarked. Raises `CodecError` for a state that already carries the key or is not finite
+    JSON.
+    """
+    if MARKER in state:
+        raise CodecError(f"the state already carries {MARKER!r}")
+    out = copy.deepcopy(dict(state))
+    applied = _apply(out, instructions, criteria, rules)
+    names = [rule.value for rule in applied]
+    if applied:
+        out[MARKER] = {"version": OBJECT_VERSION, "rules": names,
+                       "legend": " ".join(_LEGEND[rule] for rule in applied)}
+    try:
+        json.dumps(out, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise CodecError(f"the state is not finite JSON: {exc}") from None
+    return out, names
+
+
+def _apply(state: dict, instructions: str | None, criteria: Mapping[str, Any] | None,
+           rules: Sequence[Rule | str]) -> list[Rule]:
+    wanted = [Rule(rule) for rule in rules]
+    applied: list[Rule] = []
+    for rule in ALL_RULES:  # a fixed order, so the encoder and the decoder agree whatever the caller passed
+        if rule in wanted and _APPLY[rule](state, instructions, criteria):
+            applied.append(rule)
+    return applied
 
 
 def _instructions(state: dict, instructions: str | None, _criteria: Any) -> bool:
@@ -269,6 +304,25 @@ def decode(text: str, *, instructions: str | None, criteria: Mapping[str, Any] |
         if rule in applied:
             _UNDO[rule](state, instructions, criteria)
     return state
+
+
+def decode_object(state: Mapping[str, Any], *, instructions: str | None,
+                  criteria: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The exact payload an object-form state was encoded from, given the primary question it was sent with."""
+    out = copy.deepcopy(dict(state))
+    marker = out.pop(MARKER, None)
+    if marker is None:
+        return out  # nothing was applied
+    if not isinstance(marker, dict) or marker.get("version") != OBJECT_VERSION or not isinstance(marker.get("rules"), list):
+        raise CodecError(f"not a {OBJECT_VERSION} marker")
+    try:
+        applied = [Rule(name) for name in marker["rules"]]
+    except ValueError as exc:
+        raise CodecError(f"unknown {OBJECT_VERSION} rule: {exc}") from None
+    for rule in reversed(ALL_RULES):  # undo in the reverse of the order applied
+        if rule in applied:
+            _UNDO[rule](out, instructions, criteria)
+    return out
 
 
 def _undo_instructions(state: dict, instructions: str | None, _criteria: Any) -> None:

@@ -266,3 +266,66 @@ def test_a_stale_view_sends_no_image_and_the_compact_state_says_so(tmp_path: Pat
     assert "images" not in body
     assert C.decode(body["state"], instructions=asked["instructions"], criteria=asked["criteria"])[
         "game_view_status"] == "stale"
+
+
+# --------------------------------------------------------------------------- object form
+
+
+def roundtrip_object(p: dict[str, Any], rules=C.ALL_RULES) -> tuple[dict[str, Any], list[str]]:
+    original = copy.deepcopy(p)
+    state, applied = C.encode_object(p, instructions=INSTRUCTIONS, criteria=criteria(p), rules=rules)
+    assert p == original, "encoding must not touch its input"
+    sent = json.loads(canonical(state))                              # as the provider receives it
+    assert canonical(C.decode_object(sent, instructions=INSTRUCTIONS, criteria=criteria(p))) == canonical(p)
+    return state, applied
+
+
+def test_the_object_form_keeps_state_an_object_and_names_its_rules_in_a_marker():
+    state, applied = roundtrip_object(payload())
+    assert applied == [rule.value for rule in C.ALL_RULES]
+    marker = state[C.MARKER]
+    assert marker["version"] == C.OBJECT_VERSION and marker["rules"] == applied
+    assert marker["legend"].startswith("state.instructions is the question's instructions.")
+    assert "instructions" not in state and all("label" not in c for c in state["choices"])
+    assert set(state["recent_history"]["action_attempts"]["items"]) == {"columns", "rows"}
+    # the same restructuring as the text form, as an object instead of a string
+    text, _ = C.encode(payload(), instructions=INSTRUCTIONS, criteria=criteria(payload()), rules=C.ALL_RULES)
+    assert json.loads(text.split("\n", 1)[1]) == {k: v for k, v in state.items() if k != C.MARKER}
+
+
+def test_the_object_form_with_no_rule_applied_is_the_state_unchanged_and_unmarked():
+    state, applied = roundtrip_object(payload(), ())
+    assert applied == [] and C.MARKER not in state and state == payload()
+
+
+def test_the_object_form_refuses_a_state_that_already_carries_its_marker_or_a_bad_marker():
+    p = payload()
+    p[C.MARKER] = {"anything": 1}
+    with pytest.raises(C.CodecError):
+        C.encode_object(p, instructions=INSTRUCTIONS, criteria=criteria(p))
+    state, _ = C.encode_object(payload(), instructions=INSTRUCTIONS, criteria=criteria(payload()))
+    for bad in ({"version": "other/1", "rules": []}, {"version": C.OBJECT_VERSION, "rules": ["bogus"]}, "text"):
+        with pytest.raises(C.CodecError):
+            C.decode_object({**state, C.MARKER: bad}, instructions=INSTRUCTIONS, criteria=criteria(payload()))
+
+
+def test_the_adapter_sends_the_object_form_with_a_view_and_it_restores_the_context(tmp_path: Path):
+    import base64
+    raw = b"jpeg bytes"
+    ctx = built_context()
+    ctx.update(game_view="The attached image is the current game view, 640x480 pixels.",
+               game_view_sha256=digest(raw), game_view_status="sent")
+    before = copy.deepcopy(ctx)
+    port, send, ledger = _liquid(tmp_path, reply("next_action", "c1", favoured="c2"), compact_state="object",
+                                 game_view=True)
+    got = asyncio.run(port.decide(ctx, image=raw))
+    body = send.bodies[0]
+    asked = body["questions"]["next_action"]
+    assert ctx == before and isinstance(body["state"], dict) and C.MARKER in body["state"]
+    assert body["images"] == ["data:image/jpeg;base64," + base64.b64encode(raw).decode()]
+    restored = C.decode_object(body["state"], instructions=asked["instructions"], criteria=asked["criteria"])
+    assert canonical(restored) == canonical(ctx)
+    assert got.calls[0].request_sha256 == digest(canonical(body)) and got.answer["choice_id"] == "c1"
+    row = ledger.arm_rows()[0]
+    assert row["state_codec"] == C.OBJECT_VERSION and "labels-ref" in row["state_rules"]
+    assert port.compact_state == f"{C.OBJECT_VERSION}:" + ",".join(rule.value for rule in C.ALL_RULES)

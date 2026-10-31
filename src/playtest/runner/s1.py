@@ -19,9 +19,13 @@ Every call that was sent also reports its tokens to an injected meter (`playtest
 paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
 it gave them, else an estimate from the request body, reported as an estimate.
 
-`compact_state` is opt-in and off by default: on a Liquid arm it sends `state` as one string, a header naming
-the lossless rules applied and then compact JSON (`playtest.runner.state_codec`), because the server would
-otherwise bill the state as indented JSON. The body alone restores the exact context (`state_codec.decode`).
+`compact_state` is opt-in and off by default (`playtest.runner.state_codec`).
+- `"object"` keeps `state` a JSON object, restructured by the lossless rules with a `_s1_compact` key naming
+  them, so the server renders it as it renders any state.
+- `"format"`, `"default"` and `"all"` send `state` as one string: a header, then compact JSON. On d1-ultra a
+  string state is a different prompt and moves near-tie choices.
+
+Either way the body alone restores the exact context (`state_codec.decode_object` / `decode`).
 
 `state_order` is opt-in and off by default: `canonical` sends the body exactly as this adapter always
 has, and `stable-first/1` (`playtest.runner.state_order`) sends the same values with `state`'s
@@ -145,10 +149,12 @@ def _without_image(value: Any, image: bytes | None) -> Any:
 
 
 def _compact_rules(value: str | Sequence[str] | None) -> tuple[state_codec.Rule, ...] | None:
-    """`None`/`"off"`: send `state` as built. `"format"`: compact text only. `"default"`/`"all"`: those rule sets."""
+    """`None`/`"off"`: send `state` as built. `"object"`: every rule, `state` kept an object. `"format"`: compact
+    text only. `"default"`/`"all"`: those rule sets as text."""
     if value is None or value == "off":
         return None
-    named = {"format": (), "default": state_codec.DEFAULT_RULES, "all": state_codec.ALL_RULES}
+    named = {"format": (), "default": state_codec.DEFAULT_RULES, "all": state_codec.ALL_RULES,
+             "object": state_codec.ALL_RULES}
     if isinstance(value, str):
         if value not in named:
             raise ValueError(f"unknown compact-state setting {value!r}")
@@ -234,6 +240,7 @@ class SystemOneS1:
             raise ValueError("option ordering requires the full request layout")
         self._order_seed = order_seed
         self._compact = _compact_rules(compact_state)
+        self._compact_object = compact_state == "object"
         if self._compact is not None:
             if IMAGE_TRANSPORT.get(arm) != "images":
                 # The compact state is a string `state`; only an arm that sends the image beside it keeps one.
@@ -283,7 +290,8 @@ class SystemOneS1:
         """The compact-state rules this adapter may apply, or `None` when `state` is sent as built."""
         if self._compact is None:
             return None
-        return f"{state_codec.VERSION}:{','.join(rule.value for rule in self._compact) or 'format'}"
+        version = state_codec.OBJECT_VERSION if self._compact_object else state_codec.VERSION
+        return f"{version}:{','.join(rule.value for rule in self._compact) or 'format'}"
 
     @property
     def state_order(self) -> str:
@@ -371,9 +379,13 @@ class SystemOneS1:
             # The traced context stays as built: only this request's copy of it is rendered compactly, and
             # every rule points at this body's own question, so the body alone restores it exactly.
             try:
-                body["state"], compacted = state_codec.encode(
-                    context, instructions=instructions, criteria=criteria, rules=self._compact,
-                    key_order=state_keys(context) if self._state_order is not StateOrder.canonical else None)
+                if self._compact_object:
+                    body["state"], compacted = state_codec.encode_object(
+                        context, instructions=instructions, criteria=criteria, rules=self._compact)
+                else:
+                    body["state"], compacted = state_codec.encode(
+                        context, instructions=instructions, criteria=criteria, rules=self._compact,
+                        key_order=state_keys(context) if self._state_order is not StateOrder.canonical else None)
             except state_codec.CodecError:
                 return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
         try:
@@ -409,7 +421,8 @@ class SystemOneS1:
                 if len(orders) > 1:
                     extra["presented_ids_by_question"] = orders
             if compacted is not None:
-                extra.update(state_codec=state_codec.VERSION, state_rules=compacted)
+                extra.update(state_codec=state_codec.OBJECT_VERSION if self._compact_object else state_codec.VERSION,
+                             state_rules=compacted)
             reservation = self._ledger.reserve(
                 episode=self._episode, turn=turn, based_on_seq=context["as_of"]["seq"],
                 request_sha256=request_sha, requested_model=model, extra=extra)
