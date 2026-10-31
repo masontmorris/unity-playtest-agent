@@ -77,9 +77,20 @@ INSTRUCTIONS_DIRECT = (
     "appropriate. Finish when the objective's completion conditions are met or you judge no useful attempt "
     "remains; on an escalate or delegate turn, also say what to do while help is pending."
 )
+# `policy/2` is `policy/1` with one sentence changed: finishing is tied to the objective's completion
+# conditions alone, without the "no useful attempt remains" way out, and S1 is told the session ends by
+# itself. Every other sentence is today's, character for character.
+INSTRUCTIONS_FINISH_VARIANT = "policy/2"
+_FINISH_OLD = ("Finish when the objective's completion conditions are met "
+               "or you judge no useful attempt remains.")
+_FINISH_NEW = ("Finish only when the objective's completion conditions are met; otherwise keep playing "
+               "until the session ends by itself.")
+assert INSTRUCTIONS.count(_FINISH_OLD) == 1
+INSTRUCTIONS_FINISH_ONLY_WHEN_MET = INSTRUCTIONS.replace(_FINISH_OLD, _FINISH_NEW)
 INSTRUCTIONS_VARIANTS = {
     INSTRUCTIONS_POLICY_VARIANT: INSTRUCTIONS,
     INSTRUCTIONS_DIRECT_VARIANT: INSTRUCTIONS_DIRECT,
+    INSTRUCTIONS_FINISH_VARIANT: INSTRUCTIONS_FINISH_ONLY_WHEN_MET,
 }
 
 

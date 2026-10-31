@@ -5,6 +5,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import http.client
+import ssl
+import threading
+import urllib.parse
 import math
 import os
 import random
@@ -146,6 +150,48 @@ def parse_answer(data: dict[str, Any] | None, offered: set[str]) -> tuple[str | 
     return selected, probabilities, None
 
 
+# Connections are checked out exclusively; only idle connections are stored here.
+_KEEPALIVE_IDLE_SECONDS = 15.0
+_connection_pool: dict[tuple[str, str, int], tuple[http.client.HTTPConnection, float]] = {}
+_pool_lock = threading.Lock()
+
+
+def _send_keepalive(url: str, payload: bytes, headers: dict[str, str]) -> tuple[int, bytes]:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("unsupported endpoint URL")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    pool_key = (parts.scheme, parts.hostname, port)
+    with _pool_lock:
+        entry = _connection_pool.pop(pool_key, None)
+    connection = None
+    if entry:
+        connection, idle_since = entry
+        if time.monotonic() - idle_since > _KEEPALIVE_IDLE_SECONDS:
+            connection.close()
+            connection = None
+    if connection is None:
+        if parts.scheme == "https":
+            connection = http.client.HTTPSConnection(parts.hostname, port, timeout=60, context=ssl.create_default_context())
+        else:
+            connection = http.client.HTTPConnection(parts.hostname, port, timeout=60)
+    try:
+        target = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        connection.request("POST", target, body=payload, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        status, will_close = response.status, response.will_close
+    except Exception:
+        connection.close()
+        raise
+    with _pool_lock:
+        if not will_close and pool_key not in _connection_pool:
+            _connection_pool[pool_key] = (connection, time.monotonic())
+        else:
+            connection.close()
+    return status, raw
+
+
 def send_systemone(arm: str, body: dict[str, Any] | str) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
     if arm == "meta-muse-spark-s1":
         from playtest.frontier.provider import send_meta
@@ -159,13 +205,19 @@ def send_systemone(arm: str, body: dict[str, Any] | str) -> tuple[int | None, di
                                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            status, raw = response.status, response.read()
+        if os.environ.get("UPA_S1_KEEPALIVE") == "0":
+            with urllib.request.urlopen(request, timeout=60) as response:
+                status, raw = response.status, response.read()
+        else:
+            status, raw = _send_keepalive(url, text.encode("utf-8"),
+                                          {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
     except urllib.error.HTTPError as exc:
         return exc.code, None, (time.monotonic() - started) * 1000, "HTTP error"
-    except (OSError, urllib.error.URLError):
+    except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError):
         return None, None, (time.monotonic() - started) * 1000, "transport error"
     latency = (time.monotonic() - started) * 1000
+    if status >= 400:
+        return status, None, latency, "HTTP error"
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeDecodeError):

@@ -63,6 +63,10 @@ class TokenBudget:
     `record` stores a call's tokens at the current clock time. The next call is expected to use what the
     most recent recorded call used, or `initial_estimate` before the first. A call whose expected tokens
     alone exceed the limit goes out once the window is empty: waiting longer could never make it fit.
+
+    With `spread`, `burst` is the share of the limit the window may hold before spacing starts: below it a
+    call goes as soon as it fits, so a short session that never nears the limit never waits. `0.0` spaces
+    every call, as before.
     """
 
     def __init__(
@@ -74,8 +78,12 @@ class TokenBudget:
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
         initial_estimate: int | float = INITIAL_ESTIMATE,
         spread: bool = False,
+        burst: float = 0.0,
     ) -> None:
+        if isinstance(burst, bool) or not isinstance(burst, (int, float)) or not math.isfinite(burst) or not 0 <= burst <= 1:
+            raise ValueError("burst must be a share of the limit from 0 to 1")
         self._spread = spread
+        self._burst = float(burst)
         self._limit = _positive(tokens_per_minute, "tokens_per_minute")
         self._window_s = _positive(window_s, "window_s")
         self._initial = _positive(initial_estimate, "initial_estimate")
@@ -90,6 +98,11 @@ class TokenBudget:
     @property
     def limit(self) -> int | float:
         return self._limit
+
+    @property
+    def burst(self) -> float:
+        """The share of the limit the window may hold before spacing starts (0.0: every call is spaced)."""
+        return self._burst
 
     @property
     def recorded(self) -> int:
@@ -149,14 +162,16 @@ class TokenBudget:
         The window rule: enough of the oldest calls have left the window for the next one to fit. With `spread`,
         also the spacing rule: the next call starts no sooner after the last counted one than its expected tokens
         take at the limit's rate. Spacing keeps the same limit but turns a burst followed by a long stall (the
-        window filling, then draining) into short waits on every turn.
+        window filling, then draining) into short waits on every turn. It applies once the window and the next
+        call would hold more than `burst` of the limit.
         """
         self._expire(now)
         spacing = 0.0
-        if self._spread and self._window:
+        held = sum(tokens for _, tokens in self._window)
+        if self._spread and self._window and held + self.expected > self._burst * self._limit:
             last_at = self._window[-1][0]
             spacing = max(0.0, last_at + self.expected / self._limit * self._window_s - now)
-        excess = sum(tokens for _, tokens in self._window) + self.expected - self._limit
+        excess = held + self.expected - self._limit
         if excess <= 0:
             return spacing
         leaves = now
