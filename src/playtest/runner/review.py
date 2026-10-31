@@ -155,12 +155,13 @@ def main():
         status, data, latency, problem = provider.send_meta(body)
         usage = (data or {}).get('usage') or None
         cost = provider._cost(usage)
-        answer = json.loads(data['choices'][0]['message']['content']) if status == 200 and data else None
-        findings, rejected = findings_from_answer(answer, rows, manifest) if answer is not None else ([], [])
         reservation.finish(http_status=status, latency_ms=latency, cost_usd=cost, usage=usage, problem=problem)
     except Exception:
-        reservation.finish(cost_usd=None, problem='call or response processing failed')
+        reservation.finish(cost_usd=None, problem='the call failed before a response was recorded')
         raise
+    # The paid call is recorded before its answer is read, so a parse or conversion fault cannot lose its cost.
+    answer = json.loads(data['choices'][0]['message']['content']) if status == 200 and data else None
+    findings, rejected = findings_from_answer(answer, rows, manifest) if answer is not None else ([], [])
     result = {'request_sha256': sha, 'status': status, 'usage': usage, 'cost': cost, 'answer': answer, 'rejected': rejected}
     (args.output / 'review.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8', newline='\n')
     for finding in findings:
