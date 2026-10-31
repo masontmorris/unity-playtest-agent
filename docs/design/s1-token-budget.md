@@ -203,11 +203,16 @@ change this sample can separate from it.**
 What follows:
 1. **Keep `--s1-compact-state` off by default.** On this server a string state is a different prompt, and
    whether it decides better or worse is unmeasured.
-2. **Next candidate: object-path compaction.** Apply the lossless rules but keep `state` an object, so the
-   server renders it as it does today, with the legend as a small key in the state (like the
-   `dup-state-ref/1` marker). Offline this saves 14.6% of the state at the median, about 12% per call. A
-   check of 40 contexts × 2 repeats against the object baseline is about 80 calls and $0.05. It needs
-   approval and a small code change.
+2. **Object-path compaction is built: `--s1-compact-state object`.** The lossless rules are applied but
+   `state` stays an object, so the server renders it as it does any state. The applied rules and their
+   legend sit in a `_s1_compact` key, like the `dup-state-ref/1` marker.
+   - **Offline:** all 763 night payloads restore exactly. On the 157 d1-ultra primary calls, billing falls
+     from a median of 17,030 to 15,062 tokens (−11.6%).
+   - **Live:** two 3-minute FPSKit trials (`docs/probes/2026-10-31-fpskit-compact-object-trial.md`) ran
+     cleanly at about 30 decisions per minute. They billed 15.5% fewer tokens than the night layout on the
+     same contexts, and 28.5% fewer than `full`.
+   - **But both trials ended after about 45 s, when S1 chose `finish` at a near-tie with untried actions
+     left.** A control session with the format off is needed to say whether the format causes it.
 3. **Batching on the object path needs a layout fix first.** `dup-state-ref/1` only acts on single-question
    bodies, so a batched body sends the labels twice.
 4. **The string path can only be settled on outcomes.** That means a live paired play comparison,
