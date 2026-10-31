@@ -31,6 +31,7 @@ from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
 from playtest.core.context import INSTRUCTIONS, canonical
 from playtest.core.ports import S1Answer, S1Call
+from playtest.runner.option_order import OptionOrder, ordered_ids, serialize
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
 from playtest.frontier.provider import _cost as meta_cost
 
@@ -132,6 +133,8 @@ class SystemOneS1:
         budget: TokenMeter | None = None,
         game_view: bool = False,
         layout: RequestLayout | str = RequestLayout.full,
+        option_order: OptionOrder | str = OptionOrder.sorted,
+        order_seed: int | None = None,
     ) -> None:
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
@@ -148,6 +151,14 @@ class SystemOneS1:
             # from its own bytes. Fail here rather than send a layout marker that does not bind.
             raise ValueError(f"S1 arm {arm!r} sends `state` inside a message; the "
                              f"{self._layout.value!r} layout needs a plain `state`")
+        self._option_order = OptionOrder(option_order)
+        if self._option_order is OptionOrder.shuffled and (isinstance(order_seed, bool) or not isinstance(order_seed, int)):
+            raise ValueError("shuffled option order requires an integer seed")
+        if self._option_order is not OptionOrder.sorted and arm == "meta-muse-spark-s1":
+            raise ValueError("option ordering is unsupported for the Meta arm")
+        if self._option_order is not OptionOrder.sorted and self._layout is not RequestLayout.full:
+            raise ValueError("option ordering requires the full request layout")
+        self._order_seed = order_seed
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._ledger = ledger
@@ -250,7 +261,9 @@ class SystemOneS1:
                         {"type": "image_url", "image_url": {"url": url}}]}]}
                 else:
                     body["images"] = [url]
-            request_text = canonical(body)
+            presented = ordered_ids(criteria, self._option_order, self._order_seed, self._episode, turn, question)
+            request_text = (canonical(body) if self._option_order is OptionOrder.sorted
+                            else serialize(body, {question: presented}))
             request_sha = digest(request_text)
         except ValueError:
             return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
@@ -258,9 +271,12 @@ class SystemOneS1:
             return self._refused(question, request_sha, "the run's call cap was reached; no call was made",
                                  halt="the run's call cap was reached")
         try:
+            extra = {"question": question}
+            if self._option_order is not OptionOrder.sorted:
+                extra.update(option_order=self._option_order.value, order_seed=self._order_seed, presented_ids=presented)
             reservation = self._ledger.reserve(
                 episode=self._episode, turn=turn, based_on_seq=context["as_of"]["seq"],
-                request_sha256=request_sha, requested_model=model, extra={"question": question})
+                request_sha256=request_sha, requested_model=model, extra=extra)
         except call_budget.BudgetStop as exc:
             return self._refused(question, request_sha, f"{exc}; no call was made", halt=str(exc))
         self._reserved += 1
@@ -271,7 +287,11 @@ class SystemOneS1:
                 self._view_omitted += 1
                 self._view_stale += int(context.get("game_view_status") == "stale")
         try:
-            status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, body)
+            if self._option_order is OptionOrder.sorted:
+                status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, body)
+            else:
+                status, data, latency_ms, problem = await asyncio.to_thread(
+                    self._send, self._arm, body, wire_text=request_text)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
             note = f"adapter error: {type(exc).__name__}"
             self._count_tokens(None, estimate_text, image is not None)  # the request may have reached the provider
