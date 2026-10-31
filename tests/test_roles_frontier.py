@@ -709,6 +709,21 @@ def test_system_prompt_keeps_a_target_on_reachable_surface():
         assert needle in frontier.SYSTEM
 
 
+def test_system_prompt_lines_s1_up_on_a_part_while_moving():
+    """Session 8 reached 0.98 units from the stairs but walked past them, 10° off the line.
+
+    The fix is guidance, not control: line up on the part, then turn back onto it as it drifts
+    rather than commit to the first heading. The provider serializes SYSTEM verbatim, so this ships.
+    """
+    for needle in (
+        "Line up before moving",
+        "turn until the part sits in the centre of the view",
+        "after each move turn back onto it",
+        "a heading that only passes beside the part spends the approach",
+    ):
+        assert needle in frontier.SYSTEM
+
+
 def test_exploration_answer_passes_review(manifest, refs):
     """A hypothesis about an untried part plus a go-try directive needs no contract change."""
     body = answer(
