@@ -170,6 +170,33 @@ def test_a_stream_of_calls_at_the_measured_rate_never_puts_more_than_the_limit_i
     assert waited_total > 0                               # unpaced, a minute of these calls is over the limit
 
 
+def test_spreading_turns_the_burst_and_long_stall_into_short_waits_under_the_same_limit():
+    """14,000-token calls against 280,000 a minute: unspread, calls burst until the window fills and then stall
+    for most of a minute; spread, every call waits about 3 s less the turn's own time, and the window holds."""
+    longest = {}
+    for spread in (False, True):
+        b, fake = budget(280_000, spread=spread)
+        waits = []
+        for _ in range(120):
+            waits.append(ready(b))
+            fake.now += 0.6                               # the S1 call
+            b.record(14_000)
+            assert b.in_window <= 280_000
+            fake.now += 0.6                               # the hold and the next observation
+        longest[spread] = max(waits)
+    assert longest[False] > 20.0
+    assert longest[True] == pytest.approx(3.0 - 0.6)
+
+
+def test_spreading_waits_from_the_last_counted_call_and_never_before_the_first():
+    b, fake = budget(60_000, spread=True)                 # 1,000 tokens a second
+    assert ready(b) == 0.0
+    b.record(2_000)
+    assert ready(b) == pytest.approx(2.0)                 # 2,000 expected tokens take 2 s at the rate
+    fake.now += 5.0
+    assert ready(b) == 0.0                                # the turn itself took longer than the spacing
+
+
 # --- bad input ----------------------------------------------------------------------------
 
 

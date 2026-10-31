@@ -72,7 +72,9 @@ class TokenBudget:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
         initial_estimate: int | float = INITIAL_ESTIMATE,
+        spread: bool = False,
     ) -> None:
+        self._spread = spread
         self._limit = _positive(tokens_per_minute, "tokens_per_minute")
         self._window_s = _positive(window_s, "window_s")
         self._initial = _positive(initial_estimate, "initial_estimate")
@@ -141,18 +143,28 @@ class TokenBudget:
             self._window.popleft()
 
     def _delay(self, now: float) -> float:
-        """Seconds until enough of the oldest calls have left the window for the next one to fit; 0.0 if it fits now."""
+        """Seconds until the next call may go; 0.0 if it may go now.
+
+        The window rule: enough of the oldest calls have left the window for the next one to fit. With `spread`,
+        also the spacing rule: the next call starts no sooner after the last counted one than its expected tokens
+        take at the limit's rate. Spacing keeps the same limit but turns a burst followed by a long stall (the
+        window filling, then draining) into short waits on every turn.
+        """
         self._expire(now)
+        spacing = 0.0
+        if self._spread and self._window:
+            last_at = self._window[-1][0]
+            spacing = max(0.0, last_at + self.expected / self._limit * self._window_s - now)
         excess = sum(tokens for _, tokens in self._window) + self.expected - self._limit
         if excess <= 0:
-            return 0.0
+            return spacing
         leaves = now
         for at, tokens in self._window:
             leaves = at + self._window_s
             excess -= tokens
             if excess <= 0:
                 break
-        return max(0.0, leaves - now)
+        return max(spacing, leaves - now)
 
 
 @dataclass(frozen=True)
