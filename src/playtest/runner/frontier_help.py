@@ -27,7 +27,7 @@ from playtest.runner import guidance_codec
 from playtest.runner.choices import UNIT
 from playtest.runner.directives import DirectiveTracker
 from playtest.runner.frontier_history import recent_records
-from playtest.runner.probe import allowance
+from playtest.runner.probe import SURROUNDINGS_FIELD, allowance, describe_surroundings
 from playtest.runner.progress import ProgressProbe, progress_rows
 
 
@@ -120,11 +120,71 @@ def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
     merged or reordered; the packet's cap is the only limit.
     """
     of_kind = getattr(sink, "of_kind", None)
-    entries = of_kind("suspicion") if of_kind is not None else read_trace(sink.path)
-    return [{"suspicion_id": raised.suspicion.suspicion_id, "basis": raised.suspicion.basis.value,
-             "subject": raised.suspicion.subject, "turn": raised.suspicion.turn,
-             "statement": raised.suspicion.statement}
-            for raised in suspicions_in(entries)]
+    if of_kind is not None:
+        entries = of_kind("suspicion")
+        context = [entry for kind in ("observation", "effect") for entry in of_kind(kind)]
+    else:
+        entries = context = read_trace(sink.path)
+    attempts = _attempts(context)
+    rows = []
+    for raised in suspicions_in(entries):
+        row = {"suspicion_id": raised.suspicion.suspicion_id, "basis": raised.suspicion.basis.value,
+               "subject": raised.suspicion.subject, "turn": raised.suspicion.turn,
+               "statement": raised.suspicion.statement}
+        if raised.suspicion.basis.value == "effect_mismatch":
+            later = [line for turn, line in attempts if turn > raised.suspicion.turn][:FOLLOW_THROUGH_ATTEMPTS]
+            if later:
+                row["followed_by"] = later
+        rows.append(row)
+    return rows
+
+
+# A shortfall suspicion carries the next few measured attempts after it, so the order of what happened at that
+# spot (what stopped, what got past, what moved again) survives after the recent rows have moved on.
+FOLLOW_THROUGH_ATTEMPTS = 6
+
+
+def _entry(entry: Any) -> tuple[str, int | None, Mapping[str, Any]]:
+    if isinstance(entry, Mapping):
+        return str(getattr(entry["kind"], "value", entry["kind"])), entry.get("turn"), entry["body"]
+    return entry.kind.value, entry.turn, entry.body
+
+
+def _anchor_height(observation: Mapping[str, Any] | None) -> float | None:
+    probe = ((observation or {}).get("public") or {}).get(SURROUNDINGS_FIELD)
+    position = ((probe or {}).get("anchor") or {}).get("position") if isinstance(probe, Mapping) else None
+    value = position[1] if isinstance(position, list) and len(position) == 3 else None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+def _attempts(entries: Any) -> list[tuple[int, str]]:
+    """One measured line per executed action, in trace order: turn, action, displacement against its calibrated
+    value, the anchor's height change to the next observation, and the surroundings measured before it."""
+    observations: dict[int, Mapping[str, Any]] = {}
+    effects: list[tuple[int, Mapping[str, Any]]] = []
+    for entry in entries:
+        kind, turn, body = _entry(entry)
+        if not isinstance(turn, int):
+            continue
+        if kind == "observation":
+            observations.setdefault(turn, body)
+        elif kind == "effect":
+            effects.append((turn, body))
+    lines = []
+    for turn, body in effects:
+        observed = (body.get("observed") or {}).get("net_displacement")
+        expected = (body.get("expected") or {}).get("net_displacement")
+        moved = f"{observed:.3f}" if isinstance(observed, (int, float)) else "unmeasured"
+        calibrated = f"{expected:.3f}" if isinstance(expected, (int, float)) else "none recorded"
+        line = f"turn {turn} {body.get('choice_id') or body.get('action')}: moved {moved} {UNIT} (calibrated {calibrated})"
+        before, after = _anchor_height(observations.get(turn)), _anchor_height(observations.get(turn + 1))
+        line += (f"; anchor height {after - before:+.2f} by the next observation" if before is not None and after is not None
+                 else "; anchor height change unknown")
+        surroundings = describe_surroundings(((observations.get(turn) or {}).get("public") or {}).get(SURROUNDINGS_FIELD))
+        if surroundings:
+            line += f"; before it: {surroundings}"
+        lines.append((turn, line))
+    return lines
 
 
 def _evidence_snapshot(sink: Any, recent: list[dict[str, Any]] | None = None,
