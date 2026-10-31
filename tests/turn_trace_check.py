@@ -38,7 +38,7 @@ BODY_KEYS = {
     "restart": {"event", "ticket_id", "from_generation", "to_generation", "status", "reason",
                 "release_verified", "checks", "waited_s"},
     "investigation": {"event", "request_turn", "based_on_seq", "outcome_seq", "hypothesis", "directive",
-                       "outcome", "evidence_trace_seq", "reason"},
+                       "keep", "outcome", "evidence_trace_seq", "reason"},
     "stop": {"reason", "result", "error"},
     "end": {"status", "error", "turns", "redactions"},
 }

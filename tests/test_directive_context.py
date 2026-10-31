@@ -181,6 +181,7 @@ def test_the_view_states_where_a_directive_was_asked_and_first_stated_without_mi
         "requested": {"turn": 2, "seq": 4, "game_s": 1.0},                      # the ask: turn 2, bridge seq 4
         "first_stated": {"turn": 6, "seq": 8, "game_s": 8.5},                   # S1 first read it at turn 6, bridge seq 8
         "age_game_s": {"since_requested": 7.5, "since_first_stated": 0.0},
+        "expires_in_game_s": 49.0,                                             # deadline 57.5 minus this game_s
         "scored_on": "reader_setpoint",
         "baseline": {"value": 0, "source": "first_statement"}}}
     later = _at(11, 12.0)
@@ -188,6 +189,7 @@ def test_the_view_states_where_a_directive_was_asked_and_first_stated_without_mi
     ages = tracker.directive_view(later).provenance["d-1"]
     assert ages["first_stated"] == {"turn": 6, "seq": 8, "game_s": 8.5}        # fixed once stated
     assert ages["age_game_s"] == {"since_requested": 11.0, "since_first_stated": 3.5}
+    assert ages["expires_in_game_s"] == 45.5                                   # same deadline, later clock
 
 
 def test_unknown_clocks_stay_null_and_a_measured_zero_stays_zero():
@@ -196,10 +198,12 @@ def test_unknown_clocks_stay_null_and_a_measured_zero_stays_zero():
     assert unknown["requested"] == {"turn": 2, "seq": 4, "game_s": None}
     assert unknown["first_stated"] == {"turn": 6, "seq": 8, "game_s": None}
     assert unknown["age_game_s"] == {"since_requested": None, "since_first_stated": None}
+    assert unknown["expires_in_game_s"] is None                                 # no clock, so no time left
     tracker, obs = _tracked(_row("d-1", requested_game_s=None), game_s=8.5)
     mixed = tracker.directive_view(obs).provenance["d-1"]["age_game_s"]
     assert mixed["since_requested"] is None                                     # no wall-time stand-in for the ask
     assert mixed["since_first_stated"] == 0.0 and mixed["since_first_stated"] is not None
+    assert tracker.directive_view(obs).provenance["d-1"]["expires_in_game_s"] == 41.5  # deadline not re-anchored: no ask clock
 
 
 @pytest.mark.parametrize(("now", "then", "expected"), [
@@ -249,6 +253,7 @@ def test_each_outcome_is_listed_closed_with_its_own_status_and_no_age(status, ga
     assert [(d.directive_id, d.outcome.value) for d in view.closed] == [("d-1", status)]
     origin = view.provenance["d-1"]
     assert "age_game_s" not in origin                                           # only advice that is still open is aged
+    assert "expires_in_game_s" not in origin                                    # and only it states time left
     assert origin["requested"] == {"turn": 0, "seq": 0, "game_s": None}         # never asked at a known game time
     assert origin["scored_on"] == "reader_setpoint" and "baseline" not in origin  # a `>=` setpoint has no baseline
 
@@ -418,12 +423,14 @@ def test_an_open_directive_and_then_its_closed_outcome_reach_s1_with_the_provena
     assert "target" not in first["directive"]                                   # none was given, none is invented
     assert first["directive_provenance"] == {"d-0": {
         "requested": _stamp(0, 100, 100.0), "first_stated": _stamp(3, 103, 103.0),
-        "age_game_s": {"since_requested": 3.0, "since_first_stated": 0.0}, "scored_on": "reader_setpoint"}}
+        "age_game_s": {"since_requested": 3.0, "since_first_stated": 0.0},
+        "expires_in_game_s": 10.0, "scored_on": "reader_setpoint"}}
     assert first["as_of"]["seq"] == 103
 
     second = ctx[4]
     assert second["directive_provenance"]["d-0"]["first_stated"] == _stamp(3, 103, 103.0)
     assert second["directive_provenance"]["d-0"]["age_game_s"] == {"since_requested": 4.0, "since_first_stated": 1.0}
+    assert second["directive_provenance"]["d-0"]["expires_in_game_s"] == 9.0      # 113 - the 104 this turn saw
 
     closed = ctx[5]  # the reader reached the setpoint on this turn's observation
     assert closed["directive"] is None
@@ -443,6 +450,30 @@ def test_an_open_directive_and_then_its_closed_outcome_reach_s1_with_the_provena
     for number in (3, 4, 5):
         assert any(line.startswith("Frontier directive d-0:") for line in ctx[number]["facts"])
     assert "status met" in next(line for line in closed["facts"] if line.startswith("Frontier directive d-0:"))
+
+
+def test_the_frontiers_objective_attribution_reaches_s1_verbatim_and_survives_the_close(tmp_path):
+    observations = [_obs_at(100 + i, 1 if i == 5 else 0) for i in range(6)]
+    run = _play(tmp_path, observations, ["h", "w", "w", "w", "w", "w"], "ttt" "s" "ttt")
+    ctx = run.contexts
+    first = ctx[3]["directive"]
+    assert first["objective_quote"] == "Inspect."                                # the run objective, as quoted
+    assert first["continue_if"] == ["the measured count still moves toward the objective"]
+    assert first["replan_if"] == ["the measured count contradicts the objective"]
+    # A closed directive keeps the same words; nothing rewrites, drops or scores them.
+    (done,) = ctx[5]["directive_history"]
+    assert (done["objective_quote"], done["continue_if"], done["replan_if"]) == (
+        "Inspect.", ["the measured count still moves toward the objective"],
+        ["the measured count contradicts the objective"])
+    assert [r.effective_choice for r in run.loop.turns] == ["h", "w", "w", "w", "w", "w"]
+
+
+def test_a_directive_recorded_before_the_attribution_fields_stays_readable_and_is_not_backfilled(tmp_path):
+    tracker, obs = _tracked(_row("d-1"))
+    current = tracker.directive_view(obs).current
+    assert (current.objective_quote, current.continue_if, current.replan_if) == (None, None, None)
+    payload = _build(directive=current)
+    assert not {"objective_quote", "continue_if", "replan_if"} & set(payload["directive"])
 
 
 def test_the_recorded_trace_holds_exactly_what_s1_received_and_replays_clean(tmp_path):
@@ -552,6 +583,7 @@ def test_old_advice_beside_a_newer_view_carries_what_s1_needs_to_compare_them_an
     assert origin["first_stated"] == _stamp(1, 431, 270.9062326105442)               # the observation with the newer view
     assert origin["age_game_s"]["since_requested"] == pytest.approx(8.818458900226744)
     assert origin["age_game_s"]["since_first_stated"] == 0.0
+    assert origin["expires_in_game_s"] == 10.0                                       # anchored to the statement, not the ask
     # S1 chose a move over the advised turn: it ran as chosen, and nothing says it was wrong or that the advice was.
     record = run.loop.turns[1]
     assert (record.raw_choice, record.effective_choice, record.executed_action) == ("a", "a", "a")
@@ -605,6 +637,8 @@ def test_a_closed_history_keeps_every_directive_in_order_and_names_who_replaced_
     origin = last["directive_provenance"]
     assert origin["d-0"]["superseded_by"] == "d-1" and origin["d-1"]["superseded_by"] == "d-2"
     assert "superseded_by" not in origin["d-2"] and "age_game_s" not in origin["d-0"] and "age_game_s" in origin["d-2"]
+    assert "expires_in_game_s" in origin["d-2"]                                   # time left is stated for the open one only
+    assert "expires_in_game_s" not in origin["d-0"] and "expires_in_game_s" not in origin["d-1"]
     assert origin["d-1"]["requested"] == _stamp(1, 101, 101.0) and origin["d-1"]["first_stated"] == _stamp(2, 102, 102.0)
     assert origin["d-2"]["requested"] == _stamp(2, 102, 102.0) and origin["d-2"]["first_stated"] == _stamp(3, 103, 103.0)
 
@@ -650,6 +684,7 @@ def test_old_advice_is_aged_not_hidden_and_no_age_limit_changes_the_turn(tmp_pat
     recent, old = run.contexts[2], run.contexts[3]
     assert old["directive"]["directive_id"] == "d-0" and old["directive_history"] == []
     assert old["directive_provenance"]["d-0"]["age_game_s"] == {"since_requested": 8900.0, "since_first_stated": 8899.0}
+    assert old["directive_provenance"]["d-0"]["expires_in_game_s"] is None       # no deadline, so no time left to state
     assert "deadline_game_s" not in old["directive"]
     assert old["choices"] == recent["choices"] and old["pending_help"] is None
     assert run.loop.helper_count == 0 and run.bridge.requests == []
@@ -663,6 +698,7 @@ def test_a_game_clock_that_is_unknown_stays_null_in_what_s1_receives(tmp_path):
         assert ctx["directive_provenance"]["d-0"]["requested"] == _stamp(0, 100, None)
         assert ctx["directive_provenance"]["d-0"]["first_stated"] == _stamp(1, 101, None)
         assert ctx["directive_provenance"]["d-0"]["age_game_s"] == {"since_requested": None, "since_first_stated": None}
+        assert ctx["directive_provenance"]["d-0"]["expires_in_game_s"] is None    # no clock: unknown, never zero
     assert "deadline_game_s" not in run.contexts[1]["directive"]                 # no clock, no invented deadline
 
     mixed = [_obs_at(100, game_s=None), _obs_at(101), _obs_at(102)]
@@ -671,6 +707,7 @@ def test_a_game_clock_that_is_unknown_stays_null_in_what_s1_receives(tmp_path):
         "since_requested": None, "since_first_stated": 0.0}
     assert run.contexts[2]["directive_provenance"]["d-0"]["age_game_s"] == {
         "since_requested": None, "since_first_stated": 1.0}
+    assert run.contexts[2]["directive_provenance"]["d-0"]["expires_in_game_s"] is None  # the ask had no game clock
 
 
 @pytest.mark.parametrize("change", [{"scene": "s1"}, {"game_s": 50.0}, {"frame": 1}, {"session": "new-session"}],
@@ -686,6 +723,7 @@ def test_a_boundary_closes_the_open_directive_in_the_context_that_crosses_it(tmp
         assert history["window"]["turns"] >= 0
         origin = crossed["directive_provenance"]["d-0"]
         assert "age_game_s" not in origin and "superseded_by" not in origin
+        assert "expires_in_game_s" not in origin                                 # closed advice states no countdown
         assert origin["first_stated"] == _stamp(1, 101, 101.0)
     assert run.contexts[2]["recent_history"]["boundary"] is not None
 
@@ -727,7 +765,8 @@ def test_help_from_an_earlier_epoch_never_reaches_a_context_and_new_help_carries
             assert adopted["directive"]["directive_id"] == "d-2"
             assert adopted["directive_provenance"] == {"d-2": {
                 "requested": _stamp(2, 102, third.game_s), "first_stated": _stamp(3, 103, fourth.game_s),
-                "age_game_s": {"since_requested": 1.0, "since_first_stated": 0.0}, "scored_on": "reader_setpoint"}}
+                "age_game_s": {"since_requested": 1.0, "since_first_stated": 0.0},
+                "expires_in_game_s": 10.0, "scored_on": "reader_setpoint"}}
             assert all('"directive_id":"d-0"' not in canonical(ctx) for ctx in s1.contexts)
             assert [item["directive"]["directive_id"] for item in tracker.history] == ["d-2"]
             assert [(r["choice_id"], r["based_on_seq"]) for r in bridge.requests] == [("a", 101)]

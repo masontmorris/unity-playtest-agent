@@ -96,6 +96,54 @@ def _game_age(now: float | None, then: float | None) -> float | None:
     return elapsed if math.isfinite(elapsed) and elapsed >= 0 else None
 
 
+def _shown(value: Any) -> str:
+    """A measured value as text for a fact line; an unmeasured one says so instead of reading as zero."""
+    return "unknown" if value is None else str(value)
+
+
+def _expiry_note(directive: Mapping[str, Any], now_game_s: float | None) -> str:
+    """Game seconds left on an open directive: one subtraction from this observation's clock, never a verdict.
+
+    A missing deadline or a missing clock states `unknown`; nothing here rounds, clamps, extends or acts.
+    """
+    deadline = _seconds(directive.get("deadline_game_s"))
+    if deadline is None:
+        return "time left unknown (no deadline)"
+    now = _seconds(now_game_s)
+    if now is None:
+        return "time left unknown (no game clock)"
+    return f"{deadline - now} game s left until deadline game_s {deadline}"
+
+
+def _keep_note(item: Mapping[str, Any]) -> str | None:
+    """What an adopted keep request measured, or which parts are unknown. Never what would have happened."""
+    keep = item.get("keep")
+    if not isinstance(keep, Mapping):
+        return None
+    requested = keep.get("requested") if isinstance(keep.get("requested"), Mapping) else {}
+    parts = [f"a keep request at turn {_shown(requested.get('turn'))} (seq {_shown(requested.get('seq'))}, "
+             f"game_s {_shown(requested.get('game_s'))}) had "
+             f"expires_in_game_s {_shown(keep.get('expires_in_game_s'))} and was adopted at turn "
+             f"{_shown(keep.get('adopted_turn'))}"]
+    if item.get("status", "open") != "open":
+        deadline_closed = keep.get("closed_by_deadline")
+        parts.append(f"the directive closed at game_s {_shown(keep.get('closed_at_game_s'))}, "
+                     f"by its deadline: {'unknown' if deadline_closed is None else 'yes' if deadline_closed else 'no'}")
+    return "; ".join(parts)
+
+
+def _clean_keep(keep: Mapping[str, Any]) -> dict[str, Any]:
+    """The measured fields of a keep request, with anything unmeasured left `null`. Copied, never shared."""
+    requested = keep.get("requested") if isinstance(keep.get("requested"), Mapping) else {}
+    at, deadline = _seconds(requested.get("game_s")), _seconds(keep.get("deadline_game_s"))
+    return {"directive_id": str(keep.get("directive_id") or ""),
+            "requested": {"turn": _count(requested.get("turn")), "seq": _count(requested.get("seq")),
+                          "game_s": at},
+            "deadline_game_s": deadline,
+            "expires_in_game_s": _seconds(keep.get("expires_in_game_s")),
+            "request_before_deadline": at < deadline if at is not None and deadline is not None else None}
+
+
 class DirectiveTracker(FactsSource):
     """Tracks frontier directives, one open at a time. It reports measurements and never selects actions.
 
@@ -166,10 +214,11 @@ class DirectiveTracker(FactsSource):
         if item is not None and outcome is not None:
             observation_trace = (self.sink.trace_seq_for_observation(observation.seq, observation.session)
                                  if self.sink is not None and hasattr(self.sink, "trace_seq_for_observation") else None)
-            self._close(outcome, len(reports), observation.seq, observation_trace, self._reason(item, outcome))
+            self._close(outcome, len(reports), observation.seq, observation_trace, self._reason(item, outcome),
+                        closed_game_s=observation.game_s)
         # Every directive stays in S1's context with its outcome, not only on the turn it closed
         # (build bible law 4). The open one, if any, is the last line.
-        lines.extend(self._fact_line(entry) for entry in self.history)
+        lines.extend(self._fact_line(entry, observation.game_s) for entry in self.history)
         self._evaluated = (observation.session, observation.seq)
         return lines
 
@@ -196,6 +245,46 @@ class DirectiveTracker(FactsSource):
         self._close("invalidated", int(item.get("request_turn") or 0), observation.seq, evidence,
                     "the play session restarted; the directive was bound to the earlier session")
 
+    def note_keep(self, keep: Mapping[str, Any], *, adopted_turn: int) -> None:
+        """Record that an adopted answer asked for no replacement while this directive was open.
+
+        The facts come from the request the answer replied to and the adoption turn: the directive id, that
+        request's bridge turn, seq and game time, its deadline and the exact game seconds left. Nothing is
+        inferred about what would have happened; whether the directive then closed at its deadline is filled in
+        only if the tracker measures that close, and stays `null` otherwise (no clock, no deadline, or still
+        open). A directive that has already closed keeps the keep beside its outcome, so a late answer is not
+        dropped.
+        """
+        directive_id = keep.get("directive_id")
+        item = self.active if (self.active or {}).get("directive", {}).get("directive_id") == directive_id else None
+        if item is None:
+            item = next((entry for entry in reversed(self.history)
+                         if (entry.get("directive") or {}).get("directive_id") == directive_id), None)
+        if item is None:
+            return
+        item["keep"] = {**_clean_keep(keep), "adopted_turn": _count(adopted_turn),
+                        "closed_at_game_s": None, "closed_by_deadline": None}
+        if item.get("status", "open") != "open":
+            self._keep_close(item)
+        # The keep is a measurement of its own: record it beside the directive at the turn it was adopted.
+        self._write("keep", _count(adopted_turn) or 0, _count((item["keep"]["requested"] or {}).get("seq")) or 0,
+                    item, item.get("status", "open"), None)
+        self._evaluated = None  # the view states what this adoption added, once facts evaluate an observation
+
+    @staticmethod
+    def _keep_close(item: dict[str, Any]) -> None:
+        """State a keep's measured close, or leave it unknown. Never a cause, a recommendation or a timing guess."""
+        keep = item.get("keep")
+        if not isinstance(keep, dict) or item.get("status", "open") == "open":
+            return
+        keep["closed_at_game_s"] = _seconds(item.get("closed_at_game_s"))
+        keep["closed_by_deadline"] = (bool(item.get("closed_by_deadline"))
+                                      if item.get("closed_at_game_s") is not None else None)
+        requested = (keep.get("requested") or {}).get("game_s")
+        deadline = keep.get("deadline_game_s")
+        keep["request_before_deadline"] = (requested < deadline
+                                           if requested is not None and deadline is not None else None)
+
     def directive_view(self, observation: Observation) -> DirectiveView | None:
         """The tracked directives as of `observation`, or `None` when none exist or `facts` has not evaluated it.
 
@@ -211,10 +300,16 @@ class DirectiveTracker(FactsSource):
         - `first_stated`: the same three for the first context that stated the directive to S1.
         - `age_game_s` (the open directive only): game seconds from each of the above to this observation.
           It is a measurement. No age is compared with a limit here, and none hides or ranks a directive.
+        - `expires_in_game_s` (the open directive only): `deadline_game_s - this observation's game_s`, one
+          subtraction with no rounding, threshold or clamp. It is null when the record has no deadline or the
+          clock is unknown; the tracker never extends a deadline or acts on the number.
         - `scored_on`: `reader_setpoint` when the directive has a setpoint, else `null`. The outcome says only
           whether a measured reader value satisfied that setpoint.
         - `baseline` (`changed` and `unchanged` setpoints): the reader value they compare with and where it was taken.
         - `superseded_by`: the directive that replaced it, when one did.
+        - `keep`: present only when an adopted answer asked for no replacement while this directive was open:
+          that request's stamps and exact time left, the adoption turn, and, once measured, the game time it
+          closed and whether its deadline is what closed it. Unmeasured fields are `null`.
         """
         if not self.history or self._evaluated != (observation.session, observation.seq):
             return None
@@ -243,6 +338,11 @@ class DirectiveTracker(FactsSource):
         if current:
             origin["age_game_s"] = {"since_requested": _game_age(observation.game_s, requested["game_s"]),
                                     "since_first_stated": _game_age(observation.game_s, stated["game_s"])}
+            deadline = directive.deadline_game_s
+            origin["expires_in_game_s"] = (deadline - observation.game_s
+                                           if deadline is not None and observation.game_s is not None else None)
+        if isinstance(item.get("keep"), Mapping):
+            origin["keep"] = copy.deepcopy(dict(item["keep"]))
         setpoint = directive.expected
         origin["scored_on"] = "reader_setpoint" if setpoint is not None else None
         if setpoint is not None and setpoint.op in checks.CHANGE:
@@ -313,18 +413,24 @@ class DirectiveTracker(FactsSource):
         due = deadline is not None and observation.game_s is not None and observation.game_s >= deadline
         expected = item.get("expected")
         if expected is None:
-            return "unknown" if due else None
-        op = Comparator(expected["op"])
-        value = self._reading(expected["field"], observation)
-        scored = checks.evaluate(value, kind=item["kind"], op=op, expected=expected.get("value"),
-                                 baseline=item.get("baseline"), tolerance=item.get("tolerance"))
-        if op is Comparator.unchanged:
-            return self._hold(item, scored, due)
-        if scored is True:
-            return "met"
-        if due:
-            return "not_met" if scored is False else "expired"
-        return None
+            outcome = "unknown" if due else None
+        else:
+            op = Comparator(expected["op"])
+            value = self._reading(expected["field"], observation)
+            scored = checks.evaluate(value, kind=item["kind"], op=op, expected=expected.get("value"),
+                                     baseline=item.get("baseline"), tolerance=item.get("tolerance"))
+            if op is Comparator.unchanged:
+                outcome = self._hold(item, scored, due)
+            elif scored is True:
+                outcome = "met"
+            elif due:
+                outcome = "not_met" if scored is False else "expired"
+            else:
+                outcome = None
+        # Whether the deadline is what ended it: a measurement for a keep beside the outcome, never a cause.
+        if outcome is not None:
+            item["closed_by_deadline"] = bool(due and outcome in ("expired", "not_met", "unknown"))
+        return outcome
 
     @staticmethod
     def _hold(item: dict[str, Any], scored: bool | None, due: bool) -> str | None:
@@ -339,7 +445,8 @@ class DirectiveTracker(FactsSource):
             return None
         return "met" if item.get("held_readings") else "expired"
 
-    def _close(self, status: str, turn: int, seq: int, evidence: int | None, reason: str) -> None:
+    def _close(self, status: str, turn: int, seq: int, evidence: int | None, reason: str, *,
+               closed_game_s: float | None = None) -> None:
         assert self.active is not None
         item = self.active
         first = item.get("first_turn")
@@ -353,7 +460,9 @@ class DirectiveTracker(FactsSource):
                 error_class = "action_rejected"
         if window["inputs_completed"] == 0:
             reason = f"{reason}; no input completed in its window"
-        item.update(status=status, outcome=status, reason=reason, window=window, error_class=error_class)
+        item.update(status=status, outcome=status, reason=reason, window=window, error_class=error_class,
+                    closed_at_game_s=_seconds(closed_game_s) if status != "invalidated" else None)
+        self._keep_close(item)  # measured here only: what the keep asked for and how the directive ended
         if isinstance(item.get("directive"), dict):
             item["directive"].update(outcome=status, evidence_seq=[evidence] if evidence is not None else [],
                                      window=window, error_class=error_class)
@@ -369,11 +478,12 @@ class DirectiveTracker(FactsSource):
             "event": event, "request_turn": item.get("request_turn", turn),
             "based_on_seq": item.get("based_on_seq", seq), "outcome_seq": seq,
             "hypothesis": item.get("hypothesis"), "directive": item.get("directive", dict(item)),
+            "keep": copy.deepcopy(item.get("keep")),
             "outcome": outcome, "evidence_trace_seq": evidence, "reason": item.get("reason"),
         }, author="frontier", turn=None, refs=refs)
 
     @staticmethod
-    def _fact_line(item: Mapping[str, Any]) -> str:
+    def _fact_line(item: Mapping[str, Any], now_game_s: float | None = None) -> str:
         d = item.get("directive", item)
         sp = d.get("expected")
         status = item.get("status", "open")
@@ -384,12 +494,20 @@ class DirectiveTracker(FactsSource):
             if item.get("error_class"):
                 status = f"{status}; error class {item['error_class']}"
         if not isinstance(sp, Mapping):
-            return f"Frontier directive {d.get('directive_id')}: {d.get('text')}; status {status}."
-        op = sp.get("op")
-        if op == Comparator.unchanged:  # a hold, stated as one: its deadline is when it is met
-            return (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
-                    f"{sp.get('field')} unchanged until game_s {d.get('deadline_game_s')}; status {status}.")
-        val = "null" if sp.get("value") is None else repr(sp.get("value"))
-        return (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
-                f"{sp.get('field')} {op} {val}; deadline game_s {d.get('deadline_game_s')}; "
-                f"status {status}.")
+            head = f"Frontier directive {d.get('directive_id')}: {d.get('text')}"
+        elif sp.get("op") == Comparator.unchanged:  # a hold, stated as one: its deadline is when it is met
+            head = (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
+                    f"{sp.get('field')} unchanged until game_s {d.get('deadline_game_s')}")
+        else:
+            val = "null" if sp.get("value") is None else repr(sp.get("value"))
+            head = (f"Frontier directive {d.get('directive_id')}: goal {d.get('text')}; setpoint "
+                    f"{sp.get('field')} {sp.get('op')} {val}; deadline game_s {d.get('deadline_game_s')}")
+        # Only an open directive has time left to state, and it is one subtraction from this observation's clock.
+        parts = [head]
+        if item.get("status", "open") == "open":
+            parts.append(_expiry_note(d, now_game_s))
+        parts.append(f"status {status}")
+        keep = _keep_note(item)
+        if keep:
+            parts.append(keep)
+        return "; ".join(parts) + "."

@@ -17,9 +17,18 @@ hash their payloads); a mapping and the history are copied so later changes cann
 
 `directive` is the open directive and `directive_history` the closed ones, each with the outcome it ended
 with. `directive_provenance` is present only when the caller supplies what its source measured about those
-directives (by directive id): where each was asked and first stated, and its age against this observation.
-It may name only a directive the payload shows. A directive is a helper's advice, so its outcome scores a
-setpoint over a reader and nothing more; nothing here says a goal was reached.
+directives (by directive id): where each was asked and first stated, its age against this observation, and,
+for the open one only, `expires_in_game_s` (deadline minus this observation's game clock, null without
+either). When an adopted answer requested no replacement, `keep` states that request's stamps, the exact time
+left then, and, once measured, the game time the directive closed and whether its deadline closed it. Every
+unmeasured field is `null`; nothing here counts one directive against another, extends a deadline, or acts
+on any of it. It may name only a directive the payload shows. A directive is a helper's advice, so its
+outcome scores a setpoint over a reader and nothing more; nothing here says a goal was reached.
+
+A directive's `objective_quote`, `continue_if` and `replan_if` are the frontier's own words, carried exactly
+as it wrote them: a verbatim part of the run objective, and what it says to inspect to keep pursuing or
+replan. They are advice for S1 to weigh, not predicates this module evaluates, and `unknown` means the
+frontier could not tell. This module never reads them, and nothing observes S1's internal intent.
 """
 
 from __future__ import annotations

@@ -123,9 +123,18 @@ tests never really wait.
     `requested` is the turn the help was asked on, the bridge observation `seq` the answer was composed against and
     that observation's `game_s`; `first_stated` is the same three for the first context that stated it to S1 (the
     adoption). Open directives only carry `age_game_s`: game seconds from each of those to this observation, so
-    the age of the advice and the time S1 has had it are told apart. `scored_on`, `baseline` and `superseded_by`
-    are described below. Anything unmeasured is `null`. A missing game time has no wall-time stand-in, a negative or
-    non-finite age is `null`, and no age is compared with a limit: an old directive stays, with its age.
+    the age of the advice and the time S1 has had it are told apart. They also carry `expires_in_game_s`: the
+    record's `deadline_game_s` minus this observation's `game_s`, one subtraction, `null` without a deadline or a
+    clock. It is a measurement; no limit compares it, no code extends a deadline, and it never becomes an action.
+    `scored_on`, `baseline` and `superseded_by` are described below. When an adopted answer asked for no
+    replacement, `keep` states that request's turn, seq and game time, the deadline then, the exact time left, the
+    adoption turn and, once measured, the game time the directive closed and whether its deadline closed it.
+    Anything unmeasured is `null`. A missing game time has no wall-time stand-in, a negative or non-finite age is
+    `null`, and no age is compared with a limit: an old directive stays, with its age.
+  - **Attribution travels with the record.** `objective_quote`, `continue_if` and `replan_if`, when the frontier
+    wrote them, are copied into `directive` and `directive_history` verbatim. They are advice about the objective
+    and what to inspect; the loop evaluates none of them, and a record written before the fields existed simply
+    lacks them. S1's internal reason for continuing, replanning or finishing is not observed.
   - **Which number is which.** Every `seq` in the provenance is a bridge observation sequence number, comparable with
     `as_of.seq`; a trace entry number never appears there. A closed directive's `evidence_seq` is the contract's own
     citation of the trace entry that closed it, as for findings and suspicions, and is not comparable with `as_of.seq`.

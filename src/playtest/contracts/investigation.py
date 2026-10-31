@@ -104,6 +104,9 @@ class DirectiveWindow(Strict):
         return self
 
 
+MAX_OBJECTIVE_QUOTE = 200
+
+
 class Directive(Strict):
     directive_id: str = Field(min_length=1)
     parent: str | None = None
@@ -115,6 +118,17 @@ class Directive(Strict):
     expected: Expected | None = Field(None, description="Null when no checkable postcondition; outcome is then 'unknown'")
     tolerance: float | None = Field(None, ge=0)
     deadline_game_s: float | None = Field(None, gt=0)
+    # The frontier's own attribution of the advice to the run objective, and the conditions it authored for
+    # continuing or replanning. All three are null on a directive recorded before they existed: absence is
+    # unknown provenance, not a claim that the frontier authored conditions. Nothing in code reads them to
+    # select an action, help, a wait, a restart or a finish.
+    objective_quote: str | None = Field(
+        None, max_length=MAX_OBJECTIVE_QUOTE,
+        description="A verbatim substring of the run objective this advice serves, as the frontier quoted it")
+    continue_if: list[str] | None = Field(
+        None, description="What the frontier says to inspect to keep pursuing, authored as advice; null when unknown")
+    replan_if: list[str] | None = Field(
+        None, description="What the frontier says to inspect to replan, authored as advice; null when unknown")
     outcome: DirectiveOutcome = DirectiveOutcome.open
     evidence_seq: list[int] = Field(default_factory=list)
     error_class: DirectiveErrorClass | None = None
@@ -134,6 +148,28 @@ class Directive(Strict):
         if self.error_class is DirectiveErrorClass.action_rejected and (
                 window is None or window.inputs_completed != 0 or not sum(window.inputs_rejected.values())):
             raise ValueError("action_rejected needs a window in which inputs were rejected and none completed")
+        return self
+
+    @model_validator(mode="after")
+    def _objective_attribution(self) -> "Directive":
+        """The frontier's attribution is all-or-none, and never blank.
+
+        A record written before these fields existed has all three null, which stays readable: its provenance
+        is unknown, not an empty quote or invented conditions. A record that has any one of them must have all
+        three, non-empty, so a half-written attribution cannot pass as authored advice.
+        """
+        written = (self.objective_quote, self.continue_if, self.replan_if)
+        if all(value is None for value in written):
+            return self
+        if any(value is None for value in written):
+            raise ValueError("objective attribution is all-or-none: objective_quote, continue_if and replan_if")
+        if not self.objective_quote.strip():
+            raise ValueError("objective_quote is empty")
+        for name, conditions in (("continue_if", self.continue_if), ("replan_if", self.replan_if)):
+            if not conditions:
+                raise ValueError(f"{name} is empty; say unknown explicitly instead")
+            if any(not condition.strip() for condition in conditions):
+                raise ValueError(f"{name} has an empty condition")
         return self
 
 

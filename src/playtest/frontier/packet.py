@@ -100,7 +100,9 @@ def build_packet(
     recent_rows = [_recent(row, i) for i, row in enumerate(recent)]
     hypothesis_rows = _hypotheses(hypotheses)
     new_ids = _new_ids(new_hypothesis_ids)
-    directive_row = _directive(directive, where="directive")
+    directive_row = _directive(directive, where="directive",
+                               current=directive is not None and directive.outcome is DirectiveOutcome.open,
+                               as_of_game_s=observation.game_s)
     history_rows = [_directive(item, where=f"directive_history[{i}]") for i, item in enumerate(directive_history)]
     clip_row, reason = _clip(clip, clip_unavailable_reason)
     escalation_row = _escalation(escalation)
@@ -154,6 +156,7 @@ def build_packet(
         seqs.add(row["seq"])
     refs = frontier.PacketRefs(
         seqs=frozenset(seqs),
+        objective=objective,  # `review` checks a directive's quote against this exact string
         hypotheses=frozenset(row["id"] for row in hypothesis_rows if row["status"] == "open"),
         new_hypothesis_ids=tuple(new_ids),
         open_directive=directive is not None and directive.outcome is DirectiveOutcome.open,
@@ -387,13 +390,26 @@ def _progress(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _directive(value: Directive | None, *, where: str) -> dict[str, Any] | None:
+def _directive(value: Directive | None, *, where: str, current: bool = False,
+               as_of_game_s: float | None = None) -> dict[str, Any] | None:
+    """The directive record, plus the measured time it has left when it is the open one.
+
+    `expires_in_game_s` is one subtraction, `deadline_game_s - as_of.game_s`, with no rounding, threshold,
+    warning, extension or comparison: null when the record has no deadline or this observation has no game
+    clock. It is stated so the frontier need not subtract two clocks itself and mistake a nearly expired
+    directive for a fresh one. A closed record keeps its outcome and no countdown.
+    """
     if value is None:
         return None
     if not isinstance(value, Directive):
         raise ValueError(f"{where} must be a Directive record")
     # Every field, including a null deadline or missing evidence and its outcome, stays explicit.
-    return value.model_dump(mode="json")
+    row = value.model_dump(mode="json")
+    if current:
+        deadline = value.deadline_game_s
+        row["expires_in_game_s"] = (deadline - as_of_game_s
+                                    if deadline is not None and as_of_game_s is not None else None)
+    return row
 
 
 def _escalation(record: TurnRecord) -> dict[str, Any]:

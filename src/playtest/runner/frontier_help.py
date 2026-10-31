@@ -274,6 +274,7 @@ class _StagedResult:
     result: HelpResult
     payload: dict[str, Any]
     directive_row: dict[str, Any] | None
+    keep_row: dict[str, Any] | None
     based_on_seq: int
     evidence_trace_seq: int | None
     candidate: Any | None
@@ -357,7 +358,7 @@ class FrontierHelp:
                          if hasattr(self.sink, "trace_seq_for_observation") else None)
             self.sink.append("investigation", {
                 "event": "not_called", "request_turn": request.turn, "based_on_seq": seq,
-                "outcome_seq": seq, "hypothesis": None, "directive": None,
+                "outcome_seq": seq, "hypothesis": None, "directive": None, "keep": None,
                 "outcome": "unknown", "evidence_trace_seq": obs_trace,
                 "reason": "the approved frontier call cap was reached",
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
@@ -431,7 +432,8 @@ class FrontierHelp:
                                          answer=None, parse_valid=False, **details)
                 self.sink.append("investigation", {
                     "event": "invalid_answer", "request_turn": request.turn, "based_on_seq": seq,
-                    "outcome_seq": seq, "hypothesis": None, "directive": None, "outcome": "unknown",
+                    "outcome_seq": seq, "hypothesis": None, "directive": None, "keep": None,
+                    "outcome": "unknown",
                     "evidence_trace_seq": obs_trace, "reason": details["error"],
                 }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
                 return HelpResult(source="frontier", result=details)
@@ -444,9 +446,21 @@ class FrontierHelp:
                     parent=current.directive_id if current is not None else None,
                     model=result.resolved_model or provider.MODEL,
                     based_on_seq=seq, received_game_s=observation.game_s)
+            # A null directive asks for no replacement; it never renews one. Record that request beside the
+            # open directive, with the exact time left, so a later measured close can be read against it.
+            keep_row = None
+            if answer.directive is None and current is not None:
+                deadline = current.deadline_game_s
+                keep_row = {"directive_id": current.directive_id,
+                            "requested": {"turn": request.turn, "seq": seq, "game_s": observation.game_s},
+                            "deadline_game_s": deadline,
+                            "expires_in_game_s": (deadline - observation.game_s
+                                                  if deadline is not None and observation.game_s is not None
+                                                  else None)}
             result_payload = {
                 "hypotheses": [h.model_dump(mode="json") for h in accepted],
                 "directive": directive.model_dump(mode="json") if directive is not None else None,
+                "keep": copy.deepcopy(keep_row),
                 "errors": list(result.errors),
                 "review": [{"item": p.item, "reason": p.reason} for p in review.problems],
             }
@@ -459,6 +473,7 @@ class FrontierHelp:
                 "event": "hypothesis_directive", "request_turn": request.turn, "based_on_seq": seq,
                 "outcome_seq": seq,
                 "hypothesis": result_payload["hypotheses"], "directive": result_payload["directive"],
+                "keep": None,
                 "outcome": "open" if directive is not None else "unknown", "evidence_trace_seq": obs_trace,
                 "reason": reason,
             }, author="frontier", turn=None, refs=[obs_trace] if obs_trace is not None else [])
@@ -485,6 +500,7 @@ class FrontierHelp:
             if request.turn not in self._discarded and request.turn not in self._adopted:
                 self._staged[request.turn] = _StagedResult(
                     result=completed, payload=copy.deepcopy(result_payload), directive_row=directive_row,
+                    keep_row=copy.deepcopy(keep_row),
                     based_on_seq=seq, evidence_trace_seq=obs_trace, candidate=candidate,
                     finding_evidence=finding_evidence)
             return completed
@@ -522,6 +538,8 @@ class FrontierHelp:
         if staged.directive_row is not None:
             self.tracker.adopt(staged.directive_row, request_turn=request_turn,
                                based_on_seq=staged.based_on_seq, evidence_trace_seq=staged.evidence_trace_seq)
+        if staged.keep_row is not None:
+            self.tracker.note_keep(staged.keep_row, adopted_turn=request_turn)
         payload = copy.deepcopy(staged.payload)
         if staged.candidate is not None and staged.finding_evidence is not None:
             payload["candidate_finding"] = self._record_finding(staged.candidate, request_turn,

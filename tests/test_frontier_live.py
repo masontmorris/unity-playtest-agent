@@ -84,7 +84,10 @@ def _empty() -> dict:
 def _directive(text: str = "Hold the current scene and report whether it changes.",
                field: str = "scene", value: str = "main", deadline: float | None = 10.0) -> dict:
     expected = None if field is None else {"field": field, "op": "==", "value": value, "tolerance": None}
-    return {"text": text, "tests": None, "target": None, "expected": expected, "deadline_s": deadline}
+    return {"text": text, "tests": None, "target": None, "expected": expected, "deadline_s": deadline,
+            "objective_quote": "check each offered control once",
+            "continue_if": ["the measured effect still supports the objective's check"],
+            "replan_if": ["a completed check measures no effect on the objective"]}
 
 
 def _meta_response(content: dict | str, *, finish: str = "stop", usage: dict | None = None,

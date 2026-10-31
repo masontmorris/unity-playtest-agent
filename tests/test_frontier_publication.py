@@ -48,7 +48,7 @@ def _helper(tmp_path, send, *, max_calls=4, sink=None, effects=None):
 
 
 def _answer_for(packet):
-    answer = json.loads(_answer_json(packet["observation"]["seq"]))
+    answer = json.loads(_answer_json(packet["observation"]["seq"], packet["objective"]))
     hypothesis_id = packet["new_hypothesis_ids"][0]
     answer["hypotheses"][0]["id"] = hypothesis_id
     answer["directive"]["tests"] = hypothesis_id
@@ -326,6 +326,84 @@ def test_completion_cannot_start_a_scoring_window_before_adoption(tmp_path):
         assert len([e for e in sink.of_kind("investigation") if e["body"]["event"] == "directive"]) == 1
 
     asyncio.run(main())
+
+
+def test_a_null_directive_is_a_keep_with_its_exact_time_left_and_never_renews_the_open_one(tmp_path):
+    async def main():
+        sink = MemorySink()
+        calls = []
+
+        def send(body):
+            packet = json.loads(body["messages"][2]["content"])
+            answer = _answer_for(packet)
+            if calls:  # the second answer asks for no replacement: null, not a renewal
+                answer["directive"] = None
+            calls.append(packet["observation"]["seq"])
+            return _reply(answer)
+
+        helper, tracker, _ = _helper(tmp_path, send, sink=sink)
+        first = await helper.run(_escalation_request(1, counter=0))
+        assert helper.adopt_result(1, first).result["directive_id"] == "d-1"
+        await tracker.facts([], _observation(8, 2.0, 0))                 # states the directive to S1
+        assert tracker.directive_view(_observation(8, 2.0, 0)).provenance["d-1"]["expires_in_game_s"] == 10.0
+
+        second = await helper.run(_escalation_request(2, counter=0))
+        assert second.result["directive"] is None
+        assert second.result["keep"] == {
+            "directive_id": "d-1", "requested": {"turn": 2, "seq": 7, "game_s": 2.0},
+            "deadline_game_s": 12.0, "expires_in_game_s": 10.0}
+        published = helper.adopt_result(2, second)
+        assert published.result["directive_id"] is None                  # no replacement and no extension
+        assert tracker.active is not None and tracker.active["directive"]["deadline_game_s"] == 12.0
+        assert len(tracker.history) == 1
+
+        after = _observation(9, 2.0, 0)
+        await tracker.facts([], after)
+        view = tracker.directive_view(after)
+        keep = view.provenance["d-1"]["keep"]
+        assert keep["requested"] == {"turn": 2, "seq": 7, "game_s": 2.0}
+        assert keep["expires_in_game_s"] == 10.0 and keep["request_before_deadline"] is True
+        assert keep["adopted_turn"] == 2 and keep["closed_at_game_s"] is None      # still open: unknown close
+        assert keep["closed_by_deadline"] is None
+        assert "a keep request at turn 2" in next(line for line in await tracker.facts([], after)
+                                                  if line.startswith("Frontier directive d-1:"))
+        written = next(row for row in sink.of_kind("investigation") if row["body"]["event"] == "keep")
+        assert written["body"]["keep"]["directive_id"] == "d-1"
+
+        # The next observation crosses the deadline: the measured close now says the deadline ended it.
+        late = _observation(12, 12.0, 0)
+        await tracker.facts([], late)
+        closed = tracker.directive_view(late)
+        assert closed.current is None and closed.closed[0].outcome.value == "not_met"
+        measured = closed.provenance["d-1"]["keep"]
+        assert measured["closed_at_game_s"] == 12.0 and measured["closed_by_deadline"] is True
+        assert measured["request_before_deadline"] is True
+        assert "by its deadline: yes" in next(line for line in await tracker.facts([], late)
+                                              if line.startswith("Frontier directive d-1:"))
+
+    asyncio.run(main())
+
+
+def test_a_keep_that_arrives_after_the_close_stays_beside_the_outcome_and_reopens_nothing(tmp_path):
+    async def main():
+        helper, tracker, _ = _helper(tmp_path, _send)
+        first = await helper.run(_escalation_request(1, counter=0))
+        helper.adopt_result(1, first)
+        await tracker.facts([], _observation(8, 2.0, 0))
+        await tracker.facts([], _observation(9, 12.0, 0))                # the deadline closes it
+        assert tracker.active is None and tracker.history[0]["status"] == "not_met"
+
+        tracker.note_keep({"directive_id": "d-1", "requested": {"turn": 2, "seq": 7, "game_s": 11.5},
+                           "deadline_game_s": 12.0, "expires_in_game_s": 0.5}, adopted_turn=2)
+        assert tracker.active is None                                    # a late keep never reopens the directive
+        after = _observation(10, 12.5, 0)
+        await tracker.facts([], after)
+        keep = tracker.directive_view(after).provenance["d-1"]["keep"]
+        assert keep["expires_in_game_s"] == 0.5 and keep["request_before_deadline"] is True
+        assert keep["closed_at_game_s"] == 12.0 and keep["closed_by_deadline"] is True
+
+    asyncio.run(main())
+
 
 
 def test_discard_keeps_unadopted_hypotheses_and_directive_out_of_later_packets(tmp_path):

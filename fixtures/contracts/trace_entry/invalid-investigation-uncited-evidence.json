@@ -13,6 +13,7 @@
     "outcome_seq": 2,
     "hypothesis": null,
     "directive": null,
+    "keep": null,
     "outcome": "met",
     "evidence_trace_seq": 1,
     "reason": "the measured reader value satisfied the setpoint"

@@ -363,6 +363,9 @@ def frontier_request(public: dict, *, seq: int = 7, game_s: float = 2.0, scene: 
 def frontier_content(expected: dict | None = None, deadline_s: float | None = None) -> str:
     directive_row = None if expected is None else {
         "deadline_s": deadline_s, "expected": expected, "target": None, "tests": None,
+        "objective_quote": "Try each control once",
+        "continue_if": ["the offered choices still include one that was not tried"],
+        "replan_if": ["every offered choice has been tried once"],
         "text": "Approach the declared volume and say what the distance does."}
     return json.dumps({"add_choices": [], "candidate_finding": None, "directive": directive_row,
                        "hypotheses": [], "prune_choices": []})

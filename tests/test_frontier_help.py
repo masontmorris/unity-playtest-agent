@@ -41,13 +41,17 @@ def _approval():
     return {"max_calls": 2, "max_cost_usd": 1.0, "arms": {provider.MODEL: limit}}
 
 
-def _answer_json(seq: int):
+def _answer_json(seq: int, objective: str = OBJECTIVE):
     return json.dumps({
         "add_choices": [], "candidate_finding": None,
         "directive": {"deadline_s": 10.0,
                       "expected": {"field": "public.counter", "op": ">=", "value": 1.0,
                                    "tolerance": None},
-                      "target": None, "tests": "hyp-0-0", "text": "Check whether the measured count reaches one."},
+                      "target": None, "tests": "hyp-0-0",
+                      "text": "Check whether the measured count reaches one.",
+                      "objective_quote": objective.strip()[:60],
+                      "continue_if": ["the measured count still moves toward the objective"],
+                      "replan_if": ["the measured count contradicts the objective"]},
         "hypotheses": [{"confirm_if": "The count reaches one.", "contradicting_seq": [],
                         "id": "hyp-0-0", "refute_if": "The count remains below one at the deadline.",
                         "statement": "The count may increase after the selected action.",
@@ -59,7 +63,8 @@ def _answer_json(seq: int):
 def _meta_reply(_body):
     packet = json.loads(_body["messages"][2]["content"])
     seq = packet["observation"]["seq"]
-    return 200, {"model": provider.MODEL, "choices": [{"finish_reason": "stop", "message": {"content": _answer_json(seq)}}],
+    return 200, {"model": provider.MODEL, "choices": [{"finish_reason": "stop", "message": {
+        "content": _answer_json(seq, packet["objective"])}}],
                  "usage": {"prompt_tokens": 5, "completion_tokens": 5,
                            "prompt_tokens_details": {"cached_tokens": 0}}}, 1.0, None
 
@@ -632,15 +637,15 @@ def test_the_fact_line_states_a_hold_as_a_hold_and_leaves_the_other_lines_alone(
         tracker.adopt(_watch("d-1", 5.0), request_turn=0, based_on_seq=0)
         assert (await tracker.facts([], _observation(1, 1.0, 0)))[-1] == (
             "Frontier directive d-1: goal Watch the counter (d-1).; setpoint public.counter unchanged until game_s 5.0; "
-            "status open.")
+            "4.0 game s left until deadline game_s 5.0; status open.")
         tracker.adopt(_watch("d-2", 6.0, op="changed"), request_turn=1, based_on_seq=1)
         assert (await tracker.facts([], _observation(2, 2.0, 0)))[-1] == (
             "Frontier directive d-2: goal Watch the counter (d-2).; setpoint public.counter changed null; "
-            "deadline game_s 6.0; status open.")
+            "deadline game_s 6.0; 4.0 game s left until deadline game_s 6.0; status open.")
         tracker.adopt(_directive("d-3", 7.0), request_turn=2, based_on_seq=2)
         assert (await tracker.facts([], _observation(3, 3.0, 0)))[-1] == (
             "Frontier directive d-3: goal Reach the setpoint (d-3).; setpoint public.counter >= 1; "
-            "deadline game_s 7.0; status open.")
+            "deadline game_s 7.0; 4.0 game s left until deadline game_s 7.0; status open.")
 
     asyncio.run(main())
 

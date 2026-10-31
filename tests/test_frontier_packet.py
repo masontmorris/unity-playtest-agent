@@ -209,7 +209,7 @@ def test_packet_carries_every_supplied_record_and_outcome():
     assert payload["observation"]["reader_errors"] == [{"reader": "counter", "error": "timed out"}]
     assert payload["choice_set_version"] == 3
     assert [choice["id"] for choice in payload["choices"]] == ["c1", "c2", "c3", "c4"]
-    assert payload["directive"] == directive().model_dump(mode="json")
+    assert payload["directive"] == {**directive().model_dump(mode="json"), "expires_in_game_s": 17.5}
     assert payload["directive"]["outcome"] == "open"
     assert payload["directive_history"][0]["outcome"] == "not_met"
     assert payload["directive_history"][0]["evidence_seq"] == [8]
@@ -250,6 +250,21 @@ def test_refs_carry_a_copy_of_the_request_observations_public_readings():
     assert packet.refs.public == packet.payload["observation"]["public"]
 
 
+def test_only_the_open_directive_row_states_the_exact_time_left():
+    packet = build(observation=observation(game_s=12.553), directive=directive(deadline_game_s=30.0))
+    assert packet.payload["directive"]["expires_in_game_s"] == 30.0 - 12.553   # one subtraction, no rounding
+    assert build(directive=directive(deadline_game_s=None)).payload["directive"]["expires_in_game_s"] is None
+    assert build(observation=observation(game_s=None),
+                 directive=directive()).payload["directive"]["expires_in_game_s"] is None
+    closed = build(directive_history=(directive(outcome=DirectiveOutcome.met),))
+    assert "expires_in_game_s" not in closed.payload["directive_history"][0]   # a closed row counts nothing down
+
+
+def test_packet_refs_carry_the_exact_objective_its_quotes_are_checked_against():
+    packet = build(objective="Find a state that disagrees with the stated expectation.")
+    assert packet.refs.objective == "Find a state that disagrees with the stated expectation."
+
+
 def test_review_judges_a_setpoint_against_the_packets_own_observation():
     # The same observation the frontier was shown decides whether a reach setpoint already holds (#141).
     packet = build()  # public: counter 2
@@ -257,7 +272,10 @@ def test_review_judges_a_setpoint_against_the_packets_own_observation():
 
     def reviewed(op, value):
         expected = {"field": "public.counter", "op": op, "value": value, "tolerance": None}
-        directive = {"deadline_s": 5.0, "expected": expected, "target": None, "tests": None, "text": "try it"}
+        directive = {"deadline_s": 5.0, "expected": expected, "target": None, "tests": None, "text": "try it",
+                     "objective_quote": "Find a state that disagrees",
+                     "continue_if": ["the counter reading still follows the action"],
+                     "replan_if": ["the counter reading contradicts the action"]}
         answer = frontier.FrontierAnswer.model_validate({
             "add_choices": [], "candidate_finding": None, "directive": directive, "hypotheses": [],
             "prune_choices": []})

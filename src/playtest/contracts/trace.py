@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -60,6 +61,44 @@ class TraceExecutionRequest(Strict):
     lease_s: float | None = Field(None, gt=0)
 
 
+_KEEP_REQUEST_FIELDS = {"turn", "seq", "game_s"}
+_KEEP_FIELDS = {"directive_id", "requested", "deadline_game_s", "expires_in_game_s", "adopted_turn",
+                "closed_at_game_s", "closed_by_deadline", "request_before_deadline"}
+
+
+def _finite_number(value: Any, name: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"a keep row's {name} must be a finite number or null")
+
+
+def _keep_entry(keep: Any) -> None:
+    """Validate a keep row: one adopted answer's measured request beside a directive, unmeasured parts null."""
+    if keep is None:
+        return
+    if not isinstance(keep, dict) or set(keep) != _KEEP_FIELDS:
+        raise ValueError(f"investigation keep keys must be exactly {sorted(_KEEP_FIELDS)}")
+    if not isinstance(keep["directive_id"], str) or not keep["directive_id"]:
+        raise ValueError("a keep row needs the directive id it was asked for")
+    requested = keep["requested"]
+    if not isinstance(requested, dict) or set(requested) != _KEEP_REQUEST_FIELDS:
+        raise ValueError(f"a keep row's requested keys must be exactly {sorted(_KEEP_REQUEST_FIELDS)}")
+    for name in ("turn", "seq"):
+        value = requested[name]
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise ValueError(f"a keep row's requested {name} must be a non-negative integer or null")
+    _finite_number(requested["game_s"], "requested game_s")
+    for name in ("deadline_game_s", "expires_in_game_s", "closed_at_game_s"):
+        _finite_number(keep[name], name)
+    adopted = keep["adopted_turn"]
+    if isinstance(adopted, bool) or not isinstance(adopted, int) or adopted < 0:
+        raise ValueError("a keep row's adopted_turn must be a non-negative integer")
+    for name in ("closed_by_deadline", "request_before_deadline"):
+        if keep[name] is not None and not isinstance(keep[name], bool):
+            raise ValueError(f"a keep row's {name} must be a boolean or null")
+
+
 class TraceEntry(Strict):
     """One immutable, locally validated append in a run trace (build bible 5.7)."""
 
@@ -110,10 +149,13 @@ class TraceEntry(Strict):
                 TraceKind.restart: {"event", "ticket_id", "from_generation", "to_generation", "status",
                                     "reason", "release_verified", "checks", "waited_s"},
                 TraceKind.investigation: {"event", "request_turn", "based_on_seq", "hypothesis", "directive",
-                                         "outcome", "outcome_seq", "evidence_trace_seq", "reason"},
+                                         "keep", "outcome", "outcome_seq", "evidence_trace_seq", "reason"},
                 TraceKind.stop: {"reason", "result", "error"},
                 TraceKind.end: {"status", "error", "turns", "redactions"},
             }[self.kind]
+            if (self.kind is TraceKind.investigation and "keep" not in self.body
+                    and self.body.get("event") != "keep"):
+                keys = keys - {"keep"}  # traces written before keep rows existed stay readable
             if set(self.body) != keys:
                 raise ValueError(f"{self.kind.value} body keys must be exactly {sorted(keys)}")
             if self.kind is TraceKind.execution and self.body["purpose"] not in ("choice", "while_pending"):
@@ -197,7 +239,8 @@ class TraceEntry(Strict):
                 if self.body["kind"] not in ("escalate", "delegate"):
                     raise ValueError("unknown help kind")
             if self.kind is TraceKind.investigation:
-                if self.body["event"] not in ("not_called", "invalid_answer", "hypothesis_directive", "directive", "outcome"):
+                if self.body["event"] not in ("not_called", "invalid_answer", "hypothesis_directive", "directive",
+                                              "outcome", "keep"):
                     raise ValueError("unknown investigation event")
                 if (isinstance(self.body["request_turn"], bool) or not isinstance(self.body["request_turn"], int)
                         or self.body["request_turn"] < 0):
@@ -214,6 +257,7 @@ class TraceEntry(Strict):
                     raise ValueError("evidence_trace_seq must be null or an earlier cited trace sequence")
                 if self.body["reason"] is not None and not isinstance(self.body["reason"], str):
                     raise ValueError("investigation reason must be a string or null")
+                _keep_entry(self.body.get("keep"))
             if self.kind is TraceKind.end and self.body["status"] not in ("complete", "stopped", "inconclusive"):
                 raise ValueError("unknown end status")
         return self
