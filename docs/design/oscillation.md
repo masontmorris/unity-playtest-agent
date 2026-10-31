@@ -143,5 +143,14 @@ Both are now built and validated in Unity (17feee5).
 
 With a 7.7° step the half-step is 3.8°, so no reasonable tolerance can hunt.
 
+**Live check, and a correction.** That last sentence assumed S1 would use the smallest step. In
+`climb-turn-sizes-01` (turn sizes, original "centre" wording) it never chose the 7.7° turn. It hunted with
+the 18° stick turn instead, between headings about 18° apart around the staircase. 91% of its choices were
+turns, against 62–70% with two turn options.
+
+So the deadband condition applies to the step the chooser actually uses, not the smallest one offered:
+tolerance ≥ half of that step. The finer menu also adds an option-count pull toward turning. The
+deadband-consistent pairing is the turn sizes with a "middle half" tolerance (±20° ≥ 9°).
+
 Contributors: gpt-6.1-terra (first implementation and replay), with the orchestrator adding the
 rounding, compression, range summary, tests and this note.
