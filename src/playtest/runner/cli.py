@@ -177,6 +177,12 @@ def _parser() -> argparse.ArgumentParser:
                         help="the share of the per-minute token budget S1's calls may use before pacing spaces "
                              "them; 0 (default) spaces every call, 0.5 lets a session run unspaced until half the "
                              "budget is in the window (also UPA_RUN_PACING_BURST)")
+    parser.add_argument("--pacing-anchor", default=_env("UPA_RUN_PACING_ANCHOR", str, "end"),
+                        choices=["end", "send"],
+                        help="the moment the token pacer measures its spacing from: end (default) when the "
+                             "previous response arrived, or send when the previous request was posted, which "
+                             "stops each call's latency adding to the next wait; requests are built the same "
+                             "way (also UPA_RUN_PACING_ANCHOR)")
     parser.add_argument("--finish-label", default=_env("UPA_RUN_FINISH_LABEL", str, "plain"),
                         choices=sorted(FINISH_LABELS),
                         help="how the finish choice is labelled: plain ('Finish', default) or conditional (states "
@@ -258,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--frontier-clip-s must be above 0 and at most {media.MAX_WINDOW_S:g}")
     if not 0 <= args.pacing_burst <= 1:
         parser.error("--pacing-burst (or UPA_RUN_PACING_BURST) must be between 0 and 1")
+    if args.pacing_anchor not in ("end", "send"):
+        parser.error("--pacing-anchor (or UPA_RUN_PACING_ANCHOR) must be 'end' or 'send'")
     if args.tokens_per_minute < 1:
         parser.error("--tokens-per-minute (or UPA_RUN_TOKENS_PER_MINUTE) must be at least 1")
     if output.is_relative_to(project) or output.exists():
@@ -331,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["continuous_input"] = True
         if args.pacing_burst:
             plan["pacing_burst"] = args.pacing_burst
+        if args.pacing_anchor != "end":
+            plan["pacing_anchor"] = "send"
         if args.finish_label != "plain":
             plan["finish_label"] = args.finish_label
         plan["coverage_facts"] = args.coverage_facts
@@ -398,7 +408,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
         per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
-        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True, burst=args.pacing_burst)
+        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True, burst=args.pacing_burst,
+                             anchor=args.pacing_anchor)
         instructions = INSTRUCTIONS_VARIANTS[args.s1_instructions]
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,

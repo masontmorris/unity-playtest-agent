@@ -39,6 +39,7 @@ import asyncio
 import base64
 import json
 import math
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
@@ -112,8 +113,9 @@ CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used whe
 
 
 class TokenMeter(Protocol):
-    def record(self, tokens: int, *, estimated: bool = False) -> None:
-        """Count one call's tokens; `estimated` says the provider did not report them."""
+    def record(self, tokens: int, *, estimated: bool = False, sent_ago: float = 0.0) -> None:
+        """Count one call's tokens; `estimated` says the provider did not report them and `sent_ago` how long
+        before the call the request was sent (a send-anchored budget stamps its window with it)."""
         ...
 
 
@@ -452,6 +454,9 @@ class SystemOneS1:
             else:
                 self._view_omitted += 1
                 self._view_stale += int(context.get("game_view_status") == "stale")
+        # For a send-anchored budget: the request's own tokens are counted at the moment it is posted. The
+        # perf counter is monotonic and has the resolution to time a short call, so even a fast one is measured.
+        sent_at = time.perf_counter()
         try:
             # An opt-in order sends the very text it hashed, so the ledger row cannot describe bytes other
             # than the ones on the wire. The default keeps handing the body to the sender.
@@ -459,7 +464,8 @@ class SystemOneS1:
             status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, wire)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
             note = f"adapter error: {type(exc).__name__}"
-            self._count_tokens(None, estimate_text, image is not None)  # the request may have reached the provider
+            # the request may have reached the provider
+            self._count_tokens(None, estimate_text, image is not None, sent_ago=time.perf_counter() - sent_at)
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
                                resolved_model=None, usage=None, cost_usd=None)
             return _Reply(self._record(question, request_sha, None, None, None, note, None), failure=note)
@@ -469,7 +475,7 @@ class SystemOneS1:
             choice, distribution, answer_problem = replay.parse_answer(
                 self._as_next_action(data if status == 200 else None, question), set(criteria))
         usage = _without_image((data or {}).get("usage"), image)
-        self._count_tokens(usage, estimate_text, image is not None)
+        self._count_tokens(usage, estimate_text, image is not None, sent_ago=time.perf_counter() - sent_at)
         raw_cost = usage.get("cost") if isinstance(usage, dict) else None
         cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0 else None)
@@ -496,16 +502,21 @@ class SystemOneS1:
         halt = "a provider-reported cost exceeded the per-call bound" if row["cost_bound_exceeded"] else None
         return _Reply(call, choice, distribution, failure, halt, batch_fields.get("conditional_answer"))
 
-    def _count_tokens(self, usage: Any, request_text: str, has_image: bool) -> None:
-        """Report what a sent call used: the provider's own count, else an estimate marked as one."""
+    def _count_tokens(self, usage: Any, request_text: str, has_image: bool, *, sent_ago: float = 0.0) -> None:
+        """Report what a sent call used: the provider's own count, else an estimate marked as one.
+
+        `sent_ago` is how long ago this call's request was posted; a send-anchored budget stamps its window
+        with it instead of the moment the reply arrived. Both paths report the same value.
+        """
         if self._budget is None:
             return
         used = _tokens(usage)
         if used is not None:
-            self._budget.record(used)
+            self._budget.record(used, sent_ago=sent_ago)
         else:
             image_tokens = IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]] if has_image else 0
-            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN) + image_tokens, estimated=True)
+            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN) + image_tokens, estimated=True,
+                                sent_ago=sent_ago)
         reserve = getattr(self._budget, "reserve_next_image", None)
         if reserve is not None and self._game_view:
             reserve(0 if has_image else IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]])

@@ -224,6 +224,18 @@ def test_the_pacing_burst_defaults_to_zero_takes_a_share_and_reads_the_environme
         parsed()
 
 
+def test_the_pacing_anchor_defaults_to_end_takes_send_and_reads_the_environment(monkeypatch):
+    monkeypatch.delenv("UPA_RUN_PACING_ANCHOR", raising=False)
+    assert parsed().pacing_anchor == "end"
+    assert parsed("--pacing-anchor", "send").pacing_anchor == "send"
+    assert parsed("--pacing-anchor", "end").pacing_anchor == "end"
+    monkeypatch.setenv("UPA_RUN_PACING_ANCHOR", "send")
+    assert parsed().pacing_anchor == "send"
+    for bad in ("middle", "Send", "send "):
+        with pytest.raises(SystemExit):
+            parsed("--pacing-anchor", bad)
+
+
 def test_the_finish_label_defaults_to_plain_takes_conditional_and_refuses_the_rest(monkeypatch):
     monkeypatch.delenv("UPA_RUN_FINISH_LABEL", raising=False)
     assert parsed().finish_label == "plain"
@@ -277,8 +289,8 @@ def plan_run(tmp_path: Path, monkeypatch):
     """Run `main` to the plan file with the session itself stubbed out: no bridge, no provider."""
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-plan-key-0001")
     for name in ("UPA_SESSION_CONTROL_DIRECTORY", "UPA_SESSION_CATALOG", "UPA_SESSION_CATALOG_SHA256",
-                 "UPA_RUN_PACING_BURST", "UPA_RUN_FINISH_LABEL", "UPA_RUN_S1_INSTRUCTIONS",
-                 "UPA_RUN_TOKENS_PER_MINUTE"):
+                 "UPA_RUN_PACING_BURST", "UPA_RUN_PACING_ANCHOR", "UPA_RUN_FINISH_LABEL",
+                 "UPA_RUN_S1_INSTRUCTIONS", "UPA_RUN_TOKENS_PER_MINUTE"):
         monkeypatch.delenv(name, raising=False)
 
     async def stub(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -303,6 +315,28 @@ def test_the_plan_gains_pacing_burst_and_finish_label_only_when_non_default(plan
     chosen = plan_run("--pacing-burst", "0.5", "--finish-label", "conditional")
     assert chosen["pacing_burst"] == 0.5
     assert chosen["finish_label"] == "conditional"
+
+
+def test_the_plan_gains_the_pacing_anchor_only_with_send(plan_run):
+    default = plan_run()
+    assert "pacing_anchor" not in default
+    assert plan_run("--pacing-anchor", "end").get("pacing_anchor") is None
+    assert plan_run("--pacing-anchor", "send")["pacing_anchor"] == "send"
+
+
+def test_a_pacing_anchor_that_is_neither_end_nor_send_is_refused_before_the_plan_is_written(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-plan-key-0003")
+    monkeypatch.delenv("UPA_SESSION_CONTROL_DIRECTORY", raising=False)
+    files = PlanFiles(tmp_path / "case")
+    for bad in ("middle", "Send", "send "):
+        with pytest.raises(SystemExit) as raised:
+            cli.main(files.args("--pacing-anchor", bad))
+        assert raised.value.code == 2
+    monkeypatch.setenv("UPA_RUN_PACING_ANCHOR", "middle")
+    with pytest.raises(SystemExit) as raised:
+        cli.main(files.args())
+    assert raised.value.code == 2
+    assert not (files.out / "plan.json").exists()
 
 
 def test_the_plan_records_the_policy_two_variant_only_when_named(plan_run):

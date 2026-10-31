@@ -57,12 +57,24 @@ def _positive(value: Any, name: str) -> float:
     return value
 
 
+_ANCHORS = ("end", "send")
+
+
 class TokenBudget:
     """Tokens used in a trailing window, and the wait that keeps the next call under the limit.
 
-    `record` stores a call's tokens at the current clock time. The next call is expected to use what the
-    most recent recorded call used, or `initial_estimate` before the first. A call whose expected tokens
+    `record` stores a call's tokens in the clock's trailing window. The next call is expected to use what
+    the most recent recorded call used, or `initial_estimate` before the first. A call whose expected tokens
     alone exceed the limit goes out once the window is empty: waiting longer could never make it fit.
+
+    `anchor` names the moment a call's entry is stamped with: `"end"` (default) uses the clock as `record`
+    runs, which is when the response arrived; `"send"` uses `record`'s clock less the `sent_ago` a caller
+    measured, which is when the request was posted. A provider counts a request's input tokens when it
+    receives the request, so the send stamp is the faithful one. Pacing from send also stops each call's own
+    latency adding to the next wait. In the 31 October FPSKit traces, on 149 of 150 turns that waited, the
+    wait ended within 50 ms of the previous reply plus its spacing. Replaying those traces with the send stamp
+    predicts 35.1 → 41.8 and 31.7 → 37.1 decisions a minute; that is a prediction, not yet a measurement.
+    Requests are built the same way; only the measured wait that `PacingFacts` reports gets shorter.
 
     With `spread`, `burst` is the share of the limit the window may hold before spacing starts: below it a
     call goes as soon as it fits, so a short session that never nears the limit never waits. `0.0` spaces
@@ -79,9 +91,13 @@ class TokenBudget:
         initial_estimate: int | float = INITIAL_ESTIMATE,
         spread: bool = False,
         burst: float = 0.0,
+        anchor: str = "end",
     ) -> None:
         if isinstance(burst, bool) or not isinstance(burst, (int, float)) or not math.isfinite(burst) or not 0 <= burst <= 1:
             raise ValueError("burst must be a share of the limit from 0 to 1")
+        if not isinstance(anchor, str) or anchor not in _ANCHORS:
+            raise ValueError("anchor must be 'end' or 'send'")
+        self._anchor = anchor
         self._spread = spread
         self._burst = float(burst)
         self._limit = _positive(tokens_per_minute, "tokens_per_minute")
@@ -105,6 +121,11 @@ class TokenBudget:
         return self._burst
 
     @property
+    def anchor(self) -> str:
+        """Which moment a call's entry is stamped with: `"end"` (record time) or `"send"` (the post)."""
+        return self._anchor
+
+    @property
     def recorded(self) -> int:
         """How many calls have been counted."""
         return self._recorded
@@ -125,13 +146,24 @@ class TokenBudget:
         """Last call plus any image reserve, or the initial estimate before any call."""
         return self._last + self._next_extra if self._last is not None else self._initial
 
-    def record(self, tokens: int | float, *, estimated: bool = False) -> None:
-        """Count one call's tokens now. An estimate counts like a measurement and is only marked."""
+    def record(self, tokens: int | float, *, estimated: bool = False, sent_ago: float = 0.0) -> None:
+        """Count one call's tokens. An estimate counts like a measurement and is only marked.
+
+        `sent_ago` is how many seconds before this call the request was sent. It is validated always and
+        used only under the `"send"` anchor, where the entry is stamped `now - sent_ago`, never earlier than
+        the newest entry already in the window: the deque stays in time order, which `_expire` relies on.
+        """
         if isinstance(tokens, bool) or not isinstance(tokens, (int, float)) or not math.isfinite(tokens) or tokens < 0:
             raise ValueError("tokens must be a finite non-negative number")
+        if (isinstance(sent_ago, bool) or not isinstance(sent_ago, (int, float))
+                or not math.isfinite(sent_ago) or sent_ago < 0):
+            raise ValueError("sent_ago must be a finite non-negative number of seconds")
         now = self._clock()
         self._expire(now)
-        self._window.append((now, tokens))
+        at = now - sent_ago if self._anchor == "send" else now
+        if self._window and at < self._window[-1][0]:
+            at = self._window[-1][0]
+        self._window.append((at, tokens))
         self._last = tokens
         self._recorded += 1
         self._estimated += 1 if estimated else 0
@@ -164,6 +196,11 @@ class TokenBudget:
         take at the limit's rate. Spacing keeps the same limit but turns a burst followed by a long stall (the
         window filling, then draining) into short waits on every turn. It applies once the window and the next
         call would hold more than `burst` of the limit.
+
+        That "last counted one" is where the anchor matters: under `"end"` it is when the entry was recorded,
+        and the wait therefore begins after the previous response arrived; under `"send"` it is when the entry's
+        request was posted, so the wait begins from the post and overlaps the response's own latency. Both
+        measure spacing from the same kind of stamp this budget already stores; neither changes the limit.
         """
         self._expire(now)
         spacing = 0.0
