@@ -70,7 +70,7 @@ from playtest.contracts.loop import (
 from playtest.contracts.trace import TraceAuthor, TraceKind
 
 from .bridge_client import BridgeClient
-from .context import build_context, canonical
+from .context import INSTRUCTIONS, build_context, canonical
 from .decision_memory import DecisionMemory, json_ready as _json_ready
 from .decisions import parse_decision
 from .execution import ExecutionController
@@ -189,6 +189,7 @@ class TurnLoop:
         restart: RestartPort | None = None,
         generation: str | None = None,
         time_left: Callable[[], float | None] | None = None,
+        instructions: str = INSTRUCTIONS,
     ) -> None:
         if s1 is not None and not (objective and objective.strip()):
             raise ValueError("a loop with an S1 port needs an objective")
@@ -205,6 +206,7 @@ class TurnLoop:
         self._executor = ExecutionController(client, **self._executor_options)
         self._objective = objective
         self._s1 = s1
+        self._instructions = instructions
         self._view = view
         self._help = help
         self._facts: FactsSource = facts if facts is not None else RecordFacts()
@@ -374,6 +376,7 @@ class TurnLoop:
                 game_view=view.statement if view is not None else None,
                 recent_history=self._memory.snapshot() if self._memory.has_records else None,
                 reset_summary=reset_summary,
+                instructions=self._instructions,
             )
             if view is not None:
                 payload["game_view_sha256"] = view.sha256

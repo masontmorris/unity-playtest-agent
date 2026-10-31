@@ -12,6 +12,9 @@ HTTP call runs in a worker thread so the bridge client keeps reading on the even
 holds no policy: it never retries, repairs, ranks or substitutes, and the returned distribution is
 recorded and never used to select.
 
+`instructions` selects the primary question's text (a named variant, default `INSTRUCTIONS`); the
+payload must carry that same text, and `prompt_sha256` hashes exactly the texts this adapter sends.
+
 Every call that was sent also reports its tokens to an injected meter (`playtest.runner.pacing`
 paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
 it gave them, else an estimate from the request body, reported as an estimate.
@@ -45,7 +48,17 @@ FOLLOW_UP_INSTRUCTIONS = (
     "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
     "When an image is present, it is the current game view."
 )
-PROMPTS = {PRIMARY: INSTRUCTIONS, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
+
+
+def prompts(instructions: str = INSTRUCTIONS) -> dict[str, str]:
+    """Every prompt text this adapter sends for one primary-instruction variant.
+
+    The follow-up question keeps its own fixed text: it already asks one direct question, it is never
+    duplicated in `state` (which carries the primary text), and a run should vary one prompt at a time.
+    """
+    return {PRIMARY: instructions, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
+
+
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
 # Day 1 exercised the Baseten and d1.1 combinations. d1-ultra took the same `images` array in its
@@ -132,11 +145,14 @@ class SystemOneS1:
         budget: TokenMeter | None = None,
         game_view: bool = False,
         layout: RequestLayout | str = RequestLayout.full,
+        instructions: str = INSTRUCTIONS,
     ) -> None:
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
         if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
             raise ValueError("the call cap must be a positive integer")
+        if not isinstance(instructions, str) or not instructions.strip():
+            raise ValueError("the instructions text is empty")
         if game_view and arm not in IMAGE_TRANSPORT:
             raise ValueError(f"S1 arm {arm!r} has no verified image transport")
         try:
@@ -150,6 +166,8 @@ class SystemOneS1:
                              f"{self._layout.value!r} layout needs a plain `state`")
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
+        self._instructions = instructions
+        self._prompts = prompts(instructions)
         self._ledger = ledger
         self._max_calls = max_calls
         self._send = send
@@ -170,8 +188,13 @@ class SystemOneS1:
 
     @property
     def prompt_sha256(self) -> str:
-        """SHA-256 of every prompt text this adapter can send: the context instructions and the follow-up wording."""
-        return digest(canonical(PROMPTS))
+        """SHA-256 of every prompt text this adapter sends: the context instructions and the follow-up wording."""
+        return digest(canonical(self._prompts))
+
+    @property
+    def instructions(self) -> str:
+        """The primary question text this adapter sends and hashes; the context must carry this same text."""
+        return self._instructions
 
     @property
     def layout(self) -> str:
@@ -189,6 +212,9 @@ class SystemOneS1:
                 "omitted": self._view_omitted, "stale": self._view_stale}
 
     async def decide(self, context: Mapping[str, Any], *, image: bytes | None = None) -> S1Answer:
+        if context.get("instructions") != self._instructions:
+            # The hash names the text this run selected; a payload carrying other text would make it a lie.
+            raise ValueError("the context's instructions are not this adapter's instructions")
         if image is not None and (not self._game_view or digest(image) != context.get("game_view_sha256")
                                   or context.get("game_view_status") != "sent"):
             raise ValueError("image does not match the measured view")
@@ -197,7 +223,7 @@ class SystemOneS1:
         turn, self._turn = self._turn, self._turn + 1
         choices = context["choices"]
         kinds = {item["id"]: item["kind"] for item in choices}
-        first = await self._call(PRIMARY, context["instructions"], {item["id"]: item["label"] for item in choices},
+        first = await self._call(PRIMARY, self._instructions, {item["id"]: item["label"] for item in choices},
                                  context, turn, image)
         calls = [first.call]
         if first.choice is None:

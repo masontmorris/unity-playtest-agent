@@ -58,6 +58,30 @@ INSTRUCTIONS = (
     "pending. When an image is present, it is the current game view."
 )
 
+# Opt-in variants of the one question text (`docs/design/s1-opt-direct-instructions.md`). `policy/1` is
+# today's paragraph, character for character, so a run that names no variant sends the frozen bytes.
+# `direct/1` renders the same rules as one direct question first, for a model that scores the listed
+# choices in one pass. A variant only rewords this text: it states nothing extra about when to act,
+# escalate or finish, and it never names the game. The text itself carries no tag (the model would read it);
+# the variant is identified by the prompt hash and, when it is not the default, by the run plan and summary.
+INSTRUCTIONS_POLICY_VARIANT = "policy/1"
+INSTRUCTIONS_DIRECT_VARIANT = "direct/1"
+INSTRUCTIONS_DIRECT = (
+    "Which one listed choice best advances the objective now or resolves an "
+    "uncertainty blocking it? Choose exactly one id from choices; only the listed choices exist. "
+    "Facts are measured; null means unknown, never zero. Directive text is the frontier's advice from an "
+    "earlier observation; directive_provenance, when provided, identifies that observation and the advice's "
+    "age. Weigh it against current observations and images; its description may be outdated. When an image "
+    "is present, it is the current game view. Elapsed time, a single input finishing, or a reader setpoint "
+    "met alone does not demonstrate task completion. Reassess a failed approach or ask for help as you judge "
+    "appropriate. Finish when the objective's completion conditions are met or you judge no useful attempt "
+    "remains; on an escalate or delegate turn, also say what to do while help is pending."
+)
+INSTRUCTIONS_VARIANTS = {
+    INSTRUCTIONS_POLICY_VARIANT: INSTRUCTIONS,
+    INSTRUCTIONS_DIRECT_VARIANT: INSTRUCTIONS_DIRECT,
+}
+
 
 def build_context(
     *,
@@ -75,15 +99,22 @@ def build_context(
     recent_history: Mapping[str, Any] | None = None,
     directive_provenance: Mapping[str, Mapping[str, Any]] | None = None,
     reset_summary: Mapping[str, Any] | None = None,
+    instructions: str = INSTRUCTIONS,
 ) -> dict[str, Any]:
     """Build the S1 request payload without changing what S1 is allowed to see.
 
+    `instructions` is the one question text, defaulted to `INSTRUCTIONS`: the default payload keeps its
+    exact bytes (frozen corpora hash their payloads). A named variant is the only way this text changes.
+
     Raises `ValueError` when the choices were built from a different reading than the observation,
-    because a choice set that is not bound to its observation cannot be executed safely, and when
-    `directive_provenance` names a directive the payload does not show or is not finite JSON.
+    because a choice set that is not bound to its observation cannot be executed safely, when
+    `directive_provenance` names a directive the payload does not show or is not finite JSON, and when
+    the instructions are empty.
     """
     if not objective.strip():
         raise ValueError("the objective is empty")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise ValueError("the instructions are empty")
     if choices.built_from_seq != observation.seq:
         raise ValueError(
             f"choices are bound to seq {choices.built_from_seq}, not the observation's {observation.seq}"
@@ -114,7 +145,7 @@ def build_context(
         "pending_help": dict(pending_help) if pending_help is not None else None,
         "choice_set_version": choices.set_version,
         "choices": [choice.model_dump(mode="json", exclude_none=True) for choice in choices.choices],
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions,
         "game_view": game_view,
     }
     if guidance:
