@@ -3,7 +3,8 @@
 Issue #25 chose `mammoth-1` provisionally on 27 October 2026. **Status: changed on 29 October (#100).** S1's
 default is now Liquid's `d1-ultra`, Mason Morris's choice on the evidence below. `mammoth-1` stays one flag
 away (`--s1-arm`, `-S1Arm`). The 27 October decision and its evidence follow, unchanged, as the record it
-superseded.
+superseded. An experimental `system-zero` arm (RightNow System Zero) is designed and partly built in
+[system-zero-s1.md](system-zero-s1.md); it is not adopted and has made no call.
 
 ## Revisit, 29 October (#100): `liquid-d1-ultra`
 

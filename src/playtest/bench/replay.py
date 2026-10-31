@@ -18,16 +18,18 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from playtest.bench.record import _save, context_for, digest
+from playtest.bench import system_zero
+from playtest.bench.record import _save, digest, recorded_payload
 from playtest.core.context import canonical
 
 # Arm: (model, key variable, endpoint variable). Liquid's endpoint is its general decisions endpoint and the
-# request's `model` picks the model, so both Liquid arms share LIQUID_D1.1_URL.
+# request's `model` picks the model, so both Liquid arms share LIQUID_D1.1_URL. System Zero has one fixed endpoint.
 ARMS = {
     "mammoth-1": ("decision-models/baseten-mammoth-27b-latest", "BASETEN_API_KEY", None),
     "elephant-1": ("decision-models/baseten-elephant-9b-latest", "BASETEN_API_KEY", None),
     "liquid-d1.1": ("d1.1", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
     "liquid-d1-ultra": ("d1-ultra", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
+    system_zero.ARM: (system_zero.MODEL, system_zero.KEY_ENV, None),
 }
 BASETEN_URL = "https://inference.baseten.co/v1/systemone"
 
@@ -36,6 +38,8 @@ def provider_of(arm: str) -> str:
     """The provider an arm bills through: the key a balance check and an approval cap are counted against."""
     if arm == "muse-spark-1.3":
         return "meta"
+    if arm in system_zero.ARMS:
+        return system_zero.PROVIDER
     return "liquid" if arm.startswith("liquid-") else "baseten"
 Send = Callable[[str, dict[str, Any]], tuple[int | None, dict[str, Any] | None, float, str | None]]
 
@@ -73,7 +77,7 @@ def load_inputs(corpus_path: Path, labels_path: Path) -> tuple[dict[str, Any], d
         frame_id = frame.get("id")
         if not isinstance(frame_id, str) or not frame_id or frame_id in by_id:
             raise ValueError("frame ids must be unique and nonempty")
-        if frame.get("payload_sha256") != digest(canonical(context_for(frame))):
+        if recorded_payload(frame) is None:
             raise ValueError(f"context changed for {frame_id}")
         executions = frame.get("execution")
         if not isinstance(executions, list) or not executions or executions[-1].get("status") != "completed" or \
@@ -117,10 +121,15 @@ def accepted(labels: list[dict[str, Any]]) -> set[str] | None:
     return sets[0] if all(item == sets[0] for item in sets[1:]) else None
 
 
-def request_body(frame: dict[str, Any], model: str) -> dict[str, Any]:
-    payload = context_for(frame)
-    if digest(canonical(payload)) != frame["payload_sha256"]:
+def request_body(frame: dict[str, Any], model: str, arm: str | None = None) -> dict[str, Any]:
+    """The recorded context with one `next_action` question; a System Zero arm lays it out within its limits."""
+    payload = recorded_payload(frame)
+    if payload is None:
         raise ValueError("the production context no longer matches the recorded payload")
+    if arm in system_zero.ARMS:
+        items = [(choice["id"], choice["label"], choice["kind"]) for choice in payload["choices"]]
+        questions = system_zero.layout("next_action", payload["instructions"], items, media=False)
+        return {"model": model, "questions": questions, "state": payload}
     criteria = {choice["id"]: choice["label"] for choice in payload["choices"]}
     return {"model": model, "questions": {"next_action": {
         "type": "choice", "instructions": payload["instructions"], "criteria": criteria}}, "state": payload}
@@ -142,7 +151,23 @@ def parse_answer(data: dict[str, Any] | None, offered: set[str]) -> tuple[str | 
     return selected, probabilities, None
 
 
+def parse_reply(arm: str, body: dict[str, Any], data: dict[str, Any] | None,
+                offered: set[str]) -> tuple[str | None, dict[str, float] | None, str | None]:
+    """`parse_answer` for the arm that answered: a System Zero layout is decoded by its fixed rule."""
+    if arm in system_zero.ARMS:
+        return system_zero.decode("next_action", body["questions"], data, offered)
+    return parse_answer(data, offered)
+
+
+def provider_answer(arm: str, data: dict[str, Any] | None) -> Any:
+    """What a ledger row keeps of the answer: `next_action`, or every answer of a System Zero layout."""
+    answers = (data or {}).get("answers") or {}
+    return answers if arm in system_zero.ARMS else answers.get("next_action")
+
+
 def send_systemone(arm: str, body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
+    if arm in system_zero.ARMS:
+        return system_zero.send(arm, body)
     _, key_env, url_env = ARMS[arm]
     key, url = os.environ.get(key_env), (os.environ.get(url_env) if url_env else BASETEN_URL)
     if not key or not url:
@@ -296,7 +321,7 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
     completed = {row["slot"] for row in rows}
     made = 0
     for schedule_index, (arm, frame, repeat) in enumerate(schedule):
-        body = request_body(frame, ARMS[arm][0])
+        body = request_body(frame, ARMS[arm][0], arm)
         request_sha = digest(canonical(body))
         slot = digest(canonical({"phase": phase, "arm": arm, "frame": frame["id"],
                                  "repeat": repeat, "request_sha256": request_sha}))
@@ -321,7 +346,8 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
         try:
             http_status, data, latency_ms, problem = send(arm, body)
             offered = {choice["id"] for choice in frame["choice_set"]["choices"]}
-            choice, distribution, answer_problem = parse_answer(data if http_status == 200 else None, offered)
+            choice, distribution, answer_problem = parse_reply(arm, body, data if http_status == 200 else None,
+                                                               offered)
             usage = (data or {}).get("usage")
             raw_cost = usage.get("cost") if isinstance(usage, dict) else None
             cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
@@ -329,7 +355,7 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
             row.update(status="finished", http_status=http_status, choice=choice, distribution=distribution,
                        problem=problem or answer_problem, latency_ms=latency_ms,
                        resolved_model=(data or {}).get("model"), usage=usage,
-                       provider_answer=((data or {}).get("answers") or {}).get("next_action"),
+                       provider_answer=provider_answer(arm, data),
                        billed=(cost > 0 if cost is not None else None), cost_usd=cost,
                        cost_bound_exceeded=(Decimal(str(cost)) > bound if cost is not None else False))
         except Exception as exc:  # Preserve the reservation when a transport adapter fails.

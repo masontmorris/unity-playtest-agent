@@ -15,6 +15,11 @@ recorded and never used to select.
 Every call that was sent also reports its tokens to an injected meter (`playtest.runner.pacing`
 paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
 it gave them, else an estimate from the request body, reported as an estimate.
+
+The `system-zero` arm (experimental) sends the same context to RightNow System Zero. Its choice questions
+have a served option limit, so `playtest.bench.system_zero.layout` asks the same choices as one flat question
+when they fit and as a two-level layout in the same call when they do not; `decode` reads the choice back by a
+fixed rule. An image goes as an inline `attachments` entry, which raises the limit; G1 showed it accepted.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import math
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from playtest.bench import call_budget, replay
+from playtest.bench import call_budget, replay, system_zero
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
 from playtest.core.context import INSTRUCTIONS, canonical
@@ -47,9 +52,11 @@ _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
 # Day 1 exercised the Baseten and d1.1 combinations. d1-ultra took the same `images` array in its
 # 30 October probe: a 640x480 JPEG added 450 input tokens, the Day 1 image cost scaled by pixel count.
+# system-zero took the same 640x480 JPEG as an `attachments` entry in G1 (31 October): HTTP 200, `media_items` 1.
 IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images",
-                   "liquid-d1-ultra": "images"}
-IMAGE_TOKENS = {"messages": 1000, "images": 1400}  # Day 1 1280x720 measurements
+                   "liquid-d1-ultra": "images", "system-zero": "attachments"}
+# Day 1 1280x720 measurements; `attachments` is G1's 640x480 JPEG, which System Zero reported as 300 media tokens.
+IMAGE_TOKENS = {"messages": 1000, "images": 1400, "attachments": 300}
 CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
 
 
@@ -142,7 +149,10 @@ class SystemOneS1:
 
     @property
     def prompt_sha256(self) -> str:
-        """SHA-256 of every prompt text this adapter can send: the context instructions and the follow-up wording."""
+        """SHA-256 of every prompt text this adapter can send: the context instructions, the follow-up wording and,
+        on System Zero, the layout notes."""
+        if self._arm in system_zero.ARMS:
+            return digest(canonical({**PROMPTS, **system_zero.PROMPTS}))
         return digest(canonical(PROMPTS))
 
     @property
@@ -165,7 +175,7 @@ class SystemOneS1:
         choices = context["choices"]
         kinds = {item["id"]: item["kind"] for item in choices}
         first = await self._call(PRIMARY, context["instructions"], {item["id"]: item["label"] for item in choices},
-                                 context, turn, image)
+                                 context, turn, image, kinds)
         calls = [first.call]
         if first.choice is None:
             return S1Answer(answer=None, calls=tuple(calls), failure=first.failure, halt=first.halt)
@@ -176,7 +186,7 @@ class SystemOneS1:
         if kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
             criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
             if criteria:
-                second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn, image)
+                second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn, image, kinds)
                 calls.append(second.call)
                 halt = second.halt
                 if second.choice is not None:
@@ -185,11 +195,18 @@ class SystemOneS1:
         return S1Answer(answer=answer, calls=tuple(calls), halt=halt)
 
     async def _call(self, question: str, instructions: str, criteria: dict[str, str],
-                    context: Mapping[str, Any], turn: int, image: bytes | None) -> _Reply:
+                    context: Mapping[str, Any], turn: int, image: bytes | None, kinds: Mapping[str, str]) -> _Reply:
         model = self.model
-        body = {"model": model,
-                "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
-                "state": context}
+        if self._arm in system_zero.ARMS:
+            try:
+                questions = system_zero.layout(question, instructions,
+                                               [(cid, label, kinds[cid]) for cid, label in criteria.items()],
+                                               media=image is not None)
+            except ValueError as exc:
+                return self._refused(question, None, f"{exc}; no call was made", halt=None)
+        else:
+            questions = {question: {"type": "choice", "instructions": instructions, "criteria": criteria}}
+        body: dict[str, Any] = {"model": model, "questions": questions, "state": context}
         try:
             estimate_text = canonical(body)  # excludes base64; image tokens are counted separately
             if image is not None:
@@ -198,6 +215,8 @@ class SystemOneS1:
                     body["state"] = {"messages": [{"role": "user", "content": [
                         {"type": "text", "text": canonical(context)},
                         {"type": "image_url", "image_url": {"url": url}}]}]}
+                elif IMAGE_TRANSPORT[self._arm] == "attachments":
+                    body["attachments"] = [{"name": "game_view", "type": "image", "data": url}]
                 else:
                     body["images"] = [url]
             request_text = canonical(body)
@@ -228,8 +247,12 @@ class SystemOneS1:
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
                                resolved_model=None, usage=None, cost_usd=None)
             return _Reply(self._record(question, request_sha, None, None, None, note, None), failure=note)
-        choice, distribution, answer_problem = replay.parse_answer(
-            self._as_next_action(data if status == 200 else None, question), set(criteria))
+        if self._arm in system_zero.ARMS:
+            choice, distribution, answer_problem = system_zero.decode(
+                question, questions, data if status == 200 else None, set(criteria))
+        else:
+            choice, distribution, answer_problem = replay.parse_answer(
+                self._as_next_action(data if status == 200 else None, question), set(criteria))
         usage = _without_image((data or {}).get("usage"), image)
         self._count_tokens(usage, estimate_text, image is not None)
         raw_cost = usage.get("cost") if isinstance(usage, dict) else None
