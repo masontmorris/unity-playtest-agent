@@ -741,6 +741,29 @@ def test_system_prompt_does_not_turn_s1_back_and_forth_to_centre_a_part():
         assert needle in frontier.SYSTEM
 
 
+def test_system_prompt_changes_approach_after_a_measured_failure():
+    """Session 10 pressed one 1.1-unit face for 98 turns and the frontier repeated the approach.
+
+    Every one of d-63/79/96/115/125/140/149 said align, then jump and move_forward at the same face,
+    although `directive_history` showed the earlier attempt had not produced its outcome. Repeated
+    attempts spend the run, so the prompt now requires a named difference, and keeps that bound on
+    the directive rather than on S1's choice.
+    """
+    assert "- repeated attempts:" in frontier.SYSTEM
+    for needle in (
+        "directive_history lists the directives that have closed",
+        "is a measured failure of the approach it asked for",
+        "make the next one differ in at least one way you can name",
+        "Trying another part of the same structure is a different approach",
+        "asking for more of the same action at the same place is not",
+        "neither is restating the earlier text with a longer deadline",
+        "say in the directive which part you cannot reach",
+        "This bounds your directive, not S1",
+        "a hypothesis is not contradicted merely because the directive that tested it closed",
+    ):
+        assert needle in frontier.SYSTEM
+
+
 def test_exploration_answer_passes_review(manifest, refs):
     """A hypothesis about an untried part plus a go-try directive needs no contract change."""
     body = answer(
