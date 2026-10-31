@@ -289,6 +289,7 @@ class FrontierHelp:
                  max_calls: int | None = None, calibration: Mapping[str, Any] | None = None,
                  effects: Mapping[str, frontier.Effect] | None = None,
                  generation: str | None = None, session: str | None = None,
+                 clip_window_s: float = media.WINDOW_S,
                  progress: ProgressProbe | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
@@ -298,6 +299,7 @@ class FrontierHelp:
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
         self.generation = generation
+        self.clip_window_s = clip_window_s
         self.session = session
         # S1 keeps choosing while this request is pending, so the two arms' calls overlap by design.
         self.ledger = call_budget.Ledger(directory, approval, provider.MODEL, concurrent_arms=True)
@@ -386,7 +388,7 @@ class FrontierHelp:
         folder = self.directory / "clips" / f"t{request.turn}"
         clip = await asyncio.to_thread(self.capture, project=self.project, status=self.status,
                                        since_utc=self.started_utc, until_utc=now, output_dir=folder,
-                                       generation=self.generation)
+                                       generation=self.generation, window_s=self.clip_window_s)
         fact_rows = [{"text": text, "seqs": [seq]} for text in context.get("facts", []) if isinstance(text, str)]
         ids = [f"hyp-{request.turn}-{i}" for i in range(frontier.MAX_HYPOTHESES)]
         old_hypotheses = [row for row in self.hypotheses.values() if row.get("status") == "open"]

@@ -354,3 +354,29 @@ def test_a_generation_clip_records_the_generation_and_that_instances_frames(tmp_
     assert clip.descriptor["generation"] == generation
     assert clip.manifest["source_directory"] == (media.FRAME_SUBDIR / generation).as_posix()
     assert [frame["source"] for frame in clip.manifest["frames"]] == ["f-000001.jpg", "f-000002.jpg"]
+
+
+@needs_ffmpeg
+def test_a_longer_window_reaches_frames_the_default_four_seconds_leave_out(tmp_path: Path) -> None:
+    frames = _frames(tmp_path)
+    until = datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc)
+    _jpeg(frames / "f-000001.jpg", "red")
+    _jpeg(frames / "f-000002.jpg", "green")
+    _jpeg(frames / "f-000003.jpg", "blue")
+    _stamp(frames / "f-000001.jpg", until - timedelta(seconds=8))
+    _stamp(frames / "f-000002.jpg", until - timedelta(seconds=2))
+    _stamp(frames / "f-000003.jpg", until - timedelta(seconds=1))
+    since = until - timedelta(seconds=60)
+    short = _capture(tmp_path, since=since, until=until, output="short")
+    assert short.descriptor is not None and short.descriptor["frame_count"] == 2
+    long = media.capture_clip(project=tmp_path / "game", status=STATUS, since_utc=since, until_utc=until,
+                              output_dir=tmp_path / "long", window_s=10.0)
+    assert long.descriptor is not None and long.descriptor["frame_count"] == 3
+
+
+def test_a_window_outside_its_bounds_is_refused_not_clamped(tmp_path: Path) -> None:
+    until = datetime(2026, 10, 27, 12, 0, 0, tzinfo=timezone.utc)
+    for window in (0.0, -1.0, media.MAX_WINDOW_S + 1):
+        clip = media.capture_clip(project=tmp_path / "game", status=STATUS, since_utc=until - timedelta(seconds=60),
+                                  until_utc=until, output_dir=tmp_path / f"w{window}", window_s=window)
+        assert clip.path is None and "clip window" in (clip.reason or "")

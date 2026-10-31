@@ -43,6 +43,7 @@ def frame_directory(project: Path, generation: str | None = None) -> Path:
     base = project / FRAME_SUBDIR
     return base if generation is None else base / generation
 WINDOW_S = 4.0
+MAX_WINDOW_S = 30.0  # a longer window is more frames and more frontier input tokens per call
 WINDOW_ATTEMPTS = 3
 NOMINAL_RATE_HZ = 10.0
 WIDTH, HEIGHT = 640, 360
@@ -73,8 +74,9 @@ def capture_clip(
     ffmpeg: str = "ffmpeg",
     timeout_s: float = 120.0,
     generation: str | None = None,
+    window_s: float = WINDOW_S,
 ) -> Clip:
-    """Copy and encode the last `WINDOW_S` seconds of bridge frames, bounded by the run.
+    """Copy and encode the last `window_s` seconds (default `WINDOW_S`) of bridge frames, bounded by the run.
 
     `since_utc` is the run or episode start wall time and `until_utc` is the escalating
     observation's wall time. `output_dir` must be new; an existing folder is never overwritten.
@@ -91,7 +93,9 @@ def capture_clip(
         return Clip(None, None, "the clip window needs timezone-aware wall times", None)
     if until < since:
         return Clip(None, None, "the clip window ends before it starts", None)
-    start = max(since, until - timedelta(seconds=WINDOW_S))
+    if not (isinstance(window_s, (int, float)) and 0 < window_s <= MAX_WINDOW_S):
+        return Clip(None, None, f"the clip window must be above 0 and at most {MAX_WINDOW_S:g} s", None)
+    start = max(since, until - timedelta(seconds=window_s))
     source = frame_directory(project, generation)
     if not source.is_dir():
         return Clip(None, None, "the bridge frame folder is unavailable", None)
