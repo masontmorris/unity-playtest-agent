@@ -143,7 +143,7 @@ def parse_answer(data: dict[str, Any] | None, offered: set[str]) -> tuple[str | 
     return selected, probabilities, None
 
 
-def send_systemone(arm: str, body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
+def send_systemone(arm: str, body: dict[str, Any], *, wire_text: str | None = None) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
     if arm == "meta-muse-spark-s1":
         from playtest.frontier.provider import send_meta
         return send_meta(body)
@@ -151,7 +151,7 @@ def send_systemone(arm: str, body: dict[str, Any]) -> tuple[int | None, dict[str
     key, url = os.environ.get(key_env), (os.environ.get(url_env) if url_env else BASETEN_URL)
     if not key or not url:
         raise ValueError(f"missing endpoint or credential for {arm}")
-    request = urllib.request.Request(url, data=canonical(body).encode("utf-8"), method="POST",
+    request = urllib.request.Request(url, data=(canonical(body) if wire_text is None else wire_text).encode("utf-8"), method="POST",
                                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
     started = time.monotonic()
     try:
