@@ -77,6 +77,18 @@ and climbed to the top of the long staircase (feet 8.5) within 15 s. The longest
 against 13 and 29 before. This is one run, so a frozen-frame probe of several widths is being built to
 measure the effect turn by turn.
 
+A second run with the same objective (`climb-tolerance-send-01`) cut the hunting short again, with a
+longest cycle of 7 turns. But it missed the climb. At the foot of the flight, still at 38.4°, S1 walked on
+instead of turning to the flight's axis.
+
+That points at two tolerances, not one:
+- **Approach (pointing at the foot).** It can be wide, since each later decision corrects the error.
+- **Traverse (walking up a 2-unit-wide flight).** It cannot. A heading 38° off the axis leaves the side
+  within a few units.
+
+The traverse's axis is a reachable heading (0°), so its tolerance can stay tighter than half a step and
+still settle. The next wording to test keeps the approach wide and the line-up tight.
+
 ## The deadband reading
 
 A controller whose tolerance is tighter than its smallest step hunts forever. The standard cure is a

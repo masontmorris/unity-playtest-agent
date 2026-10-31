@@ -267,3 +267,28 @@ It also shows two new failure modes:
 - S1 does not react quickly to falling off the level.
 
 A frozen-frame probe across several tolerance widths is being built to measure the effect turn by turn.
+
+## Wider tolerance with send-anchored pacing (`climb-tolerance-send-01`, 180 s)
+
+Settings: as `climb-tolerance-half-01`, plus `--pacing-anchor send`. The code was 5a9fb00, and the approval
+is `approval-trial-tolerance-half-send.json`. The run completed.
+
+- **Hunting: short again.** S1 alternated 6 times, then walked at 38.4°. The longest cycle was 7 turns,
+  and turns and looks were 35% of executed choices.
+- **Climb: missed.** At the foot of the long flight S1 was still at 38.4°, with the flight rising on the
+  left of the view. It walked on instead of turning to the flight's axis (0°). It jumped across onto the
+  dark steps (feet 3.1 at 9 s) and spent the rest of the run on the ground. In `climb-tolerance-half-01`
+  it turned to 0° at the same point and climbed to the top. The two tolerance runs differ at exactly this
+  decision.
+- **Pacing: the anchor works.** `ready()` now returns a median 407 ms before "previous reply plus
+  spacing", which is the reply latency taken off the wait. Sends came every 1.84 s (32.6 a minute). The same
+  run paced from the reply would have taken 2.28 s (26.3 a minute), so the anchor bought 24%.
+  - The absolute rate did not rise against earlier runs. Requests were larger (11,463 billed tokens on
+    average, so 1.64 s of spacing), and the provider was slower (S1 p50 469 ms).
+- **Stale rejections: provider latency spikes.** 18 turns were rejected because the observation was over
+  1.0 s old at execution. Those calls had a median latency of 1,539 ms, against 406 ms for executed turns.
+  - The earlier runs today had 1, then 12. The second of those was paced from the reply, so this is not
+    the anchor.
+
+**Totals:** S1 100 calls, $0.0481; frontier 3 calls, $0.0731. The recording is `recording/session.mp4`,
+with a key-moments sheet.
