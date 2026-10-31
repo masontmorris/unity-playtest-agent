@@ -264,13 +264,66 @@ A view that cannot be read is `null` (omitted on the wire) with a `view` entry i
 does not exist. It is never a heading of zero. A reading is a direction; a turn is the difference
 of two readings with yaw wrapped to [-180, 180).
 
+## Probe
+
+`public.probe` is a measured geometry sample in the anchor's own frame: what is directly under and
+in front of the anchor. It carries raw facts only. Nothing is labelled passable, climbable or
+blocking, and a reading that could not be taken is `null`, never `0`.
+
+```json
+{
+  "version": 1,
+  "anchor": {"kind": "path", "name": "Entity", "position": [0.0, 0.0, 0.0]},
+  "under": {"forward": 0.0, "lateral": 0.0, "hit": true, "point": [0.0, 0.0, 0.0], "delta_y": -0.02, "normal": [0.0, 1.0, 0.0], "inside": false},
+  "samples": [
+    {"forward": 0.6, "lateral": -0.35, "hit": true, "point": [0.1, 0.25, 0.6], "delta_y": 0.25, "normal": [0.0, 1.0, 0.0], "inside": false}
+  ],
+  "blockers": [
+    {"height": 0.15, "max_distance": 1.8, "hit": true, "distance": 0.38, "point": [0.0, 0.15, 0.38], "normal": [0.0, 0.0, 1.0]}
+  ]
+}
+```
+
+Every field is present on every entry. The anchor is resolved once, cached, and re-resolved when
+the cached reference is destroyed: `UPA_PROBE_ANCHOR` as a hierarchy path for `GameObject.Find`
+(`kind: "path"`), otherwise the first enabled `CharacterController`
+(`kind: "character_controller"`), otherwise the first enabled `Rigidbody` (`kind: "rigidbody"`).
+With none of them, `probe` is absent and `reader_errors` carries `no anchor: set
+UPA_PROBE_ANCHOR or have an enabled CharacterController or Rigidbody in the scene`.
+
+The nine `samples` are downward casts on a 3x3 grid: `forward` along the anchor's forward
+direction and `lateral` along its right, both with the vertical part removed (a direction with no
+horizontal part falls back to the world axis). They are ordered forward `0.6`, `1.2`, `1.8`, and
+within each forward lateral `-0.35`, `0.0`, `0.35`. A cast starts 6 m above the sample point and
+runs 12 m down. Triggers and the anchor's own colliders are ignored.
+
+`under` is the same kind of reading taken straight down from the anchor, so it says what the anchor
+stands on and how far the anchor is above it (`under.delta_y`, measured against the anchor's own
+height). Every grid `delta_y` is measured against the surface under the anchor instead: flat ground
+is `0`, and a surface one riser up is that riser's height, which is what a step limit can be
+compared with. When the ground under the anchor cannot be measured, every grid `delta_y` is `null`
+rather than a height above nothing.
+
+A surface under the point is `hit: true` with `point`, `normal` and `delta_y`. A point with nothing
+under it is `hit: false` with `point`, `delta_y` and `normal` null. A point inside geometry, which
+is an obstruction taller than the cast or an overhang, has no readable surface from above: it is
+`hit: true` with `inside: true` and those three readings null.
+
+The two `blockers` are forward casts at `height` `0.15` and `0.9` above the anchor, 1.8 m long
+(`max_distance`), along the same horizontal forward. A hit reports `distance`, `point` and
+`normal`; a miss reports all three as null.
+
+The probe is re-sampled at most every 0.1 s of unscaled time, and the cached reading is reused
+between samples. A sample that throws is dropped for that tick: no `probe` is published and the
+`probe` reader error says why.
+
 ## Tests
 
 Three layers:
 
 | Layer | What it covers | Command |
 |---|---|---|
-| EditMode | protocol, transport, observations, lock, status, stop/clock and the fail-closed capture path; `-Graphics` measures the self-test outside play mode | `./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"` |
+| EditMode | protocol, transport, observations, the probe grid, lock, status, stop/clock and the fail-closed capture path; `-Graphics` measures the self-test outside play mode | `./scripts/unity/run-editmode-tests.ps1 -ProjectPath "C:\path\to\project"` |
 | PlayMode | stream, act, clock, stop, real input release, capture (self-test, status, frame window, frame_ref) | the same command with `-TestPlatform PlayMode` |
 | Unity-free | pure C# transport, seconds, no Editor | `dotnet test bridge/Tests/DotNet~` |
 

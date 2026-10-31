@@ -166,5 +166,82 @@ namespace Playtest.Bridge.Tests
                 }
             }
         }
+
+        [Test]
+        public void Probe_WithAnAnchor_IsPublishedWithNineSamplesAndTwoBlockers()
+        {
+            var anchorObject = new GameObject("ObservationTestAnchor");
+            string originalPath = Environment.GetEnvironmentVariable(UnityProbeField.AnchorVariable);
+            Environment.SetEnvironmentVariable(UnityProbeField.AnchorVariable, anchorObject.name);
+            try
+            {
+                using (var source = new UnityObservationSource(probeRaycasts: new SilentRaycasts()))
+                {
+                    source.Start();
+                    BridgeObservationSnapshot snapshot = source.GetObservation();
+
+                    Assert.That(snapshot.Public.ContainsKey("probe"), Is.True, Describe(snapshot));
+                    var probe = snapshot.Public["probe"] as IDictionary;
+                    Assert.That(probe, Is.Not.Null);
+                    Assert.That(probe["version"], Is.EqualTo(1));
+                    Assert.That(probe["under"], Is.Not.Null);
+                    Assert.That(probe["samples"], Is.InstanceOf<IList>());
+                    Assert.That((IList)probe["samples"], Has.Count.EqualTo(9));
+                    Assert.That(probe["blockers"], Is.InstanceOf<IList>());
+                    Assert.That((IList)probe["blockers"], Has.Count.EqualTo(2));
+                    Assert.That(snapshot.ReaderErrors.Exists(entry => entry.Reader == "probe"), Is.False,
+                        "a sampled probe has no reader error");
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(UnityProbeField.AnchorVariable, originalPath);
+                UnityEngine.Object.DestroyImmediate(anchorObject);
+            }
+        }
+
+        [Test]
+        public void Probe_WhenTheAnchorCannotBeResolved_IsOmittedWithAReaderError()
+        {
+            string originalPath = Environment.GetEnvironmentVariable(UnityProbeField.AnchorVariable);
+            Environment.SetEnvironmentVariable(UnityProbeField.AnchorVariable, "ProbeTestNoSuchObject");
+            try
+            {
+                using (var source = new UnityObservationSource(probeRaycasts: new SilentRaycasts()))
+                {
+                    source.Start();
+                    BridgeObservationSnapshot snapshot = source.GetObservation();
+
+                    Assert.That(snapshot.Public.ContainsKey("probe"), Is.False, "an anchorless probe is omitted");
+                    var error = snapshot.ReaderErrors.Find(entry => entry.Reader == "probe");
+                    Assert.That(error, Is.Not.Null, Describe(snapshot));
+                    Assert.That(error.Error, Does.Contain("names no GameObject"));
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(UnityProbeField.AnchorVariable, originalPath);
+            }
+        }
+
+        private static string Describe(BridgeObservationSnapshot snapshot)
+        {
+            return string.Join("; ", snapshot.ReaderErrors.ConvertAll(entry => entry.Reader + ": " + entry.Error));
+        }
+
+        /// <summary>A seam with no colliders, so an observation carries the probe shape only.</summary>
+        private sealed class SilentRaycasts : IProbeRaycasts
+        {
+            public bool Raycast(Vector3 origin, Vector3 direction, float maxDistance, out ProbeRayHit hit)
+            {
+                hit = default(ProbeRayHit);
+                return false;
+            }
+
+            public bool Overlap(Vector3 point, float radius)
+            {
+                return false;
+            }
+        }
     }
 }
