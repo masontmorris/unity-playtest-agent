@@ -88,3 +88,9 @@ def test_the_keyboard_bench_catalog_is_still_the_other_modules_own():
     assert '"preflight_key_" + control' in method and "DefaultLeaseS = 0.4" in method
     assert "KeyboardBenchCatalog);" in HOST                            # handed to Select, which a session never calls
     assert "UPA_SESSION_CATALOG" not in LIVE_SCRIPT                    # the live smoke's script does not set or read it
+
+
+def test_the_supervised_client_gets_every_path_argument_the_runner_requires():
+    # playtest.runner.cli requires --output; the supervisor only forwards the paths it is given.
+    for parameter in ("-ClientProject", "-ClientEntity", "-ClientCalibration", "-ClientOutput"):
+        assert parameter in SCRIPT, parameter
