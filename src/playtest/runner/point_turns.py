@@ -90,4 +90,4 @@ def gate_choices(choices, observation, fov):
     value = _camera_fov(observation.public)
     matches = (not isinstance(value, bool) and isinstance(value, (int, float))
                and math.isfinite(value) and abs(value - fov) <= .01 + 1e-12)
-    return [c for c in choices if matches or not c.id.startswith("point.strip")]
+    return [c for c in choices if matches or not (c.id.startswith("point.strip") or (c.id.startswith("move.strip") and c.id != "move.strip5"))]
