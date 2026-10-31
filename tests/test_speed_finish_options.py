@@ -1,4 +1,4 @@
-"""The three S1 opt-ins added together: a pacing burst allowance, the conditional finish label, `policy/2`.
+"""The S1 opt-ins added together: a pacing burst allowance, the conditional finish label, `policy/2`, `policy/3`.
 
 Every default must pace and read exactly as before; each option changes one thing and nothing else. The
 pacing tests run on a fake clock and sleep, and the command-line plan test stubs the run itself, so
@@ -10,26 +10,44 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from loop_fakes import FakeTime
+from loop_fakes import FakeTime, choices
 from runner_manifest import action, hold, manifest
-from s1_fakes import ARM, approval
+from s1_fakes import ARM, Send, approval, reply
 
+from playtest.bench import call_budget
+from playtest.bench.record import digest
+from playtest.contracts.bridge import Observation
+from playtest.contracts.common import ClockMode
+from playtest.contracts.loop import ChoiceSet
 from playtest.core.context import (
     INSTRUCTIONS,
     INSTRUCTIONS_FINISH_ONLY_WHEN_MET,
     INSTRUCTIONS_FINISH_VARIANT,
+    INSTRUCTIONS_KEEP_PLAYING,
+    INSTRUCTIONS_PENDING_VARIANT,
     INSTRUCTIONS_POLICY_VARIANT,
     INSTRUCTIONS_VARIANTS,
+    KEEP_PLAYING,
+    build_context,
+    canonical,
 )
 from playtest.preflight import catalog as exporter
 from playtest.runner import cli
 from playtest.runner.choices import FINISH_LABELS, build_choices, core_choices
 from playtest.runner.pacing import TokenBudget
+from playtest.runner.s1 import (
+    FOLLOW_UP_INSTRUCTIONS,
+    FOLLOW_UP_KEEP_PLAYING,
+    SystemOneS1,
+    follow_up_for,
+    prompts,
+)
 
 # --- pacing burst -------------------------------------------------------------------------
 
@@ -301,3 +319,132 @@ def test_a_burst_outside_zero_to_one_is_refused_before_the_plan_is_written(tmp_p
             cli.main(files.args("--pacing-burst", bad))
         assert raised.value.code == 2
     assert not (files.out / "plan.json").exists()
+
+
+# --- the `policy/3` pending-help variant ---------------------------------------------------
+
+
+PENDING_SENTENCE = "On an escalate or delegate turn, also say what to do while help is pending."
+
+
+def test_policy_three_inserts_one_sentence_after_the_pending_one():
+    """`policy/3` is `policy/2` plus `KEEP_PLAYING`, one space after the pending-help sentence."""
+    variant = INSTRUCTIONS_VARIANTS[INSTRUCTIONS_PENDING_VARIANT]
+    assert INSTRUCTIONS_PENDING_VARIANT == "policy/3"
+    assert variant == INSTRUCTIONS_KEEP_PLAYING and variant != INSTRUCTIONS_FINISH_ONLY_WHEN_MET
+    assert INSTRUCTIONS_FINISH_ONLY_WHEN_MET.count(PENDING_SENTENCE) == 1
+    assert variant.count(f"{PENDING_SENTENCE} {KEEP_PLAYING}") == 1
+    # Taking exactly the added sentence out gives `policy/2` back, so no other character moved.
+    assert variant.replace(f"{PENDING_SENTENCE} {KEEP_PLAYING}",
+                           PENDING_SENTENCE) == INSTRUCTIONS_FINISH_ONLY_WHEN_MET
+    assert variant.count(KEEP_PLAYING) == 1
+    assert KEEP_PLAYING.startswith("While help is pending, keep playing:")
+    assert "Choose wait only when continuing would spoil what you asked about." in variant
+
+
+def test_policy_one_and_two_keep_their_text_object_for_object():
+    assert INSTRUCTIONS_VARIANTS["policy/1"] is INSTRUCTIONS
+    assert INSTRUCTIONS_VARIANTS["policy/2"] is INSTRUCTIONS_FINISH_ONLY_WHEN_MET
+    assert KEEP_PLAYING not in INSTRUCTIONS and KEEP_PLAYING not in INSTRUCTIONS_FINISH_ONLY_WHEN_MET
+    assert sorted(INSTRUCTIONS_VARIANTS) == ["direct/1", "policy/1", "policy/2", "policy/3"]
+
+
+def test_the_keep_playing_sentence_brings_in_no_game_word():
+    from test_name_blind import BANNED, words
+
+    assert not (words(KEEP_PLAYING) & BANNED)
+    assert "keep playing" in KEEP_PLAYING
+
+
+def test_the_follow_up_wording_follows_the_primary_text():
+    assert follow_up_for(INSTRUCTIONS_KEEP_PLAYING) is FOLLOW_UP_KEEP_PLAYING
+    assert follow_up_for(INSTRUCTIONS) is FOLLOW_UP_INSTRUCTIONS
+    assert follow_up_for(INSTRUCTIONS_FINISH_ONLY_WHEN_MET) is FOLLOW_UP_INSTRUCTIONS
+    assert FOLLOW_UP_KEEP_PLAYING != FOLLOW_UP_INSTRUCTIONS
+    assert prompts(INSTRUCTIONS_KEEP_PLAYING) == {"next_action": INSTRUCTIONS_KEEP_PLAYING,
+                                                  "while_pending": FOLLOW_UP_KEEP_PLAYING}
+    assert prompts(INSTRUCTIONS_KEEP_PLAYING)["while_pending"] is FOLLOW_UP_KEEP_PLAYING
+    assert prompts()["while_pending"] is FOLLOW_UP_INSTRUCTIONS
+
+
+def observation() -> Observation:
+    return Observation(session="s", seq=7, game_s=3.0, wall_utc=datetime(2026, 10, 28, tzinfo=timezone.utc),
+                       clock_mode=ClockMode.realtime, scene="a", playing=True, paused=False, time_scale=1.0,
+                       frame=9)
+
+
+def payload(instructions: str = INSTRUCTIONS) -> dict[str, Any]:
+    return build_context(objective="Exercise the controls.", observation=observation(),
+                         choices=ChoiceSet(set_version=4, built_from_seq=7, choices=choices()),
+                         instructions=instructions)
+
+
+def s1_adapter(tmp_path: Path, *replies: Any, instructions: str = INSTRUCTIONS) -> tuple[SystemOneS1, Send]:
+    ledger = call_budget.Ledger(tmp_path, approval(12), ARM)
+    send = Send(tmp_path, *replies)
+    return SystemOneS1(ledger, max_calls=10, send=send, arm=ARM, instructions=instructions), send
+
+
+def decide(port: SystemOneS1, context: dict[str, Any]):
+    return asyncio.run(port.decide(context))
+
+
+def test_the_keep_playing_adapter_hashes_a_different_prompt(tmp_path: Path):
+    plain, _ = s1_adapter(tmp_path / "plain", reply("next_action", "c1"))
+    variant, _ = s1_adapter(tmp_path / "variant", reply("next_action", "c1"),
+                            instructions=INSTRUCTIONS_KEEP_PLAYING)
+    assert plain.prompt_sha256 == digest(canonical(prompts()))
+    assert variant.prompt_sha256 == digest(canonical(prompts(INSTRUCTIONS_KEEP_PLAYING)))
+    assert variant.prompt_sha256 != plain.prompt_sha256
+    assert variant.instructions == INSTRUCTIONS_KEEP_PLAYING
+
+
+@pytest.mark.parametrize("instructions, expected", [
+    (INSTRUCTIONS, FOLLOW_UP_INSTRUCTIONS),
+    (INSTRUCTIONS_KEEP_PLAYING, FOLLOW_UP_KEEP_PLAYING),
+])
+def test_a_help_turn_asks_the_follow_up_that_matches_the_primary_text(tmp_path: Path, instructions, expected):
+    port, send = s1_adapter(tmp_path, reply("next_action", "h"), reply("while_pending", "c2"),
+                            instructions=instructions)
+    context = payload(instructions)
+    got = decide(port, context)
+    assert len(send.bodies) == 2
+    follow = send.bodies[1]
+    assert set(follow) == {"model", "questions", "state"} and follow["state"] == context
+    assert list(follow["questions"]) == ["while_pending"]
+    question = follow["questions"]["while_pending"]
+    assert question["type"] == "choice" and question["instructions"] == expected
+    # Criteria are the wait choice and the executable choices; help and finish are not continuations.
+    assert list(question["criteria"]) == ["c1", "c2", "c3", "w"]
+    assert got.answer["choice_id"] == "h" and got.answer["while_pending"] == {"mode": "continue", "choice_id": "c2"}
+    assert all(c.problem is None for c in got.calls)
+
+
+def test_the_keep_playing_wording_still_maps_a_wait_to_wait(tmp_path: Path):
+    port, _ = s1_adapter(tmp_path, reply("next_action", "h"), reply("while_pending", "w"),
+                         instructions=INSTRUCTIONS_KEEP_PLAYING)
+    got = decide(port, payload(INSTRUCTIONS_KEEP_PLAYING))
+    assert got.answer["choice_id"] == "h" and got.answer["while_pending"] == {"mode": "wait"}
+
+
+def test_a_failed_keep_playing_follow_up_leaves_the_primary_standing(tmp_path: Path):
+    unoffered = (200, {"answers": {"while_pending": {"type": "choice", "choice": "zz"}}}, 9.0, None)
+    for index, bad in enumerate(((500, None, 5.0, "HTTP error"), (None, None, 5.0, "transport error"), unoffered,
+                                 (200, {"answers": {}}, 5.0, None))):
+        port, _ = s1_adapter(tmp_path / f"bad{index}", reply("next_action", "h"), bad,
+                             instructions=INSTRUCTIONS_KEEP_PLAYING)
+        got = decide(port, payload(INSTRUCTIONS_KEEP_PLAYING))
+        assert got.answer["choice_id"] == "h" and "while_pending" not in got.answer and got.failure is None
+        assert len(got.calls) == 2 and got.calls[1].question == "while_pending" and got.calls[1].problem
+
+
+def test_the_cli_accepts_the_policy_three_instructions():
+    assert parsed("--s1-instructions", "policy/3").s1_instructions == "policy/3"
+    assert INSTRUCTIONS_VARIANTS["policy/3"] == INSTRUCTIONS_KEEP_PLAYING
+    for bad in ("policy/99", "policy/4", "policy/3 "):
+        with pytest.raises(SystemExit):
+            parsed("--s1-instructions", bad)
+
+
+def test_the_plan_records_the_policy_three_variant_when_named(plan_run):
+    assert plan_run("--s1-instructions", "policy/3")["s1_instructions"] == "policy/3"
