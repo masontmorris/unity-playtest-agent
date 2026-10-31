@@ -54,7 +54,7 @@ from playtest.runner.directives import DirectiveTracker
 from playtest.runner.frontier_help import FrontierHelp, action_effects
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
-from .choices import ManifestChoices, build_choices
+from .choices import FINISH_LABELS, ManifestChoices, build_choices
 from .coverage import CoverageFacts
 from .declared import declared_configuration
 from .game_view import BridgeView
@@ -168,6 +168,14 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_TOKENS_PER_MINUTE", int, None),
                         help="the most S1 tokens the runner lets one minute use; it waits before a turn to stay "
                              "under it (default: the selected arm's own rate; also UPA_RUN_TOKENS_PER_MINUTE)")
+    parser.add_argument("--pacing-burst", type=float, default=_env("UPA_RUN_PACING_BURST", float, 0.0),
+                        help="the share of the per-minute token budget S1's calls may use before pacing spaces "
+                             "them; 0 (default) spaces every call, 0.5 lets a session run unspaced until half the "
+                             "budget is in the window (also UPA_RUN_PACING_BURST)")
+    parser.add_argument("--finish-label", default=_env("UPA_RUN_FINISH_LABEL", str, "plain"),
+                        choices=sorted(FINISH_LABELS),
+                        help="how the finish choice is labelled: plain ('Finish', default) or conditional (states "
+                             "that it ends the session and when to choose it; also UPA_RUN_FINISH_LABEL)")
     parser.add_argument("--objective", default=None)
     parser.add_argument("--objective-file", type=Path, default=_env("UPA_RUN_OBJECTIVE_FILE", Path, None))
     return parser
@@ -243,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
     args.tokens_per_minute = resolve_tokens_per_minute(args.s1_arm, args.tokens_per_minute)
     if not 0 < args.frontier_clip_s <= media.MAX_WINDOW_S:
         parser.error(f"--frontier-clip-s must be above 0 and at most {media.MAX_WINDOW_S:g}")
+    if not 0 <= args.pacing_burst <= 1:
+        parser.error("--pacing-burst (or UPA_RUN_PACING_BURST) must be between 0 and 1")
     if args.tokens_per_minute < 1:
         parser.error("--tokens-per-minute (or UPA_RUN_TOKENS_PER_MINUTE) must be at least 1")
     if output.is_relative_to(project) or output.exists():
@@ -277,7 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0, args.s1_arm)
         session_host = _host_session(project)
         built = build_choices(manifest, restart_play_mode=session_host is not None
-                              and session_host.advertises_restart)
+                              and session_host.advertises_restart,
+                              finish_label=FINISH_LABELS[args.finish_label])
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
         if session_host is not None:
             # The host must serve the very catalog this run verified, or its scene is a different session.
@@ -311,6 +322,10 @@ def main(argv: list[str] | None = None) -> int:
             plan["s1_compact_state"] = args.s1_compact_state
         if args.s1_pending_question != "follow_up":
             plan["s1_pending_question"] = args.s1_pending_question
+        if args.pacing_burst:
+            plan["pacing_burst"] = args.pacing_burst
+        if args.finish_label != "plain":
+            plan["finish_label"] = args.finish_label
         plan["coverage_facts"] = args.coverage_facts
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
@@ -374,7 +389,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
         per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
-        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True)
+        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True, burst=args.pacing_burst)
         instructions = INSTRUCTIONS_VARIANTS[args.s1_instructions]
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,

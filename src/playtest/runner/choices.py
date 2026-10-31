@@ -59,7 +59,16 @@ class ManifestChoices:
     catalog: ActionCatalog = field(default_factory=ActionCatalog)
 
 
-def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
+# How the finish choice is labelled. `plain` is today's; `conditional` states when to choose it, because a
+# decision model reads each option's text next to its code and "Finish" alone says nothing about when.
+FINISH_LABELS = {
+    "plain": "Finish",
+    "conditional": ("Finish: end the whole session now. Choose this only when the objective's completion "
+                    "conditions are met; otherwise the session ends by itself."),
+}
+
+
+def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"]) -> list[Choice]:
     """The choices every game has, plus an explicit host restart only when this host advertises it.
 
     Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
@@ -79,17 +88,18 @@ def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
             id=RESTART_ID, kind=ChoiceKind.restart_play_mode,
             label="Restart Play Mode: stop the play session and start it again from the beginning",
             source=ChoiceSource.core))
-    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.core))
+    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
     return choices
 
 
-def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False) -> ManifestChoices:
+def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
+                  finish_label: str = FINISH_LABELS["plain"]) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
     default leaves every choice, its order and its wording exactly as before.
     """
-    core = core_choices(restart_play_mode=restart_play_mode)
+    core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
     reserved = {choice.id for choice in core} | {RESTART_ID}
     catalog = export(manifest)
     choices: list[Choice] = []
