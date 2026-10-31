@@ -152,5 +152,27 @@ So the deadband condition applies to the step the chooser actually uses, not the
 tolerance ≥ half of that step. The finer menu also adds an option-count pull toward turning. The
 deadband-consistent pairing is the turn sizes with a "middle half" tolerance (±20° ≥ 9°).
 
+## Pointing turns (`--point-turns`): the generic fix
+
+Fixed-size relative turns hunt whenever the remaining error is smaller than the step the chooser uses. A
+pointing turn has no fixed step. S1 picks *where* in the view to face, as one of nine vertical strips, and a
+measured skill turns that far. A correct point lands the target near the centre, so the next pick is to walk.
+
+The frozen-frame probe (`docs/probes/2026-10-31-d1-ultra-pointing.md`) showed d1-ultra names the target's strip
+within one on 29–30 of 30 frames.
+
+What `--point-turns` offers:
+- eight "face view strip k of 9" choices; the centre strip is not a turn;
+- each strip's angle comes from the camera's *measured* vertical field of view (65°, from calibration's camera
+  readings) and the 640×480 capture;
+- each strip is executed as the best combination of at most three *measured* turn inputs, 0.1 s apart. The
+  residual is under 0.9° on FPSKit: for example, strip 3 is two right mouse impulses plus a 0.1 s left stick
+  push, 20.8° for a 20.7° target;
+- the strip choices are left out of any turn whose observed field of view differs from the measured one;
+- two large measured search turns (±144°), because S1 never reports that a target is out of view.
+
+It is game-agnostic. It uses only the camera's field of view, which the bridge reads in any game, and the
+calibration's measured turns. It is mutually exclusive with `--turn-sizes`.
+
 Contributors: gpt-6.1-terra (first implementation and replay), with the orchestrator adding the
 rounding, compression, range summary, tests and this note.

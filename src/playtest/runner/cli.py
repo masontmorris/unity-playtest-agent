@@ -152,6 +152,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
+    parser.add_argument("--point-turns", action="store_true", default=_env("UPA_RUN_POINT_TURNS", switch, False))
+    parser.add_argument("--capture-width", type=int, default=_env("UPA_RUN_CAPTURE_WIDTH", int, 640))
+    parser.add_argument("--capture-height", type=int, default=_env("UPA_RUN_CAPTURE_HEIGHT", int, 480))
     parser.add_argument("--turn-sizes", action="store_true", default=_env("UPA_RUN_TURN_SIZES", switch, False))
     parser.add_argument("--pattern-facts", action="store_true", default=_env("UPA_RUN_PATTERN_FACTS", switch, False))
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
@@ -240,6 +243,8 @@ def _host_session(project: Path) -> HostSession | None:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.turn_sizes and args.point_turns:
+        parser.error("--point-turns and --turn-sizes are mutually exclusive")
     project, output = args.project.resolve(), args.output.resolve()
     if args.approval is None:
         parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
@@ -303,9 +308,13 @@ def main(argv: list[str] | None = None) -> int:
         built = build_choices(manifest, restart_play_mode=session_host is not None
                               and session_host.advertises_restart,
                               finish_label=FINISH_LABELS[args.finish_label],
-                              turn_sizes=args.turn_sizes, calibration=calibration if args.turn_sizes else None)
+                              turn_sizes=args.turn_sizes, point_turns=args.point_turns,
+                              capture_size=(args.capture_width, args.capture_height),
+                              calibration=calibration if args.turn_sizes or args.point_turns else None)
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256,
-                                   turn_sizes=args.turn_sizes, calibration=calibration if args.turn_sizes else None)  # before any call or contact with the bridge
+                                   turn_sizes=args.turn_sizes, point_turns=args.point_turns,
+                                   capture_size=(args.capture_width, args.capture_height),
+                                   calibration=calibration if args.turn_sizes or args.point_turns else None)  # before any call or contact with the bridge
         if session_host is not None:
             # The host must serve the very catalog this run verified, or its scene is a different session.
             if (Path(session_host.config.catalog_path).resolve() != args.catalog.resolve()
@@ -347,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.finish_label != "plain":
             plan["finish_label"] = args.finish_label
         plan["coverage_facts"] = args.coverage_facts
+        if args.point_turns:
+            plan["point_turns"] = True
         if args.turn_sizes:
             plan["turn_sizes"] = True
         if args.pattern_facts:

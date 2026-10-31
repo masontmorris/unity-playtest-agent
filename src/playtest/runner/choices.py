@@ -57,6 +57,7 @@ class ManifestChoices:
     leases: dict[str, float]
     not_offered: list[dict[str, str]] = field(default_factory=list)
     catalog: ActionCatalog = field(default_factory=ActionCatalog)
+    point_fov: float | None = None
 
 
 # How the finish choice is labelled. `plain` is today's; `conditional` states when to choose it, because a
@@ -94,6 +95,7 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
 
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
                   finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
+                  point_turns: bool = False, capture_size=(640, 480),
                   calibration: dict | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
@@ -102,7 +104,10 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
     """
     core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
     reserved = {choice.id for choice in core} | {RESTART_ID}
-    catalog = export(manifest)
+    if turn_sizes and point_turns:
+        raise ValueError("--point-turns and --turn-sizes are mutually exclusive")
+    catalog = (export(manifest, point_turns=True, calibration=calibration, capture_size=capture_size)
+               if point_turns else export(manifest))
     choices: list[Choice] = []
     expected: dict[str, dict[str, Any] | None] = {}
     leases: dict[str, float] = {}
@@ -156,8 +161,18 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
             leases[choice.id] = definition.default_lease_s
             expected[choice.id] = None
         catalog = ActionCatalog(actions=declarations)
+    point_fov = None
+    if point_turns:
+        from .point_turns import measured_fov, pointing_turns
+        point_fov = measured_fov(calibration)
+        occupied = {c.id for c in choices} | reserved
+        for row in pointing_turns(manifest, calibration, capture_size):
+            if row.choice.id in occupied:
+                raise ValueError(f"point choice id collision: {row.choice.id}")
+            choices.append(row.choice)
+            expected[row.choice.id] = None
     return ManifestChoices(choices=[*choices, *core], expected=expected, leases=leases,
-                           not_offered=not_offered, catalog=catalog)
+                           not_offered=not_offered, catalog=catalog, point_fov=point_fov)
 
 
 def _reserve(name: str, reserved: set[str]) -> None:
@@ -317,7 +332,7 @@ def with_held_choices(built: ManifestChoices, eligible: list[str]) -> ManifestCh
         variants.append(choice.model_copy(update={"id": held_id}))
         leases[held_id] = built.leases[choice.id]
     return ManifestChoices(choices=[*built.choices, *variants], expected=built.expected,
-                           leases=leases, not_offered=built.not_offered, catalog=built.catalog)
+                           leases=leases, not_offered=built.not_offered, catalog=built.catalog, point_fov=built.point_fov)
 
 
 def held_choice_labels(built: ManifestChoices, held_ids: list[str], interval_s: float | None,

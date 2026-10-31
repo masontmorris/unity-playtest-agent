@@ -7,7 +7,7 @@ from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSource
 
 
 
-def measured_turns(manifest, calibration=None):
+def measured_turns(manifest, calibration=None, *, include_yaw=False):
     if calibration is not None and calibration.get("entity_id") != manifest.entity_id:
         raise ValueError("turn calibration names a different entity")
     rows = (calibration.get("action_summaries", []) if calibration is not None else
@@ -44,6 +44,7 @@ def measured_turns(manifest, calibration=None):
             timing = f"one relative impulse within {hold.requested_hold_s:g} s" if impulse else f"for {hold.requested_hold_s:g} s"
             label = (f"turn view {direction} {abs(view.yaw_deg):.1f}° (calibrated: {binding.device} {binding.control} "
                      f"{values} {timing}, spread {view.spread_deg:.1f}°)")
-            yield Choice(id=ident, kind=ChoiceKind.action, label=label, action=ident.replace(".", "_"), params={}, source=ChoiceSource.manifest), definition
+            choice = Choice(id=ident, kind=ChoiceKind.action, label=label, action=ident.replace(".", "_"), params={}, source=ChoiceSource.manifest)
+            yield (choice, definition, view.yaw_deg) if include_yaw else (choice, definition)
             if impulse:
                 break

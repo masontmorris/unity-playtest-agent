@@ -142,6 +142,7 @@ async def run_session(
     eligible = continuous_choice_ids(built) if continuous_input else []
     configured = with_held_choices(built, eligible) if continuous_input else built
     held_ids = [f"{name}.held" for name in eligible]
+    from .point_turns import gate_choices
     loop = TurnLoop(
         client, choices=configured.choices, max_age_s=max_age_s, leases=configured.leases,
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
@@ -151,6 +152,8 @@ async def run_session(
         continuous_choices=held_ids,
         continuous_labels=(lambda interval, lease: held_choice_labels(configured, held_ids, interval, lease))
         if continuous_input else None,
+        choice_filter=(lambda choices, observation: gate_choices(choices, observation, configured.point_fov))
+        if configured.point_fov is not None else None,
         instructions=instructions,
     )
     bind = getattr(probe, "bind_observation_source", None)
