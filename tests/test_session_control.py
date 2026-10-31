@@ -687,3 +687,59 @@ def test_host_state_capabilities_gate_the_restart_choice(tmp_path):
     host = load_host_session(directory, project=project)
 
     assert host.advertises_restart is False and host.capabilities == ()
+
+
+class _JsonRecord:
+    @staticmethod
+    def model_validate_json(text: str) -> Any:
+        return json.loads(text)
+
+
+def test_a_read_denied_while_the_host_replaces_the_record_is_retried(tmp_path, monkeypatch):
+    path = tmp_path / "result.json"
+    path.write_text('{"ticket": 1}', encoding="utf-8")
+    real_read = Path.read_text
+    denied = {"count": 0}
+
+    def racing(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == path and denied["count"] < 3:
+            denied["count"] += 1
+            raise PermissionError(13, "Permission denied")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", racing)
+    monkeypatch.setattr(control_module.time, "sleep", lambda seconds: None)
+
+    assert control_module._read_model(path, _JsonRecord) == {"ticket": 1}
+    assert denied["count"] == 3
+
+
+def test_a_read_still_denied_after_the_retries_fails_closed(tmp_path, monkeypatch):
+    path = tmp_path / "result.json"
+    path.write_text("{}", encoding="utf-8")
+    attempts = {"count": 0}
+
+    def always_denied(self: Path, *args: Any, **kwargs: Any) -> str:
+        attempts["count"] += 1
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", always_denied)
+    monkeypatch.setattr(control_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(SessionControlError, match="cannot read result.json"):
+        control_module._read_model(path, _JsonRecord)
+    assert attempts["count"] == control_module.READ_ATTEMPTS
+
+
+def test_a_missing_record_is_none_and_other_read_errors_are_not_retried(tmp_path, monkeypatch):
+    assert control_module._read_model(tmp_path / "result.json", _JsonRecord) is None
+    attempts = {"count": 0}
+
+    def broken(self: Path, *args: Any, **kwargs: Any) -> str:
+        attempts["count"] += 1
+        raise IsADirectoryError(21, "Is a directory")
+
+    monkeypatch.setattr(Path, "read_text", broken)
+    with pytest.raises(SessionControlError, match="cannot read result.json"):
+        control_module._read_model(tmp_path / "result.json", _JsonRecord)
+    assert attempts["count"] == 1
