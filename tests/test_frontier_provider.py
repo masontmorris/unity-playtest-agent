@@ -808,3 +808,10 @@ def test_send_meta_rejects_a_non_object_body(monkeypatch):
     monkeypatch.setenv("META_API_KEY", "sk-test-secret-value")
     with pytest.raises(ValueError, match="non-empty object"):
         provider.send_meta([])
+
+
+def test_declared_system_is_conditional():
+    plain = provider.build_request(manifest(), sample())["messages"][0]["content"]
+    declared = provider.build_request(replace(manifest(), declared={"values": []}), sample())["messages"][0]["content"]
+    assert plain == frontier.SYSTEM
+    assert declared == plain + frontier.DECLARED_SYSTEM

@@ -71,6 +71,7 @@ param(
     [string]$S1Arm = 'liquid-d1-ultra',
     [string]$Objective,
     [string]$ObjectivePath,
+    [string]$DiscoveryPath,
     [string]$ManifestOrigin,
     [switch]$Frontier,
     [int]$MaxFrontierCalls = 0,
@@ -171,7 +172,7 @@ $sessionConfig = [ordered]@{
     (New-Object Text.UTF8Encoding($false)))
 $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
-           'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE',
+           'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
            'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT')
 $previous = @{}
@@ -193,6 +194,7 @@ try {
     $env:UPA_RUN_MAX_AGE_S = $MaxAgeSeconds.ToString($invariant)
     $env:UPA_RUN_MAX_PROVIDER_FAILURES = [string]$MaxProviderFailures
     if ($tokensPerMinuteGiven) { $env:UPA_RUN_TOKENS_PER_MINUTE = [string]$TokensPerMinute }
+    $env:UPA_RUN_DISCOVERY = if ($DiscoveryPath) { [IO.Path]::GetFullPath($DiscoveryPath) } else { '' }
     $env:UPA_RUN_OBJECTIVE_FILE = if ($objectiveFile) { $objectiveFile } else { '' }
     $env:UPA_RUN_MANIFEST_ORIGIN = if ($ManifestOrigin) { $ManifestOrigin } else { '' }
     $env:UPA_RUN_S1_ARM = $S1Arm

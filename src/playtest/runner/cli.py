@@ -30,6 +30,7 @@ import json
 import os
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,7 @@ from playtest.runner.frontier_help import FrontierHelp, action_effects
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
 from .choices import ManifestChoices, build_choices
+from .declared import declared_configuration
 from .game_view import BridgeView
 from .output import secret_values
 from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
@@ -105,6 +107,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="playtest-run", description=__doc__)
     for name in ("project", "entity", "calibration", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--discovery", type=Path, default=_env("UPA_RUN_DISCOVERY", Path, None))
     parser.add_argument("--manifest", type=Path, default=_env("UPA_RUN_MANIFEST", Path, None))
     parser.add_argument("--manifest-origin", default=_env("UPA_RUN_MANIFEST_ORIGIN", str, None),
                         help="free text saying where the manifest came from, recorded in the plan and the summary "
@@ -243,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         calibration = json.loads(args.calibration.read_bytes())
         if entity.get("entity_id") != manifest.entity_id or calibration.get("entity_id") != manifest.entity_id:
             raise ValueError("the manifest, the entity record and the calibration record name different entities")
+        discovery_bytes = args.discovery.read_bytes() if args.discovery else None
+        declared = declared_configuration(json.loads(discovery_bytes), manifest.entity_id) if discovery_bytes else None
         approval, approval_sha = replay._load(args.approval)
         arms = [args.s1_arm, frontier_provider.MODEL] if args.frontier else [args.s1_arm]
         replay.validate_approval(approval, arms)
@@ -272,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
                                                    "measurement allowance (playtest.preflight.verify.MEASUREMENT_TOLERANCE)"},
                 "offered": [c.id for c in built.choices], "not_offered": built.not_offered,
                 "budget_assumptions": {"balance_override": approval.get("unverified_balance_override")}}
+        if discovery_bytes is not None:
+            plan["discovery_sha256"] = digest(discovery_bytes)
+            plan["declared_configuration_count"] = len(declared["values"]) if declared else 0
         plan["s1_game_view"] = args.s1_game_view
         plan["s1_layout"] = args.s1_layout
         plan["frontier"] = {"enabled": args.frontier,
@@ -288,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         ledger = call_budget.Ledger(run_dir, approval, args.s1_arm, concurrent_arms=True)
         before = recording._game_worktree(project)
         summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256,
-                                   calibration=calibration, session_host=session_host))
+                                   calibration=calibration, session_host=session_host, declared=declared))
         after = recording._game_worktree(project)
         summary["game_worktree_changed"] = None if before is None or after is None else before != after
         if summary["game_worktree_changed"] is True and summary["status"] == "complete":
@@ -319,7 +327,7 @@ def _suspicions(raised: list[Any], min_readings: int, drift_readings: int | None
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
                manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None,
-               session_host: HostSession | None = None) -> dict[str, Any]:
+               session_host: HostSession | None = None, declared: Mapping[str, Any] | None = None) -> dict[str, Any]:
     run_dir = args.output.resolve().parent
     started_utc = dt.datetime.now(dt.timezone.utc)
     generation = session_host.generation if session_host is not None else None
@@ -363,7 +371,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
                                   effects=action_effects(built.expected), generation=generation,
                                   session=getattr(client, "session", None), progress=progress_probe,
-                                  clip_window_s=args.frontier_clip_s)
+                                  clip_window_s=args.frontier_clip_s, declared=declared)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:

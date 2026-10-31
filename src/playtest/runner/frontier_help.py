@@ -350,11 +350,12 @@ class FrontierHelp:
                  effects: Mapping[str, frontier.Effect] | None = None,
                  generation: str | None = None, session: str | None = None,
                  clip_window_s: float = media.WINDOW_S,
-                 progress: ProgressProbe | None = None) -> None:
+                 progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
                              "frontier can be shown the suspicions recorded so far")
+        self.declared = declared
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -463,7 +464,7 @@ class FrontierHelp:
             new_hypothesis_ids=ids, age_s=context.get("as_of", {}).get("age_s"),
             clip=clip.descriptor, clip_unavailable_reason=clip.reason,
             findings=[{key: f[key] for key in ("finding_id", "title", "repro_check")} for f in self.findings],
-            suspicions=suspicions,
+            suspicions=suspicions, declared=self.declared,
             progress=(progress_rows(self.progress_probe.regions, observation)
                       if self.progress_probe.regions else ()),
         )
@@ -695,7 +696,7 @@ class FrontierHelp:
                 skills.append(choice.skill)
         return frontier.Manifest(fields=self.reader_fields, actions=actions, skills=skills,
                                  calibration=self.reader_calibration, field_notes=self.reader_notes,
-                                 effects=self.effects, progress=self.progress)
+                                 effects=self.effects, progress=self.progress, declared=self.declared)
 
     def _reading(self, observation: Observation, field: str) -> Any:
         """One field's value at this observation, including a declared region's derived distance."""

@@ -578,3 +578,13 @@ def test_a_suspicion_may_carry_the_measured_attempts_that_followed_it():
     for bad in ([], [""], ["x"] * (MAX_FOLLOW_THROUGH + 1), "turn 4", [3]):
         with pytest.raises(ValueError, match="followed_by"):
             build(suspicions=[{**row, "followed_by": bad}])
+
+
+def test_declared_optional_packet():
+    args = dict(objective="test", observation=observation(), choices=choice_set(), escalation=escalation())
+    old = build_packet(**args)
+    assert old.canonical() == build_packet(**args, declared=None).canonical()
+    block = {"values": [{"value": 2}]}
+    packet = build_packet(**args, declared=block)
+    assert packet.payload["declared_configuration"] == block
+    assert "declared_configuration" not in old.payload

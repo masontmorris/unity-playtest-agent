@@ -278,6 +278,21 @@ SYSTEM = (
 
 # Added to the system prompt only when the manifest declares reach regions, so a manifest with none sends
 # exactly the prompt it always did.
+DECLARED_SYSTEM = (
+    "\n- declared configuration: declared_configuration lists values the game's authors set (speeds, limits, sizes, "
+    "counts, permission flags) as discovery read them in play before any input, each with the component and field "
+    "it came from. The value is measured; what it governs is your reading of its name, its type and the values "
+    "beside it, so state that reading. It is the closest thing the packet holds to the authors' intent, and "
+    "stronger than a reader's preflight note. Weigh measurements against the values they bear on, with the "
+    "arithmetic: a speed against an action's displacement per second of hold; a limit (a height, distance, angle "
+    "or count) against a measured surface, gap, slope or repetition the entity failed or managed to cross; a "
+    "permission flag against an attempt that produced none of its effect. When a measurement falls outside what a "
+    "declared value says should happen and nothing measured explains the difference, a candidate_finding may give "
+    "expected_source developer_assertion: quote the field and value in expected, show the arithmetic in actual, and "
+    "say in uncertainty what your reading of the field assumes."
+)
+
+
 PROGRESS_SYSTEM = (
     "\n- declared reach regions: a progress row is an operator's declaration of an entry volume, not a "
     "measurement and not a verified target. Its author, source and verification status say where the "
@@ -362,6 +377,8 @@ class Manifest:
     # Region id -> its operator declaration. Only declarations the manifest actually contains reach the model,
     # the schema's setpoint fields and the packet. Empty for a manifest that declared none.
     progress: Mapping[str, ProgressRegion] = field(default_factory=dict, compare=False)
+
+    declared: Mapping[str, Any] | None = field(default=None, compare=False)
 
     def enums(self) -> dict[str, list[str]]:
         return {"fields": list(self.fields), "manifest_names": [*self.actions, *self.skills],
