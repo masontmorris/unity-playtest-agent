@@ -1606,7 +1606,10 @@
       "additionalProperties": false,
       "properties": {
         "action_cap": {
-          "const": 14,
+          "enum": [
+            14,
+            18
+          ],
           "title": "Action Cap",
           "type": "integer"
         },

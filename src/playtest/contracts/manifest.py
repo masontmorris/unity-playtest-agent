@@ -308,7 +308,7 @@ class SelectionCoverage(Strict):
     unsupported_bindings: list[dict[str, Any]]
     reader_cap: Literal[16]
     reader_cap_reached: bool
-    action_cap: Literal[14]
+    action_cap: Literal[14, 18]  # 14 before #217; a manifest records the cap its selection ran under
     action_cap_reached: bool
     skill_cap: Literal[6]
     skill_cap_reached: bool
