@@ -216,14 +216,20 @@ def effect_plan(manifest: PreflightManifest, action: str, inputs: list[dict[str,
 
 
 def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None = None,
+               finding_record: Mapping[str, Any] | None = None,
                repro_check: Mapping[str, Any] | None = None, attempts: int = ATTEMPTS, settle_s: float = SETTLE_S,
                start_settle_s: float = START_SETTLE_S, sample_interval_s: float = SAMPLE_INTERVAL_S) -> dict[str, Any]:
+    if finding_id is not None and finding_record is not None:
+        raise ValueError("name a trace finding or give a finding record, not both")
     raw = trace_path.read_bytes()
     entries = read_trace(trace_path)
     manifest_bytes = manifest_path.read_bytes()
     manifest = PreflightManifest.model_validate_json(manifest_bytes, strict=True)
     findings = latest_findings(entries)
-    if finding_id is None:
+    if finding_record is not None:
+        # A candidate recorded outside the trace (a post-session review): its evidence_seq still names trace entries.
+        chosen = {"finding": dict(finding_record), "trace_seq": None}
+    elif finding_id is None:
         candidates = [f for f in findings.values() if f["finding"].get("state") == FindingState.candidate.value]
         if not candidates:
             raise ValueError("the trace has no candidate finding; name one with --finding")
@@ -576,6 +582,8 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     planner.add_argument("--manifest", type=Path, required=True)
     planner.add_argument("--finding", default=None, help="finding_id; default: the latest candidate")
     planner.add_argument("--repro-check", type=Path, default=None, help="a JSON ReproCheck, if the finding has none")
+    planner.add_argument("--finding-file", type=Path, default=None,
+                         help="a JSON Finding recorded outside the trace, such as a post-session review's candidate")
     planner.add_argument("--attempts", type=int, default=ATTEMPTS)
     planner.add_argument("--settle-s", type=float, default=SETTLE_S)
     planner.add_argument("--output", type=Path, required=True)
@@ -591,7 +599,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "plan":
         try:
             check = json.loads(args.repro_check.read_text(encoding="utf-8")) if args.repro_check else None
-            plan = build_plan(args.trace, args.manifest, finding_id=args.finding, repro_check=check,
+            record = json.loads(args.finding_file.read_text(encoding="utf-8")) if args.finding_file else None
+            plan = build_plan(args.trace, args.manifest, finding_id=args.finding, finding_record=record, repro_check=check,
                               attempts=args.attempts, settle_s=args.settle_s)
         except (OSError, ValueError, KeyError) as exc:
             print(f"reproduce plan: {exc}", file=sys.stderr)

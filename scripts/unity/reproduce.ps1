@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [string]$FindingId,
     [string]$ReproCheckPath,
+    [string]$FindingPath,
     [int]$Attempts = 5,
     [double]$SettleSeconds = 3.0,
     [string]$UnityPath
@@ -48,6 +49,7 @@ $planArgs = @('-m', 'playtest.runner.reproduce', 'plan', '--trace', $trace, '--m
               '--attempts', [string]$Attempts, '--settle-s', $SettleSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))
 if ($FindingId) { $planArgs += @('--finding', $FindingId) }
 if ($ReproCheckPath) { $planArgs += @('--repro-check', [IO.Path]::GetFullPath($ReproCheckPath)) }
+if ($FindingPath) { $planArgs += @('--finding-file', [IO.Path]::GetFullPath($FindingPath)) }
 Push-Location $repoRoot
 try {
     & $python @planArgs
