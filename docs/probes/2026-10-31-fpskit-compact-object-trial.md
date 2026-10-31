@@ -153,3 +153,38 @@ The approval is `approval-trial-stairs-2.json`.
 **What is left:** S1 never squares up to the staircase's axis, and it flips between left and right turns
 in place for 18 of 43 turns. Both are decision problems, not speed problems. A continuous-input design is
 in progress on a separate branch.
+
+## Continuous-input trial (`climb-continuous-01`, 180 s)
+
+Settings:
+- **S1:** `--continuous-input` and `--s1-compact-state object`, with `--pacing-burst 0.5`, pooled HTTPS,
+  `--finish-label conditional` and `policy/2`.
+- **Objective:** `objective-climb-stairs-3min.txt`.
+- **Frontier:** at most 3 calls.
+
+The approval is `approval-trial-continuous.json`. The first launch failed before Unity started, because of
+a bug in the trial launcher (a switch was splatted as a string), and cost nothing.
+
+**Mechanism: it works.** There were 26 leased holds with leases of 0.1–5.97 s, and 16 of 16 release stops
+were verified.
+
+**Behaviour:** worse precision than the 1-minute run.
+- **Speed:** 104 turns in 177.6 s (34.8 decisions a minute, with 70.5 s of pacing over 3 minutes). The
+  ending was S1's `finish` at about 178 s.
+- **Choices:** 60 of 104 turns were `mouse_turn_left`/`mouse_turn_right`, including the first 25 turns
+  (28 s) spent turning in place. 17 were `move_forward`.
+- **Overshoot:** a held move covered 6–10 units before the next decision, against about 2 units per step.
+  With a decision every ~2 s and walking at about 5 units/s, S1 overshot the long staircase, went to the
+  dark side flights, and at one point reached x ≈ 50.
+- **Climb:** running jumps took it to the top of the 2-unit side flight (feet 2.08 at about 80 s). The long
+  grey flight was never climbed.
+- **Help:** it escalated 4 times. Answers arrived in about 9–14 s and were adopted. It restarted the level
+  twice.
+
+**Totals:** S1 109 calls, $0.0415; frontier 3 calls, $0.0654. The recording is 3 generations (1,770
+frames, none missed), joined as `recording/climb-continuous-01-full.mp4`, with a key-moments sheet.
+
+**What it shows:** continuous input only helps when decisions come faster than the character covers the
+precision a task needs. At about one decision every 2 s it is right for traversal and wrong for lining
+up on a 2-unit-wide flight. A version where S1 chooses per move between a step and a held walk would keep
+both.
