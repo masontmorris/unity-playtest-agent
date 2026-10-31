@@ -69,6 +69,14 @@ Twice, S1 kept the cycle going for 9 and 6 turns after the fact first showed. On
 that first turn. The runs took different paths and this one had three restarts, so this is an observation,
 not a test. It reads as no clear effect: stating the cycle does not by itself stop d1-ultra turning.
 
+## Live check of the deadband (`climb-tolerance-half-01`, 31 October)
+
+The objective's two alignment phrases were widened to "anywhere in the middle half of the view", and
+nothing else changed. S1 alternated five times, then walked at 38.4°. It turned once to the flight's axis
+and climbed to the top of the long staircase (feet 8.5) within 15 s. The longest cycle was 5 turns,
+against 13 and 29 before. This is one run, so a frozen-frame probe of several widths is being built to
+measure the effect turn by turn.
+
 ## The deadband reading
 
 A controller whose tolerance is tighter than its smallest step hunts forever. The standard cure is a

@@ -227,3 +227,43 @@ Settings: as `climb-continuous-01`, plus the per-move choice between a step and 
   classic hunting condition.
 - The next cheap check is an objective with a deadband of at least half a step, such as "anywhere in the
   middle half of the view". It changes no code.
+
+## Wider-tolerance trial (`climb-tolerance-half-01`, 165 s of 180)
+
+Settings: as `climb-held-pattern-01`, except the objective (`objective-climb-stairs-3min-half.txt`). Its two
+alignment phrases were widened:
+- "is in the centre of the view" became "is ahead of you, anywhere in the middle half of the view";
+- "rise straight ahead of you" became "rise ahead of you, anywhere in the middle half of the view".
+
+The code was 13921ac, and the approval is `approval-trial-tolerance-half.json`.
+
+- **Hunting: over after 5 turns.** S1 alternated between 0° and 38.4° five times, then chose a held walk
+  at 38.4°.
+  - The longest cycle was 5 turns, against 13 and 29 in the two runs before.
+  - At cycle points it continued once and broke three times.
+  - Turns were 49% of executed choices, against 62% and 70%.
+- **Climb: the top of the long staircase in 15 s.** It walked to the foot, turned to 0° (the flight's
+  axis), and walked and jumped up: feet 2.0 at 12 s, 6.4 at 14 s, 8.5 at 15 s. That is the highest of any
+  trial; the best before was 5.32. The next held walk carried it off the far end (feet 0.1 at 18 s).
+- **Afterwards:** 3 escalations, all answers adopted, then 11 waits and some wandering. At about 120 s a
+  held walk took it off the level's edge. It fell for about 40 s, reaching feet −2,104, and kept choosing
+  moves and turns until it chose `restart_play_mode` at 165 s.
+- **Ended inconclusive, not through S1.** The restart failed reading the host's `result.json`: errno 13,
+  a Windows sharing violation while the host replaced the file. Fixed on `fix/session-control-read-race`
+  (7e624cd), where a denied read is retried for about 0.5 s.
+- **Speed:** 77 turns in 165 s, which is 27.6 decisions a minute. There were 12 stale rejections, most
+  while falling, and S1's p50 was 406 ms.
+
+**Totals:** S1 81 calls, $0.0368; frontier 3 calls, $0.0691. The failed session left the recorder's video
+unencoded, so `recording/session.mp4` was encoded afterwards from its 1,616 frames. There is a key-moments
+sheet.
+
+**What it shows.** This is one run, not proof, but it is the predicted effect. With a tolerance of at least
+half a turn step, S1 stopped turning at a reachable heading and walked. With held walks it then climbed
+the whole flight in seconds.
+
+It also shows two new failure modes:
+- a held walk overshoots the top;
+- S1 does not react quickly to falling off the level.
+
+A frozen-frame probe across several tolerance widths is being built to measure the effect turn by turn.
