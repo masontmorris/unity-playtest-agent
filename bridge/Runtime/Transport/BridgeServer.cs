@@ -751,9 +751,12 @@ namespace Playtest.Bridge.Transport
             // below takes it, or is dropped.
             lock (_freshnessGate)
             {
-                session.Stopping = true;
-                session.StopStream();
-                _clock?.Reset();
+                if (reason != "release")
+                {
+                    session.Stopping = true;
+                    session.StopStream();
+                    _clock?.Reset();
+                }
             }
 
             // The lease releases the inputs and waits for device reads, which the Unity main thread
@@ -765,7 +768,7 @@ namespace Playtest.Bridge.Transport
             {
                 lock (_gate)
                 {
-                    if (ReferenceEquals(_active, session))
+                    if (reason != "release" && ReferenceEquals(_active, session))
                     {
                         _active = null;
                     }
@@ -805,7 +808,7 @@ namespace Playtest.Bridge.Transport
                 }
             }
 
-            session.Close();
+            if (reason != "release" || !verified) session.Close();
             Log?.Invoke("stop (" + reason + "): released=" + released.Count + " verified=" + verified);
             return result;
         }

@@ -631,7 +631,7 @@ namespace Playtest.Bridge.Protocol
             {
                 if (!HasString(obj, "reason") || !Contains(BridgeStopReason.All, stop.Reason))
                 {
-                    error = Invalid("reason must be user, reset, scene_change, disconnect, error or finish");
+                    error = Invalid("reason must be user, reset, scene_change, disconnect, error, finish or release");
                     return false;
                 }
             }

@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from playtest.contracts.bridge import Observation, StopResult
+from playtest.contracts.bridge import TERMINAL_STATUSES, Observation, StopResult
 from playtest.contracts.common import ClockMode
 from playtest.contracts.investigation import Suspicion
 from playtest.contracts.loop import (
@@ -73,7 +73,7 @@ from .bridge_client import BridgeClient
 from .context import INSTRUCTIONS, build_context, canonical
 from .decision_memory import DecisionMemory, json_ready as _json_ready
 from .decisions import parse_decision
-from .execution import ExecutionController
+from .execution import Execution, ExecutionController
 from .facts import RecordFacts
 from .findings import RaisedSuspicion
 from .observations import ObservationStore
@@ -189,12 +189,22 @@ class TurnLoop:
         restart: RestartPort | None = None,
         generation: str | None = None,
         time_left: Callable[[], float | None] | None = None,
+        continuous_input: bool = False,
+        continuous_choices: Sequence[str] = (),
         instructions: str = INSTRUCTIONS,
     ) -> None:
+        if continuous_input and clock_mode is not ClockMode.realtime:
+            raise ValueError("continuous input requires a realtime clock")
         if s1 is not None and not (objective and objective.strip()):
             raise ValueError("a loop with an S1 port needs an objective")
         if restart is not None and not any(choice.kind is ChoiceKind.restart_play_mode for choice in choices):
             raise ValueError("a loop with a restart port must offer the restart choice")
+        self._continuous = continuous_input
+        self._continuous_choices = frozenset(continuous_choices)
+        self._active = None
+        self._continuous_lease = None
+        self._last_started = None
+        self._intervals: list[float] = []
         self._client = client
         self._original_client = client  # the caller owns this one; adopted clients are closed here
         self._choices = list(choices)
@@ -316,6 +326,15 @@ class TurnLoop:
         scripted = decide is not _NO_SOURCE
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
+        if self._continuous:
+            now = time.perf_counter()
+            if self._last_started is not None:
+                # The previous complete start-to-start interval includes pacing and readings.
+                # Twice the slowest of the last three intervals: long enough to reach the next selection, and
+                # it shrinks again after one slow turn (a help wait), so a stalled loop never holds for long.
+                self._intervals = (self._intervals + [now - self._last_started])[-3:]
+                self._continuous_lease = min(10.0, 2 * max(self._intervals))
+            self._last_started = now
         turn = len(self._turns)
         pending = self._pending
         ready: HelpResult | asyncio.Task[HelpResult] | None = None
@@ -341,10 +360,21 @@ class TurnLoop:
             self._cancel_pending(self._pending, "observation_boundary", turn=turn)
         elif ready is not None and pending is self._pending:
             self._adopt_finished_help(pending, ready, turn)
+        if self._continuous and boundary:
+            await self._release_active("scene_change")
+        if self._continuous and self._active is not None:
+            records = self._client.action_records(self._active[0]["action_id"])
+            if records[-1].status in TERMINAL_STATUSES:
+                await self._collect_active()
+        offered_choices = self._choices
+        if self._continuous and self._continuous_lease is not None:
+            offered_choices = [c.model_copy(update={"label":
+                f"{c.label} Continuous: held up to {self._continuous_lease:.1f} s while the next decision runs."})
+                if c.id in self._continuous_choices else c for c in self._choices]
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
-            choices=self._choices,
+            choices=offered_choices,
         )
         self._set_version += 1
         offered = self._emit(TraceKind.choice_set, choice_set.model_dump(mode="json"), TraceAuthor.core, turn, [observed])
@@ -357,6 +387,22 @@ class TurnLoop:
             answer = S1Answer(answer=decide(choice_set, observation) if callable(decide) else decide)
         else:
             facts = [*await self._facts.facts(self._reports, observation), *noticed]
+            if self._continuous:
+                facts.append("Continuous input mode: wait, finish, invalid/stale answers and pending-help "
+                             "wait release input. Only the selected action (or while_pending action) starts input. "
+                             "Effects against short-hold calibration are unknown in this mode.")
+                if self._active is not None:
+                    request = self._active[0]
+                    receipt = self._client.action_records(request["action_id"])[-1]
+                    start_age = (_elapsed_s(datetime.fromtimestamp(receipt.input_start_wall_s, timezone.utc),
+                                            self._clock())
+                                 if receipt.input_start_wall_s is not None else None)
+                    facts.append(f"Input receipt: action={request['action']}, choice={request['choice_id']}, "
+                                 f"status={receipt.status.value}, input_start_wall_s={receipt.input_start_wall_s}, "
+                                 f"age_since_input_start_s={start_age}, "
+                                 f"age_since_ack_s={_elapsed_s(receipt.wall_utc, self._clock())}, "
+                                 f"lease_s={request['lease_s']}. Current physical held state is unknown "
+                                 "until another bridge receipt; age is since receipt, not measured hold duration.")
             directives = self._directive_view(observation)  # right after the facts that evaluated this observation
             view = self._view.sample(observation) if self._view is not None else None
             now = self._clock()
@@ -419,6 +465,8 @@ class TurnLoop:
         restart_refs: list[int | None] = []
 
         if not parsed.valid or parsed.decision is None:
+            if self._continuous:
+                await self._release_active("error")
             outcome = TurnOutcome.rejected_invalid
         else:
             decision = parsed.decision
@@ -445,6 +493,8 @@ class TurnLoop:
                 if while_pending is None:
                     # Stepped clocks carry no pending input; the help is recorded as waited so the trace stays adherence-clean.
                     while_pending, policy_default = WhilePending(mode="wait"), True
+                if self._continuous and while_pending.mode != "continue":
+                    await self._release_active("user")
                 if while_pending.mode == "continue":
                     target = choice_set.get(while_pending.choice_id or "")
                     if target is not None and target.kind in _EXECUTABLE_KINDS:
@@ -456,8 +506,12 @@ class TurnLoop:
                         effect_entries.append(effect_entry)
                         if not executed.execution.rejected:
                             executed_id = target.id
+                    elif self._continuous:
+                        await self._release_active("user")
                 outcome = TurnOutcome.escalated if selected.kind is ChoiceKind.escalate else TurnOutcome.delegated
             else:
+                if self._continuous:
+                    await self._release_active("finish" if selected.kind is ChoiceKind.finish else "user")
                 outcome = TurnOutcome.finished
                 if selected.kind is ChoiceKind.wait:
                     await self._wait_out(selected, observation)
@@ -597,6 +651,8 @@ class TurnLoop:
         if pending is not None:
             self._cancel_pending(pending, "restart", turn=turn)
         self._memory.mark_boundary("reset")
+        if self._continuous:
+            await self._release_active("reset")
         result = await self._client.stop("reset")
         self._stop_result = result
         return result is not None and result.release_verified is True
@@ -684,6 +740,9 @@ class TurnLoop:
         """
         assert outcome.client is not None and outcome.observation is not None
         assert outcome.to_generation is not None
+        self._continuous_lease = None
+        self._last_started = None
+        self._intervals = []
         previous_client = self._client
         self._client = outcome.client
         self._executor = ExecutionController(outcome.client, **self._executor_options)
@@ -726,7 +785,28 @@ class TurnLoop:
         observed: int | None, raw_choice: str | None, effective_choice: str, help_event: str | None,
     ) -> tuple[Executed, int | None, int | None]:
         """Send one chosen input, bound to the observation its set was built from, and measure its effect."""
-        request = self._executor.request_for(choice, based_on_seq=observation.seq)
+        lease = (self._continuous_lease if self._continuous and choice.id in self._continuous_choices else None)
+        request = self._executor.request_for(choice, based_on_seq=observation.seq, lease_s=lease)
+        if self._continuous and choice.id in self._continuous_choices and lease is not None:
+            try:
+                records = await self._client.start_act(**request)
+            except BaseException:
+                self._emit(TraceKind.execution,
+                           {"purpose": purpose, "request": request, "records": []},
+                           TraceAuthor.bridge, turn, [decided])
+                raise
+            # Supersession releases the prior selection; rejection leaves it intact at the bridge.
+            if records[-1].status in TERMINAL_STATUSES and records[-1].status.value == "rejected":
+                await self._release_active("error")
+            else:
+                await self._collect_active()
+            self._active = (request, purpose, turn, decided)
+            execution = Execution(request=request, records=tuple(records))
+            if records[-1].status in TERMINAL_STATUSES:
+                await self._collect_active()
+            return Executed(purpose=purpose, choice=choice, execution=execution, effect=None), None, None
+        if self._continuous:
+            await self._release_active("user")
         try:
             execution = await self._executor.send(request)
         except BaseException:
@@ -750,7 +830,7 @@ class TurnLoop:
         effect = None
         measured = None
         try:
-            if not execution.rejected and self._effects is not None:
+            if not self._continuous and not execution.rejected and self._effects is not None:
                 effect = await self._effects.measure(choice, execution)
                 if effect is not None:
                     measured = self._emit(
@@ -768,6 +848,27 @@ class TurnLoop:
                 trace_seq=entry, effect_trace_seq=measured)
             raise
         return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry, measured
+
+    async def _collect_active(self) -> None:
+        if self._active is None:
+            return
+        request, purpose, turn, decided = self._active
+        records = await self._client.collect_act(request["action_id"])
+        self._active = None
+        self._emit(TraceKind.execution,
+                   {"purpose": purpose, "request": request,
+                    "records": [r.model_dump(mode="json") for r in records]},
+                   TraceAuthor.bridge, turn, [decided])
+
+    async def _release_active(self, reason: str) -> None:
+        if self._active is None:
+            return
+        result = await self._client.stop("release")
+        self._emit(TraceKind.stop, {"reason": "release", "result": result.model_dump(mode="json") if result is not None else None,
+                                   "error": None}, TraceAuthor.core, None)
+        if result is None or not result.release_verified:
+            raise RuntimeError("input release was not verified")
+        await self._collect_active()
 
     # --- suspicions -------------------------------------------------------------------------
 
@@ -1022,6 +1123,8 @@ class TurnLoop:
             raise ValueError(f"stop reason must be one of {', '.join(_STOP_REASONS)}, not {reason!r}")
         if self._stopped:
             return self._stop_result
+        if self._continuous:
+            await self._release_active(reason)
         self._stopped = True
         if reason in ("reset", "scene_change"):
             self._memory.mark_boundary(reason)
@@ -1043,6 +1146,8 @@ class TurnLoop:
             )
             raise
         self._stop_result = result
+        if self._continuous:
+            await self._collect_active()
         self._emit(
             TraceKind.stop,
             {"reason": reason, "result": result.model_dump(mode="json") if result is not None else None,

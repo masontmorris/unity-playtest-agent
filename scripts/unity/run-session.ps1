@@ -84,6 +84,7 @@ param(
     [ValidateSet('follow_up', 'batched')][string]$S1PendingQuestion = 'follow_up',
     [ValidateSet('policy/1', 'direct/1', 'policy/2', 'policy/3')][string]$S1Instructions = 'policy/1',
     [ValidateSet('plain', 'conditional')][string]$FinishLabel = 'plain',
+    [switch]$S1ContinuousInput,
     [ValidateRange(0.0, 1.0)][double]$PacingBurst = 0,
     [string]$UnityPath
 )
@@ -183,7 +184,7 @@ $names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENC
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
            'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS',
            'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS',
-           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST')
+           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_CONTINUOUS_INPUT')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 $recorder = $null
@@ -213,6 +214,7 @@ try {
     $env:UPA_RUN_S1_PENDING_QUESTION = $S1PendingQuestion
     $env:UPA_RUN_S1_INSTRUCTIONS = $S1Instructions
     $env:UPA_RUN_FINISH_LABEL = $FinishLabel
+    $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
     $env:UPA_RUN_PACING_BURST = $PacingBurst.ToString($invariant)
     $env:UPA_RUN_COVERAGE_FACTS = if ($CoverageFacts) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }

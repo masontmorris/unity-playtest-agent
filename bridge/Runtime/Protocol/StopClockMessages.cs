@@ -37,10 +37,11 @@ namespace Playtest.Bridge.Protocol
         public const string Disconnect = "disconnect";
         public const string Error = "error";
         public const string Finish = "finish";
+        public const string Release = "release";
 
         public static readonly IReadOnlyList<string> All = new[]
         {
-            User, Reset, SceneChange, Disconnect, Error, Finish,
+            User, Reset, SceneChange, Disconnect, Error, Finish, Release,
         };
     }
 
