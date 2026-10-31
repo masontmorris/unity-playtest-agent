@@ -76,6 +76,21 @@ def _tokens(usage: Any) -> int | None:
     return used + (_count(usage.get("output_tokens", usage.get("completion_tokens"))) or 0)
 
 
+# State keys that do not change from turn to turn in a run, sent first so the provider's prompt cache covers them.
+_STABLE_STATE = ("choices", "instructions", "objective")
+
+
+def _stable_first(criteria: Mapping[str, str], state: Mapping[str, Any]) -> str:
+    """The Meta arm's user text: `{"criteria": ..., "state": {...}}` with the state's turn-stable keys first.
+
+    Every value is the canonical JSON it would be in one canonical object, and every key is present once; only the
+    order of the state's top-level keys differs, so the text carries exactly what `canonical` would.
+    """
+    order = [k for k in _STABLE_STATE if k in state] + sorted(k for k in state if k not in _STABLE_STATE)
+    fields = ",".join(f"{canonical(k)}:{canonical(state[k])}" for k in order)
+    return f'{{"criteria":{canonical(criteria)},"state":{{{fields}}}}}'
+
+
 def _without_image(value: Any, image: bytes | None) -> Any:
     """Do not retain an echoed data URL or encoded image in a provider response trace."""
     if image is None:
@@ -210,7 +225,7 @@ class SystemOneS1:
                 "state": context}
         if self._arm == "meta-muse-spark-s1":
             try:
-                content: Any = canonical({"state": context, "criteria": criteria})
+                content: Any = _stable_first(criteria, context)
             except ValueError:
                 return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
             if image is not None:

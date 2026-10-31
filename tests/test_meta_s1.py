@@ -67,3 +67,19 @@ def test_non_full_layout_rejected(tmp_path):
     limits["arms"][ARM] = limits["arms"].pop("mammoth-1")
     with pytest.raises(ValueError, match="layout"):
         SystemOneS1(call_budget.Ledger(tmp_path, limits, ARM), max_calls=1, arm=ARM, layout="lossless")
+
+
+def test_the_user_text_puts_turn_stable_state_first_and_carries_exactly_the_canonical_content():
+    import json
+
+    from playtest.core.context import canonical
+    from playtest.runner.s1 import _stable_first
+
+    state = {"facts": ["f"], "choices": [{"id": "a", "label": "A"}], "as_of": {"age_s": 0.1},
+             "objective": "o", "instructions": "i", "recent_history": {"turns": []}}
+    criteria = {"a": "A"}
+    text = _stable_first(criteria, state)
+    assert json.loads(text) == {"criteria": criteria, "state": state}
+    assert list(json.loads(text)["state"])[:3] == ["choices", "instructions", "objective"]
+    assert text.index('"choices"') < text.index('"as_of"') < text.index('"facts"')
+    assert len(text) == len(canonical({"criteria": criteria, "state": state}))
