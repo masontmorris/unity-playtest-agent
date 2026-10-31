@@ -37,6 +37,7 @@ from playtest.bench import call_budget, replay
 from playtest.bench import record as recording
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
+from playtest.frontier import media
 from playtest.contracts.investigation import Budget, ModelRef
 from playtest.contracts.manifest import PreflightManifest
 from playtest.core.adherence import adherence_rate
@@ -124,6 +125,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-frontier-calls", type=int,
                         default=_env("UPA_RUN_MAX_FRONTIER_CALLS", int, 0),
                         help="approved frontier call cap; requires --frontier")
+    parser.add_argument("--frontier-clip-s", type=float,
+                        default=_env("UPA_RUN_FRONTIER_CLIP_S", float, media.WINDOW_S),
+                        help="seconds of game view in each frontier clip (also UPA_RUN_FRONTIER_CLIP_S)")
     parser.add_argument("--wall-limit-s", type=float, default=_env("UPA_RUN_WALL_LIMIT_S", float, WALL_LIMIT_S))
     parser.add_argument("--max-age-s", type=float, default=_env("UPA_RUN_MAX_AGE_S", float, MAX_AGE_S),
                         help="the oldest observation the bridge will still run an action against")
@@ -206,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     # Neither the flag nor the environment named a rate, so the selected arm's own default applies. Resolving
     # before the plan and the summary is written is what makes both record the rate this run actually used.
     args.tokens_per_minute = resolve_tokens_per_minute(args.s1_arm, args.tokens_per_minute)
+    if not 0 < args.frontier_clip_s <= media.MAX_WINDOW_S:
+        parser.error(f"--frontier-clip-s must be above 0 and at most {media.MAX_WINDOW_S:g}")
     if args.tokens_per_minute < 1:
         parser.error("--tokens-per-minute (or UPA_RUN_TOKENS_PER_MINUTE) must be at least 1")
     if output.is_relative_to(project) or output.exists():
@@ -350,7 +356,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
                                   effects=action_effects(built.expected), generation=generation,
-                                  session=getattr(client, "session", None), progress=progress_probe)
+                                  session=getattr(client, "session", None), progress=progress_probe,
+                                  clip_window_s=args.frontier_clip_s)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
