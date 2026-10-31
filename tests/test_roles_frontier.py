@@ -691,6 +691,24 @@ def test_system_prompt_invites_exploration_targets():
         assert needle in frontier.SYSTEM
 
 
+def test_system_prompt_keeps_a_target_on_reachable_surface():
+    """Guidance must not send S1 off a level edge, nor spend an approach it already made.
+
+    Session 7's frontier directives walked S1 along open ground past the scene's floor edge (z=61.5,
+    no boundary) until it fell out of the world, and an earlier directive had it back away from the
+    structure it had just reached. The clip is a view, not the level's extent, so the prompt says so.
+    """
+    assert "- navigation:" in frontier.SYSTEM
+    for needle in (
+        "shows what is in view, not how far the level goes",
+        "never send S1 toward, across or out over ground",
+        "loses the run",
+        "rather than back away",
+        "which spends the approach",
+    ):
+        assert needle in frontier.SYSTEM
+
+
 def test_exploration_answer_passes_review(manifest, refs):
     """A hypothesis about an untried part plus a go-try directive needs no contract change."""
     body = answer(
