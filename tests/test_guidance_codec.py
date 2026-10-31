@@ -20,12 +20,13 @@ from playtest.runner.frontier_help import FrontierHelp
 from test_name_blind import BANNED, words
 
 REF = "other_fields_same_as_requested_turn"
-FIELDS = ("status", "statement", "confirm_if", "refute_if", "supporting_seq", "contradicting_seq")
+FIELDS = ("status", "statement", "confirm_if", "refute_if", "supporting_seq", "contradicting_seq",
+          "what_one_would_expect")
 
 
-def row(hid, status="open", statement="S", confirm="C", refute="R", sup=(), con=()):
+def row(hid, status="open", statement="S", confirm="C", refute="R", sup=(), con=(), expect="E"):
     return {"confirm_if": confirm, "contradicting_seq": list(con), "id": hid, "refute_if": refute,
-            "statement": statement, "status": status, "supporting_seq": list(sup)}
+            "statement": statement, "status": status, "supporting_seq": list(sup), "what_one_would_expect": expect}
 
 
 def item(turn, rows, *, adopted=None, age=1.5, waited=2.0, directive="d", extra=None, source="frontier"):
@@ -100,7 +101,7 @@ def test_neutral_example_layout_and_size():
     assert [e["hypothesis_ids"] for e in ledger] == [["h-1", "h-2"], ["h-1", "h-2", "h-3"], ["h-1"]]
     assert ledger[2]["result"] == {"directive_id": "d-15", "candidate_finding": {"finding_id": "f-15", "reason": None}}
     assert [e["age_s"] for e in ledger] == [30.0, 20.0, 4.25]
-    assert (len(canonical(items)), len(canonical(view))) == (1836, 1790)
+    assert (len(canonical(items)), len(canonical(view))) == (2004, 1874)
 
 
 def test_every_old_statement_and_condition_survives_in_the_rendered_text():
@@ -495,7 +496,7 @@ def test_the_layout_carries_every_field_the_frontier_states_about_a_hypothesis()
 
     assert set(HypothesisOut.model_fields) == set(FIELDS) | {"id"} == set(gc.ROW_KEYS)
     published = HypothesisOut(id="h-1", status="open", statement="S", confirm_if="C", refute_if="R",
-                              supporting_seq=[1], contradicting_seq=[]).model_dump(mode="json")
+                              supporting_seq=[1], contradicting_seq=[], what_one_would_expect="E").model_dump(mode="json")
     assert gc.liftable(item(1, [published]))
 
 

@@ -33,11 +33,17 @@ def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
 
 
-def describe_surroundings(probe: Any) -> str | None:
-    """The measured surroundings as one line: forward casts low and high, and how far the ground ahead rises.
+def _signed(value: float) -> str:
+    return f"{value:+.2f}"
 
-    Raw measurements only, nothing labelled passable or blocked beyond what a cast reported. A part that was not
-    measured says unknown; no readings at all gives None.
+
+def describe_surroundings(probe: Any) -> str | None:
+    """The measured surroundings as one line: forward casts low and high, and the ground's height ahead.
+
+    Raw measurements only, nothing labelled passable or blocked beyond what a cast reported. Every number says
+    what it is: a cast's height above the feet, how far ahead it hit, the ground's height ahead against the
+    ground under the feet. Samples across the width at one distance are given as their range, not one of them.
+    A part that was not measured says unknown; no readings at all gives None.
     """
     if not isinstance(probe, Mapping):
         return None
@@ -46,22 +52,28 @@ def describe_surroundings(probe: Any) -> str | None:
         if not isinstance(cast, Mapping):
             continue
         height, distance = _num(cast.get("height")), _num(cast.get("distance"))
-        label = f"forward cast {height:g} up" if height is not None else "forward cast at unknown height"
+        label = f"a cast {height:g} above the feet" if height is not None else "a cast at unknown height"
         if cast.get("hit") is True:
-            parts.append(f"{label} hit at {distance:.2f}" if distance is not None else f"{label} hit at unknown distance")
+            parts.append(f"{label} hit a surface {distance:.2f} ahead" if distance is not None
+                         else f"{label} hit a surface at unknown distance")
         elif cast.get("hit") is False:
             reach = _num(cast.get("max_distance"))
-            parts.append(f"{label} clear" + (f" to {reach:g}" if reach is not None else ""))
+            parts.append(f"{label} was clear" + (f" for {reach:g} ahead" if reach is not None else ""))
     rows: dict[float, list[float | None]] = {}
     for sample in probe.get("samples") or []:
         if isinstance(sample, Mapping) and _num(sample.get("forward")) is not None:
             rows.setdefault(_num(sample["forward"]), []).append(_num(sample.get("delta_y")))
     if rows:
-        rises = []
+        heights = []
         for forward in sorted(rows):
             known = [v for v in rows[forward] if v is not None]
-            rises.append(f"{max(known):.2f} at {forward:g}" if known else f"unknown at {forward:g}")
-        parts.append("ground ahead rises " + ", ".join(rises))
+            if not known:
+                heights.append(f"{forward:g} ahead unknown")
+            elif min(known) == max(known):
+                heights.append(f"{forward:g} ahead {_signed(known[0])}")
+            else:
+                heights.append(f"{forward:g} ahead {_signed(min(known))} to {_signed(max(known))}")
+        parts.append("ground height against the ground under the feet: " + ", ".join(heights))
     return "; ".join(parts) if parts else None
 
 

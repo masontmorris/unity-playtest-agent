@@ -33,7 +33,7 @@ from typing import Any
 from playtest.core.context import canonical
 
 SOURCE = "frontier"
-FIELDS = ("status", "statement", "confirm_if", "refute_if", "supporting_seq", "contradicting_seq")
+FIELDS = ("status", "statement", "confirm_if", "refute_if", "supporting_seq", "contradicting_seq", "what_one_would_expect")
 ROW_KEYS = frozenset(("id", *FIELDS))
 LEDGER_KEY = "hypothesis_ids"  # on a lifted ledger entry only; an adopted item never has it
 CURRENT, EARLIER, LEDGER = "current_hypotheses", "earlier_versions", "help_adoptions"
@@ -117,7 +117,7 @@ def render(items: Sequence[Any]) -> dict[str, Any]:
 
 
 def _version(row: Mapping[str, Any], base: Mapping[str, Any], base_turn: int) -> dict[str, Any]:
-    """The six fields of an earlier version: what its row states, the rest from the version it refers to."""
+    """The fields of an earlier version: what its row states, the rest from the version it refers to."""
     present = {f: row[f] for f in FIELDS if f in row}
     omitted = [f for f in FIELDS if f not in present]
     if not omitted:

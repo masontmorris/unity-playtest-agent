@@ -42,7 +42,7 @@ def test_a_shortfall_suspicion_lists_the_measured_attempts_after_it_in_order():
     rows = recorded_suspicions(Sink(entries()))
     lines = rows[0]["followed_by"]
     assert [line.split(":")[0] for line in lines] == ["turn 2 walk", "turn 3 hop", "turn 4 walk"]
-    assert "moved 0.000 world units (calibrated 2.000)" in lines[0] and "forward cast 0.15 up hit at 0.40" in lines[0]
+    assert "moved 0.000 world units (calibrated 2.000)" in lines[0] and "a cast 0.15 above the feet hit a surface 0.40 ahead" in lines[0]
     assert "anchor height +1.20 by the next observation" in lines[1]
     assert "followed_by" not in rows[1]                         # only shortfalls carry the attempts after them
     assert FOLLOW_THROUGH_ATTEMPTS >= 3

@@ -619,7 +619,7 @@ def test_semantic_problems_are_isolated_on_their_items_and_returned():
                     "supporting_seq": [],
                     "contradicting_seq": [],
                     "confirm_if": "it changes again",
-                    "refute_if": "it never changes",
+                    "refute_if": "it never changes", "what_one_would_expect": "unknown",
                 }
             ],
             "prune_choices": [{"name": "not_a_skill", "reason": "not needed"}],
@@ -665,7 +665,7 @@ def test_schema_shape_errors_never_return_a_partial_answer():
             "supporting_seq": [],
             "contradicting_seq": [],
             "confirm_if": "x",
-            "refute_if": "y",
+            "refute_if": "y", "what_one_would_expect": "unknown",
             "extra": True,
         }
     ]

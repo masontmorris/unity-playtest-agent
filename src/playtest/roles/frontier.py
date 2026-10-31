@@ -107,6 +107,10 @@ class HypothesisOut(Strict):
     statement: str
     status: Literal["open", "supported", "contradicted", "withdrawn"]
     supporting_seq: list[int]
+    what_one_would_expect: str = Field(
+        description="What someone playing this game would expect in the situation this hypothesis is about, judged from "
+                    "the game as it presents itself and any declared values, never from calibration on this build; "
+                    "then whether the measurement meets it, falls short of it or leaves it unknown, with the numbers")
 
 
 class AddChoice(Strict):
@@ -234,6 +238,17 @@ SYSTEM = (
     "different approach you can name, say in the directive which part you cannot reach and from where, rather "
     "than repeating the last attempt. This bounds your directive, not S1: S1 may still choose the same action, "
     "and a hypothesis is not contradicted merely because the directive that tested it closed not_met.\n"
+    "- expectation of play: every hypothesis states what_one_would_expect: what someone playing this game would "
+    "expect, judged from the game as it presents itself (what its structures, controls and other parts are "
+    "evidently built for) and from any declared values, never from calibration: calibration measured this build, so "
+    "a bug on it is already inside that measurement. 'It matches calibration' and 'it is an ordinary collision or "
+    "transient' explain a reading; they do not say whether someone playing would accept it. When the measurement "
+    "falls short of the expectation (a control that has none of its effect where someone playing expects it to "
+    "work, movement they expect to make that stops, an effect "
+    "that appears in one situation and not in a like one), do not settle the hypothesis as normal: propose a "
+    "candidate_finding with expected_source interpretation, cite the seqs, put the expectation in expected, and say "
+    "in uncertainty why the game might still intend it. A replay tests every candidate, so a wrong one costs a "
+    "replay; a missed one is lost.\n"
     "- candidate_finding: only when cited evidence already shows behaviour that contradicts an expectation; "
     "otherwise null. Say where the expectation comes from and what is still uncertain. repro_check is what a "
     "replay must show. A replay starts from a reset, and a check that already holds right after the reset cannot "
