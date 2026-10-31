@@ -89,6 +89,19 @@ That points at two tolerances, not one:
 The traverse's axis is a reachable heading (0°), so its tolerance can stay tighter than half a step and
 still settle. The next wording to test keeps the approach wide and the line-up tight.
 
+**Frozen-frame check** (`docs/probes/2026-10-31-d1-ultra-tolerance-wording.md`, 270 calls, $0.10): the
+predeclared reading is no wording effect. Widening the tolerance lowered the far-heading p(turn back) by at
+most 0.05.
+
+But d1-ultra's choice is always the argmax of a distribution that varies by about 0.1 between identical
+calls. So the margin between turning back and walking on matters more than either probability:
+- the margin shrinks from +0.10 to about +0.01–0.03;
+- the turn back is chosen 11–12 times in 16, against 14 in 16.
+
+That is a small per-decision push, inside noise. Repeated every turn, it roughly halves a hunt's expected
+length (about 2/q turns), which fits the live cycles of 5 and 7 against 13 and 29. Wording barely changes
+the line-up at the foot.
+
 ## The deadband reading
 
 A controller whose tolerance is tighter than its smallest step hunts forever. The standard cure is a
