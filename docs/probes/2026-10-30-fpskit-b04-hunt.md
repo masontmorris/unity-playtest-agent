@@ -24,6 +24,11 @@ all 15 frontier calls spent explaining the blocks away) without ever touching th
 first riser is 0.25. Session 9 ended by choosing `finish` and session 10 at the wall limit, both with zero
 findings; the hunt cost $4.787 across three preflights, ten sessions and two rate probes.
 
+The hunt's navigation never got the loop to a diagnostic riser, so the bug was settled the operator's way instead:
+a scripted push from the low end of the 2-unit flight, with no model call, reproduced `b04` and a one-line control
+showed the clamp is its cause ([scripted push](2026-10-31-fpskit-b04-scripted-push.md), #192). The ten sessions
+below are what the loop did on its own, and they are still the evidence for what it can and cannot navigate.
+
 
 ## Setup
 
@@ -329,13 +334,15 @@ not that `b04` is absent from the build.
   $1.55). All approvals on record are used up ($4.787 total spend across ten sessions, three preflights and two
   rate probes). Any claim about why S1 rarely turns or about exploration directives needs a separately approved,
   paired evaluation; none is proposed here.
-- **Next check.** Two sessions have now failed to touch a diagnostic riser: session 10 reached the side flights
+- **Scripted push (done).** Two sessions failed to touch a diagnostic riser: session 10 reached the side flights
   and pressed on a side face, and the frontier answered each block with "jump then move_forward" rather than
-  walking round to the low end at x 18. Steering S1 that far looks like a navigation problem the loop is not
-  solving, so the next check should not be another hunt. A scripted push into a 0.25 riser with a 1.0-unit tread
-  (no model calls) would test `b04` directly: place the controller at x ≈ 16.5, z -28 facing +x, hold forward, and
-  read camera y against the clamp. If a code change is wanted instead, the frontier guidance that says a blocked
-  push means jump is the thing to fix, and that is a prompt change, not a finding.
+  walking round to the low end at x 18. So the check was not another hunt. A scripted push into the 2-unit
+  flight's first 0.25 riser (no model calls, pose set in the scene and reverted) blocked dead at x 17.628 with no
+  height gain, and the same push with the clamp removed climbed one riser and one 2.0 tread per hold —
+  `b04` reproduced with the clamp as its cause. Details and tables:
+  [scripted push](2026-10-31-fpskit-b04-scripted-push.md). What is left is a fix and a repro check, plus the
+  navigation question the two sessions raised: a frontier that repeats "jump" after an unsuccessful directive
+  needs a measured prompt change (#193), not a finding.
 
 ## Sources
 
@@ -354,7 +361,8 @@ Local, uncommitted, under `runs/b04-hunt/`; no trace content is copied here:
 
 Public: PRs #158, #159, #161, #163, #165, #167, #169, #174, #175, #180, #183, #185, #187 and #189 (merged);
 commits 3576d33, b5f59f3, ffdf853, 4b02317 and a85c57c;
-issues #156, #157, #160, #162, #164, #166, #168, #170, #171, #177, #179, #182, #184, #186 and #188;
+issues #156, #157, #160, #162, #164, #166, #168, #170, #171, #177, #179, #182, #184, #186, #188 and #192;
 [image probe](2026-10-30-d1-ultra-images.md),
-[rate probe](2026-10-30-liquid-d1-ultra-rate.md) and
+[rate probe](2026-10-30-liquid-d1-ultra-rate.md),
+[scripted push](2026-10-31-fpskit-b04-scripted-push.md) and
 [decision-context audit](2026-10-30-decision-context-audit.md).

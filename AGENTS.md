@@ -23,7 +23,15 @@ Astra is the most expensive pool here, so when it is orchestrating, treat its to
 | Mid | Grunt workers fail, are rate-limited or busy, or the task is too hard for them. No need to ask the user | `{"providerInstanceId":"claudeAgent","model":"claude-sonnet-5-5","options":{"effort":"max"}}` |
 | Mid | Same as above; use as the second lane or when the Claude pool is busy | `{"providerInstanceId":"codex","model":"gpt-6-luna","options":{"reasoningEffort":"xhigh"}}` |
 
-- Always use `delegate_task`, including for Claude workers. Do not use native subagent tools (Claude's Agent/Task, Codex sub-agents), because they bill the orchestrator's own pool and ignore these options.
+**Same-setting lane.** An orchestrator that is itself on the cheap pool — OpenCode, for example DeepSeek
+`deepseek-v4.1-flash-ultrafast` at high effort — may also delegate to a native subagent on its own provider, model
+and settings, using the harness's own subagent tool. That lane is grunt-tier work only: it buys parallelism and
+keeps the orchestrator's context small; it does not buy a better model. Keep each child inside one turn, give it
+the same brief a grunt worker would get, and review its diff and rerun its acceptance check yourself. Use
+`delegate_task` instead when the child needs another provider or another model, settings the orchestrator does not
+have, a separate checkout, or background execution.
+
+- Always use `delegate_task`, including for Claude workers, except on the same-setting lane above. Do not use native subagent tools to reach another provider's or another model's pool (Claude's Agent/Task, Codex sub-agents): those bill the orchestrator's own pool and ignore these options.
 - Check that the returned provider, model and options match the table. If a model id is missing from `orchestrator_capabilities`, report the mismatch. Do not substitute another model silently.
 - Escalate in order: grunt, then mid. If grunt workers fail twice on a task, move it to a mid worker (Sonnet 5.5 or Luna) without asking. If a mid worker also fails, either do it yourself or ask the user how to proceed. Never use a model outside this table as a worker on your own.
 
