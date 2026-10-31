@@ -192,6 +192,7 @@ class TurnLoop:
         continuous_input: bool = False,
         continuous_choices: Sequence[str] = (),
         continuous_labels: Callable[[float | None, float | None], Sequence[Choice]] | None = None,
+        choice_filter: Callable[[Sequence[Choice], Observation], Sequence[Choice]] | None = None,
         instructions: str = INSTRUCTIONS,
     ) -> None:
         if continuous_input and clock_mode is not ClockMode.realtime:
@@ -209,6 +210,7 @@ class TurnLoop:
         self._intervals: list[float] = []
         self._client = client
         self._original_client = client  # the caller owns this one; adopted clients are closed here
+        self._choice_filter = choice_filter
         self._choices = list(choices)
         ChoiceSet(set_version=0, built_from_seq=0, choices=self._choices)  # fail now on duplicate ids
         self._clock_mode = clock_mode
@@ -372,6 +374,8 @@ class TurnLoop:
         if self._continuous and self._continuous_labels is not None:
             offered_choices = list(self._continuous_labels(
                 self._intervals[-1] if self._intervals else None, self._continuous_lease))
+        if self._choice_filter is not None:
+            offered_choices = list(self._choice_filter(offered_choices, observation))
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,

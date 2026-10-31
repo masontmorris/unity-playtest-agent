@@ -40,8 +40,10 @@ def _skill(skill: ManifestSkill) -> ActionDefinition:
     return ActionDefinition(backend="input_system", steps=steps, max_s=skill.max_s)
 
 
-def export(value: PreflightManifest, *, turn_sizes: bool = False, calibration: dict | None = None) -> ActionCatalog:
+def export(value: PreflightManifest, *, turn_sizes: bool = False, point_turns: bool = False, capture_size=(640, 480), calibration: dict | None = None) -> ActionCatalog:
     """Build the catalog from supported declarations only; no order or content is invented."""
+    if turn_sizes and point_turns:
+        raise ValueError("--point-turns and --turn-sizes are mutually exclusive")
     actions: dict[str, ActionDefinition] = {}
     for action in value.actions:
         if action.execution_supported:
@@ -55,6 +57,12 @@ def export(value: PreflightManifest, *, turn_sizes: bool = False, calibration: d
             if choice.action in actions:
                 raise ValueError(f"turn choice id collision: {choice.id}")
             actions[choice.action] = definition
+    if point_turns:
+        from playtest.runner.point_turns import pointing_turns
+        for row in pointing_turns(value, calibration, capture_size):
+            if row.choice.skill in actions:
+                raise ValueError(f"point choice id collision: {row.choice.id}")
+            actions[row.choice.skill] = row.definition
     return ActionCatalog(actions=actions)
 
 
@@ -78,6 +86,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="new catalog JSON file")
     parser.add_argument("--turn-sizes", action="store_true")
+    parser.add_argument("--point-turns", action="store_true")
+    parser.add_argument("--capture-width", type=int, default=640)
+    parser.add_argument("--capture-height", type=int, default=480)
     parser.add_argument("--calibration", type=Path)
     args = parser.parse_args(argv)
     output = args.output.resolve()
@@ -89,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         if problems:
             raise ValueError("the manifest is invalid: " + "; ".join(problems))
         calibration = json.loads(args.calibration.read_text(encoding="utf-8")) if args.calibration else None
-        catalog = export(value, turn_sizes=args.turn_sizes, calibration=calibration)
+        catalog = export(value, turn_sizes=args.turn_sizes, point_turns=args.point_turns,
+                         capture_size=(args.capture_width, args.capture_height), calibration=calibration)
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(serialize(catalog), stream, indent=2, allow_nan=False, sort_keys=True)
