@@ -341,3 +341,29 @@ the approval is `approval-trial-point-turns.json`. The run completed.
 target is straight ahead" must be a choice in the same terms S1 perceives in: strip 5. The proposed fix is
 "go toward strip k" for all nine strips, where each choice turns by the strip's measured angle and then
 takes one measured step. Strip 5 is then a step straight ahead, and even an imperfect point makes progress.
+
+## Go toward view strip k (`climb-point-moves-01`, 154 s)
+
+Settings: as `climb-point-turns-01`, with `--point-moves` (each strip choice is a measured turn and then one
+measured 2.0-unit step; strip 5 is a step straight ahead). The code was 4a8bed1, and the approval is
+`approval-trial-point-moves.json`.
+
+- **Approach: no hunting, straight onto the staircase.** The longest cycle was 6 turns, and no turn-in-place
+  choice was made.
+  - From the spawn, one pointing move and six "go toward strip 5" steps put S1 on the long flight, head-on in
+    the 4 s frame, with feet at 2.7 by 7 s. No earlier run reached the flight that directly.
+  - One anomaly: the first composed turn (strip 8, measured 28.9°) turned the view about 60°. Four later
+    strip-8 and strip-1 moves matched their measured totals within about 2°. The cause is unknown.
+- **Climb: off the side.** S1 kept choosing "straight ahead" at its 23° approach heading. The flight runs at
+  0°, so it crossed the 2-unit width and stepped off the east side at 2.7. It never re-aimed along the
+  flight.
+- **Afterwards:** 3 escalations with 15 waits, then 35 jumps in place. It moved west and jumped up another
+  structure (feet 4.7), and chose `finish` at 154 s.
+- **Speed:** 30 decisions a minute. The long labels and accumulating guidance raised the mean billed input to
+  12,619 tokens.
+
+**Totals:** S1 83 calls, $0.0440; frontier 3 calls, $0.0818.
+
+**What it shows.** Pointing plus a step solves *reaching* a target generically: every choice makes progress
+and the loop has its fixed point. *Following* a narrow path is a different skill. On the flight, "straight
+ahead" still looked right to S1, and nothing told it that the edge was one step to the right.
