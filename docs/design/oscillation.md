@@ -17,10 +17,11 @@ turned back anyway.
 ## Why: a limit cycle
 
 This is a classic control failure with three ingredients:
-1. **Quantized actuators.** The manifest offers turns of ±38.4° (and ±144° stick looks), with nothing finer.
+1. **Quantized actuators.** The manifest offers mouse turns of ±38.4° and a right stick look calibrated at
+   36.2°, which turned 37–47° in play. The left look has no calibrated effect. Nothing finer is offered.
 2. **An extended target.** At 38.4° the long flight runs from about 2.5° right to about 25° left of
    centre, so its visual centre is near 27°. At 0° it lies 14° to 41° to the right, centred near 27°.
-   No reachable heading centres it, and 27° lies between the two reachable headings.
+   No heading one choice away centres it: 27° lies between 0° and the 36–38° that one turn or look gives.
 3. **A memoryless greedy chooser.** At 0° the staircase looks right, so S1 turns right. At 38.4° most of
    it looks left, so S1 turns left. Each decision is locally sensible, and none of them knows the last
    one.
@@ -58,8 +59,30 @@ zero-based):
 - Turn 16: "… public.yaw alternated 0.0 and 38.4 (16 readings) and now 0.0 (net change 0.0). Over those
   turns public.jump_count ranged 0.0 to 1.0 over 16 readings and now 0.0 (net change -1.0)."
 
-Whether S1 acts on it is unmeasured. That takes a live run, or a paired replay of the oscillating turns
-with and without the fact.
+## Live check (`climb-held-pattern-01`, 31 October)
+
+The fact appeared on 22 turns. Where a cycle of four or more stood, S1 continued it 16 times out of 20
+(80%). In `climb-continuous-01`, without the fact, it continued 32 of 36 (89%). The longest cycle fell
+from 29 turns to 13.
+
+Twice, S1 kept the cycle going for 9 and 6 turns after the fact first showed. Once, it broke the cycle on
+that first turn. The runs took different paths and this one had three restarts, so this is an observation,
+not a test. It reads as no clear effect: stating the cycle does not by itself stop d1-ultra turning.
+
+## The deadband reading
+
+A controller whose tolerance is tighter than its smallest step hunts forever. The standard cure is a
+deadband at least half a step wide. Here the objective sets S1's tolerance: "Turn until the bottom of the
+staircase is in the centre of the view." With 38.4° turns no heading near the spawn centres it, so every
+view says "turn" again.
+
+Two remedies follow, and both fit the rules:
+- **Widen the tolerance in the objective's wording.** This is per run and needs no code. The half-step is
+  19.2°, and the view is about 81° wide, so the deadband needs to be at least the middle half of the view
+  (±20°). For example: "turn until the bottom of the staircase is ahead of you, anywhere in the middle half
+  of the view". At 38.4° the foot is 2.5° off centre and the flight's visual centre is 11.4° off, so that
+  heading satisfies it.
+- **Shrink the step** with a calibrated finer turn (below).
 
 ## Finer turns: design only
 
