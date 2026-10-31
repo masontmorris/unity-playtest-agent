@@ -27,6 +27,7 @@ from playtest.core.bridge_client import BridgeClient
 from playtest.core.ports import ReaderSample
 from playtest.core.readers import unread
 from playtest.preflight.packet import field_kind, field_offered
+from playtest.contracts.scene_ids import scene_free_index, without_scene_index
 
 IDENTITY_KEYS = ("id", "component_id", "object_id", "scene_id", "name", "declaring_type", "declaration_id",
                  "field_type", "field_type_assembly")
@@ -107,10 +108,14 @@ class FieldReaders:
         cap = response.caps.get("fields")
         complete = cap is not None and cap.truncated is False
         by_id = {row.get("id"): row for row in rows if isinstance(row, dict)}
+        scene_free = scene_free_index(row for row in rows if isinstance(row, dict))
         values: dict[str, Any] = {}
         errors: dict[str, str] = {}
         for reader in self._readers:
-            value, reason = _value(reader, by_id.get(reader.field_id), complete)
+            row = by_id.get(reader.field_id)
+            if row is None:  # the same field under another loaded-scene index, only when unique
+                row = scene_free.get(without_scene_index(reader.field_id))
+            value, reason = _value(reader, row, complete)
             values[reader.alias] = value
             if reason is not None:
                 errors[reader.alias] = reason
@@ -125,7 +130,8 @@ def _value(reader: ManifestReader, row: dict[str, Any] | None, complete: bool) -
     if row is None:
         return None, ("the field is not in the live scene" if complete
                       else "the field is not in the live inspection, which was truncated")
-    differs = [key for key in IDENTITY_KEYS if key in reader.descriptor and row.get(key) != reader.descriptor[key]]
+    differs = [key for key in IDENTITY_KEYS if key in reader.descriptor
+               and without_scene_index(row.get(key)) != without_scene_index(reader.descriptor[key])]
     if differs:
         return None, f"the live field differs from the manifest's descriptor ({', '.join(differs)})"
     state = row.get("value_state")
