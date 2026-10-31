@@ -112,6 +112,7 @@ if ([IO.Directory]::Exists($output)) { throw 'Choose a new output directory; exi
 $s1Credentials = @{
     'mammoth-1' = @('BASETEN_API_KEY'); 'elephant-1' = @('BASETEN_API_KEY')
     'liquid-d1.1' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL'); 'liquid-d1-ultra' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL')
+    'meta-muse-spark-s1' = @('META_API_KEY')
 }
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."

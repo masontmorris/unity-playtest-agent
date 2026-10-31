@@ -28,13 +28,14 @@ ARMS = {
     "elephant-1": ("decision-models/baseten-elephant-9b-latest", "BASETEN_API_KEY", None),
     "liquid-d1.1": ("d1.1", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
     "liquid-d1-ultra": ("d1-ultra", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
+    "meta-muse-spark-s1": ("muse-spark-1.3", "META_API_KEY", None),
 }
 BASETEN_URL = "https://inference.baseten.co/v1/systemone"
 
 
 def provider_of(arm: str) -> str:
     """The provider an arm bills through: the key a balance check and an approval cap are counted against."""
-    if arm == "muse-spark-1.3":
+    if arm in {"muse-spark-1.3", "meta-muse-spark-s1"}:
         return "meta"
     return "liquid" if arm.startswith("liquid-") else "baseten"
 Send = Callable[[str, dict[str, Any]], tuple[int | None, dict[str, Any] | None, float, str | None]]
@@ -143,6 +144,9 @@ def parse_answer(data: dict[str, Any] | None, offered: set[str]) -> tuple[str | 
 
 
 def send_systemone(arm: str, body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
+    if arm == "meta-muse-spark-s1":
+        from playtest.frontier.provider import send_meta
+        return send_meta(body)
     _, key_env, url_env = ARMS[arm]
     key, url = os.environ.get(key_env), (os.environ.get(url_env) if url_env else BASETEN_URL)
     if not key or not url:
