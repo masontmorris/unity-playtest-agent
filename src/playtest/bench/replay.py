@@ -18,7 +18,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from playtest.bench.record import _save, context_for, digest
+from playtest.bench.record import _save, digest, recorded_payload
 from playtest.core.context import canonical
 
 # Arm: (model, key variable, endpoint variable). Liquid's endpoint is its general decisions endpoint and the
@@ -73,7 +73,7 @@ def load_inputs(corpus_path: Path, labels_path: Path) -> tuple[dict[str, Any], d
         frame_id = frame.get("id")
         if not isinstance(frame_id, str) or not frame_id or frame_id in by_id:
             raise ValueError("frame ids must be unique and nonempty")
-        if frame.get("payload_sha256") != digest(canonical(context_for(frame))):
+        if recorded_payload(frame) is None:
             raise ValueError(f"context changed for {frame_id}")
         executions = frame.get("execution")
         if not isinstance(executions, list) or not executions or executions[-1].get("status") != "completed" or \
@@ -118,8 +118,8 @@ def accepted(labels: list[dict[str, Any]]) -> set[str] | None:
 
 
 def request_body(frame: dict[str, Any], model: str) -> dict[str, Any]:
-    payload = context_for(frame)
-    if digest(canonical(payload)) != frame["payload_sha256"]:
+    payload = recorded_payload(frame)
+    if payload is None:
         raise ValueError("the production context no longer matches the recorded payload")
     criteria = {choice["id"]: choice["label"] for choice in payload["choices"]}
     return {"model": model, "questions": {"next_action": {

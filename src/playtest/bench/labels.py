@@ -7,8 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from playtest.bench.record import context_for, digest
-from playtest.core.context import canonical
+from playtest.bench.record import digest, recorded_payload
 
 
 def make_sheet(corpus_path: Path, directory: Path) -> None:
@@ -26,8 +25,8 @@ def make_sheet(corpus_path: Path, directory: Path) -> None:
         if not isinstance(frame_id, str) or not frame_id or frame_id in ids:
             raise ValueError("frame ids must be unique and nonempty")
         ids.add(frame_id)
-        payload = context_for(frame)
-        if digest(canonical(payload)) != frame.get("payload_sha256"):
+        payload = recorded_payload(frame)
+        if payload is None:
             raise ValueError(f"context changed for {frame_id}")
         labels.append({"frame_id": frame_id, "payload_sha256": frame["payload_sha256"],
                        "acceptable": [], "labeller": "", "date": "", "rationale": ""})

@@ -22,7 +22,7 @@ from typing import Any
 
 from playtest.bench import record as recording
 from playtest.bench import replay
-from playtest.bench.record import PASSES, context_for, digest
+from playtest.bench.record import PASSES, digest, recorded_payload
 from playtest.bench.replay import Send, accepted, parse_answer, request_body, send_systemone, validate_approval
 from playtest.core.context import canonical
 
@@ -89,7 +89,7 @@ def load_corpus(path: Path) -> tuple[dict[str, Any], str]:
             raise ValueError(f"pass {pass_no} is not shuffled")
         expected_actions = {f"c{ids[i]}": order[i] for i in range(CONTROLS)}
         for step, frame in enumerate(frames[(pass_no - 1) * (CONTROLS + 1):pass_no * (CONTROLS + 1)]):
-            if frame.get("pass") != pass_no or frame.get("payload_sha256") != digest(canonical(context_for(frame))):
+            if frame.get("pass") != pass_no or recorded_payload(frame) is None:
                 raise ValueError(f"context changed for {frame.get('id')}")
             offered = frame["choice_set"]["choices"]
             actions = {c["id"]: c.get("action") for c in offered if c.get("kind") == "action"}
