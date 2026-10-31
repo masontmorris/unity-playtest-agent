@@ -124,6 +124,7 @@ class FakeGame:
         self._expiry: dict[str, asyncio.Task] = {}
         self._obs_history: dict[int, tuple[float, dict]] = {}
         self._action_tasks: set[asyncio.Task] = set()
+        self._writers: set[asyncio.StreamWriter] = set()
 
     @property
     def reject_acts(self) -> RejectReason | None:
@@ -153,6 +154,9 @@ class FakeGame:
     async def stop(self) -> None:
         if self._server is not None:
             self._server.close()
+            # Since Python 3.12, wait_closed waits for every client connection to close, so close ours first.
+            for writer in list(self._writers):
+                writer.close()
             await self._server.wait_closed()
             self._server = None
         tasks = list(self._expiry.values()) + list(self._action_tasks)
@@ -307,6 +311,7 @@ class FakeGame:
         await writer.drain()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._writers.add(writer)
         seq = 0
         session: str | None = None
         bound_here = False
