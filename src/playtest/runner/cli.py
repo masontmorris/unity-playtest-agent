@@ -44,6 +44,7 @@ from playtest.contracts.investigation import Budget, ModelRef
 from playtest.contracts.manifest import PreflightManifest
 from playtest.core.adherence import adherence_rate
 from playtest.core.bridge_client import BridgeClient
+from playtest.core.context import INSTRUCTIONS_POLICY_VARIANT, INSTRUCTIONS_VARIANTS
 from playtest.core.run_record import build_run_record
 from playtest.core.suspicion import RANGE_MIN_READINGS, ReaderWatch
 from playtest.core.trace import TraceWriter
@@ -130,6 +131,11 @@ def _parser() -> argparse.ArgumentParser:
                         choices=[layout.value for layout in RequestLayout],
                         help="the S1 request body layout: full (default), or the lossless layout that sends each "
                              "duplicated text once (also UPA_RUN_S1_LAYOUT)")
+    parser.add_argument("--s1-instructions", default=_env("UPA_RUN_S1_INSTRUCTIONS", str, INSTRUCTIONS_POLICY_VARIANT),
+                        choices=sorted(INSTRUCTIONS_VARIANTS),
+                        help="the S1 question text: policy/1 (default, today's paragraph) or direct/1 (one direct "
+                             "question first; docs/design/s1-opt-direct-instructions.md; also "
+                             "UPA_RUN_S1_INSTRUCTIONS)")
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
@@ -287,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["declared_configuration_count"] = len(declared["values"]) if declared else 0
         plan["s1_game_view"] = args.s1_game_view
         plan["s1_layout"] = args.s1_layout
+        if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT:
+            plan["s1_instructions"] = args.s1_instructions  # only a non-default variant adds bytes
         plan["coverage_facts"] = args.coverage_facts
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
@@ -351,8 +359,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
         per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
         budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True)
+        instructions = INSTRUCTIONS_VARIANTS[args.s1_instructions]
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
-                          game_view=args.s1_game_view, layout=args.s1_layout)
+                          game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)
@@ -389,7 +398,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                         snapshot_for=lambda new: make_snapshot(new, manifest.entity_id)),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
-                facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation)
+                facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,
+                instructions=instructions)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {
@@ -398,7 +408,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "adherence": {"rate": adherence_rate(turns), "violations": [v.__dict__ for v in result.adherence]},
                 "stop": result.stop.model_dump(mode="json") if result.stop is not None else None,
                 "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
-                       "calls": s1.calls_reserved, "call_cap": args.max_calls},
+                       "calls": s1.calls_reserved, "call_cap": args.max_calls,
+                       **({"instructions": args.s1_instructions}
+                          if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT else {})},
                 "s1_game_view": s1.view_counts,
                 "frontier": {"enabled": args.frontier, "model": frontier_provider.MODEL if args.frontier else None,
                              "calls": help_port.calls if help_port is not None else 0,
