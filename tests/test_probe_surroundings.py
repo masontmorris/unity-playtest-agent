@@ -14,11 +14,12 @@ STEP = {"blockers": [{"height": 0.15, "max_distance": 1.8, "hit": True, "distanc
 
 def test_the_surroundings_line_states_measurements_and_unknowns_only():
     line = describe_surroundings(STEP)
-    assert line == ("forward cast 0.15 up hit at 0.38; forward cast 0.9 up clear to 1.8; "
-                    "ground ahead rises 0.36 at 0.6, unknown at 1.2, 0.90 at 1.8")
+    assert line == ("a cast 0.15 above the feet hit a surface 0.38 ahead; a cast 0.9 above the feet was clear for 1.8 "
+                    "ahead; ground height against the ground under the feet: 0.6 ahead +0.30 to +0.36, 1.2 ahead "
+                    "unknown, 1.8 ahead +0.90")
     assert describe_surroundings(None) is None and describe_surroundings({}) is None
     assert describe_surroundings({"blockers": [{"height": 0.15, "hit": True, "distance": None}]}) == \
-        "forward cast 0.15 up hit at unknown distance"
+        "a cast 0.15 above the feet hit a surface at unknown distance"
 
 
 def test_the_probe_attaches_the_bound_observations_surroundings_to_fact_and_comparison():

@@ -394,7 +394,7 @@ def test_an_invalid_directive_is_not_converted_and_keeps_the_current_one(tmp_pat
 def test_schema_valid_is_not_review_clean(tmp_path: Path) -> None:
     hypothesis = {"id": "h99", "statement": "an interpretation", "status": "open",
                   "supporting_seq": [], "contradicting_seq": [],
-                  "confirm_if": "it happens again", "refute_if": "it never happens"}
+                  "confirm_if": "it happens again", "refute_if": "it never happens", "what_one_would_expect": "unknown"}
     answer = {**_empty(), "hypotheses": [hypothesis]}
     meta = Meta([_meta_response(answer)])
     out = _episode(tmp_path, S1({0: "escalate", 1: "finish"}), meta)

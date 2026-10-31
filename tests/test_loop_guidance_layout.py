@@ -365,7 +365,7 @@ def test_a_scene_boundary_leaves_adopted_guidance_in_place_as_before(tmp_path):
     "replacement",
     None,
     {"hypotheses": [{"id": "hyp-0-0", "status": "open", "statement": "An operator wrote this.", "confirm_if": "c",
-                     "refute_if": "r", "supporting_seq": [1], "contradicting_seq": []}], "directive_id": None},
+                     "refute_if": "r", "what_one_would_expect": "unknown", "supporting_seq": [1], "contradicting_seq": []}], "directive_id": None},
 ])
 def test_an_operators_result_while_the_frontier_is_attached_is_in_the_ledger_byte_for_byte(tmp_path, external):
     async def script(loop, gate):

@@ -53,7 +53,7 @@ def _answer_json(seq: int, objective: str = OBJECTIVE):
                       "continue_if": ["the measured count still moves toward the objective"],
                       "replan_if": ["the measured count contradicts the objective"]},
         "hypotheses": [{"confirm_if": "The count reaches one.", "contradicting_seq": [],
-                        "id": "hyp-0-0", "refute_if": "The count remains below one at the deadline.",
+                        "id": "hyp-0-0", "refute_if": "The count remains below one at the deadline.", "what_one_would_expect": "unknown",
                         "statement": "The count may increase after the selected action.",
                         "status": "open", "supporting_seq": [seq]}],
         "prune_choices": [],
@@ -334,7 +334,7 @@ def test_guidance_compacts_only_identical_hypotheses_and_names_the_directive_by_
                           approval=_approval(), sink=harness_trace(), tracker=DirectiveTracker(harness_trace()),
                           started_utc=datetime.now(timezone.utc), send=lambda body: _meta_reply(body),
                           capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1)
-    first_h = {"id": "hyp-1-0", "statement": "A.", "status": "open", "confirm_if": "c", "refute_if": "r",
+    first_h = {"id": "hyp-1-0", "statement": "A.", "status": "open", "confirm_if": "c", "refute_if": "r", "what_one_would_expect": "unknown",
                "supporting_seq": [3], "contradicting_seq": []}
     other = {**first_h, "id": "hyp-1-1", "statement": "B."}
     first = helper._guidance({"hypotheses": [first_h, other], "directive": {"directive_id": "d-1", "text": "t"},

@@ -55,7 +55,7 @@ def hypothesis(hid="h1", supporting=(), contradicting=()):
         "supporting_seq": list(supporting),
         "contradicting_seq": list(contradicting),
         "confirm_if": "a later sample agrees",
-        "refute_if": "a later sample disagrees",
+        "refute_if": "a later sample disagrees", "what_one_would_expect": "unknown",
     }
 
 
@@ -847,3 +847,9 @@ def test_exploration_answer_passes_review(manifest, refs):
         },
     )
     assert frontier.review(body, manifest, refs).clean
+
+
+def test_the_prompt_asks_for_an_expectation_of_play_that_calibration_cannot_settle():
+    assert "- expectation of play:" in frontier.SYSTEM
+    assert "never from calibration" in frontier.SYSTEM
+    assert "what_one_would_expect" in frontier.HypothesisOut.model_fields
