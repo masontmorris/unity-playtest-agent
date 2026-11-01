@@ -341,7 +341,7 @@ def test_a_state_change_with_no_restore_still_writes_its_record(monkeypatch, tmp
     result = run(RecordingBridge(controls=("one", "two"), stops_on="one"), monkeypatch, restore=None)
     seen = {}
 
-    async def fake_run(project, selected_record, plan_output=None, prior=None):
+    async def fake_run(project, selected_record, plan_output=None, prior=None, both_signs=False):
         seen["prior"] = prior
         return result
 
@@ -478,7 +478,7 @@ def test_a_malformed_prior_file_stops_the_run_before_the_session(monkeypatch, tm
 def test_the_flag_hands_the_loaded_prior_to_the_run(monkeypatch, tmp_path):
     seen = {}
 
-    async def fake_run(project, selected_record, plan_output=None, prior=None):
+    async def fake_run(project, selected_record, plan_output=None, prior=None, both_signs=False):
         seen["prior"] = prior
         return {"status": "inconclusive"}
 

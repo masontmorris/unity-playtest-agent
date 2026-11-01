@@ -12,9 +12,25 @@ HTTP call runs in a worker thread so the bridge client keeps reading on the even
 holds no policy: it never retries, repairs, ranks or substitutes, and the returned distribution is
 recorded and never used to select.
 
+`instructions` selects the primary question's text (a named variant, default `INSTRUCTIONS`); the
+payload must carry that same text, and `prompt_sha256` hashes exactly the texts this adapter sends.
+
 Every call that was sent also reports its tokens to an injected meter (`playtest.runner.pacing`
 paces the next turn from them): the provider's `usage.input_tokens` plus `usage.output_tokens` when
 it gave them, else an estimate from the request body, reported as an estimate.
+
+`compact_state` is opt-in and off by default (`playtest.runner.state_codec`).
+- `"object"` keeps `state` a JSON object, restructured by the lossless rules with a `_s1_compact` key naming
+  them, so the server renders it as it renders any state.
+- `"format"`, `"default"` and `"all"` send `state` as one string: a header, then compact JSON. On d1-ultra a
+  string state is a different prompt and moves near-tie choices.
+
+Either way the body alone restores the exact context (`state_codec.decode_object` / `decode`).
+
+`state_order` is opt-in and off by default: `canonical` sends the body exactly as this adapter always
+has, and `stable-first/1` (`playtest.runner.state_order`) sends the same values with `state`'s
+top-level keys in a declared stable-first order. Only that serialization changes; the context record,
+the payload and every value are untouched, and the Meta arm keeps its own stable-first text.
 """
 
 from __future__ import annotations
@@ -23,15 +39,20 @@ import asyncio
 import base64
 import json
 import math
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 from playtest.bench import call_budget, replay
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
-from playtest.core.context import INSTRUCTIONS, canonical
+from playtest.core.context import INSTRUCTIONS, INSTRUCTIONS_KEEP_PLAYING, canonical
 from playtest.core.ports import S1Answer, S1Call
+from playtest.runner.option_order import OptionOrder, ordered_ids
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
+from playtest.runner import state_codec
+from playtest.runner.state_order import StateOrder, state_keys
+from playtest.runner.wire import render
 from playtest.frontier.provider import _cost as meta_cost
 
 # The default S1 arm since #100 (29 October): Liquid's d1-ultra matched mammoth-1 on both S1 benches and kept every
@@ -45,7 +66,42 @@ FOLLOW_UP_INSTRUCTIONS = (
     "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
     "When an image is present, it is the current game view."
 )
-PROMPTS = {PRIMARY: INSTRUCTIONS, FOLLOW_UP: FOLLOW_UP_INSTRUCTIONS}
+# The follow-up's wording when the primary text is `policy/3`: the same rules, plus that the answer can take
+# tens of seconds and the input should keep playing unless that would spoil what was asked about.
+FOLLOW_UP_KEEP_PLAYING = (
+    "Help has been requested and is pending; its answer can take tens of seconds. Choose exactly one id from "
+    "the listed choices to say what happens to the game's input while it is pending: keep playing unless "
+    "continuing would spoil what you asked about. A wait choice sends no input; any other listed choice is "
+    "executed exactly as chosen. Facts are measured; null means unknown, never zero. When an image is "
+    "present, it is the current game view."
+)
+
+
+def follow_up_for(instructions: str) -> str:
+    """The follow-up question's text that goes with a primary instruction text."""
+    return FOLLOW_UP_KEEP_PLAYING if instructions == INSTRUCTIONS_KEEP_PLAYING else FOLLOW_UP_INSTRUCTIONS
+
+
+# Asked beside `next_action` in the opt-in batched mode. The questions are answered independently, so this one is
+# conditional: it is applied only when the primary answer requests help on a real-time turn.
+BATCH_INSTRUCTIONS = (
+    "If help is requested on this turn, choose exactly one id from the listed choices to say what "
+    "happens to the game's input while it is pending. A wait choice sends no input; any other listed "
+    "choice is executed exactly as chosen. Facts are measured; null means unknown, never zero. "
+    "When an image is present, it is the current game view."
+)
+
+
+def prompts(instructions: str = INSTRUCTIONS, *, batched: bool = False) -> dict[str, str]:
+    """Every prompt text this adapter sends for one primary-instruction variant and pending-question mode.
+
+    The follow-up question keeps its own fixed text: it already asks one direct question, it is never
+    duplicated in `state` (which carries the primary text), and a run should vary one prompt at a time.
+    """
+    texts = {PRIMARY: instructions, FOLLOW_UP: follow_up_for(instructions)}
+    return {**texts, "batched_while_pending": BATCH_INSTRUCTIONS} if batched else texts
+
+
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
 # Day 1 exercised the Baseten and d1.1 combinations. d1-ultra took the same `images` array in its
@@ -57,8 +113,9 @@ CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used whe
 
 
 class TokenMeter(Protocol):
-    def record(self, tokens: int, *, estimated: bool = False) -> None:
-        """Count one call's tokens; `estimated` says the provider did not report them."""
+    def record(self, tokens: int, *, estimated: bool = False, sent_ago: float = 0.0) -> None:
+        """Count one call's tokens; `estimated` says the provider did not report them and `sent_ago` how long
+        before the call the request was sent (a send-anchored budget stamps its window with it)."""
         ...
 
 
@@ -109,14 +166,36 @@ def _without_image(value: Any, image: bytes | None) -> Any:
     return clean(value)
 
 
-class _Reply:
-    """One call's outcome: its `s1_call` record, the choice it named, and why there is none."""
+def _compact_rules(value: str | Sequence[str] | None) -> tuple[state_codec.Rule, ...] | None:
+    """`None`/`"off"`: send `state` as built. `"object"`: every rule, `state` kept an object. `"format"`: compact
+    text only. `"default"`/`"all"`: those rule sets as text."""
+    if value is None or value == "off":
+        return None
+    named = {"format": (), "default": state_codec.DEFAULT_RULES, "all": state_codec.ALL_RULES,
+             "object": state_codec.ALL_RULES}
+    if isinstance(value, str):
+        if value not in named:
+            raise ValueError(f"unknown compact-state setting {value!r}")
+        return named[value]
+    try:
+        return tuple(state_codec.Rule(rule) for rule in value)
+    except ValueError:
+        raise ValueError(f"unknown compact-state rule in {list(value)!r}") from None
 
-    __slots__ = ("call", "choice", "distribution", "failure", "halt")
+
+class _Reply:
+    """One call's outcome: its `s1_call` record, the choice it named, and why there is none.
+
+    `conditional` is the batched `while_pending` answer as the ledger records it, or `None` when none was asked.
+    """
+
+    __slots__ = ("call", "choice", "distribution", "failure", "halt", "conditional")
 
     def __init__(self, call: S1Call, choice: str | None = None, distribution: Any = None,
-                 failure: str | None = None, halt: str | None = None) -> None:
+                 failure: str | None = None, halt: str | None = None,
+                 conditional: dict[str, Any] | None = None) -> None:
         self.call, self.choice, self.distribution, self.failure, self.halt = call, choice, distribution, failure, halt
+        self.conditional = conditional
 
 
 class SystemOneS1:
@@ -132,24 +211,65 @@ class SystemOneS1:
         budget: TokenMeter | None = None,
         game_view: bool = False,
         layout: RequestLayout | str = RequestLayout.full,
+        instructions: str = INSTRUCTIONS,
+        pending_question: str = "follow_up",
+        option_order: OptionOrder | str = OptionOrder.sorted,
+        order_seed: int | None = None,
+        state_order: StateOrder | str = StateOrder.canonical,
+        compact_state: str | Sequence[str] | None = None,
     ) -> None:
+        if pending_question not in ("follow_up", "batched"):
+            raise ValueError("unknown pending_question mode")
+        if pending_question == "batched" and arm == "meta-muse-spark-s1":
+            raise ValueError("meta-muse-spark-s1 has no questions map for batched pending questions")
+        self._pending_question = pending_question
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
         if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
             raise ValueError("the call cap must be a positive integer")
+        if not isinstance(instructions, str) or not instructions.strip():
+            raise ValueError("the instructions text is empty")
         if game_view and arm not in IMAGE_TRANSPORT:
             raise ValueError(f"S1 arm {arm!r} has no verified image transport")
         try:
             self._layout = RequestLayout(layout)
         except ValueError:
             raise ValueError(f"unknown S1 request layout {layout!r}") from None
+        try:
+            self._state_order = StateOrder(state_order)
+        except ValueError:
+            raise ValueError(f"unknown S1 state order {state_order!r}") from None
+        if self._state_order is not StateOrder.canonical and arm == "meta-muse-spark-s1":
+            # That arm already renders its own turn-stable-first user text (`_stable_first`); a second
+            # order over the same state would be a different experiment wearing this one's name.
+            raise ValueError(f"S1 arm {arm!r} sends its own stable-first text; the "
+                             f"{self._state_order.value!r} state order does not apply to it")
         if self._layout is not RequestLayout.full and IMAGE_TRANSPORT.get(arm) != "images":
             # That arm wraps `state` in a message, so the body it sends would not be reconstructible
             # from its own bytes. Fail here rather than send a layout marker that does not bind.
             raise ValueError(f"S1 arm {arm!r} sends `state` inside a message; the "
                              f"{self._layout.value!r} layout needs a plain `state`")
+        self._option_order = OptionOrder(option_order)
+        if self._option_order is OptionOrder.shuffled and (isinstance(order_seed, bool) or not isinstance(order_seed, int)):
+            raise ValueError("shuffled option order requires an integer seed")
+        if self._option_order is not OptionOrder.sorted and arm == "meta-muse-spark-s1":
+            raise ValueError("option ordering is unsupported for the Meta arm")
+        if self._option_order is not OptionOrder.sorted and self._layout is not RequestLayout.full:
+            raise ValueError("option ordering requires the full request layout")
+        self._order_seed = order_seed
+        self._compact = _compact_rules(compact_state)
+        self._compact_object = compact_state == "object"
+        if self._compact is not None:
+            if IMAGE_TRANSPORT.get(arm) != "images":
+                # The compact state is a string `state`; only an arm that sends the image beside it keeps one.
+                raise ValueError(f"S1 arm {arm!r} has no plain `state` to send compactly")
+            if self._layout is not RequestLayout.full:
+                raise ValueError("the compact state already sends one copy of each duplicated text; "
+                                 "use it with the full layout")
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
+        self._instructions = instructions
+        self._prompts = prompts(instructions, batched=pending_question == "batched")
         self._ledger = ledger
         self._max_calls = max_calls
         self._send = send
@@ -170,13 +290,31 @@ class SystemOneS1:
 
     @property
     def prompt_sha256(self) -> str:
-        """SHA-256 of every prompt text this adapter can send: the context instructions and the follow-up wording."""
-        return digest(canonical(PROMPTS))
+        """SHA-256 of every prompt text this adapter sends: the context instructions and the follow-up wording."""
+        return digest(canonical(self._prompts))
+
+    @property
+    def instructions(self) -> str:
+        """The primary question text this adapter sends and hashes; the context must carry this same text."""
+        return self._instructions
 
     @property
     def layout(self) -> str:
         """The body layout this adapter sends. `full` renders the context unchanged, byte for byte."""
         return self._layout.value
+
+    @property
+    def compact_state(self) -> str | None:
+        """The compact-state rules this adapter may apply, or `None` when `state` is sent as built."""
+        if self._compact is None:
+            return None
+        version = state_codec.OBJECT_VERSION if self._compact_object else state_codec.VERSION
+        return f"{version}:{','.join(rule.value for rule in self._compact) or 'format'}"
+
+    @property
+    def state_order(self) -> str:
+        """How the request's state keys are ordered on the wire. `canonical` sorts them, as before."""
+        return self._state_order.value
 
     @property
     def calls_reserved(self) -> int:
@@ -189,6 +327,9 @@ class SystemOneS1:
                 "omitted": self._view_omitted, "stale": self._view_stale}
 
     async def decide(self, context: Mapping[str, Any], *, image: bytes | None = None) -> S1Answer:
+        if context.get("instructions") != self._instructions:
+            # The hash names the text this run selected; a payload carrying other text would make it a lie.
+            raise ValueError("the context's instructions are not this adapter's instructions")
         if image is not None and (not self._game_view or digest(image) != context.get("game_view_sha256")
                                   or context.get("game_view_status") != "sent"):
             raise ValueError("image does not match the measured view")
@@ -197,8 +338,11 @@ class SystemOneS1:
         turn, self._turn = self._turn, self._turn + 1
         choices = context["choices"]
         kinds = {item["id"]: item["kind"] for item in choices}
-        first = await self._call(PRIMARY, context["instructions"], {item["id"]: item["label"] for item in choices},
-                                 context, turn, image)
+        criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
+        batch = (self._pending_question == "batched" and self._clock_mode is ClockMode.realtime
+                 and any(kind in _HELP_KINDS for kind in kinds.values()) and bool(criteria))
+        first = await self._call(PRIMARY, self._instructions, {item["id"]: item["label"] for item in choices},
+                                 context, turn, image, pending_criteria=criteria if batch else None)
         calls = [first.call]
         if first.choice is None:
             return S1Answer(answer=None, calls=tuple(calls), failure=first.failure, halt=first.halt)
@@ -206,10 +350,16 @@ class SystemOneS1:
         if first.distribution is not None:
             answer["distribution"] = first.distribution
         halt = first.halt
-        if kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
+        if batch:
+            secondary = (first.conditional or {}).get("choice")
+            if kinds[first.choice] in _HELP_KINDS and secondary is not None:
+                answer["while_pending"] = ({"mode": "wait"} if kinds[secondary] == "wait"
+                                           else {"mode": "continue", "choice_id": secondary})
+        if not batch and kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
             criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
             if criteria:
-                second = await self._call(FOLLOW_UP, FOLLOW_UP_INSTRUCTIONS, criteria, context, turn, image)
+                second = await self._call(FOLLOW_UP, follow_up_for(self._instructions), criteria, context, turn,
+                                          image)
                 calls.append(second.call)
                 halt = second.halt
                 if second.choice is not None:
@@ -218,11 +368,14 @@ class SystemOneS1:
         return S1Answer(answer=answer, calls=tuple(calls), halt=halt)
 
     async def _call(self, question: str, instructions: str, criteria: dict[str, str],
-                    context: Mapping[str, Any], turn: int, image: bytes | None) -> _Reply:
+                    context: Mapping[str, Any], turn: int, image: bytes | None,
+                    pending_criteria: dict[str, str] | None = None) -> _Reply:
         model = self.model
         body = {"model": model,
                 "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
                 "state": context}
+        if pending_criteria is not None:
+            body["questions"][FOLLOW_UP] = {"type": "choice", "instructions": BATCH_INSTRUCTIONS, "criteria": pending_criteria}
         if self._arm == "meta-muse-spark-s1":
             try:
                 content: Any = _stable_first(criteria, context)
@@ -240,6 +393,20 @@ class SystemOneS1:
             # After the question is built: only a text this same request already states verbatim is moved
             # to one copy. The context passed in is untouched, and `full` never reaches this branch.
             body = encode_request_body(body)
+        compacted: list[str] | None = None
+        if self._compact is not None:
+            # The traced context stays as built: only this request's copy of it is rendered compactly, and
+            # every rule points at this body's own question, so the body alone restores it exactly.
+            try:
+                if self._compact_object:
+                    body["state"], compacted = state_codec.encode_object(
+                        context, instructions=instructions, criteria=criteria, rules=self._compact)
+                else:
+                    body["state"], compacted = state_codec.encode(
+                        context, instructions=instructions, criteria=criteria, rules=self._compact,
+                        key_order=state_keys(context) if self._state_order is not StateOrder.canonical else None)
+            except state_codec.CodecError:
+                return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
         try:
             estimate_text = canonical(_without_image(body, image))  # image tokens are counted separately
             if image is not None and self._arm != "meta-muse-spark-s1":
@@ -250,7 +417,16 @@ class SystemOneS1:
                         {"type": "image_url", "image_url": {"url": url}}]}]}
                 else:
                     body["images"] = [url]
-            request_text = canonical(body)
+            # Every question in the body gets its own order: a batched `while_pending` is ordered like the primary.
+            orders = {name: ordered_ids(asked["criteria"], self._option_order, self._order_seed, self._episode,
+                                        turn, name)
+                      for name, asked in (body.get("questions") or {}).items()}
+            presented = orders.get(question)
+            # The default sends `canonical(body)`; an opt-in order renders and sends its own exact text.
+            ordered = self._option_order is not OptionOrder.sorted or self._state_order is not StateOrder.canonical
+            request_text = (render(body, criteria=orders if self._option_order is not OptionOrder.sorted else None,
+                                   state=state_keys if self._state_order is not StateOrder.canonical else None)
+                            if ordered else canonical(body))
             request_sha = digest(request_text)
         except ValueError:
             return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
@@ -258,9 +434,17 @@ class SystemOneS1:
             return self._refused(question, request_sha, "the run's call cap was reached; no call was made",
                                  halt="the run's call cap was reached")
         try:
+            extra = {"question": question}
+            if self._option_order is not OptionOrder.sorted:
+                extra.update(option_order=self._option_order.value, order_seed=self._order_seed, presented_ids=presented)
+                if len(orders) > 1:
+                    extra["presented_ids_by_question"] = orders
+            if compacted is not None:
+                extra.update(state_codec=state_codec.OBJECT_VERSION if self._compact_object else state_codec.VERSION,
+                             state_rules=compacted)
             reservation = self._ledger.reserve(
                 episode=self._episode, turn=turn, based_on_seq=context["as_of"]["seq"],
-                request_sha256=request_sha, requested_model=model, extra={"question": question})
+                request_sha256=request_sha, requested_model=model, extra=extra)
         except call_budget.BudgetStop as exc:
             return self._refused(question, request_sha, f"{exc}; no call was made", halt=str(exc))
         self._reserved += 1
@@ -270,11 +454,18 @@ class SystemOneS1:
             else:
                 self._view_omitted += 1
                 self._view_stale += int(context.get("game_view_status") == "stale")
+        # For a send-anchored budget: the request's own tokens are counted at the moment it is posted. The
+        # perf counter is monotonic and has the resolution to time a short call, so even a fast one is measured.
+        sent_at = time.perf_counter()
         try:
-            status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, body)
+            # An opt-in order sends the very text it hashed, so the ledger row cannot describe bytes other
+            # than the ones on the wire. The default keeps handing the body to the sender.
+            wire: dict[str, Any] | str = request_text if ordered else body
+            status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, wire)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
             note = f"adapter error: {type(exc).__name__}"
-            self._count_tokens(None, estimate_text, image is not None)  # the request may have reached the provider
+            # the request may have reached the provider
+            self._count_tokens(None, estimate_text, image is not None, sent_ago=time.perf_counter() - sent_at)
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
                                resolved_model=None, usage=None, cost_usd=None)
             return _Reply(self._record(question, request_sha, None, None, None, note, None), failure=note)
@@ -284,7 +475,7 @@ class SystemOneS1:
             choice, distribution, answer_problem = replay.parse_answer(
                 self._as_next_action(data if status == 200 else None, question), set(criteria))
         usage = _without_image((data or {}).get("usage"), image)
-        self._count_tokens(usage, estimate_text, image is not None)
+        self._count_tokens(usage, estimate_text, image is not None, sent_ago=time.perf_counter() - sent_at)
         raw_cost = usage.get("cost") if isinstance(usage, dict) else None
         cost = (float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
                 and math.isfinite(raw_cost) and raw_cost >= 0 else None)
@@ -292,26 +483,40 @@ class SystemOneS1:
             cost = meta_cost(usage)
         note = _without_image(problem or answer_problem, image)
         resolved = _without_image((data or {}).get("model"), image)
-        row = reservation.finish(http_status=status, choice=choice, distribution=distribution, problem=note,
+        batch_fields = {}
+        if pending_criteria is not None:
+            secondary, secondary_distribution, secondary_problem = replay.parse_answer(
+                self._as_next_action(data if status == 200 else None, FOLLOW_UP), set(pending_criteria))
+            batch_fields["conditional_answer"] = {"choice": secondary, "distribution": secondary_distribution,
+                "problem": secondary_problem, "condition": ("unknown" if choice is None else "met" if
+                next((x["kind"] for x in context["choices"] if x["id"] == choice), None) in _HELP_KINDS
+                else "condition not met")}
+        row = reservation.finish(**batch_fields, http_status=status, choice=choice, distribution=distribution, problem=note,
                                  latency_ms=latency_ms, resolved_model=resolved, usage=usage, cost_usd=cost)
+        # The provider's response is recorded as received: its `while_pending` answer is already in it.
         call = self._record(question, request_sha, status, latency_ms, resolved, note,
                             _without_image(data, image) if isinstance(data, dict) else None, usage)
         failure = None
         if choice is None:
             failure = (note or "no usable answer") + (f" (HTTP {status})" if status not in (None, 200) else "")
         halt = "a provider-reported cost exceeded the per-call bound" if row["cost_bound_exceeded"] else None
-        return _Reply(call, choice, distribution, failure, halt)
+        return _Reply(call, choice, distribution, failure, halt, batch_fields.get("conditional_answer"))
 
-    def _count_tokens(self, usage: Any, request_text: str, has_image: bool) -> None:
-        """Report what a sent call used: the provider's own count, else an estimate marked as one."""
+    def _count_tokens(self, usage: Any, request_text: str, has_image: bool, *, sent_ago: float = 0.0) -> None:
+        """Report what a sent call used: the provider's own count, else an estimate marked as one.
+
+        `sent_ago` is how long ago this call's request was posted; a send-anchored budget stamps its window
+        with it instead of the moment the reply arrived. Both paths report the same value.
+        """
         if self._budget is None:
             return
         used = _tokens(usage)
         if used is not None:
-            self._budget.record(used)
+            self._budget.record(used, sent_ago=sent_ago)
         else:
             image_tokens = IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]] if has_image else 0
-            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN) + image_tokens, estimated=True)
+            self._budget.record(math.ceil(len(request_text) / CHARS_PER_TOKEN) + image_tokens, estimated=True,
+                                sent_ago=sent_ago)
         reserve = getattr(self._budget, "reserve_next_image", None)
         if reserve is not None and self._game_view:
             reserve(0 if has_image else IMAGE_TOKENS[IMAGE_TRANSPORT[self._arm]])

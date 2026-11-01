@@ -682,13 +682,19 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
     calibrated = _index(calibration.actions, "control", "calibration controls")
     if current != calibrated or calibration.action_cap.returned != len(calibrated):
         raise ValueError("discovered controls or bindings differ from calibration")
-    summaries = _index([ActionCalibration.model_validate(a).model_dump(mode="json")
-                        for a in calibration.action_summaries],
-                       "control", "calibration summaries")
+    summary_rows = [ActionCalibration.model_validate(a).model_dump(mode="json") for a in calibration.action_summaries]
+    summaries = {}
+    values = set()
+    for row in summary_rows:
+        key = (row["control"], row["declared_x"], row["declared_y"])
+        if key in values:
+            raise ValueError("duplicate calibration value")
+        values.add(key)
+        summaries.setdefault(row["control"], row)
     if set(summaries) - set(calibrated):
         raise ValueError("a calibration summary names an undiscovered control")
-    if any(summaries[k]["bindings"] != calibrated[k].get("bindings") or
-           summaries[k]["resolution"] != calibrated[k].get("resolution") for k in summaries):
+    if any(row["bindings"] != calibrated[row["control"]].get("bindings") or
+           row["resolution"] != calibrated[row["control"]].get("resolution") for row in summary_rows):
         raise ValueError("a calibration summary does not match its discovered bindings")
     tested = {t.get("control") for t in calibration.trials if t.get("valid") is True}
     offered = sorted(set(calibrated) & set(summaries) & tested)
@@ -778,7 +784,7 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
             "reset": {"scene_reload": {k: v for k, v in scene_reset.items() if k not in ("fields", "evidence", "trials")},
                       "save_load": reset.get("save_load"), "checkpoint": reset.get("checkpoint"),
                       "source_sha256": _digest(calibration.reset)},
-            "control_summaries": [summaries[k] for k in offered],
+            "control_summaries": [row for k in offered for row in summary_rows if row["control"] == k],
             "field_identity_note": ("Freshness uses within-run field ids. The calibration record does not "
                                     "preserve full field descriptors, so matching ids alone do not prove "
                                     "identity across separately captured sessions."),

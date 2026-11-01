@@ -267,7 +267,7 @@ class ExecutionRecord(Envelope):
 
 class StopRequest(Envelope):
     type: Literal["stop"] = "stop"
-    reason: Literal["user", "reset", "scene_change", "disconnect", "error", "finish"]
+    reason: Literal["user", "reset", "scene_change", "disconnect", "error", "finish", "release"]
 
 
 class StopResult(Envelope):

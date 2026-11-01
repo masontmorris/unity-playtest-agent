@@ -44,6 +44,7 @@ from playtest.contracts.investigation import Budget, ModelRef
 from playtest.contracts.manifest import PreflightManifest
 from playtest.core.adherence import adherence_rate
 from playtest.core.bridge_client import BridgeClient
+from playtest.core.context import INSTRUCTIONS_POLICY_VARIANT, INSTRUCTIONS_VARIANTS
 from playtest.core.run_record import build_run_record
 from playtest.core.suspicion import RANGE_MIN_READINGS, ReaderWatch
 from playtest.core.trace import TraceWriter
@@ -53,8 +54,9 @@ from playtest.runner.directives import DirectiveTracker
 from playtest.runner.frontier_help import FrontierHelp, action_effects
 
 from .catalog import PATH_VARIABLE, SHA256_VARIABLE, verify_host_catalog
-from .choices import ManifestChoices, build_choices
+from .choices import FINISH_LABELS, ManifestChoices, build_choices
 from .coverage import CoverageFacts
+from .pattern import PatternFacts
 from .declared import declared_configuration
 from .game_view import BridgeView
 from .output import secret_values
@@ -130,9 +132,32 @@ def _parser() -> argparse.ArgumentParser:
                         choices=[layout.value for layout in RequestLayout],
                         help="the S1 request body layout: full (default), or the lossless layout that sends each "
                              "duplicated text once (also UPA_RUN_S1_LAYOUT)")
+    parser.add_argument("--s1-instructions", default=_env("UPA_RUN_S1_INSTRUCTIONS", str, INSTRUCTIONS_POLICY_VARIANT),
+                        choices=sorted(INSTRUCTIONS_VARIANTS),
+                        help="the S1 question text: policy/1 (default, today's paragraph) or direct/1 (one direct "
+                             "question first; docs/design/s1-opt-direct-instructions.md; also "
+                             "UPA_RUN_S1_INSTRUCTIONS)")
+    parser.add_argument("--s1-compact-state", default=_env("UPA_RUN_S1_COMPACT_STATE", str, "off"),
+                        choices=["off", "object", "format", "default", "all"],
+                        help="restructure S1's state with lossless rules: off (default); object (every rule, state "
+                             "kept a JSON object, about 13%% smaller); or as compact text: format, default, all "
+                             "(about 29%% fewer billed tokens, but d1-ultra renders a string state differently and "
+                             "changes some near-tie choices). Liquid arms only; use with --s1-layout full. See "
+                             "docs/design/s1-token-budget.md (also UPA_RUN_S1_COMPACT_STATE)")
+    parser.add_argument("--s1-pending-question", default=_env("UPA_RUN_S1_PENDING_QUESTION", str, "follow_up"),
+                        choices=["follow_up", "batched"],
+                        help="ask while_pending in a second call after a help choice (follow_up, default) or beside "
+                             "next_action in the same call (batched; docs/design/s1-opt-batch-pending.md; also "
+                             "UPA_RUN_S1_PENDING_QUESTION)")
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
+    parser.add_argument("--point-moves", action="store_true", default=_env("UPA_RUN_POINT_MOVES", switch, False))
+    parser.add_argument("--point-turns", action="store_true", default=_env("UPA_RUN_POINT_TURNS", switch, False))
+    parser.add_argument("--capture-width", type=int, default=_env("UPA_RUN_CAPTURE_WIDTH", int, 640))
+    parser.add_argument("--capture-height", type=int, default=_env("UPA_RUN_CAPTURE_HEIGHT", int, 480))
+    parser.add_argument("--turn-sizes", action="store_true", default=_env("UPA_RUN_TURN_SIZES", switch, False))
+    parser.add_argument("--pattern-facts", action="store_true", default=_env("UPA_RUN_PATTERN_FACTS", switch, False))
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
@@ -150,6 +175,23 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_TOKENS_PER_MINUTE", int, None),
                         help="the most S1 tokens the runner lets one minute use; it waits before a turn to stay "
                              "under it (default: the selected arm's own rate; also UPA_RUN_TOKENS_PER_MINUTE)")
+    parser.add_argument("--continuous-input", action="store_true",
+                        default=_env("UPA_RUN_CONTINUOUS_INPUT", switch, False),
+                        help="Decide while explicitly selected keyboard holds run (opt in)")
+    parser.add_argument("--pacing-burst", type=float, default=_env("UPA_RUN_PACING_BURST", float, 0.0),
+                        help="the share of the per-minute token budget S1's calls may use before pacing spaces "
+                             "them; 0 (default) spaces every call, 0.5 lets a session run unspaced until half the "
+                             "budget is in the window (also UPA_RUN_PACING_BURST)")
+    parser.add_argument("--pacing-anchor", default=_env("UPA_RUN_PACING_ANCHOR", str, "end"),
+                        choices=["end", "send"],
+                        help="the moment the token pacer measures its spacing from: end (default) when the "
+                             "previous response arrived, or send when the previous request was posted, which "
+                             "stops each call's latency adding to the next wait; requests are built the same "
+                             "way (also UPA_RUN_PACING_ANCHOR)")
+    parser.add_argument("--finish-label", default=_env("UPA_RUN_FINISH_LABEL", str, "plain"),
+                        choices=sorted(FINISH_LABELS),
+                        help="how the finish choice is labelled: plain ('Finish', default) or conditional (states "
+                             "that it ends the session and when to choose it; also UPA_RUN_FINISH_LABEL)")
     parser.add_argument("--objective", default=None)
     parser.add_argument("--objective-file", type=Path, default=_env("UPA_RUN_OBJECTIVE_FILE", Path, None))
     return parser
@@ -202,6 +244,8 @@ def _host_session(project: Path) -> HostSession | None:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if sum((args.turn_sizes, args.point_turns, args.point_moves)) > 1:
+        parser.error("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
     project, output = args.project.resolve(), args.output.resolve()
     if args.approval is None:
         parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
@@ -225,6 +269,10 @@ def main(argv: list[str] | None = None) -> int:
     args.tokens_per_minute = resolve_tokens_per_minute(args.s1_arm, args.tokens_per_minute)
     if not 0 < args.frontier_clip_s <= media.MAX_WINDOW_S:
         parser.error(f"--frontier-clip-s must be above 0 and at most {media.MAX_WINDOW_S:g}")
+    if not 0 <= args.pacing_burst <= 1:
+        parser.error("--pacing-burst (or UPA_RUN_PACING_BURST) must be between 0 and 1")
+    if args.pacing_anchor not in ("end", "send"):
+        parser.error("--pacing-anchor (or UPA_RUN_PACING_ANCHOR) must be 'end' or 'send'")
     if args.tokens_per_minute < 1:
         parser.error("--tokens-per-minute (or UPA_RUN_TOKENS_PER_MINUTE) must be at least 1")
     if output.is_relative_to(project) or output.exists():
@@ -259,8 +307,15 @@ def main(argv: list[str] | None = None) -> int:
         _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0, args.s1_arm)
         session_host = _host_session(project)
         built = build_choices(manifest, restart_play_mode=session_host is not None
-                              and session_host.advertises_restart)
-        host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256)  # before any call or contact with the bridge
+                              and session_host.advertises_restart,
+                              finish_label=FINISH_LABELS[args.finish_label],
+                              turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
+                              capture_size=(args.capture_width, args.capture_height),
+                              calibration=calibration if args.turn_sizes or args.point_turns or args.point_moves else None)
+        host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256,
+                                   turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
+                                   capture_size=(args.capture_width, args.capture_height),
+                                   calibration=calibration if args.turn_sizes or args.point_turns or args.point_moves else None)  # before any call or contact with the bridge
         if session_host is not None:
             # The host must serve the very catalog this run verified, or its scene is a different session.
             if (Path(session_host.config.catalog_path).resolve() != args.catalog.resolve()
@@ -287,7 +342,29 @@ def main(argv: list[str] | None = None) -> int:
             plan["declared_configuration_count"] = len(declared["values"]) if declared else 0
         plan["s1_game_view"] = args.s1_game_view
         plan["s1_layout"] = args.s1_layout
+        if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT:
+            plan["s1_instructions"] = args.s1_instructions  # only a non-default variant adds bytes
+        if args.s1_compact_state != "off":
+            plan["s1_compact_state"] = args.s1_compact_state
+        if args.s1_pending_question != "follow_up":
+            plan["s1_pending_question"] = args.s1_pending_question
+        if args.continuous_input:
+            plan["continuous_input"] = True
+        if args.pacing_burst:
+            plan["pacing_burst"] = args.pacing_burst
+        if args.pacing_anchor != "end":
+            plan["pacing_anchor"] = "send"
+        if args.finish_label != "plain":
+            plan["finish_label"] = args.finish_label
         plan["coverage_facts"] = args.coverage_facts
+        if args.point_moves:
+            plan["point_moves"] = True
+        if args.point_turns:
+            plan["point_turns"] = True
+        if args.turn_sizes:
+            plan["turn_sizes"] = True
+        if args.pattern_facts:
+            plan["pattern_facts"] = True
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
@@ -350,9 +427,12 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
         per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
-        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True)
+        budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True, burst=args.pacing_burst,
+                             anchor=args.pacing_anchor)
+        instructions = INSTRUCTIONS_VARIANTS[args.s1_instructions]
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
-                          game_view=args.s1_game_view, layout=args.s1_layout)
+                          game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
+                          compact_state=args.s1_compact_state, pending_question=args.s1_pending_question)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)
@@ -374,6 +454,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         facts = ProgressFacts(tracker, progress_probe) if progress_probe.regions else tracker
         if args.coverage_facts:
             facts = CoverageFacts(facts, [c.id for c in built.choices if c.kind in (ChoiceKind.action, ChoiceKind.skill)])
+        if args.pattern_facts:
+            facts = PatternFacts(facts, [reader.alias for reader in manifest.readers])
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
@@ -389,7 +471,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                         snapshot_for=lambda new: make_snapshot(new, manifest.entity_id)),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
-                facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation)
+                facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,
+                continuous_input=args.continuous_input, instructions=instructions)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {
@@ -398,7 +481,12 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "adherence": {"rate": adherence_rate(turns), "violations": [v.__dict__ for v in result.adherence]},
                 "stop": result.stop.model_dump(mode="json") if result.stop is not None else None,
                 "s1": {"provider": s1.provider, "model": s1.model, "prompt_sha256": s1.prompt_sha256,
-                       "calls": s1.calls_reserved, "call_cap": args.max_calls},
+                       "calls": s1.calls_reserved, "call_cap": args.max_calls,
+                       **({"instructions": args.s1_instructions}
+                          if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT else {}),
+                       **({"compact_state": s1.compact_state} if s1.compact_state is not None else {}),
+                       **({"pending_question": args.s1_pending_question}
+                          if args.s1_pending_question != "follow_up" else {})},
                 "s1_game_view": s1.view_counts,
                 "frontier": {"enabled": args.frontier, "model": frontier_provider.MODEL if args.frontier else None,
                              "calls": help_port.calls if help_port is not None else 0,

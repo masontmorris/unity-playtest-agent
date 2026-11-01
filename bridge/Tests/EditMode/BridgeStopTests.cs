@@ -81,6 +81,25 @@ namespace Playtest.Bridge.Tests
             Assert.That(_server.IsRunning, Is.True, "stopping a session must not stop the bridge");
         }
 
+        [Test]
+        public void Release_CancelsAndVerifiesWithoutClosingOrReplaying()
+        {
+            using (var client = new TestClient(_server))
+            {
+                Handshake(client);
+                ObservationMessage observation = ObserveOnce(client);
+                client.Send(Act("held", observation.Seq, leaseS: 5.0));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Running));
+                client.Send(Stop("release"));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Cancelled));
+                Assert.That(ReadStopResult(client).ReleaseVerified, Is.True);
+                observation = ObserveOnce(client);
+                client.Send(Act("selected-again", observation.Seq, leaseS: 0.01));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Running));
+                Assert.That(ReadExecution(client).Status, Is.EqualTo(BridgeExecStatus.Completed));
+            }
+        }
+
         [TestCase("user")]
         [TestCase("reset")]
         [TestCase("scene_change")]

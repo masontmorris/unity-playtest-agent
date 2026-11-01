@@ -553,6 +553,31 @@ class BridgeClient:
         assert isinstance(records, list) and records
         return records  # type: ignore[return-value]
 
+    async def start_act(self, **arguments: object) -> list[ExecutionRecord]:
+        """Send once, returning at apply acknowledgement; retain the terminal receipt.
+
+        Unlike act(), the connection lock is released while the input runs.
+        The owner must collect_act() after expiry, supersession or stop.
+        """
+        self._require_open()
+        async with self._lock:
+            request, done, first = self._prepare_act_locked(**arguments, with_first=True)
+            assert first is not None
+            await self._send(request)
+            await self._await(request.seq, first)
+            return list(self._exec[request.action_id]["records"])
+
+    def action_records(self, action_id: str) -> list[ExecutionRecord]:
+        """Received records only: elapsed time never proves an input is held."""
+        return list(self._exec[action_id]["records"])
+
+    async def collect_act(self, action_id: str) -> list[ExecutionRecord]:
+        entry = self._exec[action_id]
+        try:
+            return await asyncio.wait_for(asyncio.shield(entry["done"]), self._timeout_s)
+        finally:
+            self._exec.pop(action_id, None)
+
     async def act_with_inspections(
         self,
         *,
@@ -765,8 +790,9 @@ class BridgeClient:
                 return self._stop_result
             assert isinstance(result, StopResult)
             self._stop_result = result
-            self._clean_close = True
-            self._connection_lost("stopped")
+            if reason != "release":
+                self._clean_close = True
+                self._connection_lost("stopped")
             return result
 
     async def aclose(self) -> StopResult | None:

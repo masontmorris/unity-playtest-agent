@@ -279,6 +279,22 @@ def discover_actions(discovery: dict[str, Any]) -> tuple[list[dict[str, Any]], l
     return [actions[key] for key in sorted(actions)], unsupported
 
 
+def negated_view_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Plan the opposite value only after a valid trial measured a nonzero view turn."""
+    if action.get("x") is None or action.get("y") is None:
+        return None
+    if not any(t.get("valid") is True and isinstance(t.get("view_delta"), dict)
+               and any(abs(t["view_delta"].get(axis, 0)) > 0 for axis in ("yaw_deg", "pitch_deg"))
+               for t in trials):
+        return None
+    x, y = -action["x"] or 0.0, -action["y"] or 0.0  # a zero axis stays 0.0, never -0.0, in records and labels
+    try:
+        catalog_contract.InputBinding(device=action["device"], control=action["control_name"], x=x, y=y)
+    except ValueError:
+        return None
+    return {**action, "x": x, "y": y, "action": action["action"] + "_negated"}
+
+
 def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize measured displacements; untested or insufficient values remain null."""
     groups = []
@@ -1561,7 +1577,7 @@ async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str, *,
     return result
 
 
-def _summarize(result: dict[str, Any], actions: list[dict[str, Any]]) -> None:
+def _summarize(result: dict[str, Any], actions: list[dict[str, Any]], both_signs: bool = False) -> None:
     """The field-freshness and per-control summaries of everything this record holds, carried or new.
 
     A carried session's windows are windows of their own: `later_idle_windows` holds one window per pass's
@@ -1579,12 +1595,15 @@ def _summarize(result: dict[str, Any], actions: list[dict[str, Any]]) -> None:
         later_idle_windows=result["later_idle_windows"])
     result["action_summaries"] = [
         summarize_action(action, [trial for trial in result["trials"]
-                                  if trial.get("control") == action["control"]]) for action in actions]
+                                  if trial.get("control") == action["control"] and (not both_signs or
+                                  (trial.get("declared_x"), trial.get("declared_y")) == (action.get("x"), action.get("y")))])
+        for action in actions]
 
 
 async def measure(client: BridgeClient, selected: dict[str, Any], *,
                   on_plan: Callable[[dict[str, Any]], None] | None = None,
-                  restore: Any = None, prior: dict[str, Any] | None = None) -> dict[str, Any]:
+                  restore: Any = None, prior: dict[str, Any] | None = None,
+                  both_signs: bool = False) -> dict[str, Any]:
     """Calibrate the selected entity's controls and return the local record.
 
     `on_plan` is called with the plan, budget included, once the controls are known and before the
@@ -1642,7 +1661,11 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
     actions, unsupported = discover_actions(discovery)
     cap = {"limit": MAX_ACTIONS, "observed": len(actions), "returned": min(len(actions), MAX_ACTIONS),
            "truncated": len(actions) > MAX_ACTIONS}
-    budget = measurement_budget(cap["returned"])
+    if both_signs and prior is not None:
+        # Settled and completed controls are keyed by control, while both_signs measures one control in two
+        # directions; carrying either across passes could mix the directions, so the two are not combined.
+        raise ValueError("--both-signs cannot resume earlier passes: settled controls are keyed by control, not by sign")
+    budget = measurement_budget(cap["returned"] * (2 if both_signs else 1))
     carried = carried_trials(prior)
     carried_count = len(carried)
     baselines = carried_idle_windows(prior)
@@ -1673,6 +1696,10 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
     result["input_field_segments"] = carried_field_segments(prior)
     if baselines:
         result["plan"]["prior_sessions"] = baseline_index(baselines)
+    if both_signs:
+        result["plan"]["both_signs"] = True
+        result["plan"]["negated_view_actions"] = []
+    measured_actions = list(actions)
     if on_plan is not None:
         on_plan(result["plan"])
     started = time.perf_counter()
@@ -1697,7 +1724,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
             after_restore = False
             for hold in HOLD_S:
                 for repeat in range(FIELD_REPEATS if hold == HOLD_S[-1] else REPEATS):
-                    for action in actions:
+                    for action in measured_actions:
                         if action["control"] in unsupported_controls or action["control"] in settled_controls:
                             continue
                         quiet = await _quiet_window(client, entity_id)
@@ -1736,6 +1763,8 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                                 result["trials"].append(event)
                                 raise SessionStopped(event)
                         action_id = f"calibration-{action['control']}-{hold}-{repeat + 1}"
+                        if both_signs:
+                            action_id += f"-{action['x']}-{action['y']}"
                         kwargs = {"action_id": action_id, "choice_id": action_id, "action": action["action"],
                                   "based_on_seq": observation.seq, "max_age_s": 2.0, "lease_s": hold}
                         result["trials"].append({"control": action["control"], "requested_hold_s": hold,
@@ -1785,6 +1814,13 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                             trial["valid"] = False
                             trial["error"] = "game errors were logged during or shortly after this input"
                             unsupported_controls.add(action["control"])
+                        if both_signs:
+                            trial.update(declared_x=action.get("x"), declared_y=action.get("y"))
+                            if not action["action"].endswith("_negated"):
+                                opposite = negated_view_action(action, [trial])
+                                if opposite is not None and not any(a["action"] == opposite["action"] for a in measured_actions):
+                                    measured_actions.append(opposite)
+                                    result["plan"]["negated_view_actions"].append(dict(opposite))
                         result["trials"][-1] = trial
                         previous_trial, previous_settled, after_restore = trial, settled, False
                         if window["verdict"] == "unknown":
@@ -1837,7 +1873,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
             result["clock"] = await measure_clock(client, entity_id, scene_id, start=boundary)
             latest = result["clock"].get("running_after_resume") or result["clock"].get("after_resume") or boundary
             result["runtime_errors"] = latest["runtime_errors"]
-            _summarize(result, actions)
+            _summarize(result, measured_actions, both_signs)
             if not any(trial.get("valid") is True for trial in result["trials"]):
                 result["error"] = "no action produced a valid measurement"
             elif not any(len(segment["samples"]) >= 3 for segment in result["input_field_segments"]):
@@ -1857,7 +1893,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
         result["error"] = ("the game changed its own state between two trials, after this pass's inputs had been "
                            f"released: {stop}; the pass ended without pressing another control")
         try:
-            _summarize(result, actions)
+            _summarize(result, measured_actions, both_signs)
         except ValueError as exc:
             result["field_sampling_gap"] = f"the measured windows could not be summarised: {exc}"
     except (BridgeError, ValueError) as exc:
@@ -1874,7 +1910,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
 
 
 async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None = None,
-               prior: dict[str, Any] | None = None) -> dict[str, Any]:
+               prior: dict[str, Any] | None = None, both_signs: bool = False) -> dict[str, Any]:
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     # A generic restore ends this session and connects a new one; the last connection is the one whose
     # verified release closes the calibration.
@@ -1882,7 +1918,7 @@ async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None
     try:
         publish = None if plan_output is None else (lambda plan: write_plan(plan_output, plan))
         result = await measure(client, selected, on_plan=publish, restore=session_restore(project, adopted),
-                               prior=prior)
+                               prior=prior, both_signs=both_signs)
     finally:
         stop = await (adopted[-1] if adopted else client).aclose()
     result["stop"] = stop.model_dump(mode="json") if stop is not None else None
@@ -1906,6 +1942,7 @@ def main(argv: list[str] | None = None) -> int:
                              "are carried into this record, and the controls earlier passes finished measuring are "
                              "carried with their own trials, field windows and idle baseline instead of being "
                              "measured again")
+    parser.add_argument("--both-signs", action="store_true", default=os.environ.get("UPA_CALIBRATION_BOTH_SIGNS") == "1")
     args = parser.parse_args(argv)
     project, output = args.project.resolve(), args.output.resolve()
     plan_output = args.plan_output.resolve() if args.plan_output is not None else None
@@ -1922,7 +1959,7 @@ def main(argv: list[str] | None = None) -> int:
         # after a session has been spent pressing controls whose effects may already be known.
         prior = (load_prior_state_changes(args.prior_state_changes)
                  if args.prior_state_changes is not None else None)
-        result = asyncio.run(_run(project, selected, plan_output, prior))
+        result = asyncio.run(_run(project, selected, plan_output, prior, args.both_signs))
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)

@@ -57,9 +57,19 @@ class ManifestChoices:
     leases: dict[str, float]
     not_offered: list[dict[str, str]] = field(default_factory=list)
     catalog: ActionCatalog = field(default_factory=ActionCatalog)
+    point_fov: float | None = None
 
 
-def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
+# How the finish choice is labelled. `plain` is today's; `conditional` states when to choose it, because a
+# decision model reads each option's text next to its code and "Finish" alone says nothing about when.
+FINISH_LABELS = {
+    "plain": "Finish",
+    "conditional": ("Finish: end the whole session now. Choose this only when the objective's completion "
+                    "conditions are met; otherwise the session ends by itself."),
+}
+
+
+def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"]) -> list[Choice]:
     """The choices every game has, plus an explicit host restart only when this host advertises it.
 
     Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
@@ -79,19 +89,25 @@ def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
             id=RESTART_ID, kind=ChoiceKind.restart_play_mode,
             label="Restart Play Mode: stop the play session and start it again from the beginning",
             source=ChoiceSource.core))
-    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.core))
+    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
     return choices
 
 
-def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False) -> ManifestChoices:
+def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
+                  finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
+                  point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),
+                  calibration: dict | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
     default leaves every choice, its order and its wording exactly as before.
     """
-    core = core_choices(restart_play_mode=restart_play_mode)
+    core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
     reserved = {choice.id for choice in core} | {RESTART_ID}
-    catalog = export(manifest)
+    if sum((turn_sizes, point_turns, point_moves)) > 1:
+        raise ValueError("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
+    catalog = (export(manifest, point_turns=point_turns, point_moves=point_moves, calibration=calibration, capture_size=capture_size)
+               if point_turns or point_moves else export(manifest))
     choices: list[Choice] = []
     expected: dict[str, dict[str, Any] | None] = {}
     leases: dict[str, float] = {}
@@ -134,8 +150,31 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
         ))
         expected[skill.name] = None  # calibration measured no ordered sequence; nothing stands in for one
         # No lease: the declaration's own steps and max_s bound a skill.
+    if turn_sizes:
+        from .turn_sizes import measured_turns
+        declarations = dict(catalog.actions)
+        for choice, definition in measured_turns(manifest, calibration):
+            if choice.action in declarations or choice.id in reserved:
+                raise ValueError(f"turn choice id collision: {choice.id}")
+            declarations[choice.action] = definition
+            choices.append(choice)
+            leases[choice.id] = definition.default_lease_s
+            expected[choice.id] = None
+        catalog = ActionCatalog(actions=declarations)
+    point_fov = None
+    if point_turns or point_moves:
+        from .point_turns import measured_fov, pointing_turns
+        from .point_moves import pointing_moves
+        derive = pointing_moves if point_moves else pointing_turns
+        point_fov = measured_fov(calibration)
+        occupied = {c.id for c in choices} | reserved
+        for row in derive(manifest, calibration, capture_size):
+            if row.choice.id in occupied:
+                raise ValueError(f"point choice id collision: {row.choice.id}")
+            choices.append(row.choice)
+            expected[row.choice.id] = None
     return ManifestChoices(choices=[*choices, *core], expected=expected, leases=leases,
-                           not_offered=not_offered, catalog=catalog)
+                           not_offered=not_offered, catalog=catalog, point_fov=point_fov)
 
 
 def _reserve(name: str, reserved: set[str]) -> None:
@@ -274,3 +313,46 @@ def _precondition(check: ManifestCheck) -> str:
     if check.op in (Comparator.changed, Comparator.unchanged):
         return f"{check.field} {check.op.value}"
     return f"{check.field} {check.op.value} {json.dumps(check.value)}"
+
+
+def with_held_choices(built: ManifestChoices, eligible: list[str]) -> ManifestChoices:
+    """Append explicit held variants; originals and their bounded leases remain unchanged.
+
+    Choice ids are opaque unique strings (contracts.loop); reject suffix collisions rather than
+    renaming a manifest choice. The bridge still receives exactly the original action and params.
+    """
+    occupied = {c.id for c in built.choices}
+    variants = []
+    leases = dict(built.leases)
+    for choice in built.choices:
+        if choice.id not in eligible:
+            continue
+        held_id = f"{choice.id}.held"
+        if held_id in occupied:
+            raise ValueError(f"held choice id collision: {held_id}")
+        occupied.add(held_id)
+        variants.append(choice.model_copy(update={"id": held_id}))
+        leases[held_id] = built.leases[choice.id]
+    return ManifestChoices(choices=[*built.choices, *variants], expected=built.expected,
+                           leases=leases, not_offered=built.not_offered, catalog=built.catalog, point_fov=built.point_fov)
+
+
+def held_choice_labels(built: ManifestChoices, held_ids: list[str], interval_s: float | None,
+                       lease_s: float | None) -> list[Choice]:
+    """Runner-side calibration arithmetic, never a measured prediction of future movement."""
+    offered = []
+    for choice in built.choices:
+        if choice.id not in held_ids:
+            offered.append(choice)
+            continue
+        expected = built.expected[choice.action]
+        rate = expected["net_displacement"] / expected["requested_hold_s"]
+        unit = expected.get("unit", UNIT)
+        timing = ("decision interval unknown; expected distance/decision unknown" if interval_s is None else
+                  f"decision interval {interval_s:.2f} s; expected distance/decision "
+                  f"{rate:.2f} {unit}/s * {interval_s:.2f} s = {rate * interval_s:.2f} {unit}")
+        bound = lease_s if lease_s is not None else built.leases[choice.id]
+        label = (f"{choice.action}: keeps input held until next decision or lease ends "
+                 f"(lease {bound:.2f} s); calibrated rate {rate:.2f} {unit}/s; {timing}")
+        offered.append(choice.model_copy(update={"label": label}))
+    return offered

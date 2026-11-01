@@ -31,6 +31,7 @@ from playtest.contracts.bridge import StopResult
 from playtest.contracts.loop import ChoiceKind, OperationOutcome, OperationStatus
 from playtest.core.adherence import Violation, check_adherence
 from playtest.core.bridge_client import BridgeClient
+from playtest.core.context import INSTRUCTIONS
 from playtest.core.ports import (
     EffectProbe,
     FactsSource,
@@ -44,7 +45,7 @@ from playtest.core.ports import (
 from playtest.core.trace_sink import TraceSink
 from playtest.core.turn_loop import TurnLoop
 
-from .choices import ManifestChoices
+from .choices import ManifestChoices, held_choice_labels, with_held_choices
 from .pacing import PacingFacts, PacingStats, TokenBudget
 from .resources import SessionFacts
 
@@ -76,6 +77,25 @@ class SessionResult:
     restart_history: tuple[OperationOutcome, ...] = ()  # every selected host operation and its outcome
 
 
+# A held input is continued only where its calibration measured movement over a sustained hold: a tap (a
+# jump), a toggle, or an input that moved nothing would change meaning if held for seconds.
+_SUSTAINED_HOLD_S = 0.2
+
+
+def continuous_choice_ids(built: ManifestChoices) -> list[str]:
+    """Keyboard-only, non-skill actions whose calibrated hold was sustained and moved the controlled entity."""
+    ids = []
+    for name, declaration in built.catalog.actions.items():
+        expected = built.expected.get(name) or {}
+        moved, hold = expected.get("net_displacement"), expected.get("requested_hold_s")
+        if (not declaration.is_skill and declaration.inputs
+                and all(binding.device == "Keyboard" for binding in declaration.inputs)
+                and isinstance(moved, (int, float)) and moved > 0
+                and isinstance(hold, (int, float)) and hold > _SUSTAINED_HOLD_S):
+            ids.append(name)
+    return ids
+
+
 async def run_session(
     client: BridgeClient,
     built: ManifestChoices,
@@ -98,6 +118,8 @@ async def run_session(
     s1_call_cap: int | None = None,
     restart: RestartPort | None = None,
     generation: str | None = None,
+    continuous_input: bool = False,
+    instructions: str = INSTRUCTIONS,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
 
@@ -107,6 +129,8 @@ async def run_session(
     With `restart`, an S1-selected host operation runs outside decision turns under the smaller of the
     remaining wall time and the operation's own bound. Its budgets, pacing and deadlines persist; a
     non-ready outcome ends the run closed and is never retried or resumed.
+
+    `instructions` is the one question text every payload carries; its default keeps today's bytes.
     """
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
@@ -115,11 +139,22 @@ async def run_session(
     resources = SessionFacts(started=started, wall_limit_s=wall_limit_s, clock=clock,
                              s1=s1, s1_call_cap=s1_call_cap, help=help, inner=facts)
     paced = PacingFacts(inner=resources) if budget is not None else None
+    eligible = continuous_choice_ids(built) if continuous_input else []
+    configured = with_held_choices(built, eligible) if continuous_input else built
+    held_ids = [f"{name}.held" for name in eligible]
+    from .point_turns import gate_choices
     loop = TurnLoop(
-        client, choices=built.choices, max_age_s=max_age_s, leases=built.leases,
+        client, choices=configured.choices, max_age_s=max_age_s, leases=configured.leases,
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
         effects=probe, readers=readers, watch=watch, sink=sink, sleep=sleep,
         restart=restart, generation=generation, time_left=lambda: deadline - clock(),
+        continuous_input=continuous_input,
+        continuous_choices=held_ids,
+        continuous_labels=(lambda interval, lease: held_choice_labels(configured, held_ids, interval, lease))
+        if continuous_input else None,
+        choice_filter=(lambda choices, observation: gate_choices(choices, observation, configured.point_fov))
+        if configured.point_fov is not None else None,
+        instructions=instructions,
     )
     bind = getattr(probe, "bind_observation_source", None)
     if bind is not None:  # the probe states the surroundings of the observation each action was bound to

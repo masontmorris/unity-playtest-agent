@@ -30,7 +30,8 @@
         "scene_change",
         "disconnect",
         "error",
-        "finish"
+        "finish",
+        "release"
       ],
       "title": "Reason",
       "type": "string"
