@@ -213,6 +213,9 @@ class TurnReport:
     help_event: str | None
     executed: tuple[Executed, ...] = ()
     halt: str | None = None
+    # What an option turn measurably did: its `OptionOutcome.to_json()` without the receipts. `None` for
+    # every other kind of turn, including an invalid one. It is the same body the option trace entry holds.
+    option_outcome: Mapping[str, Any] | None = None
 
     @property
     def provider_failed(self) -> bool:

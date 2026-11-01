@@ -13,7 +13,11 @@ The world has three measured features the tests use:
 * a **pit**: no floor over a span, so the body falls. Falling past `dead_below` raises the declared
   `dead` reader, which the executor watches like any manifest reader.
 * **stale and rejection injection**, so an option can be seen to end `rejected` with the bridge's own
-  receipt.
+  receipt, and a **late link**: `pose_lag_ticks` publishes a pose that is that many physics steps old, and
+  `receive_lag_s` delays the reader's clock, so a decision's own latency is measurable.
+* an **acceleration ramp** (`accel`): a body that takes time to reach its run speed from a standstill, and
+  loses the momentum it had when it turns round. With `accel` unset the body is at its run speed at once,
+  which is the assumption the other tests are written against.
 
 Every observation also carries the bridge's `probe` in the shape `UnityProbeField` publishes for a body
 in a plane, derived from the same floor function the physics uses. Down-rays ahead (`samples`) and
@@ -151,6 +155,9 @@ class FakeWorld:
                                    # republishes the last sample, and it ages while the body keeps moving
     reject_acts: int = 0
     scene: str = "fixture:scene"
+    accel: float | None = None     # u/s² from a standstill; a change of direction costs the momentum it had
+    pose_lag_ticks: int = 0        # the pose each observation publishes is this many physics steps old
+    receive_lag_s: float = 0.0     # how long after the pose was taken the reader has it
 
     # --- live state
     now: float = 0.0
@@ -166,11 +173,19 @@ class FakeWorld:
     started_at: dict[str, float] = field(default_factory=dict)
     _declared: dict[str, tuple[str, ...]] = field(default_factory=declarations)
     _probe_sample: dict[str, Any] | None = field(default=None, repr=False)
+    _poses: list[tuple[float, float, float, float]] = field(default_factory=list, repr=False)
 
     # --- time -------------------------------------------------------------------------------
 
     def clock(self) -> float:
         return self.now
+
+    def wall_clock(self) -> datetime:
+        """The reader's clock: what it reads the moment an observation is in hand.
+
+        `receive_lag_s` is the link's own delay, so the age a decision measures is the pose's lag plus it.
+        """
+        return WALL_EPOCH + timedelta(seconds=self.now + self.receive_lag_s)
 
     async def sleep(self, seconds: float) -> None:
         """The world advances on observation, so a pacing sleep is a no-op."""
@@ -191,12 +206,19 @@ class FakeWorld:
         held = self.held
         previous_x, previous_y = self.x, self.y
         if self.grounded:
+            target = 0.0
             if RIGHT in held and LEFT not in held:
-                self.vx = self.run_speed
+                target = self.run_speed
             elif LEFT in held and RIGHT not in held:
-                self.vx = -self.run_speed
+                target = -self.run_speed
+            if self.accel is None or target == 0.0:
+                self.vx = target
             else:
-                self.vx = 0.0
+                if self.vx * target < 0:
+                    self.vx = 0.0            # turning round costs the momentum it had
+                step = self.accel * PERIOD_S
+                remaining = target - self.vx
+                self.vx = target if abs(remaining) <= step else self.vx + math.copysign(step, remaining)
         # The rise is a press, not a hold: only a newly applied input leaves the ground, so holding
         # it through the flight does not bounce the body on landing. Within `coyote_s` of walking off an
         # edge a press still leaves the ground, as many platformers allow.
@@ -247,15 +269,17 @@ class FakeWorld:
 
     # --- the geometry probe -----------------------------------------------------------------
 
-    def _ray(self, offset: float, ground: float | None) -> dict[str, Any]:
+    def _ray(self, offset: float, ground: float | None,
+             origin: tuple[float, float] | None = None) -> dict[str, Any]:
         """One down-ray around the body, from the same floor function the physics uses.
 
         A distance behind is a negative offset, exactly as the bridge publishes it; the height is
         measured against the floor under the body, so flat ground behind is 0 and a drop behind is
         negative. A point with no floor under it is a miss with null readings, never zeros.
         """
-        x = self.x + offset
-        surface = self._floor_at(x)
+        x, y = (self.x, self.y) if origin is None else origin
+        point_x = x + offset
+        surface = self._floor_at(point_x)
         if surface is None:
             return {"forward": offset, "lateral": 0.0, "hit": False, "point": None,
                     "delta_y": None, "normal": None, "inside": False}
@@ -263,22 +287,23 @@ class FakeWorld:
             "forward": offset,
             "lateral": 0.0,
             "hit": True,
-            "point": [x, surface, 0.0],
+            "point": [point_x, surface, 0.0],
             "delta_y": None if ground is None else surface - ground,
             "normal": [0.0, 1.0, 0.0],
             "inside": False,
         }
 
-    def _blocker(self, height: float) -> dict[str, Any]:
+    def _blocker(self, height: float, origin: tuple[float, float] | None = None) -> dict[str, Any]:
         """One forward cast at that height: the nearest standing face ahead within the probe's reach."""
         reach = 1.8
+        x, y = (self.x, self.y) if origin is None else origin
         distance: float | None = None
         top = 0.0
-        if self.wall_x is not None and self.wall_x > self.x:
-            distance, top = self.wall_x - self.x, self.wall_height
-        if (self.step_x is not None and self.step_x > self.x
-                and (distance is None or self.step_x - self.x < distance)):
-            distance, top = self.step_x - self.x, self.step_height
+        if self.wall_x is not None and self.wall_x > x:
+            distance, top = self.wall_x - x, self.wall_height
+        if (self.step_x is not None and self.step_x > x
+                and (distance is None or self.step_x - x < distance)):
+            distance, top = self.step_x - x, self.step_height
         if distance is not None and (distance > reach or height >= top):
             distance = None
         return {
@@ -286,22 +311,23 @@ class FakeWorld:
             "max_distance": reach,
             "hit": distance is not None,
             "distance": distance,
-            "point": None if distance is None else [self.x + distance, self.y + height, 0.0],
+            "point": None if distance is None else [x + distance, y + height, 0.0],
             "normal": None if distance is None else [-1.0, 0.0, 0.0],
         }
 
-    def _probe(self) -> dict[str, Any]:
+    def _probe(self, origin: tuple[float, float] | None = None) -> dict[str, Any]:
         """The measured geometry in the shape the bridge publishes for a body in a plane."""
-        ground = self._floor_at(self.x)
+        x, y = (self.x, self.y) if origin is None else origin
+        ground = self._floor_at(x)
         return {
             "version": 2,
-            "anchor": {"kind": "rigidbody2d", "name": "Body", "position": [self.x, self.y, 0.0]},
+            "anchor": {"kind": "rigidbody2d", "name": "Body", "position": [x, y, 0.0]},
             "basis": {"plane": "2d", "forward": [1.0, 0.0, 0.0],
                       "forward_source": "facing_scale", "lateral": "collapsed"},
-            "under": self._ray(0.0, ground),
-            "samples": [self._ray(offset, ground) for offset in (0.6, 1.2, 1.8)],
-            "backward": [self._ray(offset, ground) for offset in (-0.6, -1.2, -1.8)],
-            "blockers": [self._blocker(0.15), self._blocker(0.9)],
+            "under": self._ray(0.0, ground, origin),
+            "samples": [self._ray(offset, ground, origin) for offset in (0.6, 1.2, 1.8)],
+            "backward": [self._ray(offset, ground, origin) for offset in (-0.6, -1.2, -1.8)],
+            "blockers": [self._blocker(0.15, origin), self._blocker(0.9, origin)],
         }
 
     # --- the client the executor uses ---------------------------------------------------------
@@ -314,25 +340,32 @@ class FakeWorld:
         self._step()
         self.seq += 1
         self.frame += 1
+        # What this observation carries: the pose as it is now, or as it was `pose_lag_ticks` physics steps
+        # ago, stamped with when it was taken. A reader that trusts the stamp measures the whole age.
+        self._poses.append((self.x, self.y, self.vx, self.vy))
+        del self._poses[:-(max(1, self.pose_lag_ticks) + 1)]        # only the steps a lag can reach back over
+        lag = max(0, min(self.pose_lag_ticks, len(self._poses) - 1))
+        x, y, vx, vy = self._poses[-1 - lag]
+        captured = self.now - lag * PERIOD_S
         public: dict[str, Any] = {"dead": self.dead}
         if self.publish_pose:
             public["controlled"] = {
                 "object_id": "fixture:body",
                 "path": "Body",
-                "position": [self.x, self.y, 0.0],
-                "velocity": [self.vx, self.vy, 0.0],
+                "position": [x, y, 0.0],
+                "velocity": [vx, vy, 0.0],
                 "source": "rigidbody2d",
             }
             if self.publish_probe:
                 if self._probe_sample is None or self.frame % max(1, self.probe_every) == 0:
-                    self._probe_sample = self._probe()
+                    self._probe_sample = self._probe((x, y))
                 public["probe"] = self._probe_sample
         return Observation(
             protocol="upa/1",
             session="fixture",
             seq=self.seq,
             game_s=self.now,
-            wall_utc=WALL_EPOCH + timedelta(seconds=self.now),
+            wall_utc=WALL_EPOCH + timedelta(seconds=captured),
             clock_mode="realtime",
             scene=self.scene,
             playing=not self.dead,
@@ -421,6 +454,39 @@ class FakeWorld:
         self.grounded = floor is not None and self.y <= floor
         self.held.clear()
         self.now += settle_s
+        self._poses.clear()
         moved = math.hypot(self.x - before[0], self.y - before[1])
         return PlaceResult(placed=True, position_after_settle=[self.x, self.y, 0.0],
                            moved_during_settle=moved, reason=None)
+
+
+# --- scenarios the hop tests build on ------------------------------------------------------
+
+
+def tall_wall_world(**overrides: Any) -> FakeWorld:
+    """A wall taller than the rise: a hop chosen at it jumps, is blocked, and measures how high it got.
+
+    Three and a half units of wall against a rise peak of about one and a half: no run-up clears it, so a
+    hop against it is a measured `blocked` with the apex it reached as a lower bound on the wall's height.
+    """
+    settings: dict[str, Any] = {"x": 0.0, "step_x": None, "wall_x": 3.0, "wall_height": 3.5}
+    settings.update(overrides)
+    return FakeWorld(**settings)
+
+
+def lagged_pose_world(**overrides: Any) -> FakeWorld:
+    """A link that delivers the pose one physics step old, as a bridge that reads a frame behind does."""
+    settings: dict[str, Any] = {"x": 0.0, "pose_lag_ticks": 1}
+    settings.update(overrides)
+    return FakeWorld(**settings)
+
+
+def slow_start_world(**overrides: Any) -> FakeWorld:
+    """A body that takes time to reach its run speed, so a short run-in arrives short of it.
+
+    Eight units per second squared reaches the four units per second this fixture runs at in half a second
+    over one unit, and a turn costs the momentum the body had.
+    """
+    settings: dict[str, Any] = {"x": 2.6, "accel": 8.0}
+    settings.update(overrides)
+    return FakeWorld(**settings)

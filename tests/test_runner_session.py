@@ -1203,3 +1203,24 @@ def test_a_discovery_file_records_its_hash_and_declared_count_in_the_plan(tmp_pa
     plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
     assert plan["discovery_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert plan["declared_configuration_count"] == 1
+
+
+def test_the_detectors_are_opt_in_and_the_plan_records_the_bounds_they_measure_against(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0014")
+    real, current = cli.SystemOneS1, {}
+    monkeypatch.setattr(cli, "SystemOneS1", lambda ledger, **kwargs: real(ledger, send=current["send"], **kwargs))
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
+        plans: dict[str, dict[str, Any]] = {}
+        for name, flags in (("off", []), ("on", ["--detectors"])):
+            files = Project(tmp_path / name, thread.port)
+            current["send"] = Send(files.out, reply("next_action", "finish"))
+            assert cli.main([*files.args(tokens_per_minute=600_000_000), *flags]) == 0
+            plans[name] = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
+    assert "detectors" not in plans["off"]                     # off by default: the plan is what it was
+    recorded = plans["on"]["detectors"]
+    assert recorded["enabled"] is True
+    assert recorded["names"] == ["non_finite_pose", "fell_out", "hitch", "runtime_exception", "reader_over_max"]
+    assert (recorded["hitch"]["k"], recorded["hitch"]["window"]) == (5, 40)
+    assert recorded["fell_out"]["rise_peak"] == "unknown"      # this calibration measured no rise
+    assert "no measured rise peak" in recorded["fell_out"]["silent"]
+    assert recorded["reader_over_max"]["silent"].endswith("the manifest needs a declared maximum")

@@ -41,6 +41,13 @@ cleared at a reset boundary: the loop rebinds its own scene-bound ports after a 
 adapter, so it reads the loop's `reset_summary` (present on the first context after a restart) and, when an
 observation carries one, a changed `session` id.
 
+`note_turn` is where the menu's `recent` comes from: the harness hands this adapter each finished turn's
+report, and it keeps the last six executed choices with the duration each measurably took and the result it
+measurably had — an option's own `terminated_by` and `duration_s`, a plain action's or skill's verdict from
+the same rule the options memory files, the applied hold the bridge reported, and `wait`/`finished` (or the
+turn's own measured outcome) for the choices that send no input. Unknown stays `unmeasured`. Nothing is
+ranked, summarised or recommended, and the adapter can be run without ever being told a turn.
+
 `contingent` is opt-in, off by default, and needs the compact menu, whose request asks `if_blocked` and
 `if_succeeded` beside `next_action` over the same criteria. When it is on, the adapter reads those two
 answers out of the response it already has and puts them in the decision (`Decision.contingent`), so the
@@ -68,7 +75,7 @@ from typing import Any, Protocol
 from playtest.bench import call_budget, replay
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
-from playtest.contracts.loop import Choice, ChoiceSet
+from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSet
 from playtest.core.context import INSTRUCTIONS, INSTRUCTIONS_KEEP_PLAYING, canonical
 from playtest.core.ports import S1Answer, S1Call
 from playtest.runner import menu, s1_requests
@@ -219,6 +226,65 @@ def _compact_rules(value: str | Sequence[str] | None) -> tuple[state_codec.Rule,
         raise ValueError(f"unknown compact-state rule in {list(value)!r}") from None
 
 
+_PLAIN_KINDS = (ChoiceKind.action, ChoiceKind.skill)
+
+
+def _recent_entry(report: Any, primitives: Any = None) -> dict[str, Any] | None:
+    """One finished turn as a `recent` entry: the executed choice, its measured duration and measured result.
+
+    An option states its own `duration_s` and `terminated_by`. A plain action or skill states the verdict the
+    options memory files for it, from the same rule (`playtest.runner.session.choice_outcome`) and the same
+    applied hold. A wait says `wait` and a finish says `finished`, whatever the turn reports for the rest of
+    those kinds. A rejected input ran nothing, so it is `rejected` at the id the turn selected. Anything the
+    turn did not measure is `None` (duration) or `unmeasured` (result), never zero or a success.
+    """
+    record, choice = getattr(report, "record", None), getattr(report, "selected", None)
+    if record is None or choice is None:
+        return None
+    kind = getattr(choice, "kind", None)
+    if kind is ChoiceKind.option:
+        outcome = getattr(report, "option_outcome", None)
+        body = outcome if isinstance(outcome, Mapping) else {}
+        return _entry(record.executed_action or record.effective_choice,
+                      body.get("duration_s"), body.get("terminated_by"))
+    if kind in _PLAIN_KINDS:
+        seconds, result = _plain_verdict(report, choice, primitives)
+        return _entry(record.effective_choice, seconds, result)
+    if kind is ChoiceKind.wait:
+        return _entry(record.effective_choice, None, "wait")
+    return _entry(record.effective_choice, None, getattr(record.outcome, "value", record.outcome))
+
+
+def _plain_verdict(report: Any, choice: Any, primitives: Any) -> tuple[float | None, str]:
+    """The duration and verdict a plain action or skill measurably had, or `(None, "unmeasured")`.
+
+    Both come from the record the runner's memory files: the measured effect's displacement against the same
+    success margin, and the applied hold the bridge reported. Without the measured primitives, or without an
+    execution to read, the verdict is unmeasured rather than assumed.
+    """
+    if primitives is None:
+        return None, menu.UNMEASURED
+    executed = next((sent for sent in getattr(report, "executed", ())
+                     if getattr(getattr(sent, "choice", None), "id", None) == choice.id
+                     and getattr(sent, "purpose", None) == "choice"), None)
+    if executed is None:
+        return None, menu.UNMEASURED
+    from .session import choice_outcome  # the listener is only called by it, so this import is never circular
+
+    outcome = choice_outcome(choice, executed, primitives=primitives, scene=None)
+    return outcome.duration_s, outcome.terminated_by
+
+
+def _entry(choice_id: Any, seconds: Any, result: Any) -> dict[str, Any] | None:
+    """One `recent` row, or `None` when the turn names no choice: a quantity, never a claim."""
+    if not isinstance(choice_id, str) or not choice_id:
+        return None
+    measured = (float(seconds) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+                and math.isfinite(seconds) else None)
+    return {"id": choice_id, "s": measured,
+            "result": result if isinstance(result, str) and result else menu.UNMEASURED}
+
+
 class _Reply:
     """One call's outcome: its `s1_call` record, the choice it named, and why there is none.
 
@@ -338,6 +404,8 @@ class SystemOneS1:
         self._contingent = contingent
         self._menu_positions: list[list[float]] = []
         self._menu_session: str | None = None
+        # The last measured choices, oldest first: what `note_turn` was told, newest last, at most six.
+        self._recent: list[dict[str, Any]] = []
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._instructions = instructions
@@ -489,11 +557,24 @@ class SystemOneS1:
             objective=context["objective"], observation=observation, choices=choices,
             memory=self._menu_memory, directive=context.get("directive"),
             pending_help=context.get("pending_help"), facts=context.get("facts") or (),
-            game_view=context.get("game_view"), positions=self._menu_positions)
+            game_view=context.get("game_view"), positions=self._menu_positions, recent=self._recent)
         position = menu.measured_position(observation)
         if position is not None:
             self._menu_positions.append(list(position))
         return payload
+
+    def note_turn(self, report: Any, primitives: Any = None) -> None:
+        """Remember one finished turn's executed choice, measured duration and measured result.
+
+        The harness calls this after each turn with the loop's report and, when the options layer is on, the
+        measured primitives its memory files outcomes by. It records only what the turn measured: an option's
+        own `terminated_by` and `duration_s`, a plain action's or skill's verdict from the same rule the
+        memory records, and the turn's own outcome for a wait, finish, escalate, delegate or restart. A turn
+        that selected nothing records nothing. `recent` holds the newest six, oldest first.
+        """
+        entry = _recent_entry(report, primitives)
+        if entry is not None:
+            self._recent = [*self._recent, entry][-menu.RECENT_LIMIT:]
 
     def _menu_clear_at_boundary(self, context: Mapping[str, Any], observation: Mapping[str, Any]) -> None:
         """Forget the position history when this turn follows a reset, so no distance spans two sessions.

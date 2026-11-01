@@ -25,6 +25,7 @@ import asyncio
 import math
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from playtest.contracts.bridge import Observation
@@ -78,6 +79,32 @@ SUCCESS_MARGIN_STEPS = 1.0
 APEX_SHARE = 0.5
 # Placement settle: four observation periods, enough for a contact-resolved body to stop.
 PLACE_SETTLE_S = 0.25
+
+# --- the take-off (docs/design/borrowed-from-autopilot.md, item 1) ------------------------
+# The press lands within a step of the decision, and the pose the decision read is already older than the
+# decision: half an observation period for the press, plus the measured age of the pose.
+PRESS_HALF_PERIODS = 0.5
+# Speed has stopped rising when it is no faster than it was this long ago, within this share of it. Both
+# numbers are the source's own (0.3 s, 4%), measured here from the pose stream.
+PLATEAU_LOOKBACK_S = 0.3
+PLATEAU_SHARE = 0.04
+# ... and only speeds measured this recently are compared: the source's own half-second window, so a body
+# that was slow a while ago and has since reached its run speed is judged on the speed it has now.
+SPEED_WINDOW_S = 0.5
+# One speed sample spans this many observations, so a reading taken across a change of direction is the
+# small speed the body really had, not the sum of the two it had either side of the turn.
+SPEED_SPAN_TICKS = 2
+# Speed samples kept per approach: three seconds at observation rate, well past any lookback.
+SPEED_SAMPLES = 64
+# The body has run past its take-off point when it is inside this share of its lead without reaching plateau.
+# A plateau that is slow compared with the run speed is not a run past it: it met something on the way in.
+RAN_PAST_SHARE = 0.5
+# Attempts inside one hop, each with a fresh run-up, when an attempt never took off at speed. A hop that
+# jumped and was blocked is a measured result and is not retried.
+MAX_HOP_ATTEMPTS = 3
+# A hop that ended against the obstacle with its body this close to it did not pass it: the highest point
+# it reached is a lower bound on the wall's height there.
+WALL_CONTACT_U = 0.3
 
 UP = 1
 
@@ -261,6 +288,7 @@ class _Run:
     held: str | None = None
     acts: int = 0
     notes: list[str] = field(default_factory=list)
+    measured: dict[str, Any] = field(default_factory=dict)
 
     def end(self, terminated_by: str, reason: str | None = None) -> None:
         if self.terminated_by is None:
@@ -317,6 +345,96 @@ class _Progress:
         return (p1 - p0) / (t1 - t0)
 
 
+class _Speed:
+    """The body's measured speed along one direction, and whether it has stopped rising.
+
+    A sample is the distance travelled over `SPEED_SPAN_TICKS` observations, so a reading taken across a
+    change of direction reads as the small speed the body really had at the turn. The stream is restarted
+    at each approach: what matters is the speed of *this* run-in, not the one the body had before it.
+    """
+
+    def __init__(self, unit: Sequence[float]) -> None:
+        self.unit = tuple(unit)
+        self.points: list[tuple[float, float]] = []        # (time, progress along the direction)
+        self.samples: list[tuple[float, float]] = []       # (time, measured speed)
+
+    def _along(self, position: Sequence[float]) -> float:
+        return (position[0] * self.unit[0] + position[1] * self.unit[1]
+                + position[2] * self.unit[2])
+
+    def update(self, now: float, position: Sequence[float]) -> float | None:
+        """One observation: the measured speed, or None until two of them span a sample."""
+        self.points.append((now, self._along(position)))
+        del self.points[:-SPEED_SAMPLES]
+        if len(self.points) <= SPEED_SPAN_TICKS:
+            return None
+        t0, p0 = self.points[-1 - SPEED_SPAN_TICKS]
+        t1, p1 = self.points[-1]
+        if t1 <= t0:
+            return None
+        speed = abs(p1 - p0) / (t1 - t0)
+        self.samples.append((now, speed))
+        del self.samples[:-SPEED_SAMPLES]
+        return speed
+
+    def plateau(self, now: float) -> tuple[bool, float | None]:
+        """Whether the measured speed has stopped rising, and the fastest speed it measured on the way.
+
+        "Stopped rising" is no faster than it was `PLATEAU_LOOKBACK_S` ago within `PLATEAU_SHARE`. Until the
+        stream is that old the comparison is against every earlier sample but the current one, which is the
+        same statement read over the time actually measured. Only samples from the last `SPEED_WINDOW_S`
+        count: a speed the body had a while ago, before it reached its run speed, is not evidence it is slow
+        now.
+        """
+        current = self.samples[-1][1] if self.samples else None
+        window = [(stamp, value) for stamp, value in self.samples if now - stamp <= SPEED_WINDOW_S]
+        if current is None or len(window) < 2:
+            return False, None
+        older = [value for stamp, value in window if now - stamp > PLATEAU_LOOKBACK_S]
+        reference = older or [value for _stamp, value in window[:-1]]
+        best = max(reference) if reference else None
+        if best is None:
+            return False, None
+        return current <= best * (1.0 + PLATEAU_SHARE), best
+
+
+@dataclass(frozen=True)
+class _Lead:
+    """Where the take-off was taken, and the two terms that made up its lead.
+
+    The aim is one apex run before the obstacle, plus the distance the body travels while the decision is
+    being made: the measured age of the pose it read, and half an observation for the press to land.
+    """
+
+    distance: float
+    run_to_apex: float
+    latency: float
+    pose_age: float | None
+    period_s: float
+
+    def statement(self) -> str:
+        age = "unmeasured" if self.pose_age is None else f"{self.pose_age:.3f} s"
+        return (f"lead {self.distance:.3f} = {self.run_to_apex:.3f} run to apex + "
+                f"{self.latency:.3f} latency (pose age {age} + half of a {self.period_s:.3f} s period)")
+
+
+@dataclass
+class _Hop:
+    """What one hop's attempts share: the measured take-off geometry and the inputs to use."""
+
+    unit: tuple[float, float, float]
+    move_action: str
+    chord: str
+    back_action: str | None
+    speed: float | None
+    run_up: float | None
+    launch: float
+    rise_duration: float
+    flight_bound: float
+    fell: float | None
+    probe_wall: float | None = None
+
+
 class OptionExecutor:
     """Runs one chosen option's closed loop and returns what it measured.
 
@@ -335,11 +453,16 @@ class OptionExecutor:
         dead_fields: Mapping[str, Any] | None = None,
         period_s: float = PERIOD_S,
         flight: dict[str, Any] | None = None,
+        wall_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._primitives = primitives
         self._clock = clock
         self._sleep = sleep or asyncio.sleep
+        # The reader's wall clock, for the one measurement a monotonic clock cannot make: how old the pose
+        # in an observation was when it arrived. The bridge stamps `wall_utc` when it takes the pose; this
+        # is read the moment the observation is in hand.
+        self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._dead_fields = dict(dead_fields or {})
         self._period_s = period_s
         # Flights measured by earlier hops in this run, shared by the caller across executors. A hop's take-off
@@ -354,6 +477,9 @@ class OptionExecutor:
         self._last_probe_key: Any = None
         self._probe_changed_at: float | None = None
         self._probe_intervals: list[float] = []
+        # The measured age of the pose in the most recent observation: the bridge's capture stamp against
+        # the reader's clock when it arrived. None until one was measured on a pair that makes sense.
+        self._pose_age_s: float | None = None
 
     # --- the port ------------------------------------------------------------------------
 
@@ -365,6 +491,7 @@ class OptionExecutor:
         self._last_probe_key = None
         self._probe_changed_at = None
         self._probe_intervals = []
+        self._pose_age_s = None
         try:
             if spec.template == "wait":
                 await self._wait(run)
@@ -412,10 +539,15 @@ class OptionExecutor:
         duration: float | None = None
         if run.terminated_by is not None:
             duration = max(0.0, self._clock() - run.started)
+        params = dict(run.spec.params)
+        if run.measured:
+            # Additive, never a replacement: what the option measured about the place, beside what it was
+            # asked to do. `record` keeps params, so the next label can state it.
+            params["measured"] = dict(run.measured)
         return OptionOutcome(
             option_id=run.spec.option_id,
             template=run.spec.template,
-            params=dict(run.spec.params),
+            params=params,
             start_position=start,
             end_position=end,
             displacement=displacement,
@@ -446,6 +578,7 @@ class OptionExecutor:
                     f"observation failed: {exc.code}: {exc.message}")
             return None
         self._last_obs = observation
+        self._pose_age_s = self._measure_pose_age(observation)
         self._note_stream(observation)
         run.scene = run.scene or observation.scene
         reason = self._state_change(run, observation)
@@ -488,6 +621,24 @@ class OptionExecutor:
         """How long one observation takes here: the median gap between the last few, else the configured period."""
         gaps = sorted(b - a for a, b in zip(self._tick_times, self._tick_times[1:]) if b > a)
         return gaps[len(gaps) // 2] if gaps else self._period_s
+
+    def _measure_pose_age(self, observation: Observation) -> float | None:
+        """How old the pose in this observation was when it arrived, or None when that is not measurable.
+
+        The bridge stamps the pose with `wall_utc`; the reader's clock is read the moment the observation is
+        in hand. An age that is negative or past the bridge's own staleness bound is a clock disagreement,
+        not a reading, so it is reported as unmeasured rather than used as a number.
+        """
+        captured = getattr(observation, "wall_utc", None)
+        if not isinstance(captured, datetime):
+            return None
+        try:
+            age = (self._wall_clock() - captured).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(age) or age < 0.0 or age > MAX_AGE_S:
+            return None
+        return age
 
     def _probe_staleness_s(self) -> tuple[float, bool]:
         """How old a probe sample may be at the moment the body acts on it, and whether that was estimated.
@@ -665,7 +816,15 @@ class OptionExecutor:
                 return
 
     async def _hop(self, run: _Run) -> None:
-        """Run up, launch with the move held through the rise, and end on a measured landing."""
+        """Run up, launch with the move held through the rise, and end on a measured landing.
+
+        The take-off is timed the way `jump_to` times it (docs/design/borrowed-from-autopilot.md, item 1):
+        the lead carries the measured age of the pose the decision read, the press waits for the measured
+        speed to stop rising, an attempt that ran past its take-off point at too low a speed is retried with a
+        fresh run-up, and a flight that ended against the obstacle states the height it reached as a lower
+        bound on the wall's. What is already known about the wall is stated before the hop runs and never
+        refuses the hop S1 chose.
+        """
         params = run.spec.params or {}
         unit = _unit(params.get("direction"))
         if unit is None:
@@ -690,15 +849,13 @@ class OptionExecutor:
         speed = _finite(params.get("speed")) or (direction.speed if direction else None)
         run_up = _finite(params.get("run_up"))
         launch = _finite(params.get("launch_distance"))
-        # `launch` is how far short of the hop's start to take off; the obstacle a hop is chosen for is at its
-        # start. Without a stated value it is the distance covered to apex at measured speed.
+        # `launch` is the run to the apex: how far short of the hop's start to take off. Without a stated value
+        # it is the distance covered to apex at measured speed.
         if launch is None:
             launch = (speed or 0.0) * rise_duration / 2.0 if speed else 0.0
         measured_apex = self._measured_apex_s()
         if measured_apex is not None and speed and launch:
             launch = speed * measured_apex
-        flight_bound = min(OPTION_MAX_S, rise_duration * FLIGHT_BOUND_FACTOR)
-        fell = self._fell_bound()
         back_action = params.get("run_up_action")
         if run_up and back_action is None:
             back = self._primitives.opposite(unit)
@@ -706,127 +863,199 @@ class OptionExecutor:
             if back_action is None:
                 run.end("rejected", "a run-up needs an action measured opposite this direction")
                 return
+        hop = _Hop(
+            unit=unit,
+            move_action=str(move_action),
+            chord=str(chord),
+            back_action=back_action,
+            speed=speed,
+            run_up=run_up,
+            launch=launch,
+            rise_duration=rise_duration,
+            flight_bound=min(OPTION_MAX_S, rise_duration * FLIGHT_BOUND_FACTOR),
+            fell=self._fell_bound(),
+        )
 
         start = await self._tick(run)
         if start is None:
             return
         assert run.start_position is not None
         progress = _Progress(unit, run.start_position, BLOCK_WINDOW_S)
+        hop.probe_wall = self._probe_wall_lower(self._last_obs)
+        # What is already known here, against what the rise reaches: stated up front, so the next label can
+        # carry it. The hop still runs — code does not refuse the choice S1 made.
+        self._reach_pre_check(run, params, hop.probe_wall)
 
         # Phase 0: find what is to be cleared, by measurement. Advance toward the direction until the body
         # stalls: that point is the obstacle. A hop chosen pressed against it stalls at once. If nothing stalls
         # the body within the run-up distance there is no obstacle to find, and the hop is a running jump from
         # where it is, already at speed.
-        obstacle: tuple[float, float, float] | None = tuple(start)
+        obstacle, launch_at = await self._hop_seek(run, hop, tuple(start), progress)
+        if run.terminated_by is not None:
+            return
+        if obstacle is None:
+            if launch_at is None:                      # the seek ended without a measurement to jump from
+                return
+            await self._hop_fly(run, hop, None, launch_at, progress)
+            return
+
+        attempt = 0
+        while True:
+            attempt += 1
+            run.note(f"attempt {attempt} of {MAX_HOP_ATTEMPTS}")
+            started = self._clock()
+            retry = await self._hop_attempt(run, hop, obstacle, progress, started)
+            if run.terminated_by is not None or not retry:
+                return
+            if attempt >= MAX_HOP_ATTEMPTS:
+                break
+        run.end("rejected", RAN_PAST_LOW_SPEED)
+
+    async def _hop_seek(self, run: _Run, hop: _Hop, start: tuple[float, float, float],
+                        progress: _Progress) -> tuple[tuple[float, float, float] | None,
+                                                     tuple[float, float, float] | None]:
+        """Find the obstacle a hop is chosen for, or the point to run off.
+
+        Returns (obstacle, launch_at): the obstacle when one stalled the body, or None with the point at
+        which a running jump is taken (the floor ending, or the run-up distance covered with nothing in the
+        way).
+        """
+        if not hop.run_up:
+            return start, None
+        if not await self._hold(run, hop.move_action, self._observation(),
+                                lease_s=self._time_bound(hop.run_up, hop.speed)):
+            return None, None
+        seek = _Progress(hop.unit, start, BLOCK_WINDOW_S)
+        while run.terminated_by is None:
+            position = await self._tick(run)
+            if position is None:
+                return None, None
+            now = self._clock()
+            seek.update(now, position)
+            progress.update(now, position)
+            rate = seek.rate()
+            if (rate is not None and hop.speed and seek.elapsed >= BLOCK_WINDOW_S
+                    and rate < BLOCK_SHARE * hop.speed):
+                return tuple(position), None
+            if seek.along(position) >= hop.run_up:
+                return None, tuple(position)
+            # The floor ended: the body has started to drop with no rise input. A gap is cleared by taking
+            # off where the floor ends, so launch now, already moving toward it.
+            if position[UP] < start[UP] - self._landing_eps():
+                return None, tuple(position)
+            if self._fell(run) or self._timeout(run, now):
+                return None, None
+        return None, None
+
+    async def _hop_attempt(self, run: _Run, hop: _Hop, obstacle: Sequence[float],
+                           progress: _Progress, started: float) -> bool:
+        """One run-up, approach and flight. Returns True when it never took off at speed, so it is retried."""
+        unit = hop.unit
+        reference = _Progress(unit, obstacle, BLOCK_WINDOW_S)
+        back_from = tuple(run.end_position or obstacle)
+        origin: tuple[float, float, float] = back_from
+
+        # Phase 1: the run-up, away from the obstacle (from wherever the body is, so a retry backs up again).
+        if hop.run_up:
+            if not await self._hold(run, str(hop.back_action), self._observation(),
+                                    lease_s=self._time_bound(hop.run_up, hop.speed)):
+                return False
+            back_progress = _Progress((-unit[0], -unit[1], -unit[2]), back_from, BLOCK_WINDOW_S)
+            # A run-up stays on the floor it starts on: between one observation and the next the body
+            # travels `step`, and a probe sample can be older than the observation that carried it, so
+            # the floor behind is read from every backward down-ray inside that whole stopping distance.
+            step = (hop.speed or 0.0) * self._period_s
+            floor_y = back_from[UP]
+            while run.terminated_by is None:
+                position = await self._tick(run)
+                if position is None:
+                    return False
+                now = self._clock()
+                backed_up = max(0.0, back_progress.update(now, position))
+                if backed_up >= hop.run_up:
+                    break
+                if self._blocked(run, back_progress, hop.speed, BLOCK_SHARE):
+                    return False
+                staleness, estimated = self._probe_staleness_s()
+                margin = (hop.speed or 0.0) * (staleness + self._period_s)
+                holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, hop.fell)
+                if holds is False and edge is not None:
+                    note = (f"run-up {backed_up:.2f} available of {hop.run_up:.2f} "
+                            f"(floor edge at {edge - margin:.2f} behind")
+                    if estimated:
+                        note += f"; staleness {staleness:.2f} s estimated"
+                    run.note(note + ")")
+                    break
+                # Without a probe behind, the body walking off the edge is the measurement: it has already
+                # left the floor the run-up started on, so stop there and keep everything afterwards honest.
+                if position[UP] < floor_y - self._landing_eps():
+                    run.note(f"run-up truncated: floor ended after {backed_up:.2f}")
+                    break
+                if self._fell(run) or self._timeout(run, now, started):
+                    return False
+            if run.terminated_by is not None:
+                return False
+            origin = tuple(run.end_position or back_from)
+
+        # Phase 2: run in, and take off where the lead says, at a measured plateau in speed.
+        if not await self._hold(run, hop.move_action, self._observation(),
+                                lease_s=self._time_bound(hop.run_up or 0.0, hop.speed)):
+            return False
+        approach = _Progress(unit, origin, BLOCK_WINDOW_S)
+        meter = _Speed(unit)
+        lead = self._take_off_lead(hop.speed, hop.launch)
+        # Whether this attempt had room to build speed before its take-off point at all: from a standing start
+        # already inside the lead there is nothing to wait for, and the flight measures what it got.
+        room = (-reference.along(origin)) > RAN_PAST_SHARE * lead.distance
         launch_at: tuple[float, float, float] | None = None
-        if run_up:
-            if not await self._hold(run, str(move_action), self._observation(),
-                                    lease_s=self._time_bound(run_up, speed)):
-                return
-            seek = _Progress(unit, start, BLOCK_WINDOW_S)
-            while run.terminated_by is None:
-                position = await self._tick(run)
-                if position is None:
-                    return
-                now = self._clock()
-                seek.update(now, position)
-                progress.update(now, position)
-                rate = seek.rate()
-                if (rate is not None and speed and seek.elapsed >= BLOCK_WINDOW_S
-                        and rate < BLOCK_SHARE * speed):
-                    obstacle = tuple(position)
-                    break
-                if seek.along(position) >= run_up:
-                    obstacle, launch_at = None, tuple(position)
-                    break
-                # The floor ended: the body has started to drop with no rise input. A gap is cleared by taking
-                # off where the floor ends, so launch now, already moving toward it.
-                if position[1] < start[1] - self._landing_eps():
-                    obstacle, launch_at = None, tuple(position)
-                    break
-                if self._fell(run) or self._timeout(run, now):
-                    return
-            if run.terminated_by is not None:
-                return
+        while run.terminated_by is None:
+            position = await self._tick(run)
+            if position is None:
+                return False
+            now = self._clock()
+            approach.update(now, position)
+            progress.update(now, position)
+            measured = meter.update(now, position)
+            take_off_speed = measured or hop.speed
+            lead = self._take_off_lead(take_off_speed, hop.launch)
+            plateaued, plateau_speed = meter.plateau(now)
+            remaining = -reference.along(position)
+            if remaining <= lead.distance and (plateaued or not room):
+                launch_at = tuple(position)
+                break
+            if room and remaining <= RAN_PAST_SHARE * lead.distance and not plateaued:
+                # The lead point arrived before the measured speed stopped rising: the body was still
+                # accelerating when it should have been jumping. No press at a speed it had not reached.
+                detail = f"{remaining:.2f} u short of the obstacle"
+                if take_off_speed is not None:
+                    detail += f" at {take_off_speed:.2f} u/s"
+                detail += (", its speed unmeasured" if plateau_speed is None
+                           else f", still rising past {plateau_speed:.2f} u/s")
+                run.note(f"{RAN_PAST_LOW_SPEED} ({detail}); back up for a fresh run-up")
+                return True
+            rate = approach.rate()
+            if (rate is not None and plateaued and hop.speed and approach.elapsed >= BLOCK_WINDOW_S
+                    and approach.best >= self._success_margin(hop.speed)
+                    and rate < LAUNCH_SHARE * hop.speed):
+                # Met something on the way in: the speed it had is gone and did not come back. A body still
+                # rising through its run speed is not stalled, and waits for its take-off point instead.
+                launch_at = tuple(position)
+                break
+            if self._fell(run) or self._timeout(run, now, started):
+                return False
+        if run.terminated_by is not None or launch_at is None:
+            return False
+        await self._hop_fly(run, hop, obstacle, launch_at, progress, lead=lead)
+        return False
 
-        if obstacle is not None:
-            reference = _Progress(unit, obstacle, BLOCK_WINDOW_S)
-            # Phase 1: the run-up, away from the obstacle.
-            origin = obstacle
-            if run_up:
-                if not await self._hold(run, str(back_action), self._observation(),
-                                        lease_s=self._time_bound(run_up, speed)):
-                    return
-                back_progress = _Progress((-unit[0], -unit[1], -unit[2]), obstacle, BLOCK_WINDOW_S)
-                # A run-up stays on the floor it starts on: between one observation and the next the body
-                # travels `step`, and a probe sample can be older than the observation that carried it, so
-                # the floor behind is read from every backward down-ray inside that whole stopping distance.
-                step = (speed or 0.0) * self._period_s
-                floor_y = obstacle[UP]
-                while run.terminated_by is None:
-                    position = await self._tick(run)
-                    if position is None:
-                        return
-                    now = self._clock()
-                    backed_up = max(0.0, back_progress.update(now, position))
-                    if backed_up >= run_up:
-                        break
-                    if self._blocked(run, back_progress, speed, BLOCK_SHARE):
-                        return
-                    staleness, estimated = self._probe_staleness_s()
-                    margin = (speed or 0.0) * (staleness + self._period_s)
-                    holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, fell)
-                    if holds is False and edge is not None:
-                        note = (f"run-up {backed_up:.2f} available of {run_up:.2f} "
-                                f"(floor edge at {edge - margin:.2f} behind")
-                        if estimated:
-                            note += f"; staleness {staleness:.2f} s estimated"
-                        run.note(note + ")")
-                        break
-                    # Without a probe behind, the body walking off the edge is the measurement: it has already
-                    # left the floor the run-up started on, so stop there and keep everything afterwards honest.
-                    if position[UP] < floor_y - self._landing_eps():
-                        run.note(f"run-up truncated: floor ended after {backed_up:.2f}")
-                        break
-                    if self._fell(run) or self._timeout(run, now):
-                        return
-                if run.terminated_by is not None:
-                    return
-                origin = tuple(position)
-
-            # Phase 2: run in, and take off `launch` short of the obstacle, or at a measured stall.
-            if not await self._hold(run, str(move_action), self._observation(),
-                                    lease_s=self._time_bound(run_up or 0.0, speed)):
-                return
-            approach = _Progress(unit, origin, BLOCK_WINDOW_S)
-            while run.terminated_by is None:
-                position = await self._tick(run)
-                if position is None:
-                    return
-                now = self._clock()
-                approach.update(now, position)
-                progress.update(now, position)
-                if reference.along(position) >= -(launch or 0.0):
-                    launch_at = tuple(position)
-                    break
-                rate = approach.rate()
-                if (rate is not None and speed and approach.elapsed >= BLOCK_WINDOW_S
-                        and approach.best >= self._success_margin(speed)
-                        and rate < LAUNCH_SHARE * speed):
-                    launch_at = tuple(position)
-                    break
-                if self._fell(run) or self._timeout(run, now):
-                    return
-            if run.terminated_by is not None:
-                return
-        assert launch_at is not None
-        launch_progress = progress.along(launch_at)
-
-        # Phase 3: the flight. The chord holds the move and the rise inputs together for its lease.
-        if not await self._hold(run, str(chord), self._observation(), lease_s=flight_bound):
+    async def _hop_fly(self, run: _Run, hop: _Hop, obstacle: Sequence[float] | None,
+                       launch_at: tuple[float, float, float], progress: _Progress,
+                       lead: _Lead | None = None) -> None:
+        """Phase 3: the flight. The chord holds the move and the rise inputs together for its lease."""
+        if not await self._hold(run, hop.chord, self._observation(), lease_s=hop.flight_bound):
             return
         flight_start = self._clock()
-        landing = _Landing(rise_duration, self._landing_eps())
+        landing = _Landing(hop.rise_duration, self._landing_eps())
         apex: tuple[float, float] | None = None  # (elapsed, height) of the highest sample this flight
         while run.terminated_by is None:
             position = await self._tick(run)
@@ -840,30 +1069,109 @@ class OptionExecutor:
                 return
             if landing.landed(now - flight_start, position):
                 break
-            if now - flight_start >= flight_bound:
+            if now - flight_start >= hop.flight_bound:
                 run.end("timed_out", f"flight {now - flight_start:.2f} s past the bound "
-                                     f"{flight_bound:.2f} s")
+                                     f"{hop.flight_bound:.2f} s")
                 return
 
         landed_at = tuple(run.end_position or launch_at)
         self._record_apex(apex, launch_at)
-        margin = self._success_margin(speed)
+        margin = self._success_margin(hop.speed)
+        apex_height = None if apex is None else apex[1] - launch_at[UP]
         if obstacle is not None:
             # Cleared means landing past the measured obstacle, not merely past the take-off point.
-            beyond = _Progress(unit, obstacle, BLOCK_WINDOW_S).along(landed_at)
+            reference = _Progress(hop.unit, obstacle, BLOCK_WINDOW_S)
+            beyond = reference.along(landed_at)
+            took_off = reference.along(launch_at)
             outcome = "succeeded" if beyond >= margin else "blocked"
-            took_off = _Progress(unit, obstacle, BLOCK_WINDOW_S).along(launch_at)
             flight = ("apex unmeasured" if apex is None else
-                      f"apex {apex[1] - launch_at[UP]:+.3f} u at {apex[0]:.2f} s after take-off")
+                      f"apex {apex_height:+.3f} u at {apex[0]:.2f} s after take-off")
+            lead_text = f"lead {hop.launch or 0.0:.3f}" if lead is None else lead.statement()
             run.end(outcome, f"landed {beyond:.3f} u beyond the measured obstacle at "
                              f"{[round(v, 3) for v in obstacle]}, margin {margin:.3f}; took off {took_off:+.3f} u "
-                             f"from it (lead {launch or 0.0:.3f}); {flight}")
+                             f"from it ({lead_text}); {flight}")
+            if outcome == "blocked":
+                self._wall_measurement(run, hop, launch_at, apex, beyond)
             return
-        gained = progress.along(landed_at) - launch_progress
+        gained = progress.along(landed_at) - progress.along(launch_at)
         if gained >= margin:
             run.end("succeeded", f"landed {gained:.3f} u beyond the launch point, margin {margin:.3f}")
         else:
             run.end("blocked", f"landed {gained:.3f} u beyond the launch point, margin {margin:.3f}")
+
+    # --- the take-off's measurements ------------------------------------------------------
+
+    def _take_off_lead(self, speed: float | None, run_to_apex: float) -> _Lead:
+        """The distance before the obstacle at which the press must land, as one measured lead.
+
+        The body travels `speed` for the time to the apex, and for however long the decision it is making was
+        already old: the measured age of the pose it read, plus half an observation period for the press
+        itself to land. Before an observation arrives there is no age to measure, and the half period alone is
+        used, stated as such in the note.
+        """
+        period = self._observation_interval_s()
+        age = self._pose_age_s
+        latency = (speed or 0.0) * (PRESS_HALF_PERIODS * period + (age or 0.0))
+        return _Lead(distance=run_to_apex + latency, run_to_apex=run_to_apex, latency=latency,
+                     pose_age=age, period_s=period)
+
+    def _probe_wall_lower(self, observation: Observation | None) -> float | None:
+        """A lower bound on the height of the face ahead, from the probe's forward casts.
+
+        `blockers` are cast heights measured against the floor under the body, so a cast that hit at 0.9 says
+        the face there is taller than 0.9. The tallest cast that hit is the bound; no probe or no hit is
+        unknown, never zero.
+        """
+        probe = _probe(observation)
+        if not isinstance(probe, Mapping):
+            return None
+        blockers = probe.get("blockers")
+        if not isinstance(blockers, (list, tuple)) or not blockers:
+            return None
+        hits: list[float] = []
+        for entry in blockers:
+            if not isinstance(entry, Mapping) or entry.get("hit") is not True:
+                continue
+            height = _finite(entry.get("height"))
+            if height is not None:
+                hits.append(height)
+        return max(hits) if hits else None
+
+    def _reach_pre_check(self, run: _Run, params: Mapping[str, Any],
+                         probe_wall: float | None) -> None:
+        """State a wall already known to be out of reach against the measured reach, before the hop runs."""
+        known = _finite((params or {}).get("wall_min_height"))
+        walls = [wall for wall in (known, probe_wall) if wall is not None]
+        peak = self._primitives.rise_peak
+        if not walls or peak is None:
+            return
+        reach = peak + (self._primitives.short_step or 0.0)
+        wall = max(walls)
+        if wall <= reach:
+            return
+        source = "memory" if known is not None and known == wall else "probe"
+        run.note(f"reach {reach:.1f} < wall ≥ {wall:.1f}: expected blocked ({source}; the hop runs anyway)")
+
+    def _wall_measurement(self, run: _Run, hop: _Hop,
+                          launch_at: Sequence[float], apex: tuple[float, float] | None,
+                          beyond: float) -> None:
+        """A flight that ended against the obstacle says how high the body got, and that it did not pass.
+
+        The wall's top is not measured here, so what is stated is a bound: a body that ended its flight against
+        it with its highest point at `A` above take-off never got that high. `params["measured"]` carries the
+        same number, so the next label can compare it with what a rise reaches.
+        """
+        if apex is None:
+            return
+        if not (-WALL_CONTACT_U <= beyond <= WALL_CONTACT_U):
+            return                                 # landed away from it: this says nothing about its height
+        height = apex[1] - launch_at[UP]
+        note = (f"wall higher than +{height:.3f} u at this spot: the body ended against it with its apex "
+                f"+{height:.3f} u above take-off at {apex[0]:.2f} s and did not pass it")
+        if hop.probe_wall is not None:
+            note += f"; wall ≥{hop.probe_wall:g} (probe)"
+        run.note(note)
+        run.measured["wall_min_height"] = round(height, 6)
 
     def _blocked(self, run: _Run, progress: _Progress, speed: float | None, share: float) -> bool:
         """End the run when progress over the window is under its share of the measured speed."""
@@ -888,10 +1196,12 @@ class OptionExecutor:
         run.end("fell", f"dropped {drop:.3f} u, past the measured bound {bound:.3f}")
         return True
 
-    def _timeout(self, run: _Run, now: float) -> bool:
-        if now - run.started < OPTION_MAX_S:
+    def _timeout(self, run: _Run, now: float, started: float | None = None) -> bool:
+        """End the run past the option cap, counted from `started` (one hop attempt's own start)."""
+        since = run.started if started is None else started
+        if now - since < OPTION_MAX_S:
             return False
-        run.end("timed_out", f"{now - run.started:.2f} s past the cap {OPTION_MAX_S:.2f} s")
+        run.end("timed_out", f"{now - since:.2f} s past the cap {OPTION_MAX_S:.2f} s")
         return True
 
     def _observation(self) -> Observation:
@@ -932,6 +1242,10 @@ class OptionExecutor:
             return
         run.end("succeeded", None)
 
+
+# The reason an attempt was given up, and the ending when every attempt did it: the body never reached its
+# take-off point at speed, so the flight measured nothing about the obstacle.
+RAN_PAST_LOW_SPEED = "ran past the take-off point at too low a speed"
 
 # The reason a hop cannot run, stated so the bridge work it needs is unambiguous.
 HOP_NEEDS_CHORD = (

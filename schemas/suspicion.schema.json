@@ -5,7 +5,12 @@
         "invariant",
         "effect_mismatch",
         "range_exit",
-        "drift"
+        "drift",
+        "non_finite_pose",
+        "fell_out",
+        "hitch",
+        "runtime_exception",
+        "reader_over_max"
       ],
       "title": "SuspicionBasis",
       "type": "string"
@@ -14,7 +19,7 @@
   "$id": "upa/suspicion.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A measured fact worth recording (build bible section 9, step 1).\n\nIt is written to the trace and stated to S1 as a fact. It is evidence a later step can cite by `trace_seq`;\nit is not a finding, it never escalates, and nothing acts on it by itself. `statement` carries measured\nvalues only. `detail` holds the same numbers as data; its keys depend on `basis` (see\n`docs/design/suspicions.md`).",
+  "description": "A measured fact worth recording (build bible section 9, step 1).\n\nIt is written to the trace and stated to S1 as a fact. It is evidence a later step can cite by `trace_seq`;\nit is not a finding, it never escalates, and nothing acts on it by itself. `statement` carries measured\nvalues only. `detail` holds the same numbers as data; its keys depend on `basis` (see\n`docs/design/suspicions.md`).\n\nA detector basis (`playtest.runner.detectors`) is a fact about the run's own measurements, so it always\ncites the observations it was measured from: a record that cannot say which observation it rests on\ncannot be reproduced.",
   "properties": {
     "based_on_seq": {
       "description": "Bridge seq of the observation of the turn it was raised in",

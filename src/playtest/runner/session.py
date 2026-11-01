@@ -352,6 +352,11 @@ async def run_session(
             assert report is not None
             if option_memory is not None and option_primitives is not None:
                 remember_executed(option_memory, option_primitives, report)
+                # The same measured verdict, offered to an adapter that states the last choices: a port
+                # without the hook is unaffected, and this records nothing itself.
+                note = getattr(s1, "note_turn", None)
+                if note is not None:
+                    note(report, option_primitives)
             failures = failures + 1 if report.provider_failed else 0
             total_failures += 1 if report.provider_failed else 0
             if record.operation is not None:

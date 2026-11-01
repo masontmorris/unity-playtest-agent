@@ -209,6 +209,7 @@ def test_suspicion_invalid_fixtures_fail_for_their_intended_rule():
         "invalid-duplicate-evidence": "cites the same entry twice",
         "invalid-negative-evidence": "non-negative trace sequence numbers",
         "invalid-unknown-basis": "invariant",       # the enum error lists the closed set of bases
+        "invalid-detector-suspicion-without-evidence": "a detector suspicion cites the observations it measured",
         "invalid-extra-field": "Extra inputs are not permitted",
     }
     for stem, reason in reasons.items():

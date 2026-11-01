@@ -222,6 +222,45 @@ def test_compact_menu_refuses_choices_bound_to_another_reading():
                      memory=OutcomeMemory(cell=CELL))
 
 
+def test_the_payload_without_recent_keeps_its_bytes():
+    """A run that has measured no choice sends exactly the state it sent before `recent` existed."""
+    built = {"objective": "o", "observation": observation(), "choices": choices(),
+             "memory": OutcomeMemory(cell=CELL)}
+    plain = compact_menu(**built)
+    assert set(plain) == {"objective", "progress", "directive", "pending_help", "facts", "game_view",
+                          "set_version", "built_from_seq", "choices"}
+    assert "recent" not in canonical(plain)
+    assert canonical(plain) == canonical(compact_menu(**built, recent=()))
+    assert canonical(plain) == canonical(compact_menu(**built, recent=[]))
+
+
+def test_recent_states_the_last_six_choices_newest_last():
+    memory = OutcomeMemory(cell=CELL)
+    recent = [{"id": "traverse+x", "s": 1.25, "result": "succeeded"},
+              {"id": "hop+x", "s": 0.5, "result": "blocked"},
+              {"id": "move_forward", "s": 0.25, "result": "blocked"},
+              {"id": "wait", "s": None, "result": "wait"},
+              {"id": "finish", "s": None, "result": "unmeasured"},
+              {"id": "hop+x", "s": None, "result": "fell"},
+              {"id": "traverse+x", "s": 0.75, "result": "timed_out"}]
+    payload = compact_menu(objective="o", observation=observation(), choices=choices(), memory=memory,
+                           recent=recent)
+    rows = payload["recent"]
+    assert [row["id"] for row in rows] == ["hop+x", "move_forward", "wait", "finish", "hop+x", "traverse+x"]
+    assert [row["result"] for row in rows] == ["blocked", "blocked", "wait", "unmeasured", "fell", "timed_out"]
+    assert [row["s"] for row in rows] == [0.5, 0.25, None, None, None, 0.75]
+    assert all(set(row) == {"id", "s", "result"} for row in rows)
+    # The state text carries the same order, newest last, and costs the payload under 300 characters.
+    text = canonical(payload)
+    assert [row["id"] for row in json.loads(text)["recent"]] == [row["id"] for row in rows]
+    without = canonical(compact_menu(objective="o", observation=observation(), choices=choices(),
+                                     memory=memory))
+    assert len(text) - len(without) < 300, len(text) - len(without)
+    # Quantities only: no advice, no verdict word that recommends anything.
+    for word in ("try", "should", "avoid", "repeat", "recommend", "best"):
+        assert word not in text.lower()
+
+
 def test_menu_request_asks_three_questions_over_the_same_criteria():
     payload = compact_menu(objective="o", observation=observation(), choices=choices(),
                            memory=OutcomeMemory(cell=CELL))

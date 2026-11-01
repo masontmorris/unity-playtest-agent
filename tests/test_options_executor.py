@@ -9,7 +9,16 @@ import asyncio
 import json
 import re
 
-from options_fake_world import FakeWorld, calibration, catalog
+import pytest
+
+from options_fake_world import (
+    FakeWorld,
+    calibration,
+    catalog,
+    lagged_pose_world,
+    slow_start_world,
+    tall_wall_world,
+)
 from playtest.runner.options.executor import OptionExecutor
 from playtest.runner.options.model import TERMINATIONS, OptionOutcome, OptionSpec
 from playtest.runner.options.primitives import option_specs, primitives_from_calibration
@@ -27,7 +36,8 @@ def build(spec_id: str, world: FakeWorld | None = None, *, run_speed: float = 4.
 
 
 def run_spec(world: FakeWorld, primitives, spec: OptionSpec, **kwargs) -> OptionOutcome:
-    executor = OptionExecutor(world, primitives, clock=world.clock, sleep=world.sleep, **kwargs)
+    executor = OptionExecutor(world, primitives, clock=world.clock, sleep=world.sleep,
+                              wall_clock=world.wall_clock, **kwargs)
     outcome = asyncio.run(executor.run(spec))
     assert_valid(outcome, spec)
     assert world.held == set(), "input was left held"
@@ -39,7 +49,8 @@ def assert_valid(outcome: OptionOutcome, spec: OptionSpec) -> None:
     assert isinstance(outcome, OptionOutcome)
     assert outcome.terminated_by in TERMINATIONS
     assert outcome.option_id == spec.option_id and outcome.template == spec.template
-    assert outcome.params == dict(spec.params)
+    # `measured` is the one additive key: what the option measured about the place, if anything.
+    assert {key: value for key, value in outcome.params.items() if key != "measured"} == dict(spec.params)
     json.dumps(outcome.to_json())                       # JSON-ready for the trace
     stopped = [row for row in outcome.receipts if row.get("type") == "stopped"]
     assert stopped and stopped[-1]["release_verified"] is True
@@ -338,6 +349,135 @@ def test_a_hop_over_a_floor_that_continues_behind_runs_its_whole_run_up():
     assert min(xs) <= 3.0 - spec.params["run_up"] + 0.1, "the back-up ran the whole run-up the spec asked for"
 
 
+# --- the take-off (docs/design/borrowed-from-autopilot.md, item 1) ------------------------
+
+LEAD = re.compile(r"lead ([\d.]+) = ([\d.]+) run to apex \+ ([\d.]+) latency "
+                  r"\(pose age ([\d.]+) s \+ half of a ([\d.]+) s period\)")
+TOOK_OFF = re.compile(r"took off (-?[\d.]+) u from it")
+
+
+def note_rows(outcome: OptionOutcome) -> list[str]:
+    return [row["reason"] for row in outcome.receipts if row.get("type") == "option_note"]
+
+
+def lead_of(outcome: OptionOutcome) -> tuple[float, float, float, float, float]:
+    """(lead, run to apex, latency, pose age, period) as the outcome's own note states them."""
+    for note in note_rows(outcome):
+        match = LEAD.search(note)
+        if match:
+            return tuple(float(group) for group in match.groups())    # type: ignore[return-value]
+    raise AssertionError(note_rows(outcome))
+
+
+def took_off_of(outcome: OptionOutcome) -> float:
+    for note in note_rows(outcome):
+        match = TOOK_OFF.search(note)
+        if match:
+            return float(match.group(1))
+    raise AssertionError(note_rows(outcome))
+
+
+def test_the_latency_term_moves_the_take_off_earlier_by_the_measured_age():
+    """The press is aimed one apex run before the obstacle plus the distance the body covers while the decision
+    is being made: the measured age of the pose it read and half an observation for the press to land. A link
+    that delivers the pose a step late therefore aims exactly `speed x (age + half a period)` further back, and
+    the press lands on the next observation tick, so the take-off point moves back with it."""
+    speed = 4.0
+    _, primitives, spec = build("hop+x")
+    fresh = run_spec(FakeWorld(), primitives, spec)
+    late = run_spec(lagged_pose_world(), primitives, spec)
+    assert fresh.terminated_by == "succeeded" and late.terminated_by == "succeeded", (
+        note_rows(fresh), note_rows(late))
+
+    lead_fresh, lead_late = lead_of(fresh), lead_of(late)
+    for lead in (lead_fresh, lead_late):
+        total, run_to_apex, latency, age, period = lead
+        assert total == pytest.approx(run_to_apex + latency, abs=1e-9)      # the note adds up
+        assert run_to_apex == pytest.approx(speed * 0.5, abs=1e-6)          # speed x the time to apex
+        assert latency == pytest.approx(speed * (age + 0.5 * period), abs=1e-6)
+    assert lead_fresh[3] == pytest.approx(0.0, abs=1e-9)                    # a fresh pose has no age
+    assert lead_late[3] == pytest.approx(lead_late[4], abs=1e-9)            # this one is exactly a step old
+    assert lead_late[2] - lead_fresh[2] == pytest.approx(speed * lead_late[3], abs=1e-9)
+
+    # The measured take-off point is the aim it read, on the tick it got there: one step of travel at most.
+    step = speed * lead_late[4]
+    assert took_off_of(fresh) < 0 and took_off_of(late) < 0
+    assert abs((-took_off_of(fresh)) - lead_fresh[0]) <= step + 1e-9, note_rows(fresh)
+    assert abs((-took_off_of(late)) - lead_late[0]) <= step + 1e-9, note_rows(late)
+    assert abs((took_off_of(late) - took_off_of(fresh)) + (lead_late[0] - lead_fresh[0])) <= step + 1e-9
+
+
+def test_a_hop_that_ran_past_its_take_off_point_retries_with_a_fresh_run_up():
+    """A body that takes time to reach its run speed can arrive at its take-off point still accelerating. That is
+    not a jump that measured the obstacle, so the attempt is given up and the hop backs up for a fresh run-up;
+    the second attempt reaches speed in time and clears the step. Both attempts stay in the receipts."""
+    world = slow_start_world()
+    _, primitives, spec = build("hop+x")
+    # The seek stalls at the step face, so this run-up leaves 2.6 u of run-in: a unit and half a second to
+    # reach speed, then 0.6 u more, 0.65 s in all. That is still inside the window the measured speed needs
+    # to stop rising, so the first run ends still accelerating; the retry backs up from where it stopped and
+    # so gets a longer run-in.
+    patient = OptionSpec(option_id="hop+x", template="hop",
+                         params={**spec.params, "run_up": 2.6}, intent=spec.intent)
+    outcome = run_spec(world, primitives, patient)
+
+    notes = note_rows(outcome)
+    assert outcome.terminated_by == "succeeded", notes
+    assert any("attempt 1 of 3" in note for note in notes), notes
+    assert any("attempt 2 of 3" in note for note in notes), notes
+    retried = [note for note in notes if "ran past the take-off point" in note]
+    assert retried and "fresh run-up" in retried[0], notes
+
+    # Every attempt's inputs are in the receipts: seek, two run-ups, two run-ins, one rise.
+    actions = [row["action"] for row in world.requests]
+    assert actions == ["move_right", "move_left", "move_right", "move_left", "move_right", "chord_right"]
+    acts = [row["action_id"] for row in outcome.receipts if row.get("action_id")]
+    assert len(set(acts)) == len(actions) == 6, (acts, outcome.receipts)
+
+
+def test_a_hop_against_a_wall_above_its_reach_measures_the_wall():
+    """live-15: a hop that jumped and ended blocked against a wall never passed it, so the highest point it
+    reached is a lower bound on the wall's height here. The note names the apex and params carries the same
+    number, so the next label can compare it with what the rise reaches."""
+    world = tall_wall_world()
+    _, primitives, spec = build("hop+x")
+    outcome = run_spec(world, primitives, spec)
+
+    notes = note_rows(outcome)
+    assert outcome.terminated_by == "blocked", notes
+    assert outcome.end_position is not None and outcome.end_position[0] <= 3.0 + 0.3
+    measured = outcome.params.get("measured")
+    assert isinstance(measured, dict) and "wall_min_height" in measured, outcome.params
+    height = measured["wall_min_height"]
+    peak = primitives.rise_peak
+    assert peak is not None and 0.5 * peak <= height <= peak + 0.1, (height, peak)
+    wall = [note for note in notes if note.startswith("wall higher than")]
+    assert wall, notes
+    assert "apex" in wall[0] and f"+{height:.3f} u" in wall[0], wall[0]
+
+
+def test_a_wall_already_known_to_be_out_of_reach_is_stated_and_the_hop_still_runs():
+    """A bound the outcome memory carries (or the probe's own casts) is compared with the measured reach before
+    the hop runs, so the next label can say why it was expected to be blocked. Code never refuses the hop S1
+    chose: it states the expectation and runs it."""
+    world = tall_wall_world(x=2.9)          # pressed against the wall, so the probe's casts both hit it
+    _, primitives, spec = build("hop+x")
+    reach = primitives.rise_peak + primitives.short_step
+    known = round(reach + 1.0, 1)
+    remembered = OptionSpec(option_id="hop+x", template="hop",
+                           params={**spec.params, "wall_min_height": known}, intent=spec.intent)
+    outcome = run_spec(world, primitives, remembered)
+
+    notes = note_rows(outcome)
+    pre = [note for note in notes if note.startswith("reach ")]
+    assert pre, notes
+    assert pre[0] == (f"reach {reach:.1f} < wall ≥ {known:.1f}: expected blocked "
+                      f"(memory; the hop runs anyway)"), pre[0]
+    assert [row["action"] for row in world.requests][:1] == ["move_right"], "the hop ran anyway"
+    assert any("wall ≥0.9 (probe)" in note for note in notes), notes
+    assert outcome.terminated_by == "blocked", notes
+
+
 def _jittered(world):
 
     """A real clock is never on the observation grid: each read lands a little after the physics step."""
@@ -346,8 +486,6 @@ def _jittered(world):
         reads["n"] += 1
         return world.now + 0.0007 * (reads["n"] % 7)
     return clock
-
-
 def test_a_stall_is_detected_under_a_jittery_clock():
     """live-11: with timestamps off the observation grid the stall window never filled, so a body pressed against
     a wall timed out instead of ending blocked."""

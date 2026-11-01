@@ -1,0 +1,18 @@
+{
+  "run_id": "r-test",
+  "author": "core",
+  "turn": 4,
+  "refs": [0, 3],
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "trace_seq": 5,
+  "kind": "decision",
+  "body": {
+    "answer": {"choice_id": "wait", "set_version": 4},
+    "clock_mode": "realtime",
+    "valid": true,
+    "error": null,
+    "policy_default": false,
+    "decision": {"choice_id": "wait", "set_version": 4},
+    "source": "only_choice"
+  }
+}

@@ -27,6 +27,7 @@ import asyncio
 import dataclasses
 import datetime as dt
 import json
+import math
 import os
 import sys
 from collections import Counter
@@ -58,6 +59,7 @@ from .choices import FINISH_LABELS, ManifestChoices, build_choices
 from .coverage import CoverageFacts
 from .pattern import PatternFacts
 from .declared import declared_configuration
+from .detectors import DetectorWatch, build_detectors, detectors_config
 from .game_view import BridgeView
 from .output import secret_values
 from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
@@ -160,6 +162,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
+    parser.add_argument("--detectors", action="store_true", default=_env("UPA_RUN_DETECTORS", switch, False),
+                        help="raise the generic runtime detectors as suspicions over the observations already "
+                             "taken (non-finite pose, a fall below the lowest settled floor, an observation "
+                             "hitch, a new runtime error, a reader above a declared maximum); each states its "
+                             "measured values and the bound it crossed (also UPA_RUN_DETECTORS=1)")
+    parser.add_argument("--detector-max", action="append", default=None, metavar="ALIAS=VALUE",
+                        help="one declared reader maximum the reader-over-max detector compares against, "
+                             "repeatable (also UPA_RUN_DETECTOR_MAX as a comma-separated list)")
     parser.add_argument("--point-moves", action="store_true", default=_env("UPA_RUN_POINT_MOVES", switch, False))
     parser.add_argument("--point-turns", action="store_true", default=_env("UPA_RUN_POINT_TURNS", switch, False))
     parser.add_argument("--capture-width", type=int, default=_env("UPA_RUN_CAPTURE_WIDTH", int, 640))
@@ -191,6 +201,10 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_CONTINUOUS_INPUT", switch, False),
                         help="Decide while explicitly selected keyboard holds run (opt in)")
     parser.add_argument("--options", action="store_true", default=_env("UPA_RUN_OPTIONS", switch, False))
+    parser.add_argument("--memory-dir", type=Path, default=_env("UPA_RUN_MEMORY_DIR", Path, None),
+                        help="the folder that keeps the options layer's outcome memory between runs, beside the "
+                             "preflight cache; default off, so nothing is read or written and the run is "
+                             "byte-identical (also UPA_RUN_MEMORY_DIR)")
     parser.add_argument("--contingent", action="store_true", default=_env("UPA_RUN_CONTINGENT", switch, False),
                         help="act on S1's own if_blocked/if_succeeded answers, which the compact menu already asks "
                              "beside next_action: when an option ends blocked or succeeded the next turn executes "
@@ -229,6 +243,56 @@ def _objective(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str
     if not text.strip():
         parser.error("the objective is empty")
     return text.strip()
+
+
+def _detector_maxima(parser: argparse.ArgumentParser, args: argparse.Namespace,
+                     manifest: PreflightManifest) -> dict[str, float]:
+    """The reader maxima `--detector-max` declares, checked against the readers this manifest declares."""
+    raw = list(args.detector_max or ())
+    raw += [part for part in _env("UPA_RUN_DETECTOR_MAX", str, "").split(",") if part.strip()]
+    if raw and not args.detectors:
+        parser.error("--detector-max declares a detector's bound; it requires --detectors")
+    declared = {reader.alias for reader in manifest.readers}
+    maxima: dict[str, float] = {}
+    for item in raw:
+        alias, separator, value = str(item).partition("=")
+        alias = alias.strip()
+        if not separator or alias not in declared:
+            parser.error(f"--detector-max {item!r}: name a reader the manifest declares, as ALIAS=VALUE "
+                         f"(declared: {', '.join(sorted(declared)) or 'none'})")
+        try:
+            number = float(value)
+        except ValueError:
+            parser.error(f"--detector-max {item!r}: the maximum is not a number")
+        if not math.isfinite(number):
+            parser.error(f"--detector-max {item!r}: the maximum must be finite")
+        maxima[alias] = number
+    return maxima
+
+
+def _detectors(args: argparse.Namespace, calibration: Mapping[str, Any], built: ManifestChoices,
+               maxima: Mapping[str, float]) -> list[Any]:
+    """The generic detectors this run states facts with, and the measured peak the fall bound derives from.
+
+    The fall bound is twice the rise peak the calibration measured, taken through the same options
+    primitives the options layer builds; with no measured rise the bound is unknown, the plan says so and
+    that detector states nothing.
+    """
+    if not args.detectors:
+        return []
+    peak: float | None = None
+    source = "unknown: the calibration measured no rise, so the fall bound has no peak"
+    if calibration:
+        from .options.primitives import primitives_from_calibration
+        primitives = primitives_from_calibration(
+            calibration,
+            [choice.action for choice in built.choices if choice.kind is ChoiceKind.action and choice.action],
+            catalog=built.catalog.actions)
+        if primitives.rise_peak is not None:
+            peak = primitives.rise_peak
+            source = "the calibration's measured rise peak, through the options primitives"
+    return build_detectors(rise_peak=peak, peak_source=source, maxima=maxima,
+                           maxima_source="an operator declaration (`--detector-max`)")
 
 
 def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0, arm: str = ARM) -> None:
@@ -319,6 +383,12 @@ def main(argv: list[str] | None = None) -> int:
     for variable in replay.ARMS[args.s1_arm][1:]:
         if variable and not os.environ.get(variable):
             parser.error(f"{variable} is not set in the environment")
+    if args.memory_dir is not None:
+        if not args.options:
+            parser.error("--memory-dir requires --options: it holds the options layer's measured outcomes")
+        directory = args.memory_dir.resolve()
+        if directory == project or directory.is_relative_to(project):
+            parser.error("--memory-dir must be outside the Unity project, beside the preflight cache")
     if args.frontier and not os.environ.get("META_API_KEY"):
         parser.error("META_API_KEY is required when --frontier is enabled")
     objective = _objective(parser, args)
@@ -360,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("the session control directory names a different catalog than this run serves")
         if not any(c.source.value == "manifest" for c in built.choices):
             raise ValueError("the manifest offers no executable action")
+        detector_maxima = _detector_maxima(parser, args, manifest)
+        detectors = _detectors(args, calibration, built, detector_maxima)
         run_dir.mkdir(parents=True, exist_ok=True)
         manifest_sha = digest(manifest_bytes)
         plan = {"version": 1, "kind": "session", "arm": args.s1_arm, "approval_sha256": approval_sha,
@@ -412,6 +484,9 @@ def main(argv: list[str] | None = None) -> int:
             plan["pattern_facts"] = True
         if args.travel_facts:
             plan["travel_facts"] = True
+        if args.detectors:
+            # On the run's plan: which detectors ran, and the bound or constant each measures against.
+            plan["detectors"] = detectors_config(detectors)
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
@@ -426,7 +501,8 @@ def main(argv: list[str] | None = None) -> int:
         ledger = call_budget.Ledger(run_dir, approval, args.s1_arm, concurrent_arms=True)
         before = recording._game_worktree(project)
         summary = asyncio.run(_run(project, manifest, built, objective, ledger, approval, args, manifest_sha, host.sha256,
-                                   calibration=calibration, session_host=session_host, declared=declared))
+                                   calibration=calibration, session_host=session_host, declared=declared,
+                                   detectors=detectors))
         after = recording._game_worktree(project)
         summary["game_worktree_changed"] = None if before is None or after is None else before != after
         if summary["game_worktree_changed"] is True and summary["status"] == "complete":
@@ -454,10 +530,32 @@ def _suspicions(raised: list[Any], min_readings: int, drift_readings: int | None
             "by_subject": dict(Counter(item.suspicion.subject for item in raised))}
 
 
+def _plan_memory(run_dir: Path, facts: Mapping[str, Any]) -> None:
+    """Record on the run's plan what the outcome memory loaded and saved: a count of facts, not a verdict.
+
+    The plan is written before the run; this rewrites it atomically so a finished folder says which memory file
+    contributed what, without a second file to find. A plan that cannot be read or rewritten is left alone:
+    a fact about the disk must not end a run that is already measuring.
+    """
+    path = run_dir / "plan.json"
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(plan, dict):
+        return
+    plan["memory"] = dict(facts)
+    try:
+        replay._save(path, plan)
+    except OSError:
+        return
+
+
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
                manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None,
-               session_host: HostSession | None = None, declared: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               session_host: HostSession | None = None, declared: Mapping[str, Any] | None = None,
+               detectors: list[Any] | None = None) -> dict[str, Any]:
     run_dir = args.output.resolve().parent
     started_utc = dt.datetime.now(dt.timezone.utc)
     generation = session_host.generation if session_host is not None else None
@@ -480,10 +578,30 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         snapshot = make_snapshot(client, manifest.entity_id)
         await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
+        memory_facts: dict[str, Any] | None = None
+        if memory is not None and args.memory_dir is not None:
+            from .options.memory import memory_file
+
+            # The memory lives beside the preflight cache, keyed by the game and the scene rather than by the
+            # cache's fingerprint: that fingerprint covers every authored file, so one edited script would orphan
+            # what earlier runs measured, while the cells are world coordinates in one scene and stay valid.
+            memory_path = memory_file(args.memory_dir, project.name, scene)
+            present = memory_path.is_file()
+            if present:
+                memory = OutcomeMemory.load(memory_path, cell=memory.cell)  # before the first paid call
+            memory.autosave(memory_path)
+            memory_facts = {"dir": str(args.memory_dir.resolve()), "file": memory_path.name,
+                            "loaded": memory.stats() if present else None, "saved": None, "error": None}
+            _plan_memory(run_dir, memory_facts)
         readers = FieldReaders(client, manifest.readers) if manifest.readers else None
         if readers is not None:
             await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
+        # Detectors are opt-in: without them the loop reports to the readers' watch itself, so a trace is
+        # unchanged. With them, the same watch plus the detectors is one watch, numbered in one sequence.
+        reader_watch = watch
+        if detectors:
+            watch = DetectorWatch(reader_watch, detectors)
         extra = IMAGE_TOKENS[IMAGE_TRANSPORT[args.s1_arm]] if args.s1_game_view else 0
         per_minute, first_call = args.tokens_per_minute, INITIAL_ESTIMATE + extra   # the image counts from the first call
         budget = TokenBudget(per_minute, initial_estimate=first_call, spread=True, burst=args.pacing_burst,
@@ -510,6 +628,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                           max_frontier_calls=args.max_frontier_calls if args.frontier else 0),
             reset_method="restart_play_mode" if session_host is not None else "none")  # this runner only resets through the host
         writer = TraceWriter(run_dir / TRACE_FILE, record, secrets=secret_values())
+        if memory is not None and memory_facts is not None:
+            memory.note_run(record.run_id)  # the file says which runs contributed, once it is written again
         progress_probe = ProgressProbe(manifest.reach_regions)
         tracker = DirectiveTracker(writer, derived=progress_probe.derived if progress_probe.regions else None)
         facts = ProgressFacts(tracker, progress_probe) if progress_probe.regions else tracker
@@ -564,7 +684,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                     "declared": readers.aliases,
                     "installed": readers.installed.summary() if readers.installed is not None else None,
                     **readers.stats.summary()},
-                "suspicions": _suspicions(result.loop.suspicions, watch.min_readings, watch.drift_readings),
+                "suspicions": _suspicions(result.loop.suspicions, reader_watch.min_readings,
+                                          reader_watch.drift_readings),
                 "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,
                              "max_provider_failures": args.max_provider_failures,
                              "tokens_per_minute": args.tokens_per_minute},
@@ -585,6 +706,15 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             raise
         finally:
             writer.close(*closing)
+            if memory is not None and memory_facts is not None:
+                # The file already has every outcome this run recorded; this last write also carries the run id,
+                # and the plan states what was saved even when a write failed along the way.
+                try:
+                    memory.save()
+                except OSError as exc:
+                    memory_facts["error"] = f"{type(exc).__name__}: {exc}"
+                memory_facts["saved"] = memory.stats()
+                _plan_memory(run_dir, memory_facts)
         summary["redactions"] = writer.redactions
         return summary
     finally:

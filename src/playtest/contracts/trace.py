@@ -205,19 +205,25 @@ class TraceEntry(Strict):
                 if not isinstance(problems, list) or any(not isinstance(item, str) for item in problems):
                     raise ValueError("decision contingent_problems must be a list of strings")
                 if "source" in body:
-                    # A contingent turn reuses an earlier answer instead of calling S1; nothing else may claim it.
-                    if body["source"] != "contingent":
-                        raise ValueError("decision source must be contingent when present")
-                    for name in ("from_turn", "condition"):
-                        if name not in body:
-                            raise ValueError(f"a contingent decision needs {name}")
-                    turn = body["from_turn"]
-                    if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
-                        raise ValueError("decision from_turn must be a non-negative turn number")
-                    if body["condition"] not in ("blocked", "succeeded"):
-                        raise ValueError("decision condition must be blocked or succeeded")
-                    if "contingent_skipped" in body:
-                        raise ValueError("a contingent decision cannot also be skipped")
+                    # A turn with no provider call says why: a contingent turn reuses an earlier answer, and an
+                    # only-choice turn had nothing to ask about because exactly one choice was offered. Nothing
+                    # else may claim either.
+                    if body["source"] == "only_choice":
+                        if {"from_turn", "condition", "contingent_skipped"} & set(body):
+                            raise ValueError("an only-choice decision names no source turn, condition or skip")
+                    elif body["source"] == "contingent":
+                        for name in ("from_turn", "condition"):
+                            if name not in body:
+                                raise ValueError(f"a contingent decision needs {name}")
+                        turn = body["from_turn"]
+                        if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
+                            raise ValueError("decision from_turn must be a non-negative turn number")
+                        if body["condition"] not in ("blocked", "succeeded"):
+                            raise ValueError("decision condition must be blocked or succeeded")
+                        if "contingent_skipped" in body:
+                            raise ValueError("a contingent decision cannot also be skipped")
+                    else:
+                        raise ValueError("decision source must be contingent or only_choice when present")
                 elif {"from_turn", "condition"} & set(body):
                     raise ValueError("only a contingent decision names a source turn and condition")
                 skipped = body.get("contingent_skipped")

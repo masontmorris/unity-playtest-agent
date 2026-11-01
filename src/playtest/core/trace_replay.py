@@ -175,13 +175,22 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             issue("turn is missing observation, choice_set, context, or decision", record_row, turn_no)
             continue
         calls = [x for x in group if x.kind is TraceKind.s1_call]
-        contingent_turn = decrow is not None and decrow.body.get("source") == "contingent"
+        source = decrow.body.get("source") if decrow is not None else None
+        contingent_turn = source == "contingent"
         if contingent_turn:
             if calls:
                 issue("a contingent turn spends no provider call", record_row, turn_no)
             if turn_no - 1 in contingent_turns:
                 issue("a contingent turn follows another without a fresh S1 call", record_row, turn_no)
             contingent_turns.add(turn_no)
+        elif source == "only_choice":
+            # Nothing was chosen: the recorded set held exactly one choice. A call here would have asked a
+            # question with one answer, and a set with more than one choice was somebody's to choose.
+            if calls:
+                issue("an only-choice turn spends no provider call", record_row, turn_no)
+            offered_choices = setrow.body.get("choices") if setrow is not None else None
+            if not isinstance(offered_choices, list) or len(offered_choices) != 1:
+                issue("an only-choice decision was recorded for a set of more than one choice", decrow, turn_no)
         elif not 1 <= len(calls) <= 2:
             issue("turn must have one or two s1_call entries", record_row, turn_no)
         skipped = decrow.body.get("contingent_skipped") if decrow is not None else None

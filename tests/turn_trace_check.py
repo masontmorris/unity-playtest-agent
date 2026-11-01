@@ -5,7 +5,8 @@ test can assert that a trace the loop wrote is clean: contiguous sequence number
 refs of each turn, bodies with the documented keys, the choice set bound to its observation, the
 context hash, `parse_decision` reproducing each decision, the turn record agreeing with its entries,
 the adherence check, the help lifecycle (one open request, each adopted or cancelled once), and that a
-turn with no provider call really is S1's own earlier conditional answer for the condition that ended.
+turn with no provider call really is S1's own earlier conditional answer for the condition that ended or a
+set of exactly one choice with nothing to select.
 """
 
 from __future__ import annotations
@@ -132,9 +133,16 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     restarts = _all(group, "restart")
     options = _all(group, "option")
     contingent = decision["body"].get("source") == "contingent"
+    # An only-choice turn is executed without asking, because the set it was offered held exactly one choice.
+    only_choice = decision["body"].get("source") == "only_choice"
     if contingent and calls:
         found.append(f"turn {number}: a contingent turn spends no provider call")
-    if not contingent and not 1 <= len(calls) <= 2:
+    if only_choice:
+        if calls:
+            found.append(f"turn {number}: an only-choice turn spends no provider call")
+        if len(offered["body"].get("choices") or ()) != 1:
+            found.append(f"turn {number}: an only-choice decision names a set of more than one choice")
+    if not contingent and not only_choice and not 1 <= len(calls) <= 2:
         found.append(f"turn {number}: needs one or two s1_call entries, has {len(calls)}")
     refs = {
         "observation": ([], obs), "choice_set": ([obs["trace_seq"]], offered),

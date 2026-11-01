@@ -1,0 +1,15 @@
+{
+  "suspicion_id": "s4",
+  "basis": "fell_out",
+  "turn": 19,
+  "based_on_seq": 812,
+  "game_s": 47.5,
+  "subject": "public.controlled.position",
+  "statement": "public.controlled.position y is -9, below the lowest floor measured for it so far (-2, turn 4): the bound is 2 times the measured rise peak 1.2 below that floor, -4.4.",
+  "detail": {
+    "field": "public.controlled.position",
+    "y": -9.0,
+    "floor_y": -2.0
+  },
+  "evidence_seq": []
+}

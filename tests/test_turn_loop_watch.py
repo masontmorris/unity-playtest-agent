@@ -29,6 +29,7 @@ from playtest.core.suspicion import ReaderWatch
 from playtest.core.trace import TraceWriter, read_trace
 from playtest.core.trace_replay import replay
 from playtest.core.turn_loop import TurnLoop
+from playtest.runner.detectors import DetectorWatch, ReaderOverMax
 
 
 class ScriptedReaders:
@@ -174,6 +175,31 @@ def test_a_range_exit_is_written_before_the_context_that_states_it_with_its_trac
             raised = r.loop.suspicions
             assert [(x.trace_seq, x.suspicion.suspicion_id) for x in raised] == [(entry["trace_seq"], "s1")]
             assert r.loop.observation_entries[entry["body"]["based_on_seq"]] == observation_seq
+            await r.loop.stop("finish")
+            finish(r)
+        finally:
+            await r.close()
+
+    run(main)
+
+
+def test_a_detector_suspicion_is_written_as_a_trace_entry_and_stated_as_an_s1_fact():
+    async def main():
+        readers = ScriptedReaders(1.0, 12.0, 13.0)
+        watch_ = DetectorWatch(ReaderWatch({"r": "number"}, min_readings=10),
+                               [ReaderOverMax({"r": 10.0}, source="a test maximum")])
+        r = await watched("w", "w", "w", readers=readers, watch_=watch_)
+        try:
+            await r.turns(3)
+            (entry,) = r.sink.of_kind("suspicion")             # the detector states the first reading over, once
+            assert (entry["turn"], entry["body"]["basis"], entry["body"]["suspicion_id"]) == (1, "reader_over_max", "s1")
+            assert entry["body"]["statement"] == "public.r is 12, above the declared maximum 10 (a test maximum)."
+            observation_seq = next(e["trace_seq"] for e in r.sink.entries if e["turn"] == 1 and e["kind"] == "observation")
+            assert entry["refs"] == entry["body"]["evidence_seq"] == [observation_seq]
+            assert r.loop.observation_entries[entry["body"]["based_on_seq"]] == observation_seq
+            assert r.s1.contexts[1]["facts"][-1] == (
+                f"Suspicion s1 (reader_over_max, trace_seq {entry['trace_seq']}): " + entry["body"]["statement"])
+            assert "Suspicion" not in " ".join(r.s1.contexts[2]["facts"])    # 13 is still over: the same episode
             await r.loop.stop("finish")
             finish(r)
         finally:

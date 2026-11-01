@@ -16,9 +16,12 @@ direction, the current position and, when known, whether the entity is on its fl
 where an obstruction or the floor's edge is. An axis nobody measured says unmeasured, never zero.
 
 `compact_menu` returns the state payload: objective, progress, the open directive and any pending help, the
-facts the caller chose to pass, the same game-view note the full layout uses, and the labelled choices. It
+facts the caller chose to pass, the same game-view note the full layout uses, the labelled choices, and, when
+the caller passes any, `recent`: the last six choices with the duration each measurably took and the result it
+measurably had. Every entry is three quantities and no advice; a result nobody measured stays `unmeasured`. It
 carries `set_version` and `built_from_seq` so a replay can bind it to the choice set and observation it came
-from. It drops the UI dump, per-choice calibration arithmetic and the recent-history block by design.
+from. It drops the UI dump, per-choice calibration arithmetic and the full layout's recent-history block by
+design.
 
 `menu_request` is the request body in the shape the provider has always been sent, with the three contingent
 questions S1 may answer ahead of time: what next, and what next if the chosen option ends blocked or ends
@@ -48,7 +51,8 @@ from playtest.runner.options.memory import MINUS, OutcomeMemory
 # once, in the question, because the payload no longer carries an `instructions` copy.
 MENU_INSTRUCTIONS = (
     "Choose exactly one id from choices: the one that best advances the objective now or resolves an "
-    "uncertainty blocking it. Facts are measured; null means unknown, never zero."
+    "uncertainty blocking it. Facts are measured; null means unknown, never zero. `recent` lists the last "
+    "choices and what each measurably did."
 )
 IF_BLOCKED = "If the option you choose ends blocked, what next?"
 IF_SUCCEEDED = "If the option you choose ends succeeded, what next?"
@@ -57,6 +61,8 @@ BLOCKED_QUESTION = "if_blocked"
 SUCCEEDED_QUESTION = "if_succeeded"
 
 LABEL_LIMIT = 90  # past this a label stops being comparable at a glance; a longer history is clipped and marked
+RECENT_LIMIT = 6  # measured choices the payload states: the newest six, newest last
+UNMEASURED = "unmeasured"  # a result nobody measured, never a claimed success or failure
 SEPARATOR = " \u00b7 "  # the middle dot between a label's three fields
 AXES = ("x", "y", "z")
 GROUND_AXES = (0, 2)  # the plane a move travels in; the up axis is never a direction label
@@ -68,12 +74,14 @@ _NO_EFFECT = re.compile(r"calibrated effect unknown|no calibrated effect")
 
 
 def progress_line(*, positions: Sequence[Sequence[float]], now: Sequence[float] | None,
-                  start: Sequence[float] | None, grounded: bool | None, probe: Mapping | None) -> str:
+                  start: Sequence[float] | None, grounded: bool | None, probe: Mapping | None,
+                  map_line: str | None = None) -> str:
     """One line of measured numbers: furthest reached along each varied axis, where the entity is now.
 
     `positions` are every measured `public.controlled.position` so far, `start` the first one; `now` is this
     turn's position and may repeat the last. An axis is computed only from finite vectors; an unmeasured
     reading is left out rather than counted as zero, and no position at all says `unmeasured`.
+    `map_line`, when the caller has one, is the memory's felt-map reading for this facing, appended as it is.
     """
     measured = [value for value in map(_vector, positions) if value is not None]
     current = _vector(now)
@@ -103,6 +111,8 @@ def progress_line(*, positions: Sequence[Sequence[float]], now: Sequence[float] 
     summary = _probe_summary(probe)
     if summary is not None:
         line += f"; {summary}"
+    if map_line is not None:
+        line += f" \u00b7 {map_line}"
     return line
 
 
@@ -146,16 +156,35 @@ def measured_position(observation) -> tuple[float, ...] | None:
     return _vector(controlled.get("position")) if isinstance(controlled, Mapping) else None
 
 
+def _facing(positions: Sequence[Sequence[float]], now: Sequence[float] | None) -> tuple[float, ...] | None:
+    """The direction the entity last measurably moved: this turn's position less the one before it.
+
+    A turn that did not move has no facing, and neither does a run with no earlier measurement: the felt map
+    is then not walked, rather than walked along an axis the run never measured.
+    """
+    current = _vector(now)
+    history = [value for value in map(_vector, positions) if value is not None]
+    if current is None or not history:
+        return None
+    previous = history[-1]
+    length = min(len(current), len(previous))
+    delta = tuple(current[index] - previous[index] for index in range(length))
+    return delta if any(delta) else None
+
+
 def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
                  directive=None, pending_help: Mapping | None = None, facts: Sequence[str] = (),
-                 game_view: str | None = None, positions: Sequence[Sequence[float]] = ()) -> dict:
+                 game_view: str | None = None, positions: Sequence[Sequence[float]] = (),
+                 recent: Sequence[Mapping] = ()) -> dict:
     """The S1 state payload: what the objective is, how far the run got, and the labelled choices.
 
     `observation` is an `Observation` or its JSON mapping; it is read for the controlled pose, the scene, the
     probe and the sequence number, and it is handed to the memory so settled points keep being detected.
     `directive` is the open advice or None; `pending_help` the open request or None. Facts are only the lines
-    the caller passes, and `game_view` is the note the full layout sends. No UI dump, no per-choice calibration
-    arithmetic and no recent-history block is included.
+    the caller passes, and `game_view` is the note the full layout sends. `recent` is the measured choices the
+    caller has already taken, oldest first; its newest six are carried as `id`, `s` and `result`, and when it
+    is empty the payload has no such key at all, so its bytes are exactly what they were before. No UI dump,
+    no per-choice calibration arithmetic and no recent-history block is included.
     """
     memory.observe(_Seen(observation))
     scene = _field(observation, "scene")
@@ -164,16 +193,19 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
     position = measured_position(observation)
     probe = public.get("probe")
     measured = [value for value in map(_vector, positions) if value is not None]
+    facing = _facing(measured, position)
     offered = list(getattr(choices, "choices", choices))
     seq = _field(observation, "seq")
     built_from = getattr(choices, "built_from_seq", seq)
     if isinstance(built_from, int) and isinstance(seq, int) and built_from != seq:
         raise ValueError(f"choices are bound to seq {built_from}, not the observation's {seq}")
-    return {
+    payload = {
         "objective": objective,
         "progress": progress_line(positions=measured, now=position,
                                   start=measured[0] if measured else None,
-                                  grounded=_grounded(probe, memory.cell), probe=probe),
+                                  grounded=_grounded(probe, memory.cell), probe=probe,
+                                  map_line=memory.map_line(scene, None if position is None else list(position),
+                                                           facing)),
         "directive": _directive_view(directive),
         "pending_help": dict(pending_help) if pending_help is not None else None,
         "facts": list(facts),
@@ -183,6 +215,28 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
         "choices": [{"id": choice.id, "label": option_label(choice, memory, scene, position)}
                     for choice in offered],
     }
+    rows = recent_rows(recent)
+    if rows:  # only a run that measured choices grows the state; a payload without them keeps its bytes
+        payload["recent"] = rows
+    return payload
+
+
+def recent_rows(recent: Sequence[Mapping]) -> list[dict]:
+    """The newest `RECENT_LIMIT` measured choices, newest last, each as `id`, `s` and `result` only.
+
+    `s` is the measured duration in seconds, or `null` when nothing measured one; `result` is the measured
+    outcome the caller recorded, and `unmeasured` when it recorded none. Nothing is inferred, ranked or
+    shortened: an entry with no id says nothing and is left out rather than named.
+    """
+    rows: list[dict] = []
+    for item in list(recent)[-RECENT_LIMIT:]:
+        ident = _field(item, "id")
+        if not isinstance(ident, str) or not ident:
+            continue
+        result = _field(item, "result")
+        rows.append({"id": ident, "s": _num(_field(item, "s")),
+                     "result": result if isinstance(result, str) and result else UNMEASURED})
+    return rows
 
 
 def menu_request(payload: dict, model: str, *, contingent: bool, image: bytes | None = None,

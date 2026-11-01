@@ -30,6 +30,9 @@ Law 1 branches:
   still offered — and never twice in a row: it carries no branches of its own, so the turn after
   asks S1 afresh. Any other ending, a boundary, pending help or a withdrawn id also asks afresh and
   records why.
+- one choice: a choice set of exactly one choice is executed as it stands, with no provider call and
+  no `s1_call`, and the decision names `source: "only_choice"`. There is nothing to select, so no
+  code selects anything; a set of two or more choices is always S1's to answer.
 
 A finished helper's result is adopted once, after a later turn's observation passes the epoch check
 and before facts and context are built, and shown to S1 with its source and age. A boundary discards
@@ -441,6 +444,9 @@ class TurnLoop:
         payload: dict[str, Any] | None = None
         context: int | None = None
         calls: list[int | None] = []
+        # Nothing to choose: a set of exactly one choice is executed as it stands, with no provider call.
+        # The choice is still S1's to make wherever there is more than one; with one there is no selection.
+        only_choice = offered_choices[0] if len(offered_choices) == 1 and not scripted else None
         if scripted:
             answer = S1Answer(answer=decide(choice_set, observation) if callable(decide) else decide)
         else:
@@ -495,6 +501,11 @@ class TurnLoop:
                 # been sent and is recorded as such, but the turn spends no provider call.
                 answer = S1Answer(answer={"choice_id": contingent_turn["choice_id"],
                                           "set_version": choice_set.set_version})
+            elif only_choice is not None:
+                # The one choice offered is the only legal answer: the context is still built and recorded,
+                # and the turn spends no provider call because there was nothing to decide.
+                answer = S1Answer(answer={"choice_id": only_choice.id,
+                                          "set_version": choice_set.set_version})
             else:
                 answer = await self._ask(payload, view.image if view is not None else None, view is not None)
                 calls = [self._emit(TraceKind.s1_call, call.body(), TraceAuthor.s1, turn, [context])
@@ -517,6 +528,9 @@ class TurnLoop:
                                  condition=contingent_turn["condition"])
             if contingent_turn.get("cell") is not None:
                 decision_body["cell"] = list(contingent_turn["cell"])
+        elif only_choice is not None:
+            # The set held one choice, so nothing was chosen: the turn names why it spent no call.
+            decision_body["source"] = "only_choice"
         elif contingent_skipped is not None:
             decision_body["contingent_skipped"] = contingent_skipped
             if candidate is not None and contingent_skipped.startswith(_PLACE_SKIPS):
@@ -549,6 +563,7 @@ class TurnLoop:
         operation: OperationOutcome | None = None
         restart_refs: list[int | None] = []
         option_refs: list[int | None] = []
+        measured_option: dict[str, Any] | None = None  # an option turn's measured outcome, for the report
 
         if not parsed.valid or parsed.decision is None:
             if self._continuous:
@@ -581,6 +596,7 @@ class TurnLoop:
                                    TraceAuthor.core, turn, [decided])
                 option_refs.append(entry)
                 outcome, executed_id = TurnOutcome.executed, selected.option_id
+                measured_option = body  # what this option measurably did, for the turn report
                 self._contingent = _contingent_answer(decision, body.get("terminated_by"), turn, decided, cell)
             elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
@@ -649,6 +665,7 @@ class TurnLoop:
             help_event=help_event,
             executed=tuple(sent),
             halt=answer.halt,
+            option_outcome=measured_option,
         )
         self._reports.append(report)
         if operation is not None and operation.status is OperationStatus.ready:
