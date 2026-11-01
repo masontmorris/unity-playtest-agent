@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from options_fake_world import FakeWorld, calibration, catalog
 from playtest.runner.options.executor import OptionExecutor
@@ -234,7 +235,59 @@ def test_hop_toward_a_gap_in_a_game_without_coyote_time_falls_honestly():
     assert outcome.terminated_by in ("fell", "state_changed"), outcome.receipts
 
 
+def test_hop_keeps_its_run_up_on_the_floor_it_started_on():
+    """live-13: a hop backed up its whole run-up, walked off the ledge it had just climbed and failed from
+    below, seven times. The floor behind is measured, so the run-up stops at its edge and the note says how
+    much run-up was actually available."""
+    # A three-unit top with a drop behind it and a taller face ahead; the body starts on the top.
+    world = FakeWorld(x=2.6, y=1.0, step_x=0.0, step_width=3.0, step_height=1.0,
+                      wall_x=3.0, wall_height=2.0, pit_from=-9.0, pit_to=0.0)
+    _, primitives, spec = build("hop+x", world)
+    heights: list[float] = []
+    original = world.observe_once
+
+    async def track():
+        observation = await original()
+        heights.append(observation.public["controlled"]["position"][1])
+        return observation
+
+    world.observe_once = track            # type: ignore[method-assign]
+    outcome = run_spec(world, primitives, spec)
+
+    notes = [row["reason"] for row in outcome.receipts if row.get("type") == "option_note"]
+    available = [note for note in notes if "available of" in note and "(floor edge)" in note]
+    assert available, notes
+    match = re.search(r"run-up ([\d.]+) available of ([\d.]+)", available[0])
+    assert match, available[0]
+    assert 0.0 < float(match.group(1)) <= 3.0, "the run-up stayed on the three-unit top"
+    assert float(match.group(2)) > 3.0, "the run-up it asked for was longer than the top"
+    assert min(heights) >= 1.0 - 1e-6, "the hop never left the top it started on"
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert "chord_right" in [row["action"] for row in world.requests], "the shortened run-up still hopped"
+
+
+def test_hop_without_a_probe_stops_the_run_up_when_the_body_walks_off():
+    """With no probe behind, the body leaving the floor is the measurement: the back-up stops there, says
+    how far it got, and the hop carries on from where it ended up instead of silently running up from below."""
+    world = FakeWorld(x=2.6, y=1.0, step_x=0.0, step_width=3.0, step_height=1.0,
+                      wall_x=3.0, wall_height=2.0, publish_probe=False)
+    _, primitives, spec = build("hop+x", world)
+    outcome = run_spec(world, primitives, spec)
+
+    notes = [row["reason"] for row in outcome.receipts if row.get("type") == "option_note"]
+    truncated = [note for note in notes if note.startswith("run-up truncated: floor ended after")]
+    assert truncated, notes
+    match = re.search(r"floor ended after ([\d.]+)$", truncated[0])
+    assert match, truncated[0]
+    assert 2.9 <= float(match.group(1)) < spec.params["run_up"], "the back-up stopped at the edge of the top"
+    assert "available of" not in " ".join(notes), "no probe took a reading, so none is claimed"
+    # It went on: the back-up ended the phase, not the option, and the hop ran the approach from there.
+    assert [row["action"] for row in world.requests] == ["move_right", "move_left", "move_right"]
+    assert outcome.terminated_by in ("blocked", "fell", "timed_out", "state_changed"), outcome.receipts
+
+
 def _jittered(world):
+
     """A real clock is never on the observation grid: each read lands a little after the physics step."""
     reads = {"n": 0}
     def clock():

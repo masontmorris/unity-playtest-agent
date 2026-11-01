@@ -163,6 +163,53 @@ def _controlled(observation: Observation) -> Mapping[str, Any] | None:
     return None
 
 
+def _probe(observation: Observation | None) -> Mapping[str, Any] | None:
+    """The measured geometry published with that observation, or None when this tick carried none."""
+    public = getattr(observation, "public", None) if observation is not None else None
+    if not isinstance(public, Mapping):
+        return None
+    value = public.get("probe")
+    return value if isinstance(value, Mapping) else None
+
+
+def _floor_behind(probe: Any, step: float, fell: float | None) -> bool | None:
+    """Whether the floor the body stands on continues behind it, from the probe's backward down-rays.
+
+    The question is about the next step back, so the ray read is the nearest one at or past that step's
+    travel. A ray that misses has no floor under it; a ray that hits a surface more than the fell bound
+    below the anchor is standing on nothing that continues this floor; any other measured hit is floor.
+    No probe, no backward row, or an unmeasured ray is ``None`` — unknown, never a guess.
+    """
+    if not isinstance(probe, Mapping):
+        return None
+    rays = probe.get("backward")
+    if not isinstance(rays, (list, tuple)) or not rays:
+        return None
+    chosen: tuple[float, Mapping[str, Any]] | None = None
+    for entry in rays:
+        if not isinstance(entry, Mapping):
+            continue
+        offset = _finite(entry.get("forward"))
+        if offset is None or offset >= 0:
+            continue
+        behind = -offset
+        if behind + 1e-9 < step:
+            continue
+        if chosen is None or behind < chosen[0]:
+            chosen = (behind, entry)
+    if chosen is None:
+        return None
+    hit = chosen[1].get("hit")
+    if hit is not True:
+        return False if hit is False else None
+    height = _finite(chosen[1].get("delta_y"))
+    if height is None:                      # inside geometry: an obstruction, not a floor to run up on
+        return None
+    if fell is not None and height < -fell:
+        return False
+    return True
+
+
 @dataclass
 class _Run:
     """One option's live state. Never shared between runs."""
@@ -177,11 +224,16 @@ class _Run:
     reason: str | None = None
     held: str | None = None
     acts: int = 0
+    notes: list[str] = field(default_factory=list)
 
     def end(self, terminated_by: str, reason: str | None = None) -> None:
         if self.terminated_by is None:
             self.terminated_by = terminated_by
             self.reason = reason
+
+    def note(self, text: str) -> None:
+        """Keep one measured remark for the outcome, whatever ending the run reaches."""
+        self.notes.append(text)
 
 
 class _Progress:
@@ -300,6 +352,15 @@ class OptionExecutor:
                 "option_id": run.spec.option_id,
                 "terminated_by": run.terminated_by,
                 "reason": run.reason,
+            })
+        for note in run.notes:
+            # Facts measured on the way to the ending, kept beside it: what the option did before it ended is
+            # part of what it measured, not a replacement for why it ended.
+            receipts.append({
+                "type": "option_note",
+                "option_id": run.spec.option_id,
+                "terminated_by": run.terminated_by,
+                "reason": note,
             })
         duration: float | None = None
         if run.terminated_by is not None:
@@ -611,16 +672,28 @@ class OptionExecutor:
                                         lease_s=self._time_bound(run_up, speed)):
                     return
                 back_progress = _Progress((-unit[0], -unit[1], -unit[2]), obstacle, BLOCK_WINDOW_S)
+                # A run-up stays on the floor it starts on: the next step back is `step` far, and the floor
+                # behind is read from the probe's own backward down-rays when this observation carries them.
+                step = (speed or 0.0) * self._period_s
+                floor_y = obstacle[UP]
                 while run.terminated_by is None:
                     position = await self._tick(run)
                     if position is None:
                         return
                     now = self._clock()
-                    back_progress.update(now, position)
-                    if back_progress.along(position) >= run_up:
+                    backed_up = max(0.0, back_progress.update(now, position))
+                    if backed_up >= run_up:
                         break
                     if self._blocked(run, back_progress, speed, BLOCK_SHARE):
                         return
+                    if _floor_behind(_probe(self._last_obs), step, fell) is False:
+                        run.note(f"run-up {backed_up:.2f} available of {run_up:.2f} (floor edge)")
+                        break
+                    # Without a probe behind, the body walking off the edge is the measurement: it has already
+                    # left the floor the run-up started on, so stop there and keep everything afterwards honest.
+                    if position[UP] < floor_y - self._landing_eps():
+                        run.note(f"run-up truncated: floor ended after {backed_up:.2f}")
+                        break
                     if self._fell(run) or self._timeout(run, now):
                         return
                 if run.terminated_by is not None:

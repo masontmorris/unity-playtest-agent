@@ -91,6 +91,13 @@ is pressed, report it; don't fake it with alternating presses.
 Parameters come from primitives: run-up distance from measured speed times the measured rise time; launch
 distance and flight-time bound from the rise primitive's measured duration. Each constant names its source.
 
+A hop backs up on the floor it starts on. With a probe, the back-up stops at the last sample whose ray one
+step further back still reaches floor within the `fell` bound, and the note says
+`run-up N.NN available of M.MM (floor edge)`. Without a probe it stops when the body has dropped below where
+it started by the landing epsilon, and the note says `run-up truncated: floor ended after N.NN`. Either way the
+hop runs with the run-up it has: a run-up shorter than the launch lead is reported, not replaced, and the lead
+itself does not change.
+
 **Termination conditions** are generic and measured. The first to occur wins and is recorded as `terminated_by`:
 - `succeeded`
 - `blocked`: progress along the commanded direction stays below a fraction of the expected progress at

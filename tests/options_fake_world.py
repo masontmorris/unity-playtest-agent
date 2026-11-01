@@ -8,11 +8,17 @@ The world has three measured features the tests use:
 
 * a **one-tile step**: a raised block. Walking into it stops the body; a standing jump against it cannot
   clear it (holding into the wall slides you down, because there is no air control); a hop with a run-up
-  carries its takeoff momentum over the block and lands on top.
+  carries its takeoff momentum over the block and lands on top. A **wall** (`wall_x`) is the same kind of
+  block with a taller face, so a body standing on top of a step can still be stopped by something ahead.
 * a **pit**: no floor over a span, so the body falls. Falling past `dead_below` raises the declared
   `dead` reader, which the executor watches like any manifest reader.
 * **stale and rejection injection**, so an option can be seen to end `rejected` with the bridge's own
   receipt.
+
+Every observation also carries the bridge's `probe` in the shape `UnityProbeField` publishes for a body
+in a plane, derived from the same floor function the physics uses. Down-rays ahead (`samples`) and
+behind (`backward`) therefore agree with what the body will find, which is what makes a floor-aware
+run-up testable without Unity.
 
 No game, object, control or genre names: the controls, the actions and the catalog are the fixture's own.
 """
@@ -131,6 +137,8 @@ class FakeWorld:
     step_x: float | None = 3.0
     step_height: float = 1.0
     step_width: float = 3.0
+    wall_x: float | None = None        # a solid face ahead: the floor jumps to `wall_height` at this x
+    wall_height: float = 2.0
     pit_from: float | None = None
     pit_to: float | None = None
     dead_below: float = -0.5
@@ -138,6 +146,7 @@ class FakeWorld:
     left_ground_at: float | None = None
     dead: bool = False
     publish_pose: bool = True
+    publish_probe: bool = True     # the same geometry probe the bridge publishes, from this world's floor
     reject_acts: int = 0
     scene: str = "fixture:scene"
 
@@ -166,6 +175,8 @@ class FakeWorld:
     # --- physics ----------------------------------------------------------------------------
 
     def _floor_at(self, x: float) -> float | None:
+        if self.wall_x is not None and x >= self.wall_x:
+            return self.wall_height
         if self.pit_from is not None and self.pit_to is not None and self.pit_from <= x < self.pit_to:
             return None
         if (self.step_x is not None
@@ -206,6 +217,15 @@ class FakeWorld:
             self.x = self.step_x - 1e-6 if self.x < half else self.step_x + self.step_width + 1e-6
             self.vx = 0.0
 
+        if (self.wall_x is not None and self.wall_height > 0
+                and self.x >= self.wall_x
+                and previous_y < self.wall_height - 1e-9
+                and self.y < self.wall_height - 1e-9):
+            # The face of the block ahead stops a body coming at it from the side, the same way a step's
+            # side does; a body descending from above lands on the block instead.
+            self.x = self.wall_x - 1e-6
+            self.vx = 0.0
+
         floor = self._floor_at(self.x)
         was_grounded = self.grounded
         if floor is not None and self.y <= floor:
@@ -221,6 +241,65 @@ class FakeWorld:
         if self.y < self.dead_below:
             self.dead = True
         self.previous_held = set(self.held)
+
+    # --- the geometry probe -----------------------------------------------------------------
+
+    def _ray(self, offset: float, ground: float | None) -> dict[str, Any]:
+        """One down-ray around the body, from the same floor function the physics uses.
+
+        A distance behind is a negative offset, exactly as the bridge publishes it; the height is
+        measured against the floor under the body, so flat ground behind is 0 and a drop behind is
+        negative. A point with no floor under it is a miss with null readings, never zeros.
+        """
+        x = self.x + offset
+        surface = self._floor_at(x)
+        if surface is None:
+            return {"forward": offset, "lateral": 0.0, "hit": False, "point": None,
+                    "delta_y": None, "normal": None, "inside": False}
+        return {
+            "forward": offset,
+            "lateral": 0.0,
+            "hit": True,
+            "point": [x, surface, 0.0],
+            "delta_y": None if ground is None else surface - ground,
+            "normal": [0.0, 1.0, 0.0],
+            "inside": False,
+        }
+
+    def _blocker(self, height: float) -> dict[str, Any]:
+        """One forward cast at that height: the nearest standing face ahead within the probe's reach."""
+        reach = 1.8
+        distance: float | None = None
+        top = 0.0
+        if self.wall_x is not None and self.wall_x > self.x:
+            distance, top = self.wall_x - self.x, self.wall_height
+        if (self.step_x is not None and self.step_x > self.x
+                and (distance is None or self.step_x - self.x < distance)):
+            distance, top = self.step_x - self.x, self.step_height
+        if distance is not None and (distance > reach or height >= top):
+            distance = None
+        return {
+            "height": height,
+            "max_distance": reach,
+            "hit": distance is not None,
+            "distance": distance,
+            "point": None if distance is None else [self.x + distance, self.y + height, 0.0],
+            "normal": None if distance is None else [-1.0, 0.0, 0.0],
+        }
+
+    def _probe(self) -> dict[str, Any]:
+        """The measured geometry in the shape the bridge publishes for a body in a plane."""
+        ground = self._floor_at(self.x)
+        return {
+            "version": 2,
+            "anchor": {"kind": "rigidbody2d", "name": "Body", "position": [self.x, self.y, 0.0]},
+            "basis": {"plane": "2d", "forward": [1.0, 0.0, 0.0],
+                      "forward_source": "facing_scale", "lateral": "collapsed"},
+            "under": self._ray(0.0, ground),
+            "samples": [self._ray(offset, ground) for offset in (0.6, 1.2, 1.8)],
+            "backward": [self._ray(offset, ground) for offset in (-0.6, -1.2, -1.8)],
+            "blockers": [self._blocker(0.15), self._blocker(0.9)],
+        }
 
     # --- the client the executor uses ---------------------------------------------------------
 
@@ -241,6 +320,8 @@ class FakeWorld:
                 "velocity": [self.vx, self.vy, 0.0],
                 "source": "rigidbody2d",
             }
+            if self.publish_probe:
+                public["probe"] = self._probe()
         return Observation(
             protocol="upa/1",
             session="fixture",
