@@ -220,8 +220,48 @@ def _probe_key(observation: Observation | None) -> tuple[str, tuple[float, ...]]
     return None
 
 
+def _vector(value: Any) -> tuple[float, ...] | None:
+    """A sequence of finite numbers as a tuple of floats, else None (unmeasured, never a default)."""
+    if isinstance(value, (list, tuple)) and value and all(_finite(c) is not None for c in value):
+        return tuple(float(c) for c in value)
+    return None
+
+
+def _rays_toward(probe: Mapping[str, Any], back: Sequence[float] | None) -> list[tuple[float, Mapping[str, Any]]]:
+    """The probe's centre-line down-rays that point along `back` in the world, as (distance, entry).
+
+    The probe's rows are named for the body's own frame (`samples` ahead, `backward` behind), and in a plane
+    that frame follows the body's facing: a body backing up faces the way it backs, so the row that looks where
+    it is going is the one named forward. Each row is therefore placed in the world by the probe's own basis
+    (the sign of the entry's offset times `basis.forward`) and kept when it points along `back`. Without a basis
+    vector or a direction, the row named backward is read as it was, so a probe without a basis is unchanged.
+    """
+    basis = probe.get("basis") if isinstance(probe.get("basis"), Mapping) else {}
+    forward = _vector(basis.get("forward")) if basis else None
+    out: list[tuple[float, Mapping[str, Any]]] = []
+    for name in ("samples", "backward"):
+        entries = probe.get(name)
+        if not isinstance(entries, (list, tuple)):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            offset = _finite(entry.get("forward"))
+            lateral = _finite(entry.get("lateral"))
+            if offset is None or offset == 0 or (lateral is not None and abs(lateral) > 1e-9):
+                continue
+            if forward is None or back is None or len(forward) != len(back):
+                if name == "backward" and offset < 0:
+                    out.append((-offset, entry))
+                continue
+            direction = [c * (1.0 if offset > 0 else -1.0) for c in forward]
+            if sum(d * b for d, b in zip(direction, back)) > 0.5:
+                out.append((abs(offset), entry))
+    return out
+
+
 def _floor_behind(probe: Any, step: float, horizon: float,
-                  fell: float | None) -> tuple[bool | None, float | None]:
+                  fell: float | None, back: Sequence[float] | None = None) -> tuple[bool | None, float | None]:
     """Whether the floor the body stands on continues behind it, reading every backward ray that matters.
 
     The stop must land before the body can leave the floor, not after: between one sample and the next the
@@ -237,17 +277,8 @@ def _floor_behind(probe: Any, step: float, horizon: float,
     """
     if not isinstance(probe, Mapping):
         return None, None
-    rays = probe.get("backward")
-    if not isinstance(rays, (list, tuple)) or not rays:
-        return None, None
     measured: list[tuple[float, Mapping[str, Any]]] = []
-    for entry in rays:
-        if not isinstance(entry, Mapping):
-            continue
-        offset = _finite(entry.get("forward"))
-        if offset is None or offset >= 0:
-            continue
-        behind = -offset
+    for behind, entry in _rays_toward(probe, back):
         if behind + 1e-9 < step:
             continue
         measured.append((behind, entry))
@@ -540,10 +571,6 @@ class OptionExecutor:
         if run.terminated_by is not None:
             duration = max(0.0, self._clock() - run.started)
         params = dict(run.spec.params)
-        if run.measured:
-            # Additive, never a replacement: what the option measured about the place, beside what it was
-            # asked to do. `record` keeps params, so the next label can state it.
-            params["measured"] = dict(run.measured)
         return OptionOutcome(
             option_id=run.spec.option_id,
             template=run.spec.template,
@@ -555,6 +582,7 @@ class OptionExecutor:
             duration_s=duration,
             receipts=receipts,
             scene=run.scene,
+            measured=dict(run.measured) if run.measured else {},
         )
 
     # --- observation and input ------------------------------------------------------------
@@ -978,7 +1006,8 @@ class OptionExecutor:
                     return False
                 staleness, estimated = self._probe_staleness_s()
                 margin = (hop.speed or 0.0) * (staleness + self._period_s)
-                holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, hop.fell)
+                holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, hop.fell,
+                                            back=tuple(-c for c in hop.unit))
                 if holds is False and edge is not None:
                     note = (f"run-up {backed_up:.2f} available of {hop.run_up:.2f} "
                             f"(floor edge at {edge - margin:.2f} behind")

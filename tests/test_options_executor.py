@@ -49,8 +49,8 @@ def assert_valid(outcome: OptionOutcome, spec: OptionSpec) -> None:
     assert isinstance(outcome, OptionOutcome)
     assert outcome.terminated_by in TERMINATIONS
     assert outcome.option_id == spec.option_id and outcome.template == spec.template
-    # `measured` is the one additive key: what the option measured about the place, if anything.
-    assert {key: value for key, value in outcome.params.items() if key != "measured"} == dict(spec.params)
+    # params are exactly the spec's; what the option measured about the place lives on `outcome.measured`.
+    assert outcome.params == dict(spec.params)
     json.dumps(outcome.to_json())                       # JSON-ready for the trace
     stopped = [row for row in outcome.receipts if row.get("type") == "stopped"]
     assert stopped and stopped[-1]["release_verified"] is True
@@ -446,8 +446,8 @@ def test_a_hop_against_a_wall_above_its_reach_measures_the_wall():
     notes = note_rows(outcome)
     assert outcome.terminated_by == "blocked", notes
     assert outcome.end_position is not None and outcome.end_position[0] <= 3.0 + 0.3
-    measured = outcome.params.get("measured")
-    assert isinstance(measured, dict) and "wall_min_height" in measured, outcome.params
+    measured = outcome.measured
+    assert isinstance(measured, dict) and "wall_min_height" in measured, outcome.measured
     height = measured["wall_min_height"]
     peak = primitives.rise_peak
     assert peak is not None and 0.5 * peak <= height <= peak + 0.1, (height, peak)

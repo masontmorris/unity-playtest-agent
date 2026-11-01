@@ -43,6 +43,9 @@ class OptionOutcome:
     duration_s: float | None
     receipts: list[dict[str, Any]] = field(default_factory=list)
     scene: str | None = None
+    # What the option measured about the place beside what it was asked to do (e.g. a wall's minimum
+    # height): additive, and kept apart from params, which stay exactly the spec's.
+    measured: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.terminated_by not in TERMINATIONS:

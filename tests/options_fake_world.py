@@ -319,14 +319,30 @@ class FakeWorld:
         """The measured geometry in the shape the bridge publishes for a body in a plane."""
         x, y = (self.x, self.y) if origin is None else origin
         ground = self._floor_at(x)
+        # The real 2D probe's frame follows the sprite's facing: a body moving left faces left, so its
+        # "forward" rays look left. Offsets are reported in that frame; the rays are cast in the world.
+        if self.vx > 1e-9:
+            self._facing = 1.0
+        elif self.vx < -1e-9:
+            self._facing = -1.0
+        facing = getattr(self, "_facing", 1.0)
+
+        def row(offsets):
+            rays = []
+            for offset in offsets:
+                ray = self._ray(offset * facing, ground, origin)
+                ray["forward"] = offset
+                rays.append(ray)
+            return rays
+
         return {
             "version": 2,
             "anchor": {"kind": "rigidbody2d", "name": "Body", "position": [x, y, 0.0]},
-            "basis": {"plane": "2d", "forward": [1.0, 0.0, 0.0],
+            "basis": {"plane": "2d", "forward": [facing, 0.0, 0.0],
                       "forward_source": "facing_scale", "lateral": "collapsed"},
             "under": self._ray(0.0, ground, origin),
-            "samples": [self._ray(offset, ground, origin) for offset in (0.6, 1.2, 1.8)],
-            "backward": [self._ray(offset, ground, origin) for offset in (-0.6, -1.2, -1.8)],
+            "samples": row((0.6, 1.2, 1.8)),
+            "backward": row((-0.6, -1.2, -1.8)),
             "blockers": [self._blocker(0.15, origin), self._blocker(0.9, origin)],
         }
 
