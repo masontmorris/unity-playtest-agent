@@ -246,6 +246,7 @@ class OptionExecutor:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         dead_fields: Mapping[str, Any] | None = None,
         period_s: float = PERIOD_S,
+        flight: dict[str, Any] | None = None,
     ) -> None:
         self._client = client
         self._primitives = primitives
@@ -253,6 +254,9 @@ class OptionExecutor:
         self._sleep = sleep or asyncio.sleep
         self._dead_fields = dict(dead_fields or {})
         self._period_s = period_s
+        # Flights measured by earlier hops in this run, shared by the caller across executors. A hop's take-off
+        # lead uses the measured time to apex once one exists, instead of the symmetric-flight assumption.
+        self._flight = flight if flight is not None else {}
         self._last_tick: float | None = None
         self._last_obs: Observation | None = None
 
@@ -421,6 +425,20 @@ class OptionExecutor:
             bound = OPEN_TRAVERSE_S
         return min(OPTION_MAX_S, bound)
 
+    def _measured_apex_s(self) -> float | None:
+        """The median time to apex measured by earlier hops' flights in this run, or None before the first."""
+        times = sorted(self._flight.get("time_to_apex_s", []))
+        return times[len(times) // 2] if times else None
+
+    def _record_apex(self, apex: tuple[float, float] | None, launch_at: Sequence[float] | None) -> None:
+        """Keep this flight's measured time to apex when it really rose: its highest sample is above take-off
+        by more than the landing tolerance and came before the flight ended."""
+        if apex is None or launch_at is None:
+            return
+        elapsed, height = apex
+        if elapsed > 0 and height - launch_at[UP] > self._landing_eps():
+            self._flight.setdefault("time_to_apex_s", []).append(elapsed)
+
     def _fell_bound(self) -> float | None:
         candidates: list[float] = []
         if self._primitives.rise_peak is not None:
@@ -529,6 +547,9 @@ class OptionExecutor:
         # start. Without a stated value it is the distance covered to apex at measured speed.
         if launch is None:
             launch = (speed or 0.0) * rise_duration / 2.0 if speed else 0.0
+        measured_apex = self._measured_apex_s()
+        if measured_apex is not None and speed and launch:
+            launch = speed * measured_apex
         flight_bound = min(OPTION_MAX_S, rise_duration * FLIGHT_BOUND_FACTOR)
         fell = self._fell_bound()
         back_action = params.get("run_up_action")
@@ -639,12 +660,15 @@ class OptionExecutor:
             return
         flight_start = self._clock()
         landing = _Landing(rise_duration, self._landing_eps())
+        apex: tuple[float, float] | None = None  # (elapsed, height) of the highest sample this flight
         while run.terminated_by is None:
             position = await self._tick(run)
             if position is None:
                 return
             now = self._clock()
             progress.update(now, position)
+            if apex is None or position[UP] > apex[1]:
+                apex = (now - flight_start, position[UP])
             if self._fell(run):
                 return
             if landing.landed(now - flight_start, position):
@@ -655,12 +679,18 @@ class OptionExecutor:
                 return
 
         landed_at = tuple(run.end_position or launch_at)
+        self._record_apex(apex, launch_at)
         margin = self._success_margin(speed)
         if obstacle is not None:
             # Cleared means landing past the measured obstacle, not merely past the take-off point.
             beyond = _Progress(unit, obstacle, BLOCK_WINDOW_S).along(landed_at)
             outcome = "succeeded" if beyond >= margin else "blocked"
-            run.end(outcome, f"landed {beyond:.3f} u beyond the measured obstacle, margin {margin:.3f}")
+            took_off = _Progress(unit, obstacle, BLOCK_WINDOW_S).along(launch_at)
+            flight = ("apex unmeasured" if apex is None else
+                      f"apex {apex[1] - launch_at[UP]:+.3f} u at {apex[0]:.2f} s after take-off")
+            run.end(outcome, f"landed {beyond:.3f} u beyond the measured obstacle at "
+                             f"{[round(v, 3) for v in obstacle]}, margin {margin:.3f}; took off {took_off:+.3f} u "
+                             f"from it (lead {launch or 0.0:.3f}); {flight}")
             return
         gained = progress.along(landed_at) - launch_progress
         if gained >= margin:

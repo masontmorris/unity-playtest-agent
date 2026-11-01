@@ -152,8 +152,10 @@ async def run_session(
         from .options.executor import OptionExecutor
         from .options.model import OptionSpec
         class RunnerOptionPort:
+            flight: dict = {}  # measured flights shared by every option this run
+
             async def run(self, choice):
-                executor = OptionExecutor(loop.client, option_primitives)
+                executor = OptionExecutor(loop.client, option_primitives, flight=self.flight)
                 result = await executor.run(OptionSpec(choice.option_id, choice.template, choice.params, choice.label))
                 option_memory.record(result)
                 return result.to_json()

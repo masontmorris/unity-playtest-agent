@@ -260,3 +260,19 @@ def test_hop_against_the_step_clears_it_under_a_jittery_clock():
     outcome = asyncio.run(executor.run(spec))
     assert outcome.terminated_by == "succeeded", outcome.receipts
     assert outcome.end_position is not None and outcome.end_position[0] > 3.0 and outcome.end_position[1] > 0.5
+
+
+def test_a_hop_measures_its_flight_and_later_hops_use_it():
+    """The take-off lead starts from the symmetric-flight assumption; once a flight is measured, the measured
+    time to apex is used instead, and each hop's note states its take-off, obstacle and apex."""
+    flight: dict = {}
+    world = FakeWorld(x=2.9)
+    _, primitives, spec = build("hop+x")
+    executor = OptionExecutor(world, primitives, clock=world.clock, sleep=world.sleep, flight=flight)
+    outcome = asyncio.run(executor.run(spec))
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert len(flight["time_to_apex_s"]) == 1 and flight["time_to_apex_s"][0] > 0
+    note = next(r["reason"] for r in outcome.receipts if r.get("type") == "option_note")
+    assert "measured obstacle at" in note and "took off" in note and "apex" in note
+    second = OptionExecutor(FakeWorld(x=2.9), primitives, flight=flight)
+    assert second._measured_apex_s() == flight["time_to_apex_s"][0]
