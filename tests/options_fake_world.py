@@ -134,6 +134,8 @@ class FakeWorld:
     pit_from: float | None = None
     pit_to: float | None = None
     dead_below: float = -0.5
+    coyote_s: float = 0.0          # a jump still allowed this long after walking off an edge
+    left_ground_at: float | None = None
     dead: bool = False
     publish_pose: bool = True
     reject_acts: int = 0
@@ -181,11 +183,15 @@ class FakeWorld:
                 self.vx = -self.run_speed
             else:
                 self.vx = 0.0
-            # The rise is a press, not a hold: only a newly applied input leaves the ground, so holding
-            # it through the flight does not bounce the body on landing.
-            if UP in held and UP not in self.previous_held:
-                self.vy = self.jump_impulse
-                self.grounded = False
+        # The rise is a press, not a hold: only a newly applied input leaves the ground, so holding
+        # it through the flight does not bounce the body on landing. Within `coyote_s` of walking off an
+        # edge a press still leaves the ground, as many platformers allow.
+        in_coyote = (not self.grounded and self.coyote_s > 0 and self.left_ground_at is not None
+                     and self.now - self.left_ground_at <= self.coyote_s and self.vy <= 0)
+        if (self.grounded or in_coyote) and UP in held and UP not in self.previous_held:
+            self.vy = self.jump_impulse
+            self.grounded = False
+            self.left_ground_at = None
         # Airborne there is no air control: the body keeps the momentum it took off with.
         self.vy -= self.gravity * PERIOD_S
         self.x += self.vx * PERIOD_S
@@ -201,11 +207,15 @@ class FakeWorld:
             self.vx = 0.0
 
         floor = self._floor_at(self.x)
+        was_grounded = self.grounded
         if floor is not None and self.y <= floor:
             self.y = floor
             self.vy = 0.0
             self.grounded = True
+            self.left_ground_at = None
         else:
+            if was_grounded and self.vy <= 0:  # walked off an edge, not jumped
+                self.left_ground_at = self.now
             self.grounded = False
 
         if self.y < self.dead_below:

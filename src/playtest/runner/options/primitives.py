@@ -234,8 +234,20 @@ class Primitives:
         return direction.speed * self.rise_duration_s
 
     def launch_distance(self, direction: Direction | None = None) -> float | None:
-        """Ground distance to cover before the rise input: the same measured run-up, entered moving."""
-        return self.run_up(direction)
+        """How far short of the hop's start to take off: measured speed times the time to apex.
+
+        A hop is chosen facing what it should clear, so the obstacle is at the start. Taking off this far short
+        of it puts the body at full height as it arrives. The time to apex is half the measured airtime, which
+        assumes a symmetric flight: stated, not measured separately.
+        """
+        if self.rise_duration_s is None:
+            return None
+        if direction is None:
+            speeds = [item.speed for item in self.directions]
+            if not speeds:
+                return None
+            return max(speeds) * self.rise_duration_s / 2.0
+        return direction.speed * self.rise_duration_s / 2.0
 
     @property
     def can_hop(self) -> bool:

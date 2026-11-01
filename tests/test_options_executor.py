@@ -103,7 +103,8 @@ def test_hop_with_run_up_clears_the_step():
     assert outcome.displacement is not None and outcome.displacement[0] > 3.0
     assert outcome.end_position is not None and outcome.end_position[1] > 0.5   # landed on the step
     actions = [row["action"] for row in world.requests]
-    assert actions[0] == "move_left"                    # the run-up
+    # Advance until the step stalls the body, back up the run-up from there, then the chord.
+    assert actions[:2] == ["move_right", "move_left"]
     assert "chord_right" in actions                      # move and rise in one declaration
     chord = next(row for row in world.requests if row["action"] == "chord_right")
     assert chord["lease_s"] and chord["lease_s"] >= 1.0  # the lease covers the flight
@@ -204,3 +205,30 @@ def test_declared_death_reader_ends_the_option():
     world.observe_once = dying_after_three             # type: ignore[method-assign]
     outcome = run_spec(world, primitives, spec, dead_fields={"vitals.dead": True})
     assert outcome.terminated_by == "state_changed"
+
+
+def test_hop_started_against_the_step_clears_it_after_its_run_up():
+    """A hop is chosen facing what it should clear, so it starts pressed against the obstacle: it must back up,
+    run in, and take off short of the obstacle rather than at it."""
+    world = FakeWorld(x=2.9)
+    _, primitives, spec = build("hop+x")
+    outcome = run_spec(world, primitives, spec)
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert outcome.end_position is not None and outcome.end_position[1] > 0.5   # on top of the step
+    assert outcome.end_position[0] > 3.0
+
+
+def test_hop_toward_a_gap_takes_off_where_the_floor_ends():
+    """No wall stalls the body at a gap; the hop launches the moment the floor ends."""
+    world = FakeWorld(step_x=None, pit_from=2.0, pit_to=5.0, coyote_s=0.15)
+    _, primitives, spec = build("hop+x", world)
+    outcome = run_spec(world, primitives, spec)
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert outcome.end_position is not None and outcome.end_position[0] > 5.0 and outcome.end_position[1] > -0.1
+
+
+def test_hop_toward_a_gap_in_a_game_without_coyote_time_falls_honestly():
+    world = FakeWorld(step_x=None, pit_from=2.0, pit_to=5.0, coyote_s=0.0)
+    _, primitives, spec = build("hop+x", world)
+    outcome = run_spec(world, primitives, spec)
+    assert outcome.terminated_by in ("fell", "state_changed"), outcome.receipts

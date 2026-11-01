@@ -522,7 +522,10 @@ class OptionExecutor:
         speed = _finite(params.get("speed")) or (direction.speed if direction else None)
         run_up = _finite(params.get("run_up"))
         launch = _finite(params.get("launch_distance"))
-        launch = run_up if launch is None else launch
+        # `launch` is how far short of the hop's start to take off; the obstacle a hop is chosen for is at its
+        # start. Without a stated value it is the distance covered to apex at measured speed.
+        if launch is None:
+            launch = (speed or 0.0) * rise_duration / 2.0 if speed else 0.0
         flight_bound = min(OPTION_MAX_S, rise_duration * FLIGHT_BOUND_FACTOR)
         fell = self._fell_bound()
         back_action = params.get("run_up_action")
@@ -539,58 +542,92 @@ class OptionExecutor:
         assert run.start_position is not None
         progress = _Progress(unit, run.start_position, BLOCK_WINDOW_S)
 
-        # Phase 1: the run-up, away from the commanded direction.
-        origin = tuple(start)
+        # Phase 0: find what is to be cleared, by measurement. Advance toward the direction until the body
+        # stalls: that point is the obstacle. A hop chosen pressed against it stalls at once. If nothing stalls
+        # the body within the run-up distance there is no obstacle to find, and the hop is a running jump from
+        # where it is, already at speed.
+        obstacle: tuple[float, float, float] | None = tuple(start)
+        launch_at: tuple[float, float, float] | None = None
         if run_up:
-            if not await self._hold(run, str(back_action), self._observation(),
+            if not await self._hold(run, str(move_action), self._observation(),
                                     lease_s=self._time_bound(run_up, speed)):
                 return
-            back_progress = _Progress(
-                (-unit[0], -unit[1], -unit[2]), run.start_position, BLOCK_WINDOW_S
-            )
+            seek = _Progress(unit, start, BLOCK_WINDOW_S)
             while run.terminated_by is None:
                 position = await self._tick(run)
                 if position is None:
                     return
                 now = self._clock()
-                back_progress.update(now, position)
-                if back_progress.along(position) >= run_up:
+                seek.update(now, position)
+                progress.update(now, position)
+                rate = seek.rate()
+                if (rate is not None and speed and seek.elapsed >= BLOCK_WINDOW_S
+                        and rate < BLOCK_SHARE * speed):
+                    obstacle = tuple(position)
                     break
-                if self._blocked(run, back_progress, speed, BLOCK_SHARE):
-                    return
+                if seek.along(position) >= run_up:
+                    obstacle, launch_at = None, tuple(position)
+                    break
+                # The floor ended: the body has started to drop with no rise input. A gap is cleared by taking
+                # off where the floor ends, so launch now, already moving toward it.
+                if position[1] < start[1] - self._landing_eps():
+                    obstacle, launch_at = None, tuple(position)
+                    break
                 if self._fell(run) or self._timeout(run, now):
                     return
             if run.terminated_by is not None:
                 return
-            origin = tuple(position)
 
-        # Phase 2: the approach, until the measured launch distance or a measured stall.
-        if not await self._hold(run, str(move_action), self._observation(),
-                                lease_s=self._time_bound((launch or 0.0) + (run_up or 0.0), speed)):
-            return
-        approach = _Progress(unit, origin, BLOCK_WINDOW_S)
-        launch_at: tuple[float, float, float] | None = None
-        while run.terminated_by is None:
-            position = await self._tick(run)
-            if position is None:
+        if obstacle is not None:
+            reference = _Progress(unit, obstacle, BLOCK_WINDOW_S)
+            # Phase 1: the run-up, away from the obstacle.
+            origin = obstacle
+            if run_up:
+                if not await self._hold(run, str(back_action), self._observation(),
+                                        lease_s=self._time_bound(run_up, speed)):
+                    return
+                back_progress = _Progress((-unit[0], -unit[1], -unit[2]), obstacle, BLOCK_WINDOW_S)
+                while run.terminated_by is None:
+                    position = await self._tick(run)
+                    if position is None:
+                        return
+                    now = self._clock()
+                    back_progress.update(now, position)
+                    if back_progress.along(position) >= run_up:
+                        break
+                    if self._blocked(run, back_progress, speed, BLOCK_SHARE):
+                        return
+                    if self._fell(run) or self._timeout(run, now):
+                        return
+                if run.terminated_by is not None:
+                    return
+                origin = tuple(position)
+
+            # Phase 2: run in, and take off `launch` short of the obstacle, or at a measured stall.
+            if not await self._hold(run, str(move_action), self._observation(),
+                                    lease_s=self._time_bound(run_up or 0.0, speed)):
                 return
-            now = self._clock()
-            value = approach.update(now, position)
-            progress.update(now, position)
-            target = launch or 0.0
-            if value >= target:
-                launch_at = tuple(position)
-                break
-            rate = approach.rate()
-            if (rate is not None and speed and approach.elapsed >= BLOCK_WINDOW_S
-                    and approach.best >= self._success_margin(speed)
-                    and rate < LAUNCH_SHARE * speed):
-                launch_at = tuple(position)
-                break
-            if self._fell(run) or self._timeout(run, now):
+            approach = _Progress(unit, origin, BLOCK_WINDOW_S)
+            while run.terminated_by is None:
+                position = await self._tick(run)
+                if position is None:
+                    return
+                now = self._clock()
+                approach.update(now, position)
+                progress.update(now, position)
+                if reference.along(position) >= -(launch or 0.0):
+                    launch_at = tuple(position)
+                    break
+                rate = approach.rate()
+                if (rate is not None and speed and approach.elapsed >= BLOCK_WINDOW_S
+                        and approach.best >= self._success_margin(speed)
+                        and rate < LAUNCH_SHARE * speed):
+                    launch_at = tuple(position)
+                    break
+                if self._fell(run) or self._timeout(run, now):
+                    return
+            if run.terminated_by is not None:
                 return
-        if run.terminated_by is not None:
-            return
         assert launch_at is not None
         launch_progress = progress.along(launch_at)
 
@@ -614,9 +651,15 @@ class OptionExecutor:
                                      f"{flight_bound:.2f} s")
                 return
 
-        end_progress = progress.along(tuple(run.end_position or launch_at))
-        gained = end_progress - launch_progress
+        landed_at = tuple(run.end_position or launch_at)
         margin = self._success_margin(speed)
+        if obstacle is not None:
+            # Cleared means landing past the measured obstacle, not merely past the take-off point.
+            beyond = _Progress(unit, obstacle, BLOCK_WINDOW_S).along(landed_at)
+            outcome = "succeeded" if beyond >= margin else "blocked"
+            run.end(outcome, f"landed {beyond:.3f} u beyond the measured obstacle, margin {margin:.3f}")
+            return
+        gained = progress.along(landed_at) - launch_progress
         if gained >= margin:
             run.end("succeeded", f"landed {gained:.3f} u beyond the launch point, margin {margin:.3f}")
         else:
