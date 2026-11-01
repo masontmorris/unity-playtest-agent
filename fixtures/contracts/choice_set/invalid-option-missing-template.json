@@ -1,0 +1,20 @@
+{
+  "set_version": 1,
+  "built_from_seq": 2,
+  "choices": [
+    {
+      "id": "traverse+x",
+      "kind": "option",
+      "label": "Traverse",
+      "option_id": "traverse+x",
+      "params": {
+        "direction": [
+          1,
+          0,
+          0
+        ]
+      },
+      "source": "manifest"
+    }
+  ]
+}

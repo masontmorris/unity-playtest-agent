@@ -93,6 +93,38 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
     return choices
 
 
+def options_choices(choices: list[Choice], primitives: Any, memory: Any, observation: Any,
+                    *, placement: bool = False, regions: Any = ()) -> list[Choice]:
+    """Rebuild option labels against this observation; never select an option here."""
+    from .options.primitives import option_specs
+    from .options.model import OptionSpec
+
+    memory.observe(observation)
+    scene = observation.scene
+    controlled = observation.public.get("controlled") or {}
+    position = controlled.get("position") if isinstance(controlled, dict) else None
+    movement = {p.action for p in primitives.classified if p.kind in ("move", "rise")}
+    retained = [c for c in choices if not (c.kind is ChoiceKind.action and c.action in movement)]
+    specs = list(option_specs(primitives))
+    if placement:
+        points = list(memory.settled_points(scene))
+        for region in regions:
+            anchor = getattr(region, "anchor", None)
+            if getattr(region, "scene", None) == scene and anchor is not None:
+                points.append(anchor)
+        unique = []
+        for point in points:
+            if list(point) not in unique:
+                unique.append(list(point))
+        for index, point in enumerate(unique[:8]):
+            specs.append(OptionSpec(f"place:{index}", "place", {"position": point},
+                                    f"place at {point}"))
+    offered = [Choice(id=s.option_id, kind=ChoiceKind.option, option_id=s.option_id, template=s.template,
+                      params=s.params, label=f"{s.intent} — {memory.suffix(scene, position, s.option_id)}",
+                      source=ChoiceSource.manifest) for s in specs]
+    return [*retained, *offered]
+
+
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
                   finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
                   point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),

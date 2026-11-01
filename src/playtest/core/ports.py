@@ -24,6 +24,11 @@ from .execution import Execution
 
 # --- S1 -------------------------------------------------------------------------------------
 
+class OptionPort(Protocol):
+    """Execute the chosen routine. Stop must release inputs and prevent further input from this run."""
+
+    async def run(self, choice: Choice) -> dict[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class S1Call:

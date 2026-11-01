@@ -119,6 +119,10 @@ async def run_session(
     restart: RestartPort | None = None,
     generation: str | None = None,
     continuous_input: bool = False,
+    option_primitives: Any = None,
+    option_memory: Any = None,
+    placement: bool = False,
+    reach_regions: Any = (),
     instructions: str = INSTRUCTIONS,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
@@ -143,6 +147,27 @@ async def run_session(
     configured = with_held_choices(built, eligible) if continuous_input else built
     held_ids = [f"{name}.held" for name in eligible]
     from .point_turns import gate_choices
+    option_port = None
+    if option_primitives is not None:
+        from .options.executor import OptionExecutor
+        from .options.model import OptionSpec
+        class RunnerOptionPort:
+            async def run(self, choice):
+                executor = OptionExecutor(loop.client, option_primitives)
+                result = await executor.run(OptionSpec(choice.option_id, choice.template, choice.params, choice.label))
+                option_memory.record(result)
+                return result.to_json()
+
+        option_port = RunnerOptionPort()
+
+    def filter_choices(choices, observation):
+        if configured.point_fov is not None:
+            choices = gate_choices(choices, observation, configured.point_fov)
+        if option_primitives is not None:
+            from .choices import options_choices
+            choices = options_choices(list(choices), option_primitives, option_memory, observation,
+                                      placement=placement, regions=reach_regions)
+        return choices
     loop = TurnLoop(
         client, choices=configured.choices, max_age_s=max_age_s, leases=configured.leases,
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
@@ -152,8 +177,8 @@ async def run_session(
         continuous_choices=held_ids,
         continuous_labels=(lambda interval, lease: held_choice_labels(configured, held_ids, interval, lease))
         if continuous_input else None,
-        choice_filter=(lambda choices, observation: gate_choices(choices, observation, configured.point_fov))
-        if configured.point_fov is not None else None,
+        choice_filter=filter_choices if configured.point_fov is not None or option_primitives is not None else None,
+        option_port=option_port,
         instructions=instructions,
     )
     bind = getattr(probe, "bind_observation_source", None)

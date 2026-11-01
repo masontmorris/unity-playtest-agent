@@ -26,6 +26,7 @@ class TraceKind(str, Enum):
     s1_call = "s1_call"
     decision = "decision"
     execution = "execution"
+    option = "option"
     effect = "effect"
     help = "help"
     restart = "restart"
@@ -144,6 +145,7 @@ class TraceEntry(Strict):
                 TraceKind.s1_call: {"question", "provider", "model", "resolved_model", "request_sha256", "http_status", "latency_ms", "problem", "response", "usage"},
                 TraceKind.decision: {"answer", "clock_mode", "valid", "error", "policy_default", "decision"},
                 TraceKind.execution: {"purpose", "request", "records"},
+                TraceKind.option: {"option_id", "template", "params", "outcome", "receipts"},
                 TraceKind.effect: {"choice_id", "action", "expected", "observed"},
                 TraceKind.help: {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
                 TraceKind.restart: {"event", "ticket_id", "from_generation", "to_generation", "status",
@@ -160,6 +162,24 @@ class TraceEntry(Strict):
                 raise ValueError(f"{self.kind.value} body keys must be exactly {sorted(keys)}")
             if self.kind is TraceKind.execution and self.body["purpose"] not in ("choice", "while_pending"):
                 raise ValueError("execution purpose must be choice or while_pending")
+            if self.kind is TraceKind.option:
+                body = self.body
+                if not isinstance(body["option_id"], str) or not body["option_id"]:
+                    raise ValueError("option_id must be non-empty")
+                if body["template"] not in ("traverse", "retreat", "hop", "wait", "place"):
+                    raise ValueError("unknown option template")
+                if not isinstance(body["params"], dict) or not isinstance(body["outcome"], dict) or not isinstance(body["receipts"], list):
+                    raise ValueError("option params and outcome must be objects and receipts a list")
+                if "receipts" in body["outcome"]:
+                    raise ValueError("receipts belong outside outcome")
+                outcome = body["outcome"]
+                if set(outcome) != {"option_id", "template", "params", "start_position", "end_position",
+                                    "displacement", "terminated_by", "duration_s", "scene"}:
+                    raise ValueError("option outcome has incorrect keys")
+                if any(outcome[k] != body[k] for k in ("option_id", "template", "params")):
+                    raise ValueError("option outcome identity differs from option")
+                if outcome["terminated_by"] not in ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured"):
+                    raise ValueError("unknown option termination")
             if self.kind is TraceKind.execution:
                 TraceExecutionRequest.model_validate(self.body["request"])
                 records = self.body["records"]

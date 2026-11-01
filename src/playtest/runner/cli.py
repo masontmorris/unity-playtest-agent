@@ -183,6 +183,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--continuous-input", action="store_true",
                         default=_env("UPA_RUN_CONTINUOUS_INPUT", switch, False),
                         help="Decide while explicitly selected keyboard holds run (opt in)")
+    parser.add_argument("--options", action="store_true", default=_env("UPA_RUN_OPTIONS", switch, False))
+    parser.add_argument("--placement", action="store_true", default=_env("UPA_RUN_PLACEMENT", switch, False))
     parser.add_argument("--pacing-burst", type=float, default=_env("UPA_RUN_PACING_BURST", float, 0.0),
                         help="the share of the per-minute token budget S1's calls may use before pacing spaces "
                              "them; 0 (default) spaces every call, 0.5 lets a session run unspaced until half the "
@@ -355,6 +357,10 @@ def main(argv: list[str] | None = None) -> int:
             plan["s1_pending_question"] = args.s1_pending_question
         if args.continuous_input:
             plan["continuous_input"] = True
+        if args.options:
+            plan["options"] = True
+        if args.placement:
+            plan["placement"] = True
         if args.pacing_burst:
             plan["pacing_burst"] = args.pacing_burst
         if args.pacing_anchor != "end":
@@ -425,6 +431,18 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                if session_host is not None and session_host.advertises_restart else None)
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
     try:
+        primitives = memory = None
+        if args.placement and not args.options:
+            raise ValueError("--placement requires --options")
+        if args.options:
+            from .options.primitives import primitives_from_calibration
+            from .options.memory import OutcomeMemory
+            primitives = primitives_from_calibration(calibration or {},
+                [c.action for c in built.choices if c.kind is ChoiceKind.action and c.action], catalog=built.catalog)
+            steps = [d.step for d in primitives.directions if d.step is not None and d.step > 0]
+            if not steps:
+                raise ValueError("options require a measured short movement step for outcome memory")
+            memory = OutcomeMemory(cell=min(steps))
         snapshot = make_snapshot(client, manifest.entity_id)
         await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
@@ -481,7 +499,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
                 facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,
-                continuous_input=args.continuous_input, instructions=instructions)
+                continuous_input=args.continuous_input, instructions=instructions,
+                option_primitives=primitives, option_memory=memory, placement=args.placement,
+                reach_regions=manifest.reach_regions)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {

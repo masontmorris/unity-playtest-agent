@@ -153,7 +153,7 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                     issue("help adoption must follow the epoch check and precede choice assembly", entry, turn_no)
         rank = {TraceKind.observation: 0, TraceKind.choice_set: 1, TraceKind.context: 2,
                 TraceKind.s1_call: 3, TraceKind.decision: 4, TraceKind.restart: 5,
-                TraceKind.execution: 6, TraceKind.effect: 7, TraceKind.turn: 8}
+                TraceKind.execution: 6, TraceKind.option: 6, TraceKind.effect: 7, TraceKind.turn: 8}
         ordered = [rank[x.kind] for x in group if x.kind in rank and x.trace_seq not in deferred]
         if ordered != sorted(ordered):
             issue("turn entries are out of documented order", group[-1], turn_no)
@@ -190,8 +190,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             refs(decrow, {setrow.trace_seq, *(x.trace_seq for x in calls)}, "decision")
         if decrow:
             for x in group:
-                if x.kind is TraceKind.execution:
-                    refs(x, {decrow.trace_seq}, "execution")
+                if x.kind in (TraceKind.execution, TraceKind.option):
+                    refs(x, {decrow.trace_seq}, x.kind.value)
                 if x.kind is TraceKind.help and x.body.get("event") in ("opened", "repeat"):
                     refs(x, {decrow.trace_seq}, "help")
                 if x.kind is TraceKind.restart and x.body.get("event") == "request":
@@ -216,7 +216,7 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             elif any(effect.body.get("choice_id") != x.body.get("request", {}).get("choice_id") or
                      effect.body.get("action") != x.body.get("request", {}).get("action") for x in executions):
                 issue("effect differs from execution request", effect, turn_no)
-        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.restart)
+        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.option, TraceKind.restart)
                           and x.trace_seq not in deferred}, "turn")
         try:
             obs = Observation.model_validate(obsrow.body)
@@ -274,6 +274,18 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
         raw = answer.get("choice_id") if isinstance(answer, dict) and isinstance(answer.get("choice_id"), str) else None
         selected = choices.get(expected_decision.choice_id) if expected_decision else None
         exec_rows = [x for x in group if x.kind is TraceKind.execution]
+        option_rows = [x for x in group if x.kind is TraceKind.option]
+        if selected and selected.kind is ChoiceKind.option:
+            if len(option_rows) != 1 or exec_rows:
+                issue("option turn must have exactly one option and no executions", record_row, turn_no)
+            for row in option_rows:
+                if (row.body.get("option_id"), row.body.get("template"), row.body.get("params")) != (selected.option_id, selected.template, selected.params):
+                    issue("option differs from S1 choice", row, turn_no)
+                outcome_body = row.body.get("outcome", {})
+                if any(outcome_body.get(k) != row.body.get(k) for k in ("option_id", "template", "params")):
+                    issue("option outcome differs from option", row, turn_no)
+        elif option_rows:
+            issue("unexpected option entry", option_rows[0], turn_no)
         action_exec: str | None = None
         terminal: ExecutionRecord | None = None
         for exrow in exec_rows:
@@ -292,7 +304,11 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                         action_exec = req.choice_id
             except (ValidationError, KeyError, TypeError, ValueError) as exc:
                 issue(f"invalid execution evidence: {exc}", exrow, turn_no)
-        if selected and selected.kind in (ChoiceKind.action, ChoiceKind.skill):
+        if option_rows and selected and selected.kind is ChoiceKind.option:
+            action_exec = option_rows[0].body.get("option_id")
+        if selected and selected.kind is ChoiceKind.option:
+            outcome = TurnOutcome.executed
+        elif selected and selected.kind in (ChoiceKind.action, ChoiceKind.skill):
             outcome = TurnOutcome.rejected_stale if terminal and terminal.status.value == "rejected" else TurnOutcome.executed
         elif selected and selected.kind is ChoiceKind.escalate:
             outcome = TurnOutcome.escalated

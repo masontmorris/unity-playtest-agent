@@ -21,6 +21,7 @@
         "s1_call",
         "decision",
         "execution",
+        "option",
         "effect",
         "help",
         "restart",

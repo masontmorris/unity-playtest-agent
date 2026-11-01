@@ -193,6 +193,7 @@ class TurnLoop:
         continuous_choices: Sequence[str] = (),
         continuous_labels: Callable[[float | None, float | None], Sequence[Choice]] | None = None,
         choice_filter: Callable[[Sequence[Choice], Observation], Sequence[Choice]] | None = None,
+        option_port: Any = None,
         instructions: str = INSTRUCTIONS,
     ) -> None:
         if continuous_input and clock_mode is not ClockMode.realtime:
@@ -211,6 +212,8 @@ class TurnLoop:
         self._client = client
         self._original_client = client  # the caller owns this one; adopted clients are closed here
         self._choice_filter = choice_filter
+        self._option_port = option_port
+        self._option_task: asyncio.Task | None = None
         self._choices = list(choices)
         ChoiceSet(set_version=0, built_from_seq=0, choices=self._choices)  # fail now on duplicate ids
         self._clock_mode = clock_mode
@@ -468,6 +471,7 @@ class TurnLoop:
         help_event: str | None = None
         operation: OperationOutcome | None = None
         restart_refs: list[int | None] = []
+        option_refs: list[int | None] = []
 
         if not parsed.valid or parsed.decision is None:
             if self._continuous:
@@ -481,6 +485,25 @@ class TurnLoop:
                 operation, restart_entries = await self._restart_turn(selected, decided, turn)
                 restart_refs = restart_entries
                 outcome = TurnOutcome.restarted
+            elif selected.kind is ChoiceKind.option:
+                if self._option_port is None:
+                    raise RuntimeError("an option was selected without an option port")
+                if self._continuous:
+                    await self._release_active("user")
+                self._option_task = asyncio.create_task(self._option_port.run(selected))
+                try:
+                    result = await self._option_task
+                finally:
+                    self._option_task = None
+                body = dict(result)
+                receipts = body.pop("receipts")
+                if (body.get("option_id"), body.get("template"), body.get("params")) != (selected.option_id, selected.template, selected.params):
+                    raise ValueError("option outcome differs from selected choice")
+                entry = self._emit(TraceKind.option, {"option_id": selected.option_id, "template": selected.template,
+                                   "params": selected.params, "outcome": body, "receipts": receipts},
+                                   TraceAuthor.core, turn, [decided])
+                option_refs.append(entry)
+                outcome, executed_id = TurnOutcome.executed, selected.option_id
             elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
                     selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
@@ -537,7 +560,7 @@ class TurnLoop:
         self._turns.append(record)
         turn_entry = self._emit(
             TraceKind.turn, record.model_dump(mode="json"), TraceAuthor.core, turn,
-            [observed, offered, context, decided, *entries, *restart_refs],
+            [observed, offered, context, decided, *entries, *restart_refs, *option_refs],
         )
         report = TurnReport(
             record=record,
@@ -1132,6 +1155,10 @@ class TurnLoop:
             raise ValueError(f"stop reason must be one of {', '.join(_STOP_REASONS)}, not {reason!r}")
         if self._stopped:
             return self._stop_result
+        if self._option_task is not None:
+            task = self._option_task
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         if self._continuous:
             await self._release_active(reason)
         self._stopped = True

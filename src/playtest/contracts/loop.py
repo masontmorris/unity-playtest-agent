@@ -12,6 +12,7 @@ from .common import Strict
 
 class ChoiceKind(str, Enum):
     action = "action"
+    option = "option"
     skill = "skill"
     delegate = "delegate"
     escalate = "escalate"
@@ -32,6 +33,8 @@ class Choice(Strict):
     label: str = Field(min_length=1)
     action: str | None = None
     skill: str | None = None
+    option_id: str | None = Field(None, min_length=1, exclude_if=lambda v: v is None)
+    template: Literal["traverse", "retreat", "hop", "wait", "place"] | None = Field(None, exclude_if=lambda v: v is None)
     role: Literal["frontier", "helper"] | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     preconditions: list[str] = Field(default_factory=list)
@@ -43,13 +46,16 @@ class Choice(Strict):
         need = {
             ChoiceKind.action: ("action",),
             ChoiceKind.skill: ("skill",),
+            ChoiceKind.option: ("option_id", "template"),
             ChoiceKind.escalate: ("role",),
             ChoiceKind.delegate: ("role",),
         }.get(self.kind, ())
-        for name in ("action", "skill", "role"):
+        for name in ("action", "skill", "role", "option_id", "template"):
             present = getattr(self, name) is not None
             if present != (name in need):
                 raise ValueError(f"'{name}' is {'required' if name in need else 'not allowed'} for kind '{self.kind.value}'")
+        if self.kind is ChoiceKind.option and self.id != self.option_id:
+            raise ValueError("option choice id must equal option_id")
         if self.source is ChoiceSource.frontier and self.kind not in (ChoiceKind.action, ChoiceKind.skill):
             raise ValueError("the frontier may only add choices that instantiate a manifest action or skill")
         if self.kind is ChoiceKind.restart_play_mode and self.source is not ChoiceSource.core:

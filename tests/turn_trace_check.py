@@ -21,7 +21,7 @@ from playtest.core.decisions import parse_decision
 
 AUTHORS = {
     "run": "harness", "observation": "bridge", "choice_set": "core", "context": "core", "s1_call": "s1",
-    "decision": "core", "execution": "bridge", "effect": "core", "help": "core", "restart": "core",
+    "decision": "core", "execution": "bridge", "option": "core", "effect": "core", "help": "core", "restart": "core",
     "investigation": "frontier", "suspicion": "core", "turn": "core",
     "stop": "core", "end": "harness", "finding": "core",
 }
@@ -33,6 +33,7 @@ BODY_KEYS = {
                 "latency_ms", "problem", "response", "usage"},
     "decision": {"answer", "clock_mode", "valid", "error", "policy_default", "decision"},
     "execution": {"purpose", "request", "records"},
+    "option": {"option_id", "template", "params", "outcome", "receipts"},
     "effect": {"choice_id", "action", "expected", "observed"},
     "help": {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
     "restart": {"event", "ticket_id", "from_generation", "to_generation", "status", "reason",
@@ -44,9 +45,9 @@ BODY_KEYS = {
 }
 REQUEST_KEYS = {"action_id", "choice_id", "action", "params", "based_on_seq", "max_age_s", "depends_on", "lease_s"}
 TOKENS = {"observation": "O", "choice_set": "S", "context": "C", "s1_call": "1", "decision": "D",
-          "execution": "X", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F", "restart": "R"}
+          "execution": "X", "option": "Q", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F", "restart": "R"}
 # New traces check the observation epoch before adoption/cancellation; historical traces may resolve first.
-ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1*D(?:H?(?:X(?:EP*)?){0,2}|RR)T$")
+ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1*D(?:H?(?:X(?:EP*)?){0,2}|RR|Q)T$")
 
 
 def problems(entries: list[dict[str, Any]]) -> list[str]:
@@ -119,6 +120,7 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     turn_entry = _one(group, "turn")
     calls, executions = _all(group, "s1_call"), _all(group, "execution")
     restarts = _all(group, "restart")
+    options = _all(group, "option")
     refs = {
         "observation": ([], obs), "choice_set": ([obs["trace_seq"]], offered),
         "context": ([obs["trace_seq"], offered["trace_seq"]], context),
@@ -133,6 +135,9 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     for execution in executions:
         if execution["refs"] != [decision["trace_seq"]]:
             found.append(f"turn {number}: execution refs {execution['refs']}")
+    for option in options:
+        if option["refs"] != [decision["trace_seq"]]:
+            found.append(f"turn {number}: option refs {option['refs']}")
     for effect in _all(group, "effect"):
         owner = group[group.index(effect) - 1]
         if owner["kind"] != "execution" or effect["refs"] != [owner["trace_seq"]]:
@@ -151,7 +156,8 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
         if executions:
             found.append(f"turn {number}: a restarted turn sent gameplay input")
     expected_turn_refs = [obs["trace_seq"], offered["trace_seq"], context["trace_seq"], decision["trace_seq"],
-                          *[e["trace_seq"] for e in executions], *[r["trace_seq"] for r in restarts]]
+                          *[e["trace_seq"] for e in executions], *[r["trace_seq"] for r in restarts],
+                          *[o["trace_seq"] for o in options]]
     if turn_entry["refs"] != expected_turn_refs:
         found.append(f"turn {number}: turn refs {turn_entry['refs']}, expected {expected_turn_refs}")
 
@@ -185,6 +191,15 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     sent = [e["body"]["request"]["choice_id"] for e in executions
             if e["body"]["records"] and e["body"]["records"][-1]["status"] != "rejected"]
     selected = choice_set.get(parsed.decision.choice_id) if parsed.decision is not None else None
+    if selected is not None and selected.kind is ChoiceKind.option:
+        if len(options) != 1 or executions:
+            found.append(f"turn {number}: option needs exactly one option entry and no execution")
+        elif any(options[0]["body"].get(k) != getattr(selected, k) for k in ("option_id", "template", "params")):
+            found.append(f"turn {number}: option differs from selected choice")
+        else:
+            sent.append(selected.option_id)
+    elif options:
+        found.append(f"turn {number}: unexpected option entry")
     expected_fields = {
         "set_version": choice_set.set_version, "based_on_seq": obs["body"]["seq"], "raw_choice": raw,
         "effective_choice": selected.id if selected is not None else None,
@@ -195,7 +210,7 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
             found.append(f"turn {number}: {name} is {getattr(record, name)!r}, entries say {expected!r}")
     if selected is None:
         expected_outcome = "rejected_invalid"
-    elif selected.kind in (ChoiceKind.action, ChoiceKind.skill):
+    elif selected.kind in (ChoiceKind.action, ChoiceKind.skill, ChoiceKind.option):
         expected_outcome = "executed" if sent else "rejected_stale"
     elif selected.kind is ChoiceKind.escalate:
         expected_outcome = "escalated"
