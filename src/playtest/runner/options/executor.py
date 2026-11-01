@@ -172,20 +172,48 @@ def _probe(observation: Observation | None) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
-def _floor_behind(probe: Any, step: float, fell: float | None) -> bool | None:
-    """Whether the floor the body stands on continues behind it, from the probe's backward down-rays.
+def _probe_key(observation: Observation | None) -> tuple[str, tuple[float, ...]] | None:
+    """What one probe sample is identified by: the point measured under the body, else the observation's `seq`.
 
-    The question is about the next step back, so the ray read is the nearest one at or past that step's
-    travel. A ray that misses has no floor under it; a ray that hits a surface more than the fell bound
-    below the anchor is standing on nothing that continues this floor; any other measured hit is floor.
+    A repeated probe is the same sample: its `under.point` has not moved, so the geometry around the body
+    was not measured again. That is what dates a sample, and a body can travel a long way while it ages.
+    """
+    probe = _probe(observation)
+    if probe is None:
+        return None
+    under = probe.get("under")
+    point = under.get("point") if isinstance(under, Mapping) else None
+    if isinstance(point, (list, tuple)) and point:
+        measured = tuple(number for number in (_finite(item) for item in point) if number is not None)
+        if len(measured) == len(point):
+            return ("under.point", measured)
+    seq = getattr(observation, "seq", None)
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        return ("seq", (float(seq),))
+    return None
+
+
+def _floor_behind(probe: Any, step: float, horizon: float,
+                  fell: float | None) -> tuple[bool | None, float | None]:
+    """Whether the floor the body stands on continues behind it, reading every backward ray that matters.
+
+    The stop must land before the body can leave the floor, not after: between one sample and the next the
+    body travels `horizon` backwards (`step` in one observation period plus however far a probe sample can
+    age), so every ray inside that distance is a place the floor could already have ended. A ray that
+    misses has no floor under it; a ray that hits a surface more than the fell bound below the anchor is
+    standing on nothing that continues this floor; any other measured hit is floor. Rays between the next
+    step and the horizon are read together, and the nearest one that ends the floor comes back with it,
+    minus the horizon's travel, as the floor still available now. When no ray lies inside the horizon the
+    nearest one past it is the earliest reading the probe offers, and is read alone.
+
     No probe, no backward row, or an unmeasured ray is ``None`` — unknown, never a guess.
     """
     if not isinstance(probe, Mapping):
-        return None
+        return None, None
     rays = probe.get("backward")
     if not isinstance(rays, (list, tuple)) or not rays:
-        return None
-    chosen: tuple[float, Mapping[str, Any]] | None = None
+        return None, None
+    measured: list[tuple[float, Mapping[str, Any]]] = []
     for entry in rays:
         if not isinstance(entry, Mapping):
             continue
@@ -195,19 +223,27 @@ def _floor_behind(probe: Any, step: float, fell: float | None) -> bool | None:
         behind = -offset
         if behind + 1e-9 < step:
             continue
-        if chosen is None or behind < chosen[0]:
-            chosen = (behind, entry)
-    if chosen is None:
-        return None
-    hit = chosen[1].get("hit")
-    if hit is not True:
-        return False if hit is False else None
-    height = _finite(chosen[1].get("delta_y"))
-    if height is None:                      # inside geometry: an obstruction, not a floor to run up on
-        return None
-    if fell is not None and height < -fell:
-        return False
-    return True
+        measured.append((behind, entry))
+    if not measured:
+        return None, None
+    measured.sort(key=lambda pair: pair[0])
+    inside = [pair for pair in measured if pair[0] <= horizon + 1e-9]
+    window = inside or measured[:1]
+    unknown = False
+    for behind, entry in window:
+        hit = entry.get("hit")
+        if hit is True:
+            height = _finite(entry.get("delta_y"))
+            if height is None:                  # inside geometry: an obstruction, not a floor to run up on
+                unknown = True
+                continue
+            if fell is not None and height < -fell:
+                return False, behind
+            continue
+        if hit is False:
+            return False, behind
+        unknown = True
+    return (None if unknown else True), None
 
 
 @dataclass
@@ -311,6 +347,13 @@ class OptionExecutor:
         self._flight = flight if flight is not None else {}
         self._last_tick: float | None = None
         self._last_obs: Observation | None = None
+        # The observation stream's own timing, measured rather than assumed: how often an observation
+        # arrives, and how often a probe sample is actually a new one. A run-up's stopping distance is
+        # both of them times the body's measured speed.
+        self._tick_times: list[float] = []
+        self._last_probe_key: Any = None
+        self._probe_changed_at: float | None = None
+        self._probe_intervals: list[float] = []
 
     # --- the port ------------------------------------------------------------------------
 
@@ -318,6 +361,10 @@ class OptionExecutor:
         """Run one option. Always releases held input; never raises for a measured failure."""
         run = _Run(spec=spec, started=self._clock())
         self._last_tick = None
+        self._tick_times = []
+        self._last_probe_key = None
+        self._probe_changed_at = None
+        self._probe_intervals = []
         try:
             if spec.template == "wait":
                 await self._wait(run)
@@ -399,6 +446,7 @@ class OptionExecutor:
                     f"observation failed: {exc.code}: {exc.message}")
             return None
         self._last_obs = observation
+        self._note_stream(observation)
         run.scene = run.scene or observation.scene
         reason = self._state_change(run, observation)
         if reason is not None:
@@ -414,6 +462,44 @@ class OptionExecutor:
             run.start_position = list(position)
         run.end_position = list(position)
         return position
+
+    def _note_stream(self, observation: Observation) -> None:
+        """Time the observation stream: one arrival stamp, and one stamp per genuinely new probe sample.
+
+        A probe that is republished unchanged is not a new measurement, so counting observations instead of
+        sample changes would call a stale sample fresh and let the body outrun the geometry it read.
+        """
+        now = self._clock()
+        self._tick_times = [*self._tick_times, now][-6:]
+        key = _probe_key(observation)
+        if key is None:
+            return
+        if self._last_probe_key is None:
+            self._probe_changed_at = now
+        elif key != self._last_probe_key:
+            if self._probe_changed_at is not None:
+                gap = now - self._probe_changed_at
+                if gap > 0:
+                    self._probe_intervals = [*self._probe_intervals, gap][-5:]
+            self._probe_changed_at = now
+        self._last_probe_key = key
+
+    def _observation_interval_s(self) -> float:
+        """How long one observation takes here: the median gap between the last few, else the configured period."""
+        gaps = sorted(b - a for a, b in zip(self._tick_times, self._tick_times[1:]) if b > a)
+        return gaps[len(gaps) // 2] if gaps else self._period_s
+
+    def _probe_staleness_s(self) -> tuple[float, bool]:
+        """How old a probe sample may be at the moment the body acts on it, and whether that was estimated.
+
+        Measured as the interval between changes of the probe's `under.point` (or its observation `seq`) in
+        this run's own stream. Until two samples have changed there is nothing to measure, and the bound is
+        twice the observed observation interval — stated as an estimate, never as a reading.
+        """
+        if self._probe_intervals:
+            ordered = sorted(self._probe_intervals)
+            return ordered[len(ordered) // 2], False
+        return 2.0 * self._observation_interval_s(), True
 
     def _state_change(self, run: _Run, observation: Observation) -> str | None:
         if run.scene is not None and observation.scene != run.scene:
@@ -672,8 +758,9 @@ class OptionExecutor:
                                         lease_s=self._time_bound(run_up, speed)):
                     return
                 back_progress = _Progress((-unit[0], -unit[1], -unit[2]), obstacle, BLOCK_WINDOW_S)
-                # A run-up stays on the floor it starts on: the next step back is `step` far, and the floor
-                # behind is read from the probe's own backward down-rays when this observation carries them.
+                # A run-up stays on the floor it starts on: between one observation and the next the body
+                # travels `step`, and a probe sample can be older than the observation that carried it, so
+                # the floor behind is read from every backward down-ray inside that whole stopping distance.
                 step = (speed or 0.0) * self._period_s
                 floor_y = obstacle[UP]
                 while run.terminated_by is None:
@@ -686,8 +773,15 @@ class OptionExecutor:
                         break
                     if self._blocked(run, back_progress, speed, BLOCK_SHARE):
                         return
-                    if _floor_behind(_probe(self._last_obs), step, fell) is False:
-                        run.note(f"run-up {backed_up:.2f} available of {run_up:.2f} (floor edge)")
+                    staleness, estimated = self._probe_staleness_s()
+                    margin = (speed or 0.0) * (staleness + self._period_s)
+                    holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, fell)
+                    if holds is False and edge is not None:
+                        note = (f"run-up {backed_up:.2f} available of {run_up:.2f} "
+                                f"(floor edge at {edge - margin:.2f} behind")
+                        if estimated:
+                            note += f"; staleness {staleness:.2f} s estimated"
+                        run.note(note + ")")
                         break
                     # Without a probe behind, the body walking off the edge is the measurement: it has already
                     # left the floor the run-up started on, so stop there and keep everything afterwards honest.

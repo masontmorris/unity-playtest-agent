@@ -321,6 +321,8 @@ async def run_session(
         if continuous_input else None,
         choice_filter=filter_choices if configured.point_fov is not None or option_primitives is not None else None,
         option_port=option_port,
+        # The same measured step the option memory files places by: a reused conditional answer is bound to it.
+        contingent_cell=getattr(option_memory, "cell", None),
         instructions=instructions,
     )
     bind = getattr(probe, "bind_observation_source", None)

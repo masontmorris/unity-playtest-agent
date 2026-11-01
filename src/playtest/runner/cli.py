@@ -492,7 +492,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
                           compact_state=args.s1_compact_state, pending_question=args.s1_pending_question,
-                          s1_context=args.s1_context, menu_memory=memory, contingent=args.contingent)
+                          s1_context=args.s1_context, menu_memory=memory, contingent=args.contingent,
+                          requests_dir=run_dir / "requests" / "s1")
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)

@@ -47,6 +47,11 @@ answers out of the response it already has and puts them in the decision (`Decis
 loop can execute what S1 chose for the branch that measurably happened without asking again. The request
 is unchanged and the response is already recorded in the `s1_call` entry; the loop's `parse_decision`
 binds each id to the offered set and nulls a branch that names nothing offered.
+
+Every request that is sent is also kept in the run folder as `requests/s1/<turn>-<question>.json`
+(`playtest.runner.s1_requests`): the body as posted, the digest the `s1_call` entry records, and how to
+reproduce that digest. The trace's `context` is the payload the core built, which the compact menu
+replaces; the file is what S1 was actually asked.
 """
 
 from __future__ import annotations
@@ -57,6 +62,7 @@ import json
 import math
 import time
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 from playtest.bench import call_budget, replay
@@ -65,7 +71,7 @@ from playtest.contracts.common import ClockMode
 from playtest.contracts.loop import Choice, ChoiceSet
 from playtest.core.context import INSTRUCTIONS, INSTRUCTIONS_KEEP_PLAYING, canonical
 from playtest.core.ports import S1Answer, S1Call
-from playtest.runner import menu
+from playtest.runner import menu, s1_requests
 from playtest.runner.image_transport import IMAGE_TOKENS, IMAGE_TRANSPORT, attach_images, image_url
 from playtest.runner.option_order import OptionOrder, ordered_ids
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
@@ -185,6 +191,17 @@ def _without_image(value: Any, image: bytes | None) -> Any:
     return clean(value)
 
 
+def _noted(text: str | None, store_problem: str | None) -> str | None:
+    """A call's recorded problem, with any failure to keep its request beside it.
+
+    The request is stored whatever happens to the answer, so a storage failure is reported the same way a
+    provider problem is: in the `s1_call` entry, next to the call it belongs to.
+    """
+    if store_problem is None:
+        return text
+    return f"{text}; {store_problem}" if text else store_problem
+
+
 def _compact_rules(value: str | Sequence[str] | None) -> tuple[state_codec.Rule, ...] | None:
     """`None`/`"off"`: send `state` as built. `"object"`: every rule, `state` kept an object. `"format"`: compact
     text only. `"default"`/`"all"`: those rule sets as text."""
@@ -242,6 +259,7 @@ class SystemOneS1:
         s1_context: str = FULL_CONTEXT,
         menu_memory: Any = None,
         contingent: bool = False,
+        requests_dir: Path | str | None = None,
     ) -> None:
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
@@ -327,6 +345,7 @@ class SystemOneS1:
                          else prompts(instructions, batched=pending_question == "batched"))
         self._ledger = ledger
         self._max_calls = max_calls
+        self._requests_dir = Path(requests_dir) if requests_dir is not None else None
         self._send = send
         self._arm = arm
         self._clock_mode = clock_mode
@@ -582,6 +601,18 @@ class SystemOneS1:
         except call_budget.BudgetStop as exc:
             return self._refused(question, request_sha, f"{exc}; no call was made", halt=str(exc))
         self._reserved += 1
+        store_problem: str | None = None
+        if self._requests_dir is not None:
+            # Keep the exact state this request carries in the run folder as the call is made: the trace's
+            # `context` is the payload the core built, which is not what a compact-menu request sends.
+            try:
+                s1_requests.write_request(
+                    self._requests_dir,
+                    s1_requests.request_record(turn=turn, question=question, body=body, sha256=request_sha,
+                                               image=image, rendered=ordered),
+                    turn, question)
+            except (OSError, ValueError, TypeError) as exc:  # the call still goes out; the loss is recorded
+                store_problem = f"the S1 request was not stored ({type(exc).__name__}: {exc})"
         if self._game_view:
             if image is not None:
                 self._view_sent += 1
@@ -597,7 +628,7 @@ class SystemOneS1:
             wire: dict[str, Any] | str = request_text if ordered else body
             status, data, latency_ms, problem = await asyncio.to_thread(self._send, self._arm, wire)
         except Exception as exc:  # noqa: BLE001 - keep the reservation: an unknown outcome is never retried
-            note = f"adapter error: {type(exc).__name__}"
+            note = _noted(f"adapter error: {type(exc).__name__}", store_problem)
             # the request may have reached the provider
             self._count_tokens(None, estimate_text, image is not None, sent_ago=time.perf_counter() - sent_at)
             reservation.finish(http_status=None, choice=None, distribution=None, problem=note, latency_ms=None,
@@ -615,7 +646,7 @@ class SystemOneS1:
                 and math.isfinite(raw_cost) and raw_cost >= 0 else None)
         if self._arm == "meta-muse-spark-s1":
             cost = meta_cost(usage)
-        note = _without_image(problem or answer_problem, image)
+        note = _noted(_without_image(problem or answer_problem, image), store_problem)
         resolved = _without_image((data or {}).get("model"), image)
         batch_fields = {}
         branches = None

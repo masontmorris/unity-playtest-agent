@@ -46,7 +46,8 @@ BODY_KEYS = {
 }
 # A contingent turn names where its answer came from; a turn that held one and asked S1 anyway says why, and
 # a branch S1 named that the parser dropped is recorded beside the answer it was dropped from.
-OPTIONAL_KEYS = {"decision": {"source", "from_turn", "condition", "contingent_skipped", "contingent_problems"}}
+OPTIONAL_KEYS = {"decision": {"source", "from_turn", "condition", "contingent_skipped", "contingent_problems",
+                              "cell", "from_cell"}}
 REQUEST_KEYS = {"action_id", "choice_id", "action", "params", "based_on_seq", "max_age_s", "depends_on", "lease_s"}
 TOKENS = {"observation": "O", "choice_set": "S", "context": "C", "s1_call": "1", "decision": "D",
           "execution": "X", "option": "Q", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F", "restart": "R"}

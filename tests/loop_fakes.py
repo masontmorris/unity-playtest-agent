@@ -192,6 +192,18 @@ def choice_set_of(entry: dict[str, Any]) -> ChoiceSet:
     return ChoiceSet.model_validate(entry["body"])
 
 
+class PositionedGame(FakeGame):
+    """A fake game that publishes the controlled entity's measured pose, so a turn's place has a cell.
+
+    The pose is this fake's own `pos`: a test moves it between turns to change the place the body is in.
+    """
+
+    def _public(self) -> dict:
+        return {**super()._public(),
+                "controlled": {"object_id": "entity", "path": "entity", "position": list(self._pos),
+                               "velocity": list(self._vel), "source": "rigidbody3d"}}
+
+
 class TransformsGame(FakeGame):
     """A fake game that also answers `inspect("transforms")` with the entity's position.
 

@@ -31,6 +31,13 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
   `context` is still the payload it would have been sent, so the answer's real provenance is the
   `from_turn` context. A turn that asked S1 afresh although it held such an answer adds
   `"contingent_skipped"` saying why.
+
+  A conditional answer is bound to the place it was made in. The decision that named the branch carries
+  `"cell"`: `floor(position / cell)` per axis of `public.controlled.position`, at the measured step the
+  option memory files places by. A contingent turn's decision carries the same `"cell"`, and a turn that
+  skipped the answer because the place moved (or was unmeasured at either end) records
+  `"contingent_skipped": "place_changed: ..."` or `"place_unknown: ..."` with `"cell"` (this
+  observation) and `"from_cell"` (the answer's): a measured check on reuse, never a different action.
 - `execution` (bridge; refs the decision): zero, one or two per turn:
   `{"purpose": "choice" | "while_pending", "request": {"action_id", "choice_id", "action", "params",
   "based_on_seq", "max_age_s", "depends_on", "lease_s"}, "records": [<every ExecutionRecord the

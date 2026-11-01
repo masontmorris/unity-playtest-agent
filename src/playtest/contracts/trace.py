@@ -63,7 +63,8 @@ class TraceExecutionRequest(Strict):
 
 
 _KEEP_REQUEST_FIELDS = {"turn", "seq", "game_s"}
-_DECISION_OPTIONAL = {"contingent_problems", "source", "from_turn", "condition", "contingent_skipped"}
+_DECISION_OPTIONAL = {"contingent_problems", "source", "from_turn", "condition", "contingent_skipped",
+                      "cell", "from_cell"}
 _KEEP_FIELDS = {"directive_id", "requested", "deadline_game_s", "expires_in_game_s", "adopted_turn",
                 "closed_at_game_s", "closed_by_deadline", "request_before_deadline"}
 

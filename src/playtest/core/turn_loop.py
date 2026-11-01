@@ -142,12 +142,21 @@ def _sha256(text: str) -> str:
 # The measured option endings S1 answered a conditional question for. Any other ending asks S1 afresh.
 _CONTINGENT_CONDITIONS = ("blocked", "succeeded")
 
+# The skip reasons that are a place check on reuse; each records both cells beside it.
+_PLACE_SKIPS = ("place_changed", "place_unknown")
 
-def _contingent_answer(decision: Decision, terminated_by: Any, turn: int, decided: int | None) -> dict[str, Any] | None:
+
+def _cell_text(cell: Sequence[int]) -> str:
+    return "[" + ", ".join(str(value) for value in cell) + "]"
+
+
+def _contingent_answer(decision: Decision, terminated_by: Any, turn: int, decided: int | None,
+                       cell: list[int] | None) -> dict[str, Any] | None:
     """The id S1 already selected for the branch this option measurably ended in, or `None`.
 
     Nothing is inferred: both the measured termination and S1's own non-null answer for exactly that
-    branch are required. The returned record names the deciding turn so a replay can check the link.
+    branch are required. The returned record names the deciding turn so a replay can check the link, and
+    the cell the body stood in when the answer was made: the next turn reuses it only in that same place.
     """
     contingent = decision.contingent
     if contingent is None or terminated_by not in _CONTINGENT_CONDITIONS:
@@ -155,7 +164,8 @@ def _contingent_answer(decision: Decision, terminated_by: Any, turn: int, decide
     choice_id = contingent.for_condition(terminated_by)
     if choice_id is None:
         return None
-    return {"from_turn": turn, "condition": terminated_by, "choice_id": choice_id, "decided": decided}
+    return {"from_turn": turn, "condition": terminated_by, "choice_id": choice_id, "decided": decided,
+            "cell": list(cell) if cell is not None else None}
 
 
 @dataclass
@@ -221,6 +231,7 @@ class TurnLoop:
         continuous_labels: Callable[[float | None, float | None], Sequence[Choice]] | None = None,
         choice_filter: Callable[[Sequence[Choice], Observation], Sequence[Choice]] | None = None,
         option_port: Any = None,
+        contingent_cell: float | None = None,
         instructions: str = INSTRUCTIONS,
     ) -> None:
         if continuous_input and clock_mode is not ClockMode.realtime:
@@ -240,6 +251,9 @@ class TurnLoop:
         self._original_client = client  # the caller owns this one; adopted clients are closed here
         self._choice_filter = choice_filter
         self._option_port = option_port
+        # The measured step a place is filed by, the same one the runner's option memory uses: with it, a
+        # reused conditional answer is bound to the cell of the body it was given for. No step, no binding.
+        self._contingent_cell = contingent_cell
         self._option_task: asyncio.Task | None = None
         self._choices = list(choices)
         ChoiceSet(set_version=0, built_from_seq=0, choices=self._choices)  # fail now on duplicate ids
@@ -415,12 +429,14 @@ class TurnLoop:
         self._set_version += 1
         offered = self._emit(TraceKind.choice_set, choice_set.model_dump(mode="json"), TraceAuthor.core, turn, [observed])
         noticed = self._notice(observation, sample, turn, observed, stated=not scripted)
-        # S1's conditional answer from the turn that ended an option is good for the very next turn only,
-        # and only if this observation still offers it; otherwise it is spent and S1 is asked afresh.
+        # S1's conditional answer from the turn that ended an option is good for the very next turn only, in
+        # the place it was given, and only if this observation still offers it; otherwise it is spent and S1
+        # is asked afresh.
+        cell = self._cell_of(observation)
         candidate, self._contingent = self._contingent, None
         contingent_turn, contingent_skipped = (
             (None, None) if candidate is None or scripted
-            else self._contingent_for(candidate, choice_set, boundary))
+            else self._contingent_for(candidate, choice_set, boundary, cell))
 
         payload: dict[str, Any] | None = None
         context: int | None = None
@@ -499,8 +515,20 @@ class TurnLoop:
         if contingent_turn is not None:
             decision_body.update(source="contingent", from_turn=contingent_turn["from_turn"],
                                  condition=contingent_turn["condition"])
+            if contingent_turn.get("cell") is not None:
+                decision_body["cell"] = list(contingent_turn["cell"])
         elif contingent_skipped is not None:
             decision_body["contingent_skipped"] = contingent_skipped
+            if candidate is not None and contingent_skipped.startswith(_PLACE_SKIPS):
+                # Both cells, so a reader can see the place the answer was made in and the one it found.
+                decision_body["cell"] = list(cell) if cell is not None else None
+                decision_body["from_cell"] = (list(candidate["cell"])
+                                              if candidate.get("cell") is not None else None)
+        else:
+            # An answer that names a branch for later is bound to the place it was given in.
+            branches = parsed.decision.contingent if parsed.decision is not None else None
+            if branches is not None and cell is not None and (branches.if_blocked or branches.if_succeeded):
+                decision_body["cell"] = list(cell)
         decided = self._emit(
             TraceKind.decision,
             decision_body,
@@ -553,7 +581,7 @@ class TurnLoop:
                                    TraceAuthor.core, turn, [decided])
                 option_refs.append(entry)
                 outcome, executed_id = TurnOutcome.executed, selected.option_id
-                self._contingent = _contingent_answer(decision, body.get("terminated_by"), turn, decided)
+                self._contingent = _contingent_answer(decision, body.get("terminated_by"), turn, decided, cell)
             elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
                     selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
@@ -694,12 +722,35 @@ class TurnLoop:
 
     # --- waiting ----------------------------------------------------------------------------
 
+    def _cell_of(self, observation: Observation) -> list[int] | None:
+        """The cell the body's measured position falls in, at the step the runner's memory files places by.
+
+        `floor(position / cell)` per axis is exactly what `OutcomeMemory.cell_of` does, so a place named here
+        is the place that memory would name. No step, no position, or an unmeasured one gives `None`: the
+        place is unknown, never guessed at the origin.
+        """
+        if self._contingent_cell is None or observation is None:
+            return None
+        public = getattr(observation, "public", None)
+        controlled = public.get("controlled") if isinstance(public, Mapping) else None
+        position = controlled.get("position") if isinstance(controlled, Mapping) else None
+        if not isinstance(position, (list, tuple)) or not position:
+            return None
+        cells: list[int] = []
+        for value in position:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return None
+            cells.append(math.floor(float(value) / self._contingent_cell))
+        return cells
+
     def _contingent_for(self, candidate: dict[str, Any], choice_set: ChoiceSet,
-                        boundary: bool) -> tuple[dict[str, Any] | None, str | None]:
+                        boundary: bool, cell: list[int] | None) -> tuple[dict[str, Any] | None, str | None]:
         """Use S1's conditional answer for this turn, or say why S1 is asked afresh instead.
 
         Executing it is adherence only while the condition that selected it still holds: an unchanged
-        scene, no pending help, and the very id S1 named still offered by this observation's own set.
+        scene, no pending help, the very id S1 named still offered by this observation's own set, and the
+        body still in the cell the answer was made in. The cell is a measured check on reuse, not a
+        choice: a different or unmeasured place spends the answer and asks S1, and nothing picks another.
         """
         if boundary:
             return None, ("the observation crossed a scene boundary after the option ended; asked S1 afresh")
@@ -708,6 +759,12 @@ class TurnLoop:
         if choice_set.get(candidate["choice_id"]) is None:
             return None, (f"S1's {candidate['condition']} answer {candidate['choice_id']!r} is no longer "
                           f"offered; asked S1 afresh")
+        armed, here = candidate.get("cell"), cell
+        if armed is None or here is None:
+            unknown = "the cell the answer was made in" if armed is None else "this observation"
+            return None, f"place_unknown: {unknown} has no measured cell; asked S1 afresh"
+        if list(armed) != list(here):
+            return None, (f"place_changed: cell {_cell_text(armed)} -> {_cell_text(here)}; asked S1 afresh")
         return candidate, None
 
     async def _wait_out(self, choice: Choice, observation: Observation) -> None:

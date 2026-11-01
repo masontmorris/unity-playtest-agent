@@ -147,6 +147,8 @@ class FakeWorld:
     dead: bool = False
     publish_pose: bool = True
     publish_probe: bool = True     # the same geometry probe the bridge publishes, from this world's floor
+    probe_every: int = 1           # one probe sample every this many observations; between them the bridge
+                                   # republishes the last sample, and it ages while the body keeps moving
     reject_acts: int = 0
     scene: str = "fixture:scene"
 
@@ -163,6 +165,7 @@ class FakeWorld:
     terminal: dict[str, list[ExecutionRecord]] = field(default_factory=dict)
     started_at: dict[str, float] = field(default_factory=dict)
     _declared: dict[str, tuple[str, ...]] = field(default_factory=declarations)
+    _probe_sample: dict[str, Any] | None = field(default=None, repr=False)
 
     # --- time -------------------------------------------------------------------------------
 
@@ -321,7 +324,9 @@ class FakeWorld:
                 "source": "rigidbody2d",
             }
             if self.publish_probe:
-                public["probe"] = self._probe()
+                if self._probe_sample is None or self.frame % max(1, self.probe_every) == 0:
+                    self._probe_sample = self._probe()
+                public["probe"] = self._probe_sample
         return Observation(
             protocol="upa/1",
             session="fixture",

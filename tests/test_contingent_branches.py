@@ -14,6 +14,7 @@ import pytest
 
 from loop_fakes import choices as base_choices
 from loop_fakes import rig, run
+from loop_fakes import FakeGame, PositionedGame
 from turn_trace_check import problems
 from playtest.contracts.common import ClockMode
 from playtest.contracts.loop import Choice, ChoiceSet
@@ -27,6 +28,17 @@ from playtest.runner import cli
 def option() -> Choice:
     return Choice(id="traverse+x", kind="option", label="Traverse", option_id="traverse+x",
                   template="traverse", params={"direction": [1, 0, 0]}, source="manifest")
+
+
+# The measured step a place is filed by, as the runner's option memory supplies it.
+CELL = 0.5
+
+
+async def placed(*steps, **kwargs):
+    """A rig whose fake game publishes a measured pose, and the loop bound to the memory's cell."""
+    kwargs.setdefault("game_class", PositionedGame)
+    kwargs.setdefault("contingent_cell", CELL)
+    return await rig(*steps, **kwargs)
 
 
 class Port:
@@ -76,7 +88,7 @@ async def finished(r) -> None:
 ])
 def test_a_measured_ending_runs_s1s_branch_with_no_call(ended, branch, expected):
     async def main():
-        r = await rig(first(if_blocked="c2", if_succeeded="c3"),
+        r = await placed(first(if_blocked="c2", if_succeeded="c3"),
                       choices=[*base_choices(), option()], option_port=Port(ended))
         try:
             await r.turns(1)
@@ -98,9 +110,90 @@ def test_a_measured_ending_runs_s1s_branch_with_no_call(ended, branch, expected)
     run(main)
 
 
+def test_the_answer_is_bound_to_the_cell_it_was_made_in():
+    """A contingent answer runs only in the cell the body stood in when S1 gave it."""
+    async def main():
+        r = await placed(first(if_succeeded="c3"), "c1",
+                         choices=[*base_choices(), option()], option_port=Port("succeeded"))
+        try:
+            await r.turns(2)
+            assert decision_body(r, 0)["cell"] == [0, 0, 0], "the place the answer was made in"
+            body = decision_body(r, 1)
+            assert (body["source"], body["condition"], body["cell"]) == ("contingent", "succeeded", [0, 0, 0])
+            assert r.loop.turns[1].executed_action == "c3"
+            await finished(r)
+            assert not problems(r.sink.entries) and not replay(entries(r))
+        finally:
+            await r.close()
+    run(main)
+
+
+def test_an_answer_made_in_another_place_asks_s1_afresh():
+    """live-15: the answer was given at the ledge base and the next turn ran on the ledge top, a different
+    place with its own history. The answer is spent there, and S1 is asked from that new place."""
+    async def main():
+        r = await placed(first(if_succeeded="c3"), "c1",
+                         choices=[*base_choices(), option()], option_port=Port("succeeded"))
+        try:
+            await r.turns(1)
+            r.game._pos = [1.0, 0.0, 0.0]        # the option left the body in another cell
+            await r.turns(1)
+            assert len(r.s1.contexts) == 2 and len(calls(r, 1)) == 1
+            body = decision_body(r, 1)
+            assert "source" not in body
+            assert body["contingent_skipped"].startswith("place_changed:")
+            assert (body["from_cell"], body["cell"]) == ([0, 0, 0], [2, 0, 0])
+            assert r.loop.turns[1].executed_action == "c1"
+            await finished(r)
+            assert not problems(r.sink.entries) and not replay(entries(r))
+        finally:
+            await r.close()
+    run(main)
+
+
+def test_an_unmeasured_place_spends_the_answer():
+    """No pose in the observation is an unknown place, never an assumed unchanged one."""
+    async def main():
+        r = await placed(first(if_succeeded="c3"), "c1",
+                         choices=[*base_choices(), option()], option_port=Port("succeeded"),
+                         game_class=FakeGame)
+        try:
+            await r.turns(2)
+            assert len(r.s1.contexts) == 2 and len(calls(r, 1)) == 1
+            assert "cell" not in decision_body(r, 0), "no measured place, so none is claimed"
+            body = decision_body(r, 1)
+            assert "source" not in body
+            assert body["contingent_skipped"].startswith("place_unknown:")
+            assert body["cell"] is None and body["from_cell"] is None
+            assert r.loop.turns[1].executed_action == "c1"
+            await finished(r)
+            assert not problems(r.sink.entries) and not replay(entries(r))
+        finally:
+            await r.close()
+    run(main)
+
+
+def test_replay_flags_a_contingent_answer_that_changed_place():
+    async def main():
+        r = await placed(first(if_blocked="c2"), "c3",
+                         choices=[*base_choices(), option()], option_port=Port("blocked"))
+        try:
+            await r.turns(2)
+            await finished(r)
+            rows = [{**row, "run_id": "test"} for row in r.sink.entries]
+            rows[0]["body"] = _run_body()
+            decided = next(i for i, row in enumerate(rows) if row["kind"] == "decision" and row["turn"] == 1)
+            rows[decided]["body"]["cell"] = [7, 0, 0]
+            found = [p.message for p in replay([TraceEntry.model_validate(row) for row in rows])]
+            assert any("the place changed from cell" in p for p in found), found
+        finally:
+            await r.close()
+    run(main)
+
+
 def test_any_other_ending_asks_s1_afresh():
     async def main():
-        r = await rig(first(if_blocked="c2"), "c3",
+        r = await placed(first(if_blocked="c2"), "c3",
                       choices=[*base_choices(), option()], option_port=Port("fell"))
         try:
             await r.turns(2)
@@ -123,7 +216,7 @@ def test_a_withdrawn_id_asks_s1_afresh_and_says_why():
             seen["sets"] += 1
             return [c for c in offered if not (c.id == "c2" and seen["sets"] > 1)]
 
-        r = await rig(first(if_blocked="c2"), "c3",
+        r = await placed(first(if_blocked="c2"), "c3",
                       choices=[*base_choices(), option()], option_port=Port("blocked"),
                       choice_filter=drop_after_first)
         try:
@@ -142,7 +235,7 @@ def test_a_withdrawn_id_asks_s1_afresh_and_says_why():
 
 def test_a_contingent_turn_is_not_built_on_another():
     async def main():
-        r = await rig(first(if_blocked="c2"), "c3",
+        r = await placed(first(if_blocked="c2"), "c3",
                       choices=[*base_choices(), option()], option_port=Port("blocked"))
         try:
             await r.turns(3)
@@ -158,7 +251,7 @@ def test_a_contingent_turn_is_not_built_on_another():
 
 def test_replay_refuses_a_contingent_turn_that_follows_another():
     async def main():
-        r = await rig(first(if_blocked="c2"), "c3",
+        r = await placed(first(if_blocked="c2"), "c3",
                       choices=[*base_choices(), option()], option_port=Port("blocked"))
         try:
             await r.turns(3)
@@ -182,7 +275,7 @@ def test_replay_refuses_a_contingent_turn_that_follows_another():
 
 def test_adherence_flags_an_input_that_differs_from_the_contingent_id():
     async def main():
-        r = await rig(first(if_blocked="c2"),
+        r = await placed(first(if_blocked="c2"),
                       choices=[*base_choices(), option()], option_port=Port("blocked"))
         try:
             await r.turns(2)
@@ -204,17 +297,18 @@ def test_adherence_flags_an_input_that_differs_from_the_contingent_id():
 def test_the_other_refusals_ask_s1_afresh():
     """A scene boundary or help still pending after the option ended: the branch is spent, not acted on."""
     async def main():
-        r = await rig(first(if_blocked="c2"),
+        r = await placed(first(if_blocked="c2"),
                       choices=[*base_choices(), option()], option_port=Port("blocked"))
         try:
             await r.turns(1)
-            candidate = {"choice_id": "c2", "condition": "blocked", "from_turn": 0, "decided": 1}
+            candidate = {"choice_id": "c2", "condition": "blocked", "from_turn": 0, "decided": 1,
+                         "cell": [0, 0, 0]}
             offered = ChoiceSet(set_version=1, built_from_seq=2, choices=[*base_choices(), option()])
-            assert r.loop._contingent_for(candidate, offered, False) == (candidate, None)
-            assert r.loop._contingent_for(candidate, offered, True) == (
+            assert r.loop._contingent_for(candidate, offered, False, [0, 0, 0]) == (candidate, None)
+            assert r.loop._contingent_for(candidate, offered, True, [0, 0, 0]) == (
                 None, "the observation crossed a scene boundary after the option ended; asked S1 afresh")
             r.loop._pending = object()  # what a still-open help looks like to this check
-            assert r.loop._contingent_for(candidate, offered, False) == (
+            assert r.loop._contingent_for(candidate, offered, False, [0, 0, 0]) == (
                 None, "help is pending after the option ended; asked S1 afresh")
         finally:
             await r.close()

@@ -184,6 +184,15 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             contingent_turns.add(turn_no)
         elif not 1 <= len(calls) <= 2:
             issue("turn must have one or two s1_call entries", record_row, turn_no)
+        skipped = decrow.body.get("contingent_skipped") if decrow is not None else None
+        if isinstance(skipped, str) and skipped.startswith(_PLACE_SKIPS):
+            # A place check is a measurement: the cells it names must be the ones it read.
+            here, there = decrow.body.get("cell"), decrow.body.get("from_cell")
+            if here is None or there is None:
+                if not skipped.startswith("place_unknown"):
+                    issue("a place_changed skip needs both measured cells", decrow, turn_no)
+            elif here == there:
+                issue("a place skip records the same cell at both ends", decrow, turn_no)
         if len([x for x in group if x.kind is TraceKind.execution]) > 2:
             issue("turn has more than two executions", record_row, turn_no)
         def refs(row: TraceEntry, expected: set[int], label: str) -> None:
@@ -395,6 +404,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
 
 
 _CONDITIONS = ("blocked", "succeeded")
+# The skip reasons that are a place check on reuse: both cells are recorded with them.
+_PLACE_SKIPS = ("place_changed", "place_unknown")
 
 
 def _check_contingent_source(body: dict[str, Any], expected_effective: str | None, turn_no: int,
@@ -421,6 +432,14 @@ def _check_contingent_source(body: dict[str, Any], expected_effective: str | Non
         issue(f"turn {from_turn} holds no contingent answer for {condition}", row, turn_no)
     elif named != expected_effective:
         issue(f"the executed choice differs from S1's {condition} answer", row, turn_no)
+    cell, source_cell = body.get("cell"), (source_decision.body.get("cell") if source_decision is not None else None)
+    if not isinstance(source_cell, list) or not source_cell:
+        issue(f"turn {from_turn} records no cell for the place it answered in", row, turn_no)
+    elif not isinstance(cell, list) or not cell:
+        issue("a contingent decision carries no cell for the place its answer was made in", row, turn_no)
+    elif cell != source_cell:
+        issue(f"the place changed from cell {source_cell} to {cell} after the contingent answer was made",
+              row, turn_no)
     ended = (((source_option.body.get("outcome") if source_option is not None else None) or {})
              .get("terminated_by"))
     if ended != condition:
