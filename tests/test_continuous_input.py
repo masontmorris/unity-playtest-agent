@@ -335,3 +335,18 @@ def test_a_receipt_that_was_never_a_running_lease_gets_no_exemption():
     problems = _replay_problems(rows)
     assert 'turn entries are interleaved' in problems
     assert 'turn entries are out of documented order' in problems
+
+
+def test_a_stale_rejected_held_selection_replays_clean():
+    """A held dispatch the bridge rejects at once is collected in its own turn, and the turn record refs it."""
+    async def run():
+        r = await active_rig('c3')
+        try:
+            r.game._reject_acts = RejectReason.stale_age
+            record = await r.loop.run_turn()
+            assert record.outcome.value == 'rejected_stale'
+            await r.loop.stop('finish')
+            return [dict(row) for row in r.sink.entries]
+        finally:
+            await r.close()
+    assert _replay_problems(asyncio.run(run())) == []

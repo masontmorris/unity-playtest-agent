@@ -807,9 +807,10 @@ class TurnLoop:
                 await self._collect_active()
             self._active = (request, purpose, turn, decided)
             execution = Execution(request=request, records=tuple(records))
-            if records[-1].status in TERMINAL_STATUSES:
-                await self._collect_active()
-            return Executed(purpose=purpose, choice=choice, execution=execution, effect=None), None, None
+            # A dispatch that closed at once (rejected, or already terminal) is collected inside this turn, so
+            # the turn record refs its receipt; a running lease's receipt is written when it later closes.
+            entry = await self._collect_active() if records[-1].status in TERMINAL_STATUSES else None
+            return Executed(purpose=purpose, choice=choice, execution=execution, effect=None), entry, None
         if self._continuous:
             await self._release_active("user")
             # Exclude movement during the decision and verified release from the bounded effect.
@@ -857,13 +858,13 @@ class TurnLoop:
             raise
         return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry, measured
 
-    async def _collect_active(self) -> None:
+    async def _collect_active(self) -> int | None:
         if self._active is None:
-            return
+            return None
         request, purpose, turn, decided = self._active
         records = await self._client.collect_act(request["action_id"])
         self._active = None
-        self._emit(TraceKind.execution,
+        return self._emit(TraceKind.execution,
                    {"purpose": purpose, "request": request,
                     "records": [r.model_dump(mode="json") for r in records]},
                    TraceAuthor.bridge, turn, [decided])
