@@ -81,6 +81,7 @@ param(
     [switch]$S1GameView,
     [switch]$CoverageFacts,
     [switch]$PatternFacts,
+    [switch]$TravelFacts,
     [switch]$TurnSizes,
     [switch]$PointTurns,
     [switch]$PointMoves,
@@ -204,7 +205,7 @@ $names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
-           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
+           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
            'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS',
            'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT')
 $previous = @{}
@@ -246,6 +247,7 @@ try {
     $env:UPA_RUN_CAPTURE_HEIGHT = [string]$CaptureHeight
     $env:UPA_RUN_TURN_SIZES = if ($TurnSizes) { '1' } else { '' }
     $env:UPA_RUN_PATTERN_FACTS = if ($PatternFacts) { '1' } else { '' }
+    $env:UPA_RUN_TRAVEL_FACTS = if ($TravelFacts) { '1' } else { '' }
     $env:UPA_RUN_COVERAGE_FACTS = if ($CoverageFacts) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }

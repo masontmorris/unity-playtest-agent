@@ -183,15 +183,22 @@ class DisplacementProbe:
 
 
 def displacement_between(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """The net displacement between two snapshots of the entity, or None when either snapshot was not taken.
+    """The measured displacement between two snapshots of the entity, or None when either snapshot was not taken.
 
-    A snapshot whose position is unknown gives a `net_displacement` of None: unmeasured, never zero.
+    `net_displacement` is how far the body moved and `displacement` is the signed vector that took it there, from
+    `from_position` to `to_position` along the world axes. The magnitude alone cannot say whether the body went up
+    and came back down or went forward, so the vector is recorded too. A snapshot whose position is unknown gives
+    None for every one of them: unmeasured, never zero.
     """
     if before is None or after is None:
         return None
     start, end = _vector(before.get("position")), _vector(after.get("position"))
+    moved = _sub(end, start) if start is not None and end is not None else None
     return {
-        "net_displacement": _norm(_sub(end, start)) if start is not None and end is not None else None,
+        "net_displacement": _norm(moved) if moved is not None else None,
+        "displacement": list(moved) if moved is not None else None,
+        "from_position": list(start) if start is not None else None,
+        "to_position": list(end) if end is not None else None,
         "unit": UNIT,
         "from_inspection_seq": before.get("inspection_seq"),
         "to_inspection_seq": after.get("inspection_seq"),

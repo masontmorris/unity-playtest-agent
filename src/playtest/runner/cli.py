@@ -74,6 +74,7 @@ from .session_control import (
     control_directory,
     load_host_session,
 )
+from .travel import TravelFacts
 
 DEFAULT_OBJECTIVE = (
     "Play the game for the time allowed, using only the offered choices. Try the available controls and "
@@ -158,6 +159,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--capture-height", type=int, default=_env("UPA_RUN_CAPTURE_HEIGHT", int, 480))
     parser.add_argument("--turn-sizes", action="store_true", default=_env("UPA_RUN_TURN_SIZES", switch, False))
     parser.add_argument("--pattern-facts", action="store_true", default=_env("UPA_RUN_PATTERN_FACTS", switch, False))
+    parser.add_argument("--travel-facts", action="store_true", default=_env("UPA_RUN_TRAVEL_FACTS", switch, False),
+                        help="state each turn where the body actually went over the last 20 executed choices: the "
+                             "total path, the position change as a vector, and each choice's mean displacement "
+                             "vector (also UPA_RUN_TRAVEL_FACTS=1)")
     parser.add_argument("--frontier", action="store_true", default=_env("UPA_RUN_FRONTIER", switch, False),
                         help="enable frontier calls after S1 chooses escalate (also UPA_RUN_FRONTIER=1)")
     parser.add_argument("--max-frontier-calls", type=int,
@@ -365,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["turn_sizes"] = True
         if args.pattern_facts:
             plan["pattern_facts"] = True
+        if args.travel_facts:
+            plan["travel_facts"] = True
         plan["frontier"] = {"enabled": args.frontier,
                              "max_calls": args.max_frontier_calls if args.frontier else 0,
                              "model": frontier_provider.MODEL if args.frontier else None}
@@ -456,6 +463,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             facts = CoverageFacts(facts, [c.id for c in built.choices if c.kind in (ChoiceKind.action, ChoiceKind.skill)])
         if args.pattern_facts:
             facts = PatternFacts(facts, [reader.alias for reader in manifest.readers])
+        if args.travel_facts:
+            facts = TravelFacts(facts)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
