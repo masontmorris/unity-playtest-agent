@@ -210,6 +210,7 @@ namespace Playtest.Bridge.Tests
 
             Assert.That(UnityProbeField.IsPlanar(child.transform), Is.True,
                 "the body the session moves decides the plane, not the object the path names");
+            Environment.SetEnvironmentVariable(UnityControlledEntity.VariableName, null);
             Assert.That(UnityProbeField.IsPlanar(CreateGameObject("ProbeTestPlanarPlain").transform), Is.False);
         }
 

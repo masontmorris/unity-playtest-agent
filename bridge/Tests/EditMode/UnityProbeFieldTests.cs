@@ -359,7 +359,7 @@ namespace Playtest.Bridge.Tests
             Transform anchor = CreateAnchor(Vector3.zero);
             _rays.RaycastHandler = (origin, direction, maxDistance) =>
             {
-                if (maxDistance <= UnityProbeField.BlockerMaxDistance || origin.x <= -1f)
+                if (maxDistance <= UnityProbeField.BlockerMaxDistance || origin.z <= -1f)
                 {
                     return default(ProbeRayHit);
                 }
