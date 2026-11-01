@@ -6,6 +6,7 @@ is, what it measured, and what happened here, and nothing else that S1 would hav
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timezone
 
@@ -102,8 +103,8 @@ def test_every_kind_has_one_shape_and_fits():
     assert labels["traverse+x"].startswith(f"traverse +x{SEPARATOR}3.10 u/s, step 0.55{SEPARATOR}")
     assert labels["retreat+x:1.2"].startswith(f"retreat from +x{SEPARATOR}1.20 at 3.10 u/s{SEPARATOR}")
     assert labels["wait:0.5"].startswith(f"wait 0.5 s{SEPARATOR}")
-    assert labels["move_forward"].startswith(f"move_forward{SEPARATOR}2.35 units{SEPARATOR}")
-    assert labels["combo"].startswith(f"combo{SEPARATOR}effect unknown{SEPARATOR}")
+    assert labels["move_forward"].startswith(f"Move forward{SEPARATOR}2.35 units{SEPARATOR}")
+    assert labels["combo"].startswith(f"Combo{SEPARATOR}effect unknown{SEPARATOR}")
     assert labels["wait"].startswith(f"wait{SEPARATOR}0.5 s no input")
     assert labels["escalate"].startswith(f"escalate{SEPARATOR}")
     assert labels["delegate"].startswith(f"delegate{SEPARATOR}")
@@ -237,6 +238,55 @@ def test_menu_request_asks_three_questions_over_the_same_criteria():
     assert json.loads(canonical(body))["questions"][PRIMARY]["type"] == "choice"
     plain = menu_request(payload, "liquid-d1-ultra", contingent=False)
     assert list(plain["questions"]) == [PRIMARY]
+
+
+def test_a_plain_action_and_a_skill_keep_their_intent_clause():
+    """A manifest label says what an action does; the tuned id says only which input it is."""
+    memory = OutcomeMemory(cell=CELL)
+    stick = Choice(id="stick_right", kind=ChoiceKind.action, action="stick_right",
+                   source=ChoiceSource.manifest,
+                   label=("move right on stick: request a 0.4-second hold of Gamepad leftStick (x=1, y=0); "
+                          "calibrated net displacement 3.780 world units (sample variance 0.0012, n=4)."))
+    jump = Choice(id="jump_pad", kind=ChoiceKind.action, action="jump_pad", source=ChoiceSource.manifest,
+                  label=("jump: request a 0.2-second hold of Space; calibrated net displacement 1.204 world "
+                         "units (sample variance 0.0031, n=5)."))
+    skill = Choice(id="combo_right_jump", kind=ChoiceKind.skill, skill="combo_right_jump",
+                   source=ChoiceSource.manifest,
+                   label=("run and jump right: request this ordered sequence of 2 steps, at most 1.5 s in "
+                          "total: step 1: hold right for 0.5 s; no calibrated effect is recorded for this "
+                          "sequence."))
+    label = option_label(stick, memory, "scene-a", [0.0, 0.0, 0.0])
+    assert label == f"move right on stick{SEPARATOR}3.78 units{SEPARATOR}here: untried"
+    assert option_label(jump, memory, "scene-a", [0.0, 0.0, 0.0]).startswith(
+        f"jump{SEPARATOR}1.20 units{SEPARATOR}")
+    assert option_label(skill, memory, "scene-a", [0.0, 0.0, 0.0]).startswith(
+        f"run and jump right{SEPARATOR}effect unknown{SEPARATOR}")
+    # A label with no clause at all still names the choice, and every label stays inside the limit.
+    bare = Choice(id="plain_step", kind=ChoiceKind.action, action="plain_step",
+                  source=ChoiceSource.manifest, label="plain_step")
+    assert option_label(bare, memory, "scene-a", [0.0, 0.0, 0.0]).startswith("plain_step")
+    long_label = Choice(id="long", kind=ChoiceKind.action, action="long", source=ChoiceSource.manifest,
+                        label="hold right and walk steadily all the way to the far side of the pit and stop "
+                              "there: calibrated net displacement 3.780 world units (sample variance 0.0012, n=3).")
+    clipped = option_label(long_label, memory, "scene-a", [0.0, 0.0, 0.0])
+    assert clipped.startswith("hold right and walk steadily all the way to the far side")
+    assert len(clipped) <= 90 and clipped.endswith("\u2026")
+
+
+def test_menu_request_attaches_the_game_view_as_images_zero():
+    raw = b"a 640x480 jpeg standing in for the frame"
+    payload = compact_menu(objective="o", observation=observation(), choices=choices(),
+                           memory=OutcomeMemory(cell=CELL), game_view="The attached image is the current game view.")
+    assert payload["game_view"] == "The attached image is the current game view."
+    body = menu_request(payload, "d1-ultra", contingent=True, image=raw)
+    url = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+    assert body["images"] == [url] and list(body) == ["model", "questions", "state", "images"]
+    assert body["state"]["game_view"] == payload["game_view"]
+    # No image, no key: the request is exactly the body the earlier bench sent.
+    assert "images" not in menu_request(payload, "d1-ultra", contingent=True)
+    # An arm that carries the image inside a message cannot take one in a plain state body.
+    with pytest.raises(ValueError, match="plain images array"):
+        menu_request(payload, "mammoth-1", contingent=True, image=raw, arm="mammoth-1")
 
 
 def test_eight_option_menu_stays_small():

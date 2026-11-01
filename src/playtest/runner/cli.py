@@ -145,6 +145,13 @@ def _parser() -> argparse.ArgumentParser:
                              "(about 29%% fewer billed tokens, but d1-ultra renders a string state differently and "
                              "changes some near-tie choices). Liquid arms only; use with --s1-layout full. See "
                              "docs/design/s1-token-budget.md (also UPA_RUN_S1_COMPACT_STATE)")
+    parser.add_argument("--s1-context", default=_env("UPA_RUN_S1_CONTEXT", str, "full"),
+                        choices=["full", "compact-menu"],
+                        help="what S1 reads: full (default, the payload the loop built, byte for byte) or "
+                             "compact-menu (the menu's own shorter state: one comparable label per choice, the "
+                             "run's measured positions and the game view; requires --options for the measured "
+                             "cell, and cannot be combined with --s1-layout, --s1-compact-state, a non-sorted "
+                             "option order or --s1-pending-question; also UPA_RUN_S1_CONTEXT)")
     parser.add_argument("--s1-pending-question", default=_env("UPA_RUN_S1_PENDING_QUESTION", str, "follow_up"),
                         choices=["follow_up", "batched"],
                         help="ask while_pending in a second call after a help choice (follow_up, default) or beside "
@@ -286,6 +293,21 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output must be a new file outside the Unity project")
     if args.s1_game_view and args.s1_arm not in IMAGE_TRANSPORT:
         parser.error(f"--s1-game-view: S1 arm {args.s1_arm!r} has no verified image transport")
+    if args.s1_context == "compact-menu":
+        if not args.options:
+            parser.error("--s1-context compact-menu requires --options: the menu's measured cell comes from the "
+                         "options layer's memory")
+        if args.s1_layout != RequestLayout.full.value:
+            parser.error("--s1-context compact-menu sends its own state; it cannot be combined with --s1-layout")
+        if args.s1_compact_state != "off":
+            parser.error("--s1-context compact-menu sends its own state; it cannot be combined with "
+                         "--s1-compact-state")
+        if args.s1_pending_question != "follow_up":
+            parser.error("--s1-context compact-menu asks its own pending question beside next_action; it cannot be "
+                         "combined with --s1-pending-question")
+        if args.s1_game_view and IMAGE_TRANSPORT[args.s1_arm] != "images":
+            parser.error(f"--s1-context compact-menu: S1 arm {args.s1_arm!r} does not take a plain images array, "
+                         f"so the menu cannot attach its game view")
     for variable in replay.ARMS[args.s1_arm][1:]:
         if variable and not os.environ.get(variable):
             parser.error(f"{variable} is not set in the environment")
@@ -355,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["s1_compact_state"] = args.s1_compact_state
         if args.s1_pending_question != "follow_up":
             plan["s1_pending_question"] = args.s1_pending_question
+        if args.s1_context != "full":
+            plan["s1_context"] = args.s1_context
         if args.continuous_input:
             plan["continuous_input"] = True
         if args.options:
@@ -457,7 +481,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         instructions = INSTRUCTIONS_VARIANTS[args.s1_instructions]
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
-                          compact_state=args.s1_compact_state, pending_question=args.s1_pending_question)
+                          compact_state=args.s1_compact_state, pending_question=args.s1_pending_question,
+                          s1_context=args.s1_context, menu_memory=memory)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)
@@ -515,7 +540,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                           if args.s1_instructions != INSTRUCTIONS_POLICY_VARIANT else {}),
                        **({"compact_state": s1.compact_state} if s1.compact_state is not None else {}),
                        **({"pending_question": args.s1_pending_question}
-                          if args.s1_pending_question != "follow_up" else {})},
+                          if args.s1_pending_question != "follow_up" else {}),
+                       **({"context": args.s1_context} if args.s1_context != "full" else {})},
                 "s1_game_view": s1.view_counts,
                 "frontier": {"enabled": args.frontier, "model": frontier_provider.MODEL if args.frontier else None,
                              "calls": help_port.calls if help_port is not None else 0,

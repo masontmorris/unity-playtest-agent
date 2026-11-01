@@ -22,12 +22,13 @@ from. It drops the UI dump, per-choice calibration arithmetic and the recent-his
 
 `menu_request` is the request body in the shape the provider has always been sent, with the three contingent
 questions S1 may answer ahead of time: what next, and what next if the chosen option ends blocked or ends
-succeeded.
+succeeded. With a frame it attaches `images[0]` through `playtest.runner.image_transport`, exactly as the
+adapter does, beside the payload's own game-view note.
 
-Wiring is not enabled by default. A live `--s1-context compact-menu` would need three things this module does
-not have: the run's measured positions (the turn loop does not keep them), the option memory (it exists only
-when the options layer does), and an answer to what happens to input while help is pending (the compact menu
-asks about the next option, not that).
+Wiring is opt-in (`--s1-context compact-menu`, `UPA_RUN_S1_CONTEXT`). It needs the run's measured positions
+(the adapter accumulates them per context and clears them at a reset), the option memory of the options layer
+(so `--options` is required, for the measured cell), and S1's own answer about input while help is pending
+(the adapter adds `while_pending` to the same request on an escalate turn). The default mode is untouched.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from enum import Enum
 from typing import Any
 
 from playtest.contracts.loop import ChoiceKind
+from playtest.runner.image_transport import attach_images
 from playtest.runner.options.memory import MINUS, OutcomeMemory
 
 # The one question text the compact menu sends. It is short because the labels carry the state; it is stated
@@ -59,6 +61,7 @@ SEPARATOR = " \u00b7 "  # the middle dot between a label's three fields
 AXES = ("x", "y", "z")
 GROUND_AXES = (0, 2)  # the plane a move travels in; the up axis is never a direction label
 GROUNDED_FRACTION = 0.05  # a twentieth of one measured step: floor at the anchor's own origin
+LIQUID_ARM = "liquid-d1-ultra"  # the arm whose verified image transport is a plain `images` array
 
 _EFFECT = re.compile(r"calibrated net displacement\s+(-?\d+(?:\.\d+)?)")
 _NO_EFFECT = re.compile(r"calibrated effect unknown|no calibrated effect")
@@ -108,9 +111,10 @@ def option_label(choice, memory: OutcomeMemory, scene: str | None,
     """One uniform label for any choice: what it is, what it is expected to do, what it did here.
 
     An option's intent is its spec's first clause and its expectation the measured numbers that spec states;
-    a plain action's effect is the one calibrated number its manifest label carries, with the sample variance
-    and trial count stripped; a skill carries no calibrated sequence effect. Wait, finish, escalate, delegate
-    and restart are fixed short labels. Deterministic for the same choice, memory and position.
+    a plain action's or skill's intent is its manifest label's first clause, which says what it does, and its
+    expectation the one calibrated number that label carries, with the sample variance and trial count
+    stripped. Wait, finish, escalate, delegate and restart are fixed short labels. Deterministic for the same
+    choice, memory and position.
     """
     kind = _kind(choice)
     if kind is ChoiceKind.option:
@@ -119,12 +123,27 @@ def option_label(choice, memory: OutcomeMemory, scene: str | None,
     if kind in (ChoiceKind.action, ChoiceKind.skill):
         name = (getattr(choice, "action", None) if kind is ChoiceKind.action
                 else getattr(choice, "skill", None)) or choice.id
-        return _fit(str(name), _effect(getattr(choice, "label", "") or ""),
-                    _suffix(memory, scene, position, choice.id))
+        label = getattr(choice, "label", "") or ""
+        # The manifest label's first clause says what the action does ("move right on stick", "jump"); the
+        # tuned action or skill name says only which input it is. Keeping the clause is what makes a plain
+        # action comparable with an option at a pit edge, so it is the intent, not the identifier.
+        intent = _first_clause(label) or str(name)
+        return _fit(intent, _effect(label), _suffix(memory, scene, position, choice.id))
     fixed = _fixed(kind, choice)
     if fixed is not None:
         return fixed
     return _fit(_first_clause(getattr(choice, "label", "") or ""), "", "")
+
+
+def measured_position(observation) -> tuple[float, ...] | None:
+    """The controlled entity's measured position, or `None` when this observation carries none.
+
+    One reader of `public.controlled.position`, shared by the payload and by the adapter that keeps the
+    run's position history, so both mean the same measurement by the same rules.
+    """
+    public = _field(observation, "public")
+    controlled = public.get("controlled") if isinstance(public, Mapping) else None
+    return _vector(controlled.get("position")) if isinstance(controlled, Mapping) else None
 
 
 def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
@@ -142,8 +161,7 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
     scene = _field(observation, "scene")
     public = _field(observation, "public")
     public = public if isinstance(public, Mapping) else {}
-    controlled = public.get("controlled")
-    position = _vector(controlled.get("position")) if isinstance(controlled, Mapping) else None
+    position = measured_position(observation)
     probe = public.get("probe")
     measured = [value for value in map(_vector, positions) if value is not None]
     offered = list(getattr(choices, "choices", choices))
@@ -167,18 +185,23 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
     }
 
 
-def menu_request(payload: dict, model: str, *, contingent: bool) -> dict:
+def menu_request(payload: dict, model: str, *, contingent: bool, image: bytes | None = None,
+                 arm: str = LIQUID_ARM) -> dict:
     """The request body: `next_action` over the payload's labels, and the two conditional questions.
 
     With `contingent`, `if_blocked` and `if_succeeded` ask the same choice set in advance, so the next option
     can start without a second call. All three questions offer exactly the payload's criteria.
+
+    `image` is this turn's game-view JPEG. It is attached as `images[0]` by the same helper the adapter sends
+    with (`playtest.runner.image_transport`), beside the payload's own `game_view` note, so the compact menu
+    carries the view the full layout carries and not one character of it is encoded twice.
     """
     criteria = {item["id"]: item["label"] for item in payload["choices"]}
     questions = {PRIMARY: {"type": "choice", "instructions": MENU_INSTRUCTIONS, "criteria": criteria}}
     if contingent:
         questions[BLOCKED_QUESTION] = {"type": "choice", "instructions": IF_BLOCKED, "criteria": criteria}
         questions[SUCCEEDED_QUESTION] = {"type": "choice", "instructions": IF_SUCCEEDED, "criteria": criteria}
-    return {"model": model, "questions": questions, "state": payload}
+    return attach_images({"model": model, "questions": questions, "state": payload}, arm, image)
 
 
 # --- choice labels ----------------------------------------------------------------------
@@ -293,7 +316,8 @@ def _clip_suffix(intent: str, suffix: str) -> str:
     """The history's head that fits, keeping its `best` quantity, and an ellipsis for what it left out."""
     room = LABEL_LIMIT - len(intent) - len(SEPARATOR)
     if room < 2:
-        return f"{intent}{SEPARATOR}\u2026"
+        # The intent alone has nearly filled the label: it is clipped, so no label leaves the limit.
+        return intent[:LABEL_LIMIT - 1] + "\u2026"
     base, mark, best = suffix.partition(", best ")
     tail = f", best {best}" if mark else ""
     budget = room - len(tail) - 1
@@ -306,7 +330,12 @@ def _clip_suffix(intent: str, suffix: str) -> str:
         if len(candidate) > budget:
             break
         kept = candidate
-    return f"{intent}{SEPARATOR}{kept}{tail}\u2026"
+    text = f"{intent}{SEPARATOR}{kept}{tail}\u2026"
+    if len(text) <= LABEL_LIMIT:
+        return text
+    if budget >= 1:  # the first clause alone is too long: keep its head and still mark it as clipped
+        return f"{intent}{SEPARATOR}{kept[:budget]}\u2026"
+    return intent[:LABEL_LIMIT - 1] + "\u2026"
 
 
 def _first_segment(expected: str) -> str:

@@ -31,6 +31,15 @@ Either way the body alone restores the exact context (`state_codec.decode_object
 has, and `stable-first/1` (`playtest.runner.state_order`) sends the same values with `state`'s
 top-level keys in a declared stable-first order. Only that serialization changes; the context record,
 the payload and every value are untouched, and the Meta arm keeps its own stable-first text.
+
+`s1_context` selects what S1 reads. `full` (default) sends the payload the turn loop built, byte for byte.
+`compact-menu` sends `playtest.runner.menu`'s shorter state built from that same payload: the same offered
+ids, one comparable label per choice, the run's measured positions and the game-view note. It needs the
+options layer's `OutcomeMemory` (`--options`) for the measured cell, and it bypasses the layout, the state
+codec and option ordering rather than combining with them. Positions are accumulated here, per context, and
+cleared at a reset boundary: the loop rebinds its own scene-bound ports after a host restart but not this
+adapter, so it reads the loop's `reset_summary` (present on the first context after a restart) and, when an
+observation carries one, a changed `session` id.
 """
 
 from __future__ import annotations
@@ -46,8 +55,11 @@ from typing import Any, Protocol
 from playtest.bench import call_budget, replay
 from playtest.bench.record import digest
 from playtest.contracts.common import ClockMode
+from playtest.contracts.loop import Choice, ChoiceSet
 from playtest.core.context import INSTRUCTIONS, INSTRUCTIONS_KEEP_PLAYING, canonical
 from playtest.core.ports import S1Answer, S1Call
+from playtest.runner import menu
+from playtest.runner.image_transport import IMAGE_TOKENS, IMAGE_TRANSPORT, attach_images, image_url
 from playtest.runner.option_order import OptionOrder, ordered_ids
 from playtest.runner.request_layout import RequestLayout, encode as encode_request_body
 from playtest.runner import state_codec
@@ -104,12 +116,12 @@ def prompts(instructions: str = INSTRUCTIONS, *, batched: bool = False) -> dict[
 
 _HELP_KINDS = ("escalate", "delegate")
 _PENDING_KINDS = ("wait", "action", "skill")
-# Day 1 exercised the Baseten and d1.1 combinations. d1-ultra took the same `images` array in its
-# 30 October probe: a 640x480 JPEG added 450 input tokens, the Day 1 image cost scaled by pixel count.
-IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images",
-                   "liquid-d1-ultra": "images", "meta-muse-spark-s1": "meta"}
-IMAGE_TOKENS = {"messages": 1000, "images": 1400, "meta": 1400}  # fallback estimate
 CHARS_PER_TOKEN = 2.5  # request characters per token, for the estimate used when a reply reports no usage
+
+# The opt-in context modes. `full` is the payload the loop builds, sent as it always has been; `menu` sends
+# the compact menu's own shorter state (`playtest.runner.menu`) instead, and nothing else about the arm changes.
+FULL_CONTEXT = "full"
+MENU_CONTEXT = "compact-menu"
 
 
 class TokenMeter(Protocol):
@@ -217,6 +229,8 @@ class SystemOneS1:
         order_seed: int | None = None,
         state_order: StateOrder | str = StateOrder.canonical,
         compact_state: str | Sequence[str] | None = None,
+        s1_context: str = FULL_CONTEXT,
+        menu_memory: Any = None,
     ) -> None:
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
@@ -225,6 +239,9 @@ class SystemOneS1:
         self._pending_question = pending_question
         if arm not in replay.ARMS:
             raise ValueError(f"unknown S1 arm {arm!r}")
+        if s1_context not in (FULL_CONTEXT, MENU_CONTEXT):
+            raise ValueError(f"unknown S1 context {s1_context!r}")
+        self._menu = s1_context == MENU_CONTEXT
         if isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1:
             raise ValueError("the call cap must be a positive integer")
         if not isinstance(instructions, str) or not instructions.strip():
@@ -266,10 +283,32 @@ class SystemOneS1:
             if self._layout is not RequestLayout.full:
                 raise ValueError("the compact state already sends one copy of each duplicated text; "
                                  "use it with the full layout")
+        if self._menu:
+            # The compact menu replaces the state itself: nothing may be laid over it, and it needs the
+            # options layer's memory to say what a choice did at this measured cell.
+            if self._layout is not RequestLayout.full:
+                raise ValueError("the compact menu sends its own state; it cannot be combined with a request layout")
+            if self._compact is not None:
+                raise ValueError("the compact menu sends its own state; it cannot be combined with the "
+                                 "compact state codec")
+            if self._option_order is not OptionOrder.sorted:
+                raise ValueError("the compact menu sends its own state; it cannot be combined with option ordering")
+            if arm == "meta-muse-spark-s1":
+                raise ValueError(f"S1 arm {arm!r} sends its own user text; the compact menu does not apply to it")
+            if menu_memory is None:
+                raise ValueError("the compact menu needs the options layer's outcome memory (--options) for "
+                                 "its measured cell")
+            if game_view and IMAGE_TRANSPORT.get(arm) != "images":
+                raise ValueError(f"S1 arm {arm!r} does not take a plain images array; the compact menu cannot "
+                                 f"attach its game view")
+        self._menu_memory = menu_memory
+        self._menu_positions: list[list[float]] = []
+        self._menu_session: str | None = None
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._instructions = instructions
-        self._prompts = prompts(instructions, batched=pending_question == "batched")
+        self._prompts = (self._menu_prompts() if self._menu
+                         else prompts(instructions, batched=pending_question == "batched"))
         self._ledger = ledger
         self._max_calls = max_calls
         self._send = send
@@ -290,8 +329,23 @@ class SystemOneS1:
 
     @property
     def prompt_sha256(self) -> str:
-        """SHA-256 of every prompt text this adapter sends: the context instructions and the follow-up wording."""
+        """SHA-256 of every prompt text this adapter sends: the context instructions and the follow-up wording.
+
+        In the compact-menu mode that is the menu's three question texts plus the batched pending question,
+        which are exactly the texts a request can carry there.
+        """
         return digest(canonical(self._prompts))
+
+    @staticmethod
+    def _menu_prompts() -> dict[str, str]:
+        """Every question text a compact-menu request can carry, named as the request names it."""
+        return {menu.PRIMARY: menu.MENU_INSTRUCTIONS, menu.BLOCKED_QUESTION: menu.IF_BLOCKED,
+                menu.SUCCEEDED_QUESTION: menu.IF_SUCCEEDED, FOLLOW_UP: BATCH_INSTRUCTIONS}
+
+    @property
+    def s1_context(self) -> str:
+        """The context this adapter sends: `full`, or the compact menu's shorter state."""
+        return MENU_CONTEXT if self._menu else FULL_CONTEXT
 
     @property
     def instructions(self) -> str:
@@ -327,8 +381,10 @@ class SystemOneS1:
                 "omitted": self._view_omitted, "stale": self._view_stale}
 
     async def decide(self, context: Mapping[str, Any], *, image: bytes | None = None) -> S1Answer:
-        if context.get("instructions") != self._instructions:
+        if not self._menu and context.get("instructions") != self._instructions:
             # The hash names the text this run selected; a payload carrying other text would make it a lie.
+            # The compact menu carries no `instructions` at all: its question texts are the menu's own, and
+            # they are hashed by `prompt_sha256` whether or not any payload states them.
             raise ValueError("the context's instructions are not this adapter's instructions")
         if image is not None and (not self._game_view or digest(image) != context.get("game_view_sha256")
                                   or context.get("game_view_status") != "sent"):
@@ -338,11 +394,16 @@ class SystemOneS1:
         turn, self._turn = self._turn, self._turn + 1
         choices = context["choices"]
         kinds = {item["id"]: item["kind"] for item in choices}
-        criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
-        batch = (self._pending_question == "batched" and self._clock_mode is ClockMode.realtime
+        menu_payload = self._menu_payload(context) if self._menu else None
+        labels = ({item["id"]: item["label"] for item in menu_payload["choices"]} if menu_payload is not None
+                  else {item["id"]: item["label"] for item in choices})
+        criteria = {choice_id: labels[choice_id] for choice_id, kind in kinds.items()
+                    if kind in _PENDING_KINDS}
+        batch = ((self._menu or self._pending_question == "batched") and self._clock_mode is ClockMode.realtime
                  and any(kind in _HELP_KINDS for kind in kinds.values()) and bool(criteria))
-        first = await self._call(PRIMARY, self._instructions, {item["id"]: item["label"] for item in choices},
-                                 context, turn, image, pending_criteria=criteria if batch else None)
+        first = await self._call(PRIMARY, self._instructions, labels,
+                                 context, turn, image, pending_criteria=criteria if batch else None,
+                                 menu_payload=menu_payload)
         calls = [first.call]
         if first.choice is None:
             return S1Answer(answer=None, calls=tuple(calls), failure=first.failure, halt=first.halt)
@@ -355,7 +416,10 @@ class SystemOneS1:
             if kinds[first.choice] in _HELP_KINDS and secondary is not None:
                 answer["while_pending"] = ({"mode": "wait"} if kinds[secondary] == "wait"
                                            else {"mode": "continue", "choice_id": secondary})
-        if not batch and kinds[first.choice] in _HELP_KINDS and self._clock_mode is ClockMode.realtime and halt is None:
+        if (not batch and not self._menu and kinds[first.choice] in _HELP_KINDS
+                and self._clock_mode is ClockMode.realtime and halt is None):
+            # The menu never makes a second call: its pending question is asked in the same request, so a
+            # menu turn without it leaves `while_pending` absent rather than spending another call on it.
             criteria = {item["id"]: item["label"] for item in choices if item["kind"] in _PENDING_KINDS}
             if criteria:
                 second = await self._call(FOLLOW_UP, follow_up_for(self._instructions), criteria, context, turn,
@@ -367,56 +431,105 @@ class SystemOneS1:
                                                else {"mode": "continue", "choice_id": second.choice})
         return S1Answer(answer=answer, calls=tuple(calls), halt=halt)
 
+    def _menu_payload(self, context: Mapping[str, Any]) -> dict:
+        """The compact menu's state for this context, from the loop's payload and this run's own memory.
+
+        The offered choices are the same ids the loop offered, bound to the same observation, and the
+        position history is every measured position this adapter has seen since the last reset boundary.
+        The current position is added to it only after the payload is built, because `compact_menu` reads it
+        as this turn's `now` and a position counted twice would read as a place the entity visited twice.
+        """
+        observation = context.get("observation")
+        observation = observation if isinstance(observation, Mapping) else {}
+        self._menu_clear_at_boundary(context, observation)
+        choices = ChoiceSet(set_version=context["choice_set_version"],
+                            built_from_seq=context["as_of"]["seq"],
+                            choices=[Choice.model_validate(item) for item in context["choices"]])
+        payload = menu.compact_menu(
+            objective=context["objective"], observation=observation, choices=choices,
+            memory=self._menu_memory, directive=context.get("directive"),
+            pending_help=context.get("pending_help"), facts=context.get("facts") or (),
+            game_view=context.get("game_view"), positions=self._menu_positions)
+        position = menu.measured_position(observation)
+        if position is not None:
+            self._menu_positions.append(list(position))
+        return payload
+
+    def _menu_clear_at_boundary(self, context: Mapping[str, Any], observation: Mapping[str, Any]) -> None:
+        """Forget the position history when this turn follows a reset, so no distance spans two sessions.
+
+        The loop rebinds its own scene-bound ports after a host restart and leaves this adapter alone, so the
+        evidence it does hand over is read here: the `reset_summary` the first context after a restart carries,
+        and, for a caller whose observation names one, a changed bridge `session`.
+        """
+        session = observation.get("session")
+        if context.get("reset_summary") is not None or (isinstance(session, str) and self._menu_session is not None
+                                                        and session != self._menu_session):
+            self._menu_positions = []
+        if isinstance(session, str):
+            self._menu_session = session
+
     async def _call(self, question: str, instructions: str, criteria: dict[str, str],
                     context: Mapping[str, Any], turn: int, image: bytes | None,
-                    pending_criteria: dict[str, str] | None = None) -> _Reply:
+                    pending_criteria: dict[str, str] | None = None,
+                    menu_payload: dict | None = None) -> _Reply:
         model = self.model
-        body = {"model": model,
-                "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
-                "state": context}
-        if pending_criteria is not None:
-            body["questions"][FOLLOW_UP] = {"type": "choice", "instructions": BATCH_INSTRUCTIONS, "criteria": pending_criteria}
-        if self._arm == "meta-muse-spark-s1":
-            try:
-                content: Any = _stable_first(criteria, context)
-            except ValueError:
-                return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
-            if image is not None:
-                url = "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
-                content = [{"type": "text", "text": content}, {"type": "image_url", "image_url": {"url": url}}]
-            body = {"model": model, "reasoning_effort": "minimal", "max_tokens": 512,
-                    "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}],
-                    "response_format": {"type": "json_schema", "json_schema": {"name": "s1_choice", "strict": True,
-                        "schema": {"type": "object", "additionalProperties": False, "required": ["choice"],
-                                   "properties": {"choice": {"type": "string", "enum": list(criteria)}}}}}}
-        if self._layout is not RequestLayout.full:
-            # After the question is built: only a text this same request already states verbatim is moved
-            # to one copy. The context passed in is untouched, and `full` never reaches this branch.
-            body = encode_request_body(body)
         compacted: list[str] | None = None
-        if self._compact is not None:
-            # The traced context stays as built: only this request's copy of it is rendered compactly, and
-            # every rule points at this body's own question, so the body alone restores it exactly.
-            try:
-                if self._compact_object:
-                    body["state"], compacted = state_codec.encode_object(
-                        context, instructions=instructions, criteria=criteria, rules=self._compact)
-                else:
-                    body["state"], compacted = state_codec.encode(
-                        context, instructions=instructions, criteria=criteria, rules=self._compact,
-                        key_order=state_keys(context) if self._state_order is not StateOrder.canonical else None)
-            except state_codec.CodecError:
-                return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
+        if self._menu:
+            # The menu's own state and its three questions; the batched pending question joins the same
+            # request when this turn offers help. No layout, codec or ordering applies to it (refused in
+            # `__init__`), and the image is attached by the same helper every other request uses.
+            assert menu_payload is not None
+            body = menu.menu_request(menu_payload, model, contingent=True, image=image, arm=self._arm)
+            if pending_criteria is not None:
+                body["questions"][FOLLOW_UP] = {"type": "choice", "instructions": BATCH_INSTRUCTIONS,
+                                                "criteria": pending_criteria}
+        else:
+            body = {"model": model,
+                    "questions": {question: {"type": "choice", "instructions": instructions, "criteria": criteria}},
+                    "state": context}
+            if pending_criteria is not None:
+                body["questions"][FOLLOW_UP] = {"type": "choice", "instructions": BATCH_INSTRUCTIONS, "criteria": pending_criteria}
+            if self._arm == "meta-muse-spark-s1":
+                try:
+                    content: Any = _stable_first(criteria, context)
+                except ValueError:
+                    return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
+                if image is not None:
+                    content = [{"type": "text", "text": content},
+                               {"type": "image_url", "image_url": {"url": image_url(image)}}]
+                body = {"model": model, "reasoning_effort": "minimal", "max_tokens": 512,
+                        "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": content}],
+                        "response_format": {"type": "json_schema", "json_schema": {"name": "s1_choice", "strict": True,
+                            "schema": {"type": "object", "additionalProperties": False, "required": ["choice"],
+                                       "properties": {"choice": {"type": "string", "enum": list(criteria)}}}}}}
+            if self._layout is not RequestLayout.full:
+                # After the question is built: only a text this same request already states verbatim is moved
+                # to one copy. The context passed in is untouched, and `full` never reaches this branch.
+                body = encode_request_body(body)
+            if self._compact is not None:
+                # The traced context stays as built: only this request's copy of it is rendered compactly, and
+                # every rule points at this body's own question, so the body alone restores it exactly.
+                try:
+                    if self._compact_object:
+                        body["state"], compacted = state_codec.encode_object(
+                            context, instructions=instructions, criteria=criteria, rules=self._compact)
+                    else:
+                        body["state"], compacted = state_codec.encode(
+                            context, instructions=instructions, criteria=criteria, rules=self._compact,
+                            key_order=state_keys(context) if self._state_order is not StateOrder.canonical else None)
+                except state_codec.CodecError:
+                    return self._refused(question, None, "the request is not finite JSON; no call was made", halt=None)
         try:
             estimate_text = canonical(_without_image(body, image))  # image tokens are counted separately
-            if image is not None and self._arm != "meta-muse-spark-s1":
-                url = "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
+            if image is not None and not self._menu and self._arm != "meta-muse-spark-s1":
                 if IMAGE_TRANSPORT[self._arm] == "messages":
+                    url = image_url(image)
                     body["state"] = {"messages": [{"role": "user", "content": [
                         {"type": "text", "text": canonical(context)},
                         {"type": "image_url", "image_url": {"url": url}}]}]}
                 else:
-                    body["images"] = [url]
+                    attach_images(body, self._arm, image)
             # Every question in the body gets its own order: a batched `while_pending` is ordered like the primary.
             orders = {name: ordered_ids(asked["criteria"], self._option_order, self._order_seed, self._episode,
                                         turn, name)

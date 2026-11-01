@@ -90,6 +90,7 @@ param(
     [ValidateSet('full', 'dup-state-ref/1')][string]$S1Layout = 'full',
     [ValidateSet('off', 'object', 'format', 'default', 'all')][string]$S1CompactState = 'off',
     [ValidateSet('follow_up', 'batched')][string]$S1PendingQuestion = 'follow_up',
+    [ValidateSet('full', 'compact-menu')][string]$S1Context = 'full',
     [ValidateSet('policy/1', 'direct/1', 'policy/2', 'policy/3')][string]$S1Instructions = 'policy/1',
     [ValidateSet('plain', 'conditional')][string]$FinishLabel = 'plain',
     [switch]$S1ContinuousInput,
@@ -141,6 +142,13 @@ foreach ($variable in $s1Credentials[$S1Arm]) {
 }
 if ($Frontier -and $MaxFrontierCalls -lt 1) { throw '-Frontier needs -MaxFrontierCalls of at least 1: no frontier call starts without a cap.' }
 if (-not $Frontier -and $MaxFrontierCalls -ne 0) { throw '-MaxFrontierCalls needs -Frontier.' }
+if ($S1Context -eq 'compact-menu' -and -not $Options) {
+    # The menu's measured cell comes from the options layer's outcome memory; the runner refuses this too.
+    throw '-S1Context compact-menu needs -Options: the menu''s measured cell comes from the options layer.'
+}
+if ($S1Context -eq 'compact-menu' -and $S1Layout -ne 'full') { throw '-S1Context compact-menu sends its own state; it cannot be combined with -S1Layout.' }
+if ($S1Context -eq 'compact-menu' -and $S1CompactState -ne 'off') { throw '-S1Context compact-menu sends its own state; it cannot be combined with -S1CompactState.' }
+if ($S1Context -eq 'compact-menu' -and $S1PendingQuestion -ne 'follow_up') { throw '-S1Context compact-menu asks its own pending question beside next_action; it cannot be combined with -S1PendingQuestion.' }
 if ($Frontier -and [string]::IsNullOrEmpty($env:META_API_KEY)) { throw 'META_API_KEY is not set in this session.' }
 $packages = Get-Content -LiteralPath (Join-Path $project 'Packages/manifest.json') -Raw | ConvertFrom-Json
 $expected = 'file:' + (Join-Path $repoRoot 'bridge').Replace('\', '/')
@@ -208,7 +216,7 @@ $names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
            'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
-           'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS',
+           'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS', 'UPA_RUN_S1_CONTEXT',
            'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
            'UPA_RUN_OPTIONS', 'UPA_RUN_PLACEMENT', 'UPA_CONTROLLED_ENTITY')
 $previous = @{}
@@ -239,6 +247,7 @@ try {
     $env:UPA_RUN_S1_LAYOUT = $S1Layout
     $env:UPA_RUN_S1_COMPACT_STATE = $S1CompactState
     $env:UPA_RUN_S1_PENDING_QUESTION = $S1PendingQuestion
+    $env:UPA_RUN_S1_CONTEXT = $S1Context
     $env:UPA_RUN_S1_INSTRUCTIONS = $S1Instructions
     $env:UPA_RUN_FINISH_LABEL = $FinishLabel
     $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
