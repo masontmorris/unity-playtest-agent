@@ -283,3 +283,55 @@ def test_session_offers_both_forms_only_when_enabled(enabled):
         finally:
             await r.close()
     asyncio.run(run())
+
+
+def _replay_problems(rows):
+    from playtest.contracts.common import ClockMode
+    from playtest.contracts.investigation import Budget, RunRecord
+    from playtest.core.trace_replay import replay
+    run = RunRecord(run_id='test', game_project='Synthetic', clock_mode=ClockMode.realtime, models=[],
+                    objective='Exercise controls.', budget=Budget(), core_version='0.0.1')
+    rows = [dict(row) for row in rows]
+    rows[0] = {**rows[0], 'body': run.model_dump(mode='json')}
+    return [p.message for p in replay([TraceEntry.model_validate({'run_id': 'test', **row}) for row in rows])]
+
+
+async def _held_then_superseded_rows():
+    r = await active_rig('c3', 'w')
+    try:
+        await r.loop.run_turn()
+        await r.loop.run_turn()
+        await r.loop.stop('finish')
+        return [dict(row) for row in r.sink.entries]
+    finally:
+        await r.close()
+
+
+def test_held_lease_receipts_replay_clean():
+    """A held lease's receipt is written when it closes, inside the next turn's span; replay accepts that."""
+    rows = asyncio.run(_held_then_superseded_rows())
+    held = [row for row in rows if row['kind'] == 'execution' and row['body']['records']
+            and row['body']['records'][0]['status'] == 'running']
+    turn_seq = {row['turn']: row['trace_seq'] for row in rows if row['kind'] == 'turn'}
+    assert any(row['trace_seq'] > turn_seq[row['turn']] for row in held)  # the overlap really occurs
+    assert _replay_problems(rows) == []
+
+
+def test_held_receipt_closing_after_its_superseding_turn_is_flagged():
+    rows = asyncio.run(_held_then_superseded_rows())
+    turn_seq = {row['turn']: row['trace_seq'] for row in rows if row['kind'] == 'turn'}
+    late = next(row for row in rows if row['kind'] == 'execution' and row['turn'] is not None
+                and row['trace_seq'] > turn_seq[row['turn']])
+    late['turn'] -= 1  # now it claims a turn two turns before the span it sits in
+    assert 'a held execution closed after the turn that superseded it' in _replay_problems(rows)
+
+
+def test_a_receipt_that_was_never_a_running_lease_gets_no_exemption():
+    rows = asyncio.run(_held_then_superseded_rows())
+    turn_seq = {row['turn']: row['trace_seq'] for row in rows if row['kind'] == 'turn'}
+    late = next(row for row in rows if row['kind'] == 'execution' and row['turn'] is not None
+                and row['trace_seq'] > turn_seq[row['turn']])
+    late['body'] = {**late['body'], 'records': late['body']['records'][1:]}  # drop the running receipt
+    problems = _replay_problems(rows)
+    assert 'turn entries are interleaved' in problems
+    assert 'turn entries are out of documented order' in problems

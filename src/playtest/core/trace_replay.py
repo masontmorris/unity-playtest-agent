@@ -60,10 +60,33 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
     turn_records: list[TurnRecord] = []
     if sorted(groups) != list(range(len(groups))):
         issue("turn numbers are not contiguous from 0")
+    # Continuous input overlaps turns in time: a held lease dispatched in turn N keeps running while turn N+1
+    # observes and decides, and its execution receipt is written when the lease closes (superseded, released
+    # or expired). That receipt keeps turn N's number and refs N's decision, and is written after N's turn
+    # record. It is the only entry allowed outside its turn's span, and only if the bridge recorded it as a
+    # running lease and it closes before turn N+2 begins.
+    turn_record_seq = {row.turn: row.trace_seq for row in rows
+                       if row.kind is TraceKind.turn and row.turn is not None}
+    first_seq: dict[int, int] = {}
+    for row in rows:
+        if row.turn is not None:
+            first_seq.setdefault(row.turn, row.trace_seq)
+    deferred: set[int] = set()
+    for row in rows:
+        records = row.body.get("records") if row.kind is TraceKind.execution else None
+        if (row.turn is None or row.turn not in turn_record_seq or row.trace_seq < turn_record_seq[row.turn]
+                or not isinstance(records, list) or not records or not isinstance(records[0], dict)
+                or records[0].get("status") != "running"):
+            continue
+        superseding_end = first_seq.get(row.turn + 2)
+        if superseding_end is not None and row.trace_seq > superseding_end:
+            issue("a held execution closed after the turn that superseded it", row, row.turn)
+        else:
+            deferred.add(row.trace_seq)
     seen_turns: set[int] = set()
     last_turn: int | None = None
     for row in rows:
-        if row.turn is None:
+        if row.turn is None or row.trace_seq in deferred:
             continue
         if last_turn is not None and row.turn < last_turn:
             issue("turn entries are out of trace order", row, row.turn)
@@ -131,7 +154,7 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
         rank = {TraceKind.observation: 0, TraceKind.choice_set: 1, TraceKind.context: 2,
                 TraceKind.s1_call: 3, TraceKind.decision: 4, TraceKind.restart: 5,
                 TraceKind.execution: 6, TraceKind.effect: 7, TraceKind.turn: 8}
-        ordered = [rank[x.kind] for x in group if x.kind in rank]
+        ordered = [rank[x.kind] for x in group if x.kind in rank and x.trace_seq not in deferred]
         if ordered != sorted(ordered):
             issue("turn entries are out of documented order", group[-1], turn_no)
         for required in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.turn):
@@ -193,7 +216,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             elif any(effect.body.get("choice_id") != x.body.get("request", {}).get("choice_id") or
                      effect.body.get("action") != x.body.get("request", {}).get("action") for x in executions):
                 issue("effect differs from execution request", effect, turn_no)
-        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.restart)}, "turn")
+        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.restart)
+                          and x.trace_seq not in deferred}, "turn")
         try:
             obs = Observation.model_validate(obsrow.body)
             choices = ChoiceSet.model_validate(setrow.body)
