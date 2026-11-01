@@ -59,6 +59,8 @@ RESULT_NAME = "result.json"
 CANCEL_NAME = "cancel.json"
 ARCHIVE_DIRECTORY = "archive"
 DEFAULT_POLL_S = 0.25
+READ_ATTEMPTS = 25  # a denied read is retried this many times in all, READ_RETRY_S apart, before failing closed
+READ_RETRY_S = 0.02
 MAX_OPERATION_S = 60.0
 
 
@@ -132,12 +134,24 @@ def load_host_session(
 
 
 def _read_model(path: Path, model: type[Any]) -> Any:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise SessionControlError(f"cannot read {path.name}: {exc}") from exc
+    """Read one host record, or None if there is none.
+
+    On Windows a read that races the host's temp-file replace can be denied for a moment (a sharing
+    violation, errno 13), though the record is whole before and after the replace. A denied read is
+    retried for at most about 0.5 s; one still denied after that fails closed, like any other read error.
+    """
+    for attempt in range(READ_ATTEMPTS):
+        try:
+            text = path.read_text(encoding="utf-8")
+            break
+        except FileNotFoundError:
+            return None
+        except PermissionError as exc:
+            if attempt == READ_ATTEMPTS - 1:
+                raise SessionControlError(f"cannot read {path.name}: {exc}") from exc
+            time.sleep(READ_RETRY_S)
+        except OSError as exc:
+            raise SessionControlError(f"cannot read {path.name}: {exc}") from exc
     try:
         return model.model_validate_json(text)
     except ValidationError as exc:
