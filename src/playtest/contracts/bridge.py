@@ -1,15 +1,17 @@
 """Bridge wire protocol (build bible 5.1, 5.2, 5.5).
 
-Six verbs: hello/status, observe, act, stop, clock and inspect. Requests flow core -> bridge;
-observations, execution records and inspection results flow back. `inspect` exists only in the
-Editor and is the only path that runs discovery; it never writes to the project.
+Seven verbs: hello/status, observe, act, stop, clock, inspect and place. Requests flow core ->
+bridge; observations, execution records, inspection results and placement measurements flow back.
+`inspect` exists only in the Editor and is the only path that runs discovery; it never writes to the
+project. `place` is a tester's affordance, never a player's: it moves the one configured controlled
+entity and reports what it measured.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -288,6 +290,63 @@ class ClockRequest(Envelope):
             raise ValueError("step_game_s is required exactly when op is 'step'")
         if (self.op == "set_scale") != (self.time_scale is not None):
             raise ValueError("time_scale is required exactly when op is 'set_scale'")
+        return self
+
+
+# --- place (a tester's affordance) ----------------------------------------------
+
+
+# A world position is three finite numbers on every axis: a malformed one is not a target.
+WorldPosition = Annotated[
+    list[Annotated[float, Field(allow_inf_nan=False)]],
+    Field(min_length=3, max_length=3, description="World position [x, y, z]"),
+]
+
+
+class PlaceRequest(Envelope):
+    """Put the configured controlled entity at one position and let it settle.
+
+    Tester affordance, not a player's: the bridge releases every held input first, verified as
+    `stop` does, and acts only on the entity the session configured. A game object, control or
+    genre name never appears here; the entity is resolved by the bridge from its own configuration.
+    """
+
+    type: Literal["place"] = "place"
+    position: WorldPosition = Field(description="Requested world position [x, y, z]")
+    settle_s: float = Field(gt=0, allow_inf_nan=False,
+                            description="Game seconds to wait after setting the pose")
+
+
+class PlaceResult(Envelope):
+    """What the bridge measured after a place request.
+
+    A placement the entity kept moving after (falling, pushed out of geometry) is reported as
+    placed with the measured `moved_during_settle`; the caller decides what that means. A placement
+    that could not run is `placed` false with a reason and no invented measurement: an unmeasured
+    position stays null, never zero.
+    """
+
+    type: Literal["placed"] = "placed"
+    placed: bool
+    position_after_settle: WorldPosition | None = Field(
+        None, description="Measured position after the settle wait; null when the place did not run")
+    moved_during_settle: float | None = Field(
+        None, ge=0, allow_inf_nan=False,
+        description="Distance from the requested position after settle; null when it was not measured")
+    reason: str | None = Field(None, min_length=1, description="Why the place did not run; null when placed")
+
+    @model_validator(mode="after")
+    def _measures_or_explains(self) -> "PlaceResult":
+        if self.placed:
+            if self.position_after_settle is None or self.moved_during_settle is None:
+                raise ValueError("a placed result carries its measured position and moved_during_settle")
+            if self.reason is not None:
+                raise ValueError("a placed result has no reason")
+        else:
+            if self.position_after_settle is not None or self.moved_during_settle is not None:
+                raise ValueError("an unplaced result carries no measurement")
+            if self.reason is None:
+                raise ValueError("an unplaced result needs a reason")
         return self
 
 

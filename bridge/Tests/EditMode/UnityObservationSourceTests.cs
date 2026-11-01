@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using Playtest.Bridge.Transport;
@@ -35,6 +36,35 @@ namespace Playtest.Bridge.Tests
             }
 
             Time.timeScale = _originalTimeScale;
+        }
+
+        [TestCase("transform")]
+        [TestCase("rigidbody")]
+        [TestCase("rigidbody2d")]
+        public void ControlledPose_UsesConfiguredEntityAndMeasuredVelocity(string kind)
+        {
+            string previous = Environment.GetEnvironmentVariable("UPA_CONTROLLED_ENTITY");
+            var target = new GameObject("UPA_pose_test_unique");
+            try
+            {
+                target.transform.position = new Vector3(2, 3, 4);
+                if (kind == "rigidbody") target.AddComponent<Rigidbody>();
+                if (kind == "rigidbody2d") target.AddComponent<Rigidbody2D>();
+                Environment.SetEnvironmentVariable("UPA_CONTROLLED_ENTITY", target.name);
+                _source.Start();
+                var controlled = (Dictionary<string, object>)_source.GetObservation().Public["controlled"];
+                Assert.That(controlled["source"], Is.EqualTo(kind));
+                Assert.That(controlled["path"], Is.EqualTo(target.name));
+                Assert.That((List<object>)controlled["position"], Is.EqualTo(new object[] { 2f, 3f, 4f }));
+                Assert.That(controlled["object_id"], Is.Not.Null);
+                if (kind == "transform") Assert.That(controlled["velocity"], Is.Null);
+                else Assert.That(controlled["velocity"], Is.Not.Null);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("UPA_CONTROLLED_ENTITY", previous);
+                UnityEngine.Object.DestroyImmediate(target);
+            }
         }
 
         [Test]

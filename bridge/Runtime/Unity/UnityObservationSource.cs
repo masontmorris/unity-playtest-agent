@@ -266,7 +266,47 @@ namespace Playtest.Bridge.Unity
                 publicFacts["probe"] = _probe;
             }
 
-            var errors = new List<ObservationReaderError>(5);
+            ObservationReaderError controlledError = null;
+            try
+            {
+                GameObject entity;
+                string entityReason;
+                if (!UnityControlledEntity.TryResolve(out entity, out entityReason))
+                {
+                    controlledError = new ObservationReaderError { Reader = "controlled", Error = entityReason };
+                }
+                else
+                {
+                    Transform t = entity.transform;
+                    Vector3 position = t.position;
+                    Vector3? velocity;
+                    string source = UnityControlledEntity.ReadSource(entity, out velocity);
+                    object measuredVelocity = null;
+                    if (velocity.HasValue)
+                    {
+                        Vector3 v = velocity.Value;
+                        measuredVelocity = new List<object> { v.x, v.y, v.z };
+                    }
+                    var indices = new List<string>();
+                    for (Transform node = t; node != null; node = node.parent)
+                        indices.Insert(0, node.GetSiblingIndex().ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    Scene entityScene = entity.scene;
+                    int sceneIndex = -1;
+                    for (int i = 0; i < SceneManager.sceneCount; i++)
+                        if (SceneManager.GetSceneAt(i) == entityScene) { sceneIndex = i; break; }
+                    string sceneId = string.IsNullOrEmpty(entityScene.path) ? "scene:untitled:" + entityScene.name : "scene:" + entityScene.path;
+                    publicFacts["controlled"] = new Dictionary<string, object> {
+                        { "object_id", sceneId + "@" + sceneIndex + "::" + string.Join(".", indices) },
+                        { "path", UnityControlledEntity.ConfiguredPath() },
+                        { "position", new List<object> { position.x, position.y, position.z } },
+                        { "velocity", measuredVelocity }, { "source", source },
+                    };
+                }
+            }
+            catch (Exception ex) { controlledError = Describe("controlled", ex); }
+
+            var errors = new List<ObservationReaderError>(6);
+            if (controlledError != null) errors.Add(controlledError);
             if (sceneError != null)
             {
                 errors.Add(sceneError);

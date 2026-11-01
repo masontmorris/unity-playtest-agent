@@ -200,6 +200,8 @@ namespace Playtest.Bridge.Unity
 
         public const string KindRigidbody = "rigidbody";
 
+        public const string KindRigidbody2D = "rigidbody2d";
+
         /// <summary>Shape version of the published probe.</summary>
         public const int Version = 1;
 
@@ -291,17 +293,22 @@ namespace Playtest.Bridge.Unity
         public static bool TryFindAnchor(out Transform anchor, out string kind, out string reason)
         {
             string path = Environment.GetEnvironmentVariable(AnchorVariable);
+            if (string.IsNullOrEmpty(path)) path = Environment.GetEnvironmentVariable("UPA_CONTROLLED_ENTITY");
             Transform pathAnchor = string.IsNullOrEmpty(path) ? null : FindByPath(path);
             CharacterController controller = FirstEnabledController();
             Rigidbody body = FirstActiveBody();
-            return ChooseAnchor(
+            Rigidbody2D body2d = UnityEngine.Object.FindFirstObjectByType<Rigidbody2D>();
+            bool found = ChooseAnchor(
                 path,
                 pathAnchor,
                 controller == null ? null : controller.transform,
-                body == null ? null : body.transform,
+                body != null ? body.transform : (body2d == null ? null : body2d.transform),
                 out anchor,
                 out kind,
                 out reason);
+            if (found && string.IsNullOrEmpty(path) && controller == null && body == null && body2d != null)
+                kind = KindRigidbody2D;
+            return found;
         }
 
         /// <summary>
@@ -375,6 +382,11 @@ namespace Playtest.Bridge.Unity
                 return false;
             }
 
+            if (_injected == null && anchor.GetComponent<Rigidbody2D>() != null)
+            {
+                reason = "2D probe raycasts are not available";
+                return false;
+            }
             probe = Sample(anchor, _anchorKind);
             reason = null;
             return true;

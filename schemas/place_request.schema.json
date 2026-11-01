@@ -1,0 +1,74 @@
+{
+  "$id": "upa/place_request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Put the configured controlled entity at one position and let it settle.\n\nTester affordance, not a player's: the bridge releases every held input first, verified as\n`stop` does, and acts only on the entity the session configured. A game object, control or\ngenre name never appears here; the entity is resolved by the bridge from its own configuration.",
+  "properties": {
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "position": {
+      "description": "Requested world position [x, y, z]",
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "title": "Position",
+      "type": "array"
+    },
+    "protocol": {
+      "default": "upa/1",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "settle_s": {
+      "description": "Game seconds to wait after setting the pose",
+      "exclusiveMinimum": 0,
+      "title": "Settle S",
+      "type": "number"
+    },
+    "type": {
+      "const": "place",
+      "default": "place",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "position",
+    "settle_s"
+  ],
+  "title": "PlaceRequest",
+  "type": "object"
+}
