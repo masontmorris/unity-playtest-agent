@@ -1,18 +1,19 @@
 """Reader values in the observation, and the live readers that produce them.
 
-`install` puts a sample in an observation; `FieldReaders` builds the sample from the Editor's field inspection.
-A reader that cannot be read is null with a reason, never zero; a lost bridge is not a failed read.
+`install` puts a sample in an observation; `FieldReaders` verifies each reader's identity once from the
+full-descriptor inspection and then reads values from the values-only one. A reader that cannot be read is
+null with a reason, never zero; a lost bridge is not a failed read.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-
 from loop_fakes import TOKEN, TransformsGame
 from runner_manifest import fixture
 
@@ -79,7 +80,15 @@ def reader(alias: str = "speed", field_id: str = "field", **descriptor: Any) -> 
 
 
 def row(**overrides: Any) -> dict[str, Any]:
+    """A full-descriptor field row, as the discovery stage sends it."""
     return {"id": "field", "scene_id": "scene", "field_type": "System.Single", "value_kind": "number",
+            "value_state": "present", "value": 4.5, "is_null": False, "value_truncated": None, "read_error": None,
+            **overrides}
+
+
+def values_row(**overrides: Any) -> dict[str, Any]:
+    """A values-only field row, as the per-turn `fields` stage sends it: no static descriptor keys."""
+    return {"id": "field", "scene_id": "scene", "object_id": "object", "value_kind": "number",
             "value_state": "present", "value": 4.5, "is_null": False, "value_truncated": None, "read_error": None,
             **overrides}
 
@@ -90,8 +99,13 @@ def response(rows: list[dict[str, Any]], *, truncated: bool = False, stage: str 
                          in_reply_to=3, data={"fields": rows, "game_time_s": game_s}, caps={"fields": cap}, errors=[])
 
 
+def descriptors(rows: list[dict[str, Any]], *, truncated: bool = False) -> InspectResult:
+    """The one full-descriptor inspection install verifies identity in."""
+    return response(rows, truncated=truncated, stage="discovery")
+
+
 class Client:
-    """Answers `inspect("fields")` with scripted responses (or raises them)."""
+    """Answers `inspect(stage)` with scripted responses (or raises them)."""
 
     def __init__(self, *items: Any) -> None:
         self.items = list(items)
@@ -177,17 +191,114 @@ def test_a_lost_bridge_ends_the_run_instead_of_reading_null():
         asyncio.run(live.read())
 
 
-def test_installing_reports_which_readers_resolve_and_refuses_a_scene_that_has_none():
+def test_installing_verifies_the_full_identity_from_the_discovery_inspection_and_refuses_a_scene_that_has_none():
     both = [reader(), reader(alias="gone", field_id="gone")]
-    live = FieldReaders(Client(response([row()])), both)                    # type: ignore[arg-type]
+    client = Client(descriptors([row()]))
+    live = FieldReaders(client, both)                                       # type: ignore[arg-type]
     installed = asyncio.run(live.install())
+    assert client.stages == ["discovery"]                                   # one full-descriptor inspection
     assert installed.resolved == ["speed"] and installed.unresolved == [
         {"alias": "gone", "reason": "the field is not in the live scene"}]
-    assert installed.summary()["inspection_seq"] == 77 and live.installed is installed
-    nothing = FieldReaders(Client(response([row(id="other")])), [reader()])           # type: ignore[arg-type]
+    assert installed.summary()["inspection_seq"] == 77 and installed.summary()["identity_stage"] == "discovery"
+    assert live.installed is installed
+    nothing = FieldReaders(Client(descriptors([row(id="other")])), [reader()])           # type: ignore[arg-type]
     with pytest.raises(ValueError, match="none of the manifest's 1 readers can be read"):
         asyncio.run(nothing.install())
     assert FieldReaders(Client(), []).aliases == []
+
+
+# --- identity once, values every turn ------------------------------------------------------------
+
+
+# Every static key a full descriptor carries, as a synthetic manifest records it for its one field.
+STATIC = {"component_id": "component", "object_id": "object", "name": "speed", "declaring_type": "Game.Body",
+          "declaration_id": "mscorlib:Game.Body:speed", "field_type_assembly": "mscorlib"}
+
+
+def full_reader(alias: str = "speed", field_id: str = "field", **descriptor: Any) -> ManifestReader:
+    return reader(alias=alias, field_id=field_id, **STATIC, **descriptor)
+
+
+def full_row(**overrides: Any) -> dict[str, Any]:
+    return row(**{**STATIC, **overrides})
+
+
+def test_install_verifies_every_static_key_and_a_values_only_row_reads_the_value():
+    client = Client(descriptors([full_row()]), response([values_row(value=7.5)]))
+    live = FieldReaders(client, [full_reader()])                            # type: ignore[arg-type]
+    assert asyncio.run(live.install()).resolved == ["speed"]
+    sample = asyncio.run(live.read())
+    assert (client.stages, sample.values, sample.errors) == (["discovery", "fields"], {"speed": 7.5}, {})
+    assert live.stats.reads == 2                                             # the install's inspection and the turn's
+
+
+def test_install_refuses_a_values_only_row_because_the_static_identity_was_not_measured():
+    live = FieldReaders(Client(descriptors([values_row()])), [full_reader()])          # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=re.escape(
+            "the live field differs from the manifest's descriptor (component_id, name, declaring_type, "
+            "declaration_id, field_type, field_type_assembly)")):
+        asyncio.run(live.install())
+    assert live.installed is not None and live.installed.resolved == []
+
+
+def test_a_per_turn_row_whose_present_object_id_differs_leaves_the_reader_unread():
+    live = FieldReaders(Client(descriptors([full_row()]), response([values_row(object_id="elsewhere")])),
+                        [full_reader()])                                   # type: ignore[arg-type]
+    asyncio.run(live.install())
+    sample = asyncio.run(live.read())
+    assert sample.values == {"speed": None}
+    assert sample.errors == {"speed": "the live field differs from the manifest's descriptor (object_id)"}
+    assert live.stats.unread == {"speed": 1}
+
+
+def test_a_static_key_the_per_turn_row_omits_is_unmeasured_not_a_difference():
+    without = {key: value for key, value in values_row().items() if key != "object_id"}
+    live = FieldReaders(Client(descriptors([full_row()]), response([without])), [full_reader()])   # type: ignore[arg-type]
+    asyncio.run(live.install())
+    assert asyncio.run(live.read()).values == {"speed": 4.5}
+
+
+def test_the_old_full_row_path_still_checks_every_static_key_a_row_carries():
+    live = FieldReaders(Client(descriptors([full_row()]), response([full_row(name="other")])),
+                        [full_reader()])                                   # type: ignore[arg-type]
+    asyncio.run(live.install())
+    assert asyncio.run(live.read()).errors == {
+        "speed": "the live field differs from the manifest's descriptor (name)"}
+
+
+def test_a_reader_that_failed_identity_at_install_is_never_read_later():
+    gone = full_reader(alias="gone", field_id="gone")
+    live = FieldReaders(Client(descriptors([full_row()]),
+                               response([values_row(value=9.0), values_row(id="gone", value=1.0)])),
+                        [full_reader(), gone])                             # type: ignore[arg-type]
+    installed = asyncio.run(live.install())
+    assert installed.resolved == ["speed"] and installed.unresolved == [
+        {"alias": "gone", "reason": "the field is not in the live scene"}]
+    sample = asyncio.run(live.read())          # the turn's rows would resolve `gone`; identity says it may not be read
+    assert sample.values == {"speed": 9.0, "gone": None}
+    assert sample.errors == {"gone": "the field is not in the live scene"}
+    assert live.stats.unread == {"gone": 2}          # the install's inspection and the turn's, both unread
+
+
+def test_rebind_re_verifies_the_identity_and_forgets_an_earlier_identity_failure():
+    gone = full_reader(alias="gone", field_id="gone")
+    live = FieldReaders(Client(descriptors([full_row()])), [full_reader(), gone])      # type: ignore[arg-type]
+    assert asyncio.run(live.install()).resolved == ["speed"]
+    with pytest.raises(ValueError, match="none of the manifest's 2 readers can be read"):
+        asyncio.run(live.rebind(client=Client(descriptors([full_row(name="other")]))))  # type: ignore[arg-type]
+    restarted = Client(descriptors([full_row(), full_row(id="gone")]), response([values_row(), values_row(id="gone")]))
+    asyncio.run(live.rebind(client=restarted))                              # type: ignore[arg-type]
+    assert restarted.stages == ["discovery"] and live.installed.resolved == ["speed", "gone"]
+    assert live.installed.summary()["identity_stage"] == "discovery"
+    assert asyncio.run(live.read()).values == {"speed": 4.5, "gone": 4.5}
+
+
+def test_an_identity_inspection_that_returns_no_field_list_leaves_every_reader_unread():
+    live = FieldReaders(Client(descriptors([full_row()], truncated=False), response([], stage="transforms")),
+                        [full_reader()])                                   # type: ignore[arg-type]
+    asyncio.run(live.install())
+    sample = asyncio.run(live.read())          # a `transforms` reply is not a field list: the reader has no value
+    assert sample.problem == "the field inspection did not return a field list" and sample.values == {"speed": None}
 
 
 def test_the_live_readers_work_through_the_real_client_against_the_protocol_peer():

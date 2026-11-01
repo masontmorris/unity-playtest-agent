@@ -38,7 +38,13 @@ def no_ambient_credentials(monkeypatch):
 
 
 class ReaderGame(CatalogGame):
-    """A catalog game whose reader value follows `series`: one value per field inspection, the last one repeating."""
+    """A catalog game whose reader value follows `series`: one value per field inspection, the last one repeating.
+
+    `rows` scripts whole values-only rows instead (its value keys are what every stage reports); `field_reads`
+    counts the inspections that read a value, the install's identity inspection included.
+    """
+
+    VALUE_KEYS = ("value_state", "value_kind", "value", "is_null", "value_truncated", "read_error")
 
     def __init__(self, *, series: list[Any] | None = None, rows: list[dict[str, Any]] | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -46,14 +52,15 @@ class ReaderGame(CatalogGame):
         self.rows = rows
         self.field_reads = 0
 
-    def field_rows(self) -> list[dict[str, Any]]:
+    def field_value(self) -> dict[str, Any]:
         if self.rows is not None:
-            return self.rows
-        rows = super().field_rows()
-        if self.series is not None:
-            rows[0]["value"] = self.series[min(self.field_reads, len(self.series) - 1)]
+            value = {key: self.rows[0].get(key) for key in self.VALUE_KEYS}
+        else:
+            value = super().field_value()
+            if self.series is not None:
+                value["value"] = self.series[min(self.field_reads, len(self.series) - 1)]
         self.field_reads += 1
-        return rows
+        return value
 
 
 def test_the_probe_supplies_the_stage_seven_allowance_only_when_it_measured_and_the_calibration_recorded_a_spread():
@@ -146,11 +153,11 @@ def test_an_unreadable_reader_stays_null_with_its_reason_and_the_summary_counts_
 
 def test_a_reader_that_goes_unreadable_mid_run_is_null_with_an_error_not_zero(tmp_path: Path, monkeypatch):
     class Flaky(ReaderGame):
-        def field_rows(self) -> list[dict[str, Any]]:
-            rows = super().field_rows()
+        def field_value(self) -> dict[str, Any]:
+            value = super().field_value()
             if self.field_reads in (3, 4):                         # reads 2 and 3 (turns 1 and 2): the value is gone
-                rows[0].update(value_state="null", value_kind="null", value=None, is_null=True)
-            return rows
+                value.update(value_state="null", value_kind="null", value=None, is_null=True)
+            return value
 
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-readers-0002")
     with GameThread(Flaky, catalog=export(two_actions()), series=[2.0]) as thread:

@@ -36,6 +36,26 @@ def test_candidate_controls_are_derived_from_vector_bindings_and_unsupported_are
     assert unsupported == [{"binding_id": "c", "path": "<Gamepad>/leftStick"}]
 
 
+
+def test_value_composite_parts_and_plain_axis_are_candidates():
+    rows = [
+        {"id": "root", "action_type": "Value", "expected_control_type": "Axis",
+         "binding_effective_path": "1DAxis", "binding_is_composite": True},
+        {"id": "negative", "action_type": "Value", "expected_control_type": "Axis",
+         "binding_effective_path": "<Keyboard>/a", "binding_is_part_of_composite": True},
+        {"id": "positive", "action_type": "Value", "expected_control_type": "Axis",
+         "binding_effective_path": "<Keyboard>/d", "binding_is_part_of_composite": True},
+        {"id": "plain", "action_type": "Value", "expected_control_type": "Axis",
+         "binding_effective_path": "<Keyboard>/q"},
+        {"id": "button", "action_type": "Button", "expected_control_type": "Button",
+         "binding_effective_path": "<Keyboard>/space"},
+        {"id": "undeclared", "action_type": "Value", "expected_control_type": "",
+         "binding_effective_path": "<Keyboard>/f"},
+    ]
+    candidates, unsupported = candidate_controls({"input_asset_bindings": rows})
+    assert [row["control"] for row in candidates] == ["a", "d", "q"]
+    assert unsupported == []
+
 def test_measures_repeatable_motion_collapses_children_and_excludes_idle_animation():
     parents = {"root": None, "child": "root", "independent": None, "still": None}
     start = {"root": (0, 0, 0), "child": (0, 1, 0), "independent": (2, 0, 0), "still": (3, 0, 0)}
@@ -283,3 +303,11 @@ def test_changed_scene_after_discovery_stops_before_input(monkeypatch):
     assert result["status"] == "inconclusive"
     assert "after discovery" in result["error"]
     assert client.actions == []
+
+def test_measurement_discovery_refuses_any_inspection_error():
+    cap = SimpleNamespace(limit=10, observed=1, returned=1, truncated=False)
+    snap = SimpleNamespace(stage='discovery', errors=['field synthetic: serialization is ambiguous across base types'],
+                           caps={name: cap for name in ('game_objects', 'components', 'bindings', 'input_asset_bindings')},
+                           data={})
+    with pytest.raises(ValueError):
+        entity._complete(snap, 'discovery')

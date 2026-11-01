@@ -42,7 +42,7 @@ namespace Playtest.Bridge.Tests
             System.Diagnostics.Process process = null;
             try
             {
-                string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
+                string scenePath = BuildSceneSelection.Resolve();
                 Assert.That(scenePath, Is.Not.Null.And.Not.Empty, "an enabled build scene is required");
                 LogAssert.ignoreFailingMessages = true;
                 try
@@ -56,6 +56,8 @@ namespace Playtest.Bridge.Tests
                     loaded = SceneManager.GetSceneByPath(scenePath);
                     Assert.That(loaded.IsValid() && loaded.isLoaded, Is.True);
                     SceneManager.SetActiveScene(loaded);
+                    string sceneRecord = output;
+                    if (!string.IsNullOrEmpty(sceneRecord)) File.WriteAllText(sceneRecord + ".scene.txt", loaded.path);
                 }
                 finally { LogAssert.ignoreFailingMessages = false; }
 
@@ -78,12 +80,17 @@ namespace Playtest.Bridge.Tests
                     WorkingDirectory = repo,
                     UseShellExecute = false,
                     CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
                 };
                 process = System.Diagnostics.Process.Start(start);
                 Assert.That(process, Is.Not.Null, "the measurement client could not start");
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
                 DateTime measurementDeadline = DateTime.UtcNow.AddSeconds(300);
                 while (!process.HasExited && DateTime.UtcNow < measurementDeadline) yield return null;
                 Assert.That(process.HasExited, Is.True, "the measurement client timed out");
+                File.WriteAllText(output + ".client.log", stdout.GetAwaiter().GetResult() + "\n" + stderr.GetAwaiter().GetResult());
                 Assert.That(process.ExitCode, Is.EqualTo(0), "measurement was inconclusive; inspect the local output");
                 Assert.That(File.Exists(output), Is.True, "the measurement client did not write its evidence");
             }

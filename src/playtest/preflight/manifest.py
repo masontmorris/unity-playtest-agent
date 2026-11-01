@@ -14,7 +14,7 @@ from playtest.contracts.action_catalog import (
     evidence_receipt_problems,
 )
 from playtest.contracts.manifest import PreflightManifest
-from playtest.preflight.packet import Packet, field_kind, field_offered
+from playtest.preflight.packet import OFFER_BUDGET_REASON, Packet, field_kind, field_offered
 from playtest.preflight import stages
 from playtest.preflight.stages import RunResult
 from playtest.roles import preflight
@@ -153,8 +153,11 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
         coverage.append("some discovered controls lack a valid calibration trial")
     if data["calibration"].get("field_sampling_gap"):
         coverage.append(data["calibration"]["field_sampling_gap"])
-    if data["unoffered_fields"]:
+    if any(row.get("reason") != OFFER_BUDGET_REASON for row in data["unoffered_fields"]):
         coverage.append("some discovered fields could not be read and were not offered as readers")
+    if (data.get("offer_budget") or {}).get("applied"):
+        coverage.append("some readable fields were not offered as readers because the provider's field id "
+                        "enum limit was reached")
     if not data["offered_fields"]:
         coverage.append("no discovered field was offered as a reader")
     if not data["offered_controls"]:

@@ -53,12 +53,22 @@ namespace Playtest.Bridge.Editor.Preflight
                             foreach (InputBinding binding in map.bindings)
                             {
                                 bindingsSeen++;
+                                InputAction action = map.FindAction(binding.action, false);
                                 if (bindings.Count < BindingLimit)
                                     bindings.Add(new Dictionary<string, object>
                                     {
                                         ["asset_path"] = path, ["map_name"] = map.name, ["map_id"] = map.id.ToString(),
                                         ["id"] = binding.id.ToString(), ["name"] = binding.name,
                                         ["action"] = binding.action, ["path"] = binding.path,
+                                        ["binding_id"] = binding.id.ToString(),
+                                        ["action_id"] = action == null ? null : action.id.ToString(),
+                                        ["action_type"] = action == null ? null : action.type.ToString(),
+                                        ["expected_control_type"] = action == null ? null : action.expectedControlType,
+                                        ["binding_name"] = binding.name, ["binding_path"] = binding.path,
+                                        ["binding_effective_path"] = binding.effectivePath,
+                                        ["binding_is_composite"] = binding.isComposite,
+                                        ["binding_is_part_of_composite"] = binding.isPartOfComposite,
+                                        ["provenance"] = "project_asset",
                                         ["groups"] = binding.groups, ["interactions"] = binding.interactions,
                                         ["processors"] = binding.processors, ["is_composite"] = binding.isComposite,
                                         ["is_part_of_composite"] = binding.isPartOfComposite,

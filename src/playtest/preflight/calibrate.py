@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from typing import Any
 from playtest.contracts import action_catalog as catalog_contract
 from playtest.core.bridge_client import BridgeClient, BridgeError
 from playtest.core.bridge_lock import BridgeLockError
+from playtest.preflight.bindings import binding_set, measured_text
 from playtest.preflight.entity import _complete, _norm, _objects, _sub, _vector, candidate_controls
 from playtest.contracts.scene_ids import unique_by_scene_free_id
 
@@ -220,48 +222,60 @@ def _preflight_action_name(device: str, control: str) -> str:
 def discover_actions(discovery: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Group discovered paths by the physical device control the bridge can request.
 
-    Keyboard ids stay the original physical key tokens. Mouse and gamepad controls get stable
-    canonical ids (mouse_delta, gamepad_leftstick, ...). A path outside the supported root
-    controls is preserved as an unsupported binding with a reason; it is never remapped to a
-    different device, an absolute pointer, a touch control or VR input.
+    Both discovery sections are read as one binding set: a binding reached through a scene
+    field and the same binding read from the project's asset are the same binding, pressed
+    once, and its preferred reach is the one the calibration record names. Keyboard ids stay
+    the original physical key tokens. Mouse and gamepad controls get stable canonical ids
+    (mouse_delta, gamepad_leftstick, ...). A path outside the supported root controls is
+    preserved as an unsupported binding with a reason; it is never remapped to a different
+    device, an absolute pointer, a touch control or VR input. A binding whose effective path
+    was not measured is reported as unknown for that reason; it is not pressed and its path
+    is not inferred.
     """
     actions: dict[str, dict[str, Any]] = {}
     unsupported = []
-    for section in ("bindings", "input_asset_bindings"):
-        for binding in discovery.get(section, []):
-            if binding.get("binding_is_composite"):
-                continue
-            path = binding.get("binding_effective_path")
-            descriptor = {"binding_id": binding.get("id"), "action_id": binding.get("action_id"),
-                          "path": path, "part": binding.get("binding_name"),
-                          "source_object_id": binding.get("source_object_id")}
-            match = None
-            device = None
-            if isinstance(path, str):
-                for candidate, pattern in (("Keyboard", KEY_PATH), ("Mouse", MOUSE_PATH),
-                                           ("Gamepad", GAMEPAD_PATH)):
-                    found = pattern.fullmatch(path)
-                    if found:
-                        device, match = candidate, found.group(1)
-                        break
-            resolved = _control_descriptor(device, match) if device is not None else None
-            if resolved is None:
-                if isinstance(path, str) and ("<Touchscreen>" in path or "<Pointer>" in path):
-                    reason = "binding is an absolute pointer or touch control, which is unsupported"
-                elif isinstance(path, str) and device == "Mouse" and match in ("position", "scroll"):
-                    reason = ("relative scroll is not tested and remains unsupported" if match == "scroll"
-                              else "absolute pointer position is unsupported")
-                elif isinstance(path, str) and path.lower().startswith("<keyboard>/"):
-                    reason = "keyboard path cannot be resolved to a supported key"
-                else:
-                    reason = "binding is not drivable by a supported input backend"
-                unsupported.append({**descriptor, "effect": None, "variance": None, "inversion": None,
-                                    "dead_zone": None, "minimum_hold": None, "reason": reason})
-                continue
-            item = actions.setdefault(resolved["control"], {
-                **resolved, "action": _preflight_action_name(resolved["device"], resolved["control"]),
-                "bindings": []})
-            item["bindings"].append(descriptor)
+    for binding in binding_set(discovery):
+        if binding.get("binding_is_composite"):
+            continue
+        path = measured_text(binding, "binding_effective_path")
+        # The descriptor keeps the shape a recorded calibration is compared by, so it carries the
+        # binding's own ids and paths only; the binding set and the unsupported rows name the reach.
+        descriptor = {"binding_id": binding.get("id"), "action_id": binding.get("action_id"),
+                      "path": binding.get("binding_effective_path"), "part": binding.get("binding_name"),
+                      "source_object_id": binding.get("source_object_id")}
+        match = None
+        device = None
+        if path is not None:
+            for candidate, pattern in (("Keyboard", KEY_PATH), ("Mouse", MOUSE_PATH),
+                                       ("Gamepad", GAMEPAD_PATH)):
+                found = pattern.fullmatch(path)
+                if found:
+                    device, match = candidate, found.group(1)
+                    break
+        resolved = _control_descriptor(device, match) if device is not None else None
+        if resolved is None:
+            if path is None:
+                reason = "the binding's effective path was not measured, so it is not pressed"
+                if binding["unknown"]:
+                    reason += " (unmeasured: " + ", ".join(binding["unknown"]) + ")"
+            elif "<Touchscreen>" in path or "<Pointer>" in path:
+                reason = "binding is an absolute pointer or touch control, which is unsupported"
+            elif device == "Mouse" and match in ("position", "scroll"):
+                reason = ("relative scroll is not tested and remains unsupported" if match == "scroll"
+                          else "absolute pointer position is unsupported")
+            elif path.lower().startswith("<keyboard>/"):
+                reason = "keyboard path cannot be resolved to a supported key"
+            else:
+                reason = "binding is not drivable by a supported input backend"
+            unsupported.append({**descriptor, "provenance": binding["provenance"],
+                                "unmeasured": list(binding["unknown"]),
+                                "effect": None, "variance": None, "inversion": None,
+                                "dead_zone": None, "minimum_hold": None, "reason": reason})
+            continue
+        item = actions.setdefault(resolved["control"], {
+            **resolved, "action": _preflight_action_name(resolved["device"], resolved["control"]),
+            "bindings": []})
+        item["bindings"].append(descriptor)
     return [actions[key] for key in sorted(actions)], unsupported
 
 
@@ -534,6 +548,763 @@ async def _quiet_window(client: BridgeClient, entity_id: str) -> tuple[dict[str,
     return None
 
 
+# Every control is assumed to be safe to press: the game keeps running and the displacement measured
+# across the trial is the input's effect. A control can break that assumption (a pause or menu action, a
+# scene change), and the trial's own readings say so: game time stops advancing while real time does not.
+# The trial window is short, so the game must advance game time through it at close to the wall rate.
+# Across the saved calibration records the windows that ran advanced at 0.43-1.06 game seconds per wall
+# second, and the windows in which the game stopped its own clock advanced at 0.23 or less, most of them
+# at exactly 0. A window below a quarter of the wall rate did not run through the window: the clock
+# stopped in it, and the displacement measured across it is not the input's effect.
+CLOCK_STOP_RATE = 0.25
+# Under one frame of game time a window is indistinguishable from a stopped clock, and a window this
+# short of real time cannot tell a stop from a sample that was simply brief.
+CLOCK_STOP_S = 0.05
+CLOCK_MIN_WINDOW_S = 0.1
+# What one generic restore may take: the Editor's play-mode restart, its readiness check included.
+RESTORE_OPERATION_S = 120.0
+# What the trial window's clock and scene evidence means, kept in the record so a reader of it does not
+# have to find this code.
+CLOCK_WINDOW_BASIS = (
+    "the trial's own two reads: game time and real time in seconds, and the scene, pause state and clock "
+    "mode each observation reported. A trial whose game time advanced at less than a quarter of its real "
+    f"time, or at most {CLOCK_STOP_S} s, over at least {CLOCK_MIN_WINDOW_S} s of real time did not run "
+    "through the window; one whose scene changed did not measure the same game on both sides")
+STATE_CHANGE_NOT_PRESSED_AGAIN = (
+    "not pressed again: this control changed the game's state, and each further trial would measure a "
+    "stopped or replaced game rather than the input's effect")
+# A session does not only change its state under a press. The measured body drifts while the controls are
+# pressed, and a long enough session walks it into a hazard, a trigger, a conversation or the end of the level:
+# the game reacts to where the body has got to, not to any one control. The next trial then opens on a game
+# that stopped its own clock or replaced its scene, and the control about to be pressed is the one the old
+# attribution would have blamed. The state changed between two trials, with no input, so the change belongs to
+# no control: it is a session event, its cause is unknown, and the pass ends instead of pressing a control on a
+# game that is no longer the one it started in.
+BETWEEN_TRIAL_CHANGES = frozenset({"stopped", "scene_changed", "unknown"})
+SESSION_EVENT_KIND = "session_event"
+SESSION_EVENT_CAUSE = "unknown"
+SESSION_EVENT_BASIS = (
+    "the fact is a change in the game between two trials of one session, measured from the previous trial's "
+    "closing read to the read that opens the next trial, after that trial's input was released and before "
+    "anything else was pressed. No control was active, so no control is blamed: the cause is unknown. It is "
+    "evidence about the session, not a measurement of any control's effect")
+# The keys a prior file holds: the state changes earlier passes measured, and the sessions whose controls they
+# finished measuring, each with the idle baseline that session's trials were measured against.
+PRIOR_STATE_CHANGES = "state_changes"
+PRIOR_SESSIONS = "sessions"
+PRIOR_SCHEMA_VERSION = 1
+PRIOR_KEYS = frozenset({"schema_version", PRIOR_STATE_CHANGES, PRIOR_SESSIONS})
+PLANNED_PASS = "pass"
+
+
+def _window_reading(snapshot: Any, observation: Any = None) -> dict[str, Any]:
+    """One end of a trial window: the clock it read, and the scene and pause state an observation reported.
+
+    A value the sample did not carry stays null. It is never read as zero, false or success.
+    """
+    def number(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return None
+        return float(value)
+
+    sample = snapshot if isinstance(snapshot, dict) else {}
+    paused = getattr(observation, "paused", None)
+    clock_mode = getattr(observation, "clock_mode", None)
+    clock_mode = getattr(clock_mode, "value", clock_mode)
+    scene = getattr(observation, "scene", None)
+    return {
+        "frame": _whole(sample.get("frame")),
+        "game_time_s": number(sample.get("game_time_s")),
+        "real_time_s": number(sample.get("real_time_s")),
+        "scene": scene if isinstance(scene, str) and scene else None,
+        "paused": paused if isinstance(paused, bool) else None,
+        "time_scale": number(getattr(observation, "time_scale", None)),
+        "clock_mode": clock_mode if isinstance(clock_mode, str) and clock_mode else None,
+    }
+
+
+def clock_window(before: dict[str, Any], after: dict[str, Any], *,
+                 bridge_paused: bool | None = None) -> dict[str, Any]:
+    """What a trial's own clock and scene evidence says about the game it ran on.
+
+    `before` and `after` are `_window_reading`s of the reads that bound the trial. The verdict is one of
+    `running` (the clock advanced and the scene held), `stopped` (game time did not advance while real
+    time did, and the bridge did not pause it), `scene_changed`, `bridge_paused` (the bridge paused the
+    clock itself, so nothing about the game changed) or `unknown` (the evidence cannot say).
+
+    `bridge_paused` is what the caller knows about its own clock requests. The bridge's own report in
+    `clock_mode` is measured evidence and takes precedence over it: `stepped` is the mode the bridge
+    sets when it pauses or steps the clock, and `realtime` when it has not. A stopped window the caller
+    cannot attribute, with no `clock_mode` to settle it, is unknown rather than valid.
+
+    Only `running` and `bridge_paused` keep the trial's measurement. Every other verdict says the
+    displacement measured across the window is not the input's effect, and states the evidence why.
+    """
+    first_game, second_game = before.get("game_time_s"), after.get("game_time_s")
+    first_real, second_real = before.get("real_time_s"), after.get("real_time_s")
+    game_delta = second_game - first_game if first_game is not None and second_game is not None else None
+    real_delta = second_real - first_real if first_real is not None and second_real is not None else None
+    first_scene, second_scene = before.get("scene"), after.get("scene")
+    scene_changed = first_scene != second_scene if first_scene and second_scene else None
+    modes = [mode for mode in (before.get("clock_mode"), after.get("clock_mode")) if isinstance(mode, str)]
+    observed_pause = True if "stepped" in modes else (False if modes else None)
+    paused = observed_pause if observed_pause is not None else bridge_paused
+    rate = game_delta / real_delta if game_delta is not None and real_delta is not None and real_delta > 0 else None
+    evidence: dict[str, Any] = {
+        "game_time_s": {"before": first_game, "after": second_game, "delta_s": game_delta},
+        "real_time_s": {"before": first_real, "after": second_real, "delta_s": real_delta},
+        "game_rate": rate,
+        "scene": {"before": first_scene, "after": second_scene, "changed": scene_changed},
+        "paused": {"before": before.get("paused"), "after": after.get("paused")},
+        "time_scale": {"before": before.get("time_scale"), "after": after.get("time_scale")},
+        "clock_mode": {"before": before.get("clock_mode"), "after": after.get("clock_mode")},
+        "bridge_paused": paused, "verdict": "unknown", "effect": None, "valid": False,
+        "state_change": False, "reason": None, "basis": CLOCK_WINDOW_BASIS}
+    stopped: bool | None = None
+    reason: str | None = None
+
+    def seconds(value: float | None) -> str:
+        return "unmeasured" if value is None else f"{value:.4f} s"
+
+    if game_delta is None or real_delta is None:
+        reason = "the trial's game time and real time were not both read at both ends of the window"
+    elif game_delta < 0 or real_delta < 0:
+        reason = (f"the trial's clock went backwards: game time advanced {game_delta:.4f} s and real time "
+                  f"{real_delta:.4f} s")
+    elif real_delta < CLOCK_MIN_WINDOW_S:
+        reason = (f"the trial's window was only {real_delta:.4f} s of real time, too short to tell a stopped "
+                  "game clock from a brief sample")
+    else:
+        stopped = game_delta <= max(CLOCK_STOP_S, CLOCK_STOP_RATE * real_delta)
+    if scene_changed is True:
+        evidence.update(verdict="scene_changed", effect="scene changed", valid=False, state_change=True,
+                        reason=(f"the scene changed from {first_scene!r} to {second_scene!r} across the trial "
+                                f"(game time advanced {seconds(game_delta)}, real time {seconds(real_delta)})"))
+    elif stopped is True and paused is True:
+        evidence.update(verdict="bridge_paused", effect=None, valid=True, state_change=False,
+                        reason=("the bridge paused the clock itself, which is not a game state change: game "
+                                f"time advanced {game_delta:.4f} s while real time advanced {real_delta:.4f} s"))
+    elif stopped is True and paused is False:
+        evidence.update(verdict="stopped", effect="game clock stopped", valid=False, state_change=True,
+                        reason=(f"the game clock stopped: game time advanced {game_delta:.4f} s while real time "
+                                f"advanced {real_delta:.4f} s across the trial"))
+    elif stopped is True:
+        reason = (f"game time advanced {game_delta:.4f} s while real time advanced {real_delta:.4f} s, but "
+                  "neither the bridge nor the trial says who paused the clock")
+    elif stopped is False:
+        evidence.update(verdict="running", effect=None, valid=True, state_change=False, reason=None)
+    if reason is not None:
+        evidence["reason"] = reason
+    return evidence
+
+
+def state_change_record(action: dict[str, Any], action_id: str, hold: float, window: dict[str, Any],
+                        trial: int) -> dict[str, Any]:
+    """The fact that one control changed the game's state, with the readings that measured it.
+
+    The control is kept: it is what a later stage has to expose, not something to drop. The record
+    carries the effect it produced, the game and real time and the scene before and after it, and the
+    generic restore that put a running game back before the next trial.
+    """
+    return {
+        "control": action["control"], "action_id": action_id, "requested_hold_s": hold,
+        "device": action.get("device"), "control_name": action.get("control_name"),
+        "effect": window["effect"], "trial": trial,
+        "before": {"game_time_s": window["game_time_s"]["before"], "real_time_s": window["real_time_s"]["before"],
+                   "scene": window["scene"]["before"]},
+        "after": {"game_time_s": window["game_time_s"]["after"], "real_time_s": window["real_time_s"]["after"],
+                  "scene": window["scene"]["after"]},
+        "further_trials": STATE_CHANGE_NOT_PRESSED_AGAIN, "restore": None, "evidence": window,
+    }
+
+
+def _seconds(value: Any) -> str:
+    """A measured interval, or the fact that it was not measured; never zero for unknown."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return "unmeasured"
+    return f"{float(value):.4f} s"
+
+
+def between_trial_window(previous: dict[str, Any], previous_observation: Any,
+                         current: dict[str, Any], observation: Any) -> dict[str, Any] | None:
+    """Whether the game still ran between the previous trial's close and this trial's start.
+
+    `previous` is the trial this one follows, and its `after` read is the last good evidence of the game
+    before this trial's baseline; `current` is the read that opens this trial. The two observations carry
+    the scene, pause state and clock mode each read reported. The window is decided by the same thresholds
+    as a trial's own window (`clock_window`), with the bridge's clock known to be realtime here: this loop
+    sends no clock request of its own.
+
+    A previous trial whose closing read is not a measured snapshot gives no window. Nothing was compared,
+    which is not the same as a measured running game, and it is not evidence that the game changed.
+    """
+    closing = previous.get("after") if isinstance(previous, dict) else None
+    if not isinstance(closing, dict) or not isinstance(current, dict):
+        return None
+    return clock_window(_window_reading(closing, previous_observation),
+                        _window_reading(current, observation), bridge_paused=False)
+
+
+def session_event(window: dict[str, Any], last_trial: dict[str, Any], trial_index: int,
+                  after_trial: int) -> dict[str, Any]:
+    """The record of a game state change between trials that no control produced, with its readings.
+
+    It is filed among the trials because that is where the evidence it interrupts lives, but it is not a
+    trial: `unattributed` says so, `control` is null, `valid` is null because nothing was pressed, and the
+    cause is `unknown`. What it carries is measured: the game and real time and the scene on both sides of
+    the change, the body's position at the last good read, and the control that was released before it and
+    when that release completed. It says which entry it sits after, so a reader can find the two trials it
+    separates.
+    """
+    execution = last_trial.get("execution") if isinstance(last_trial, dict) else None
+    released = (execution[-1] if isinstance(execution, list) and execution
+                and isinstance(execution[-1], dict) else None)
+    after = last_trial.get("after") if isinstance(last_trial, dict) else None
+    return {
+        "control": None, "unattributed": True, "kind": SESSION_EVENT_KIND,
+        "cause": SESSION_EVENT_CAUSE, "effect": window["effect"], "valid": None, "error": None,
+        "trial": trial_index, "after_trial": after_trial,
+        "last_control": last_trial.get("control") if isinstance(last_trial, dict) else None,
+        "last_action_id": last_trial.get("action_id") if isinstance(last_trial, dict) else None,
+        "last_release_wall_s": released.get("input_end_wall_s") if isinstance(released, dict) else None,
+        "position": after.get("position") if isinstance(after, dict) else None,
+        "clock": window, "reason": session_event_reason(window), "basis": SESSION_EVENT_BASIS,
+    }
+
+
+def session_event_reason(window: dict[str, Any]) -> str:
+    """What the window measured, in a sentence, with the values it measured it from."""
+    game, real, scene = window["game_time_s"], window["real_time_s"], window["scene"]
+    if window["verdict"] == "scene_changed":
+        return (f"the scene changed from {scene['before']!r} to {scene['after']!r} between two trials, with no "
+                f"input pressed (game time advanced {_seconds(game['delta_s'])}, real time "
+                f"{_seconds(real['delta_s'])})")
+    if window["verdict"] == "stopped":
+        return (f"the game clock stopped between two trials, with no input pressed: game time advanced "
+                f"{_seconds(game['delta_s'])} while real time advanced {_seconds(real['delta_s'])}")
+    return ("the game's clock and scene could not be read between two trials, so whether it still runs is "
+            "unknown: " + (window.get("reason") or "no reason was measured"))
+
+
+class SessionStopped(Exception):
+    """The game changed its own state between two trials; the pass ends and no control is blamed."""
+
+    def __init__(self, event: dict[str, Any]) -> None:
+        super().__init__(event["reason"])
+        self.event = event
+
+
+def _prior_trial(entry: Any, index: int) -> dict[str, Any]:
+    """One carried trial, checked for the evidence that a state change has to bring with it."""
+    if not isinstance(entry, dict):
+        raise ValueError(f"prior state change {index} is not a trial record")
+    control = entry.get("control")
+    change = entry.get("state_change")
+    if not isinstance(control, str) or not control:
+        raise ValueError(f"prior state change {index} names no control")
+    if not isinstance(change, dict):
+        raise ValueError(f"prior state change {index} for {control!r} carries no state_change entry")
+    if change.get("control") != control:
+        raise ValueError(f"prior state change {index} is listed as {control!r} but its state_change entry "
+                         f"names {change.get('control')!r}")
+    _prior_pass(entry, f"prior state change {index}")
+    return entry
+
+
+def _prior_pass(entry: dict[str, Any], what: str) -> int | None:
+    """The pass number a carried record names, or None when the file predates the numbering."""
+    value = entry.get(PLANNED_PASS)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{what} names the pass {value!r}, which is not a positive pass number")
+    return value
+
+
+def _checked_state_changes(entries: Any, what: str) -> list[dict[str, Any]]:
+    if not isinstance(entries, list):
+        raise ValueError(f"{what} must be a list of trial records")
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        _prior_trial(entry, index)
+        if entry["control"] in seen:
+            raise ValueError(f"{what} names the control {entry['control']!r} twice")
+        seen.add(entry["control"])
+    return entries
+
+
+_SESSION_KEYS = frozenset({PLANNED_PASS, "idle_fields", "later_idle_windows", "controls", "session_events"})
+_CONTROL_KEYS = frozenset({"control", "trials", "input_field_segments"})
+
+
+def _prior_control(entry: Any, number: int, index: int) -> dict[str, Any]:
+    """One completed control of a carried session, checked for the evidence it has to bring with it."""
+    if not isinstance(entry, dict) or set(entry) != _CONTROL_KEYS:
+        raise ValueError(f"prior session {number} control {index} is a mapping holding exactly "
+                         f"{sorted(_CONTROL_KEYS)}")
+    control = entry["control"]
+    if not isinstance(control, str) or not control:
+        raise ValueError(f"prior session {number} control {index} names no control")
+    trials = entry["trials"]
+    if not isinstance(trials, list) or not trials:
+        raise ValueError(f"prior session {number} control {control!r} carries no measured trial")
+    for trial_index, trial in enumerate(trials):
+        if not isinstance(trial, dict) or trial.get("control") != control:
+            raise ValueError(f"prior session {number} control {control!r} trial {trial_index} is not a trial "
+                             "of that control")
+        if isinstance(trial.get("state_change"), dict):
+            raise ValueError(f"prior session {number} control {control!r} carries a state change; a control that "
+                             "changed the game's state is filed as one, not as a measurement")
+        if trial.get("valid") is None:
+            raise ValueError(f"prior session {number} control {control!r} trial {trial_index} never finished, so "
+                             "the control is not completed")
+    segments = entry["input_field_segments"]
+    if not isinstance(segments, list):
+        raise ValueError(f"prior session {number} control {control!r} field segments are not a list")
+    for segment_index, segment in enumerate(segments):
+        if not isinstance(segment, dict) or segment.get("control") != control:
+            raise ValueError(f"prior session {number} control {control!r} field segment {segment_index} is not "
+                             "that control's")
+        samples = segment.get("samples")
+        if not isinstance(samples, list) or any(not isinstance(sample, dict) for sample in samples):
+            raise ValueError(f"prior session {number} control {control!r} field segment {segment_index} has no "
+                             "sample list")
+    return entry
+
+
+def _prior_session_event(entry: Any, number: int, index: int) -> dict[str, Any]:
+    """One carried session event, checked to be unattributed: a carried event never blames a control."""
+    if not isinstance(entry, dict) or entry.get("unattributed") is not True:
+        raise ValueError(f"prior session {number} event {index} is not an unattributed event")
+    if entry.get("control") is not None:
+        raise ValueError(f"prior session {number} event {index} blames the control {entry.get('control')!r}")
+    if entry.get("cause") != SESSION_EVENT_CAUSE:
+        raise ValueError(f"prior session {number} event {index} does not state the cause {SESSION_EVENT_CAUSE!r}")
+    return entry
+
+
+def _prior_session(entry: Any, index: int) -> dict[str, Any]:
+    """One passed session, checked for the baseline and the controls it has to bring with it."""
+    if not isinstance(entry, dict) or set(entry) != _SESSION_KEYS:
+        raise ValueError(f"prior session {index} is a mapping holding exactly {sorted(_SESSION_KEYS)}")
+    number = entry[PLANNED_PASS]
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        raise ValueError(f"prior session {index} names the pass {number!r}, which is not a positive pass number")
+    idle = entry["idle_fields"]
+    if not isinstance(idle, list) or not idle or any(not isinstance(sample, dict) for sample in idle):
+        raise ValueError(f"prior session {number} carries no idle baseline to measure its trials against")
+    windows = entry["later_idle_windows"]
+    if not isinstance(windows, list) or any(not isinstance(window, list) or
+                                           any(not isinstance(sample, dict) for sample in window)
+                                           for window in windows):
+        raise ValueError(f"prior session {number} carries malformed later idle windows")
+    controls, events = entry["controls"], entry["session_events"]
+    if not isinstance(controls, list) or not isinstance(events, list):
+        raise ValueError(f"prior session {number} controls and session events are lists")
+    if not controls and not events:
+        raise ValueError(f"prior session {number} measured nothing to carry")
+    for control_index, control in enumerate(controls):
+        _prior_control(control, number, control_index)
+    for event_index, event in enumerate(events):
+        _prior_session_event(event, number, event_index)
+    return entry
+
+
+def _prior_document(prior: Any) -> dict[str, Any]:
+    """A prior file checked whole, as `{schema_version, state_changes, sessions}`.
+
+    Everything a earlier pass settled appears once: a control is either a state change or a completed
+    measurement, never both and never twice, because a later pass would otherwise carry one fact as two.
+    """
+    if not isinstance(prior, dict) or PRIOR_STATE_CHANGES not in prior:
+        raise ValueError(f"prior measurements are a mapping holding {PRIOR_STATE_CHANGES!r}, and optionally "
+                         f"{PRIOR_SESSIONS!r}")
+    unknown = set(prior) - PRIOR_KEYS
+    if unknown:
+        raise ValueError(f"prior measurements hold keys this format does not define: {sorted(unknown)}")
+    version = prior.get("schema_version", PRIOR_SCHEMA_VERSION)
+    if version != PRIOR_SCHEMA_VERSION:
+        raise ValueError(f"prior measurements are schema version {version!r}, not {PRIOR_SCHEMA_VERSION}")
+    changes = _checked_state_changes(prior[PRIOR_STATE_CHANGES], "prior state_changes")
+    sessions = prior.get(PRIOR_SESSIONS, [])
+    if not isinstance(sessions, list):
+        raise ValueError(f"prior {PRIOR_SESSIONS} must be a list of the passes whose controls were completed")
+    checked = [_prior_session(entry, index) for index, entry in enumerate(sessions)]
+    numbers = [session[PLANNED_PASS] for session in checked]
+    if len(set(numbers)) != len(numbers):
+        raise ValueError(f"prior {PRIOR_SESSIONS} numbers the same pass twice")
+    known = {entry["control"] for entry in changes}
+    for session in checked:
+        for control in session["controls"]:
+            name = control["control"]
+            if name in known:
+                raise ValueError(f"prior measurements name the control {name!r} twice")
+            known.add(name)
+    return {"schema_version": PRIOR_SCHEMA_VERSION, PRIOR_STATE_CHANGES: changes, PRIOR_SESSIONS: checked}
+
+
+def _prior_entries(prior: Any) -> list[dict[str, Any]]:
+    return _prior_document(prior)[PRIOR_STATE_CHANGES]
+
+
+def _prior_sessions(prior: Any) -> list[dict[str, Any]]:
+    return _prior_document(prior)[PRIOR_SESSIONS]
+
+
+def load_prior_state_changes(path: Path) -> dict[str, Any]:
+    """Read what earlier passes measured, handed to a fresh calibration run as `--prior-state-changes`.
+
+    The file is `{"schema_version": 1, "state_changes": [...], "sessions": [...]}`. `state_changes` holds one
+    trial per control an earlier pass showed to change the game's state, exactly as that pass wrote it, its
+    `state_change` entry included. `sessions` holds one entry per pass whose controls were finished, each with
+    that pass's own idle baseline, the trials and field segments its measurement produced, and the session
+    events it saw. Anything else is an error: a prior file that silently dropped, duplicated or reshaped one of
+    these facts would let the run press a control whose effect is already known, or carry a measurement into a
+    record whose baseline is another session's. It is read and checked before the session is touched.
+    """
+    return copy.deepcopy(_prior_document(json.loads(Path(path).read_text(encoding="utf-8"))))
+
+
+def _carried(entry: dict[str, Any], number: int | None) -> dict[str, Any]:
+    """A carried entry as this record's own, with the pass that measured it and no bookkeeping key left over."""
+    carried = {key: value for key, value in copy.deepcopy(entry).items() if key != PLANNED_PASS}
+    carried["prior_pass"] = number if number is not None else True
+    return carried
+
+
+def carried_trials(prior: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Every trial an earlier pass measured, as this record's own, marked with the pass that measured it.
+
+    That is the state changes an earlier pass found and the trials of the controls it finished measuring. A
+    carried entry keeps the evidence its own session produced and nothing is pressed again. `prior_pass` is
+    the originating pass number, or `True` for a prior file written before the passes were numbered.
+    """
+    if prior is None:
+        return []
+    entries = [_carried(entry, _prior_pass(entry, "prior state change")) for entry in _prior_entries(prior)]
+    for session in _prior_sessions(prior):
+        number = session[PLANNED_PASS]
+        for control in session["controls"]:
+            entries.extend(_carried(trial, number) for trial in control["trials"])
+        entries.extend(_carried(event, number) for event in session["session_events"])
+    return entries
+
+
+def carried_field_segments(prior: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The held-input field windows of the controls an earlier pass finished, with the baseline they belong to.
+
+    `prior_pass` and `baseline_pass` are the session that produced the window and the idle baseline it was
+    sampled against. A carried window is analysed only inside itself, against windows of the same session.
+    """
+    if prior is None:
+        return []
+    segments = []
+    for session in _prior_sessions(prior):
+        number = session[PLANNED_PASS]
+        for control in session["controls"]:
+            for segment in control["input_field_segments"]:
+                segments.append(dict(copy.deepcopy(segment), prior_pass=number, baseline_pass=number))
+    return segments
+
+
+def carried_idle_windows(prior: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Each carried session's own idle windows, in pass order, with the controls they belong to.
+
+    The first window of each is that pass's `idle_fields`: the baseline its trials and held windows were
+    measured against. No window is ever merged with another; they are separate windows in one record.
+    """
+    if prior is None:
+        return []
+    carried = []
+    for session in _prior_sessions(prior):
+        windows = [copy.deepcopy(session["idle_fields"])]
+        windows.extend(copy.deepcopy(window) for window in session["later_idle_windows"])
+        carried.append({"pass": session[PLANNED_PASS],
+                        "controls": [control["control"] for control in session["controls"]],
+                        "windows": windows})
+    return carried
+
+
+def baseline_index(baselines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Where each carried session's idle windows sit in a record's `later_idle_windows`, and whose they are.
+
+    A session's own `idle_fields` comes first in its windows: that is the baseline its trials and held windows
+    were measured against. Every later window of the session follows it. The indexes let a reader of the final
+    record tell which pass sampled a window and which controls it served, without merging the windows.
+    """
+    rows, start = [], 0
+    for baseline in baselines:
+        rows.append({"pass": baseline["pass"], "controls": baseline["controls"], "idle_fields_window": start,
+                     "later_idle_windows": list(range(start, start + len(baseline["windows"])))})
+        start += len(baseline["windows"])
+    return rows
+
+
+def carried_controls(prior: dict[str, Any] | None) -> dict[str, int | None]:
+    """Every control an earlier pass settled, with the pass that measured it (None when it was not numbered).
+
+    Settled means an earlier pass either finished that control's full trial set or showed that it changes the
+    game's state. Neither is pressed again: a measurement belongs to the session that produced it.
+    """
+    if prior is None:
+        return {}
+    controls: dict[str, int | None] = {
+        entry["control"]: _prior_pass(entry, "prior state change") for entry in _prior_entries(prior)}
+    for session in _prior_sessions(prior):
+        for control in session["controls"]:
+            controls[control["control"]] = session[PLANNED_PASS]
+    return controls
+
+
+def planned_holds() -> dict[float, int]:
+    """How many trials of each requested hold one control's full measurement takes: every hold and repeat."""
+    planned: dict[float, int] = {}
+    for hold in trial_schedule():
+        planned[hold] = planned.get(hold, 0) + 1
+    return planned
+
+
+def completed_controls(record: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The controls whose full planned trial set finished in this record's own session.
+
+    A control is completed when every requested hold has as many finished trials as the plan gives it, so a
+    control interrupted partway is not completed: a later pass measures it whole, in one session, and never
+    mixes two sessions' trials into one measurement. A control that changed the game's state, that the bridge
+    rejected, or whose press was sent but never finished is not a completed measurement. Each result carries
+    the trials and field segments of its own session, and nothing from another.
+    """
+    if not isinstance(record, dict) or not isinstance(record.get("trials"), list):
+        raise ValueError("a calibration record holds a trials list")
+    trials = record["trials"]
+    planned = planned_holds()
+    segments = record.get("input_field_segments") or []
+    counted: dict[str, dict[float, int]] = {}
+    indexes: dict[str, list[int]] = {}
+    refused: set[str] = set()
+    for index, trial in enumerate(trials):
+        if not isinstance(trial, dict):
+            raise ValueError("a calibration record holds trial records")
+        control = trial.get("control")
+        if not isinstance(control, str):
+            continue  # a session event belongs to no control
+        if trial.get("prior_pass") is not None:
+            continue  # measured by an earlier pass, and carried from it
+        indexes.setdefault(control, []).append(index)
+        if isinstance(trial.get("state_change"), dict) or trial.get("rejected") is True:
+            refused.add(control)
+            continue
+        hold = trial.get("requested_hold_s")
+        if trial.get("valid") is None or isinstance(hold, bool) or not isinstance(hold, (int, float)):
+            continue  # a press that was sent but never finished is not a finished trial
+        held = counted.setdefault(control, {})
+        held[float(hold)] = held.get(float(hold), 0) + 1
+    completed = []
+    for control in sorted(counted):
+        if control in refused:
+            continue
+        if any(counted[control].get(hold, 0) != count for hold, count in planned.items()):
+            continue
+        completed.append({
+            "control": control,
+            "trials": [copy.deepcopy(trials[index]) for index in indexes[control]],
+            "input_field_segments": [copy.deepcopy(segment) for segment in segments
+                                     if isinstance(segment, dict) and segment.get("control") == control]})
+    return completed
+
+
+def unattributed_events(record: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The session events a record holds: state changes between trials that no control produced."""
+    if not isinstance(record, dict) or not isinstance(record.get("trials"), list):
+        raise ValueError("a calibration record holds a trials list")
+    return [trial for trial in record["trials"]
+            if isinstance(trial, dict) and trial.get("unattributed") is True]
+
+
+def recorded_session_events(record: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The session events this record's own session saw, not the ones an earlier pass carried in.
+
+    An event belongs to the session that measured it. A pass carries an earlier event into its record for
+    the final report, but filing it again with this pass would duplicate one fact, so a later merge takes
+    only the events whose `prior_pass` is absent.
+    """
+    return [event for event in unattributed_events(record) if event.get("prior_pass") is None]
+
+
+def remaining_controls(record: dict[str, Any] | None, prior: dict[str, Any] | None = None) -> list[str]:
+    """The offered controls a later pass still has to measure, in the order this record offers them.
+
+    Structural, never read from a message: a control is accounted for when a trial of it carries a state
+    change, when the bridge rejected it, when its full trial set finished in this record, or when the prior
+    file already holds it as a state change or a completed measurement. Every control not accounted for has to
+    be measured in a fresh pass, because its measurement belongs to one session and this one did not finish
+    it. A pass that ends with an empty list has every offered control accounted for.
+    """
+    if not isinstance(record, dict) or not isinstance(record.get("actions"), list):
+        raise ValueError("a calibration record holds an actions list")
+    accounted = set(carried_controls(prior))
+    for trial in record.get("trials") or []:
+        if not isinstance(trial, dict) or not isinstance(trial.get("control"), str):
+            continue
+        if isinstance(trial.get("state_change"), dict) or trial.get("rejected") is True:
+            accounted.add(trial["control"])
+    accounted.update(control["control"] for control in completed_controls(record))
+    return [action["control"] for action in record["actions"]
+            if isinstance(action, dict) and action.get("control") not in accounted]
+
+
+def new_state_changes(record: dict[str, Any], prior: dict[str, Any]) -> list[dict[str, Any]]:
+    """The state changes a pass recorded that its prior file did not already know.
+
+    Read structurally, never from an error message: a trial carrying a `state_change` entry whose
+    control the prior file does not list is new. A control is one fact, so it is reported once; a
+    trial the record carried from an earlier pass is known by its control and is not new.
+    """
+    known = set(carried_controls(prior))
+    trials = record.get("trials") if isinstance(record, dict) else None
+    if not isinstance(trials, list):
+        raise ValueError("a calibration record holds a trials list")
+    found: list[dict[str, Any]] = []
+    for trial in trials:
+        if not isinstance(trial, dict) or not isinstance(trial.get("state_change"), dict):
+            continue
+        control = trial.get("control")
+        if not isinstance(control, str) or control in known:
+            continue
+        _prior_trial(trial, len(found))
+        known.add(control)
+        found.append(trial)
+    return found
+
+
+def merge_prior(prior: dict[str, Any], record: dict[str, Any] | None, pass_number: int) -> dict[str, Any]:
+    """The prior file for the next pass: everything earlier passes settled, plus what this pass did.
+
+    `record` is this pass's own record (None when the pass produced none) and `pass_number` is which pass it
+    was. The state changes it found are kept whole and numbered. The controls it finished measuring are filed
+    as one session with this pass's own idle baseline, so a later pass carries their measurements without
+    pressing them again and without measuring them against another session's baseline. The session events this
+    pass saw are filed with it — not the ones it carried from an earlier pass, which stay with the session
+    that measured them — so the final record can still show where the game changed on its own.
+    """
+    if isinstance(pass_number, bool) or not isinstance(pass_number, int) or pass_number < 1:
+        raise ValueError("a pass number is a positive integer")
+    document = _prior_document(prior)
+    if any(session[PLANNED_PASS] == pass_number for session in document[PRIOR_SESSIONS]):
+        raise ValueError(f"the prior file already holds the pass {pass_number}")
+    changes = [copy.deepcopy(entry) for entry in document[PRIOR_STATE_CHANGES]]
+    if record is not None:
+        for entry in new_state_changes(record, document):
+            changes.append(dict(copy.deepcopy(entry), **{PLANNED_PASS: pass_number}))
+    controls = completed_controls(record) if record is not None else []
+    events = recorded_session_events(record) if record is not None else []
+    sessions = [copy.deepcopy(session) for session in document[PRIOR_SESSIONS]]
+    if controls or events:
+        source = record or {}
+        sessions.append({
+            PLANNED_PASS: pass_number,
+            "idle_fields": copy.deepcopy(source.get("idle_fields") or []),
+            "later_idle_windows": copy.deepcopy(source.get("later_idle_windows") or []),
+            "controls": controls,
+            "session_events": copy.deepcopy(events)})
+    return {"schema_version": PRIOR_SCHEMA_VERSION, PRIOR_STATE_CHANGES: changes,
+            PRIOR_SESSIONS: sessions}
+
+
+async def _running_window(client: BridgeClient, entity_id: str) -> dict[str, Any]:
+    """Whether the game's clock runs now, from two reads of the entity `RUNNING_OBSERVATION_S` apart."""
+    first = await _read_entity(client, entity_id)
+    await asyncio.sleep(RUNNING_OBSERVATION_S)
+    second = await _read_entity(client, entity_id)
+    return clock_window(_window_reading(first), _window_reading(second), bridge_paused=False)
+
+
+async def restore_running_game(restore: Any, *, client: BridgeClient, entity_id: str, trial: int,
+                               evidence: dict[str, Any]) -> tuple[BridgeClient, dict[str, Any]]:
+    """Run the calibration's generic restore and require that the game runs again before the next trial.
+
+    `restore` is the generic mechanism, called as `restore(trial=, evidence=, client=)`; it returns a
+    record of what it did, with `status` `restored` when the game runs again and, when it produced a new
+    connection, that connection under `client`. There is no per-control unpause: a control that paused,
+    opened a menu or changed the scene is restored by the same generic reset every other state is, and a
+    calibration that has no generic restore stops here instead of measuring a stopped game.
+    """
+    if restore is None:
+        raise ValueError(
+            "the game changed its own state during a trial and this calibration has no generic restore, "
+            "so the remaining controls cannot be measured on a running game")
+    outcome = await restore(trial=trial, evidence=evidence, client=client)
+    if not isinstance(outcome, dict):
+        raise ValueError("the generic restore returned no record of what it did")
+    record = {key: value for key, value in outcome.items() if key != "client"}
+    record.setdefault("method", None)
+    record.setdefault("status", None)
+    adopted = outcome.get("client")
+    if record["status"] != "restored":
+        detail = record.get("error") or f"status {record['status']!r}"
+        record["running_after_restore"] = None
+        raise ValueError(f"the generic restore did not restore the game ({detail})")
+    if adopted is not None and adopted is not client:
+        await client.aclose()
+        client = adopted
+    running = await _running_window(client, entity_id)
+    record["running_after_restore"] = running
+    if running["verdict"] != "running":
+        raise ValueError("the game clock was still not running after the generic restore: "
+                         + (running["reason"] or "the evidence does not say it ran"))
+    return client, record
+
+
+def session_restore(project: Path, adopted: list[BridgeClient] | None = None) -> Any:
+    """The calibration's generic restore as a callable, or None when this session has none.
+
+    It is the Editor-owned play-mode restart `playtest-restart-smoke` exercises: the host restarts the
+    play session, verifies its own input release and reports a ready state at a new generation, and the
+    client that comes with it is the one the calibration continues on. A session with no control
+    directory, or a host that does not advertise the restart, has no generic restore: the calibration
+    then stops when one is needed rather than pressing keys nobody measured.
+    """
+    from playtest.runner.session_control import (
+        SessionControlError, SessionControl, control_directory, load_host_session,
+    )
+
+    directory = control_directory()
+    if directory is None:
+        return None
+    try:
+        host = load_host_session(directory, project=project)
+    except (SessionControlError, OSError, ValueError):
+        return None
+    if not host.advertises_restart:
+        return None
+    control = SessionControl(host, project=project)
+
+    async def restore(*, trial: int, evidence: dict[str, Any], client: BridgeClient | None = None) -> dict[str, Any]:
+        record: dict[str, Any] = {"method": "restart_play_mode", "status": "failed", "error": None,
+                                  "trial": trial, "effect": evidence.get("effect"), "evidence": None}
+        generation = control.generation
+        if not isinstance(generation, str) or not generation:
+            record["error"] = "the host reports no play generation, so a restart cannot be proven"
+            return record
+        operation = await control.restart(
+            ticket_id=f"calibration-restore-{trial + 1}", from_generation=generation,
+            previous_endpoint=getattr(client, "endpoint", None) if client is not None else None,
+            previous_session=getattr(client, "session", None) if client is not None else None,
+            deadline_s=RESTORE_OPERATION_S, release_verified=True)
+        record["evidence"] = {"status": operation.status.value, "ticket_id": operation.ticket_id,
+                              "from_generation": operation.from_generation, "to_generation": operation.to_generation,
+                              "reason": operation.reason, "waited_s": operation.waited_s}
+        if operation.status.value != "ready" or operation.client is None:
+            record["error"] = operation.reason or "the restarted session produced no new connection"
+            return record
+        record["status"] = "restored"
+        record["client"] = operation.client
+        if adopted is not None:
+            adopted.append(operation.client)
+        return record
+
+    return restore
+
+
 def _within_execution(response: Any, record: Any) -> bool:
     start, end = record.input_start_wall_s, record.input_end_wall_s
     if start is None or end is None or end < start:
@@ -790,12 +1561,50 @@ async def measure_clock(client: BridgeClient, entity_id: str, scene_id: str, *,
     return result
 
 
+def _summarize(result: dict[str, Any], actions: list[dict[str, Any]]) -> None:
+    """The field-freshness and per-control summaries of everything this record holds, carried or new.
+
+    A carried session's windows are windows of their own: `later_idle_windows` holds one window per pass's
+    baseline, and freshness is only ever measured between adjacent samples inside one window, so no
+    measurement is set against another session's idle baseline and no two sessions' values are mixed. Each
+    control's held windows are summarised per control, so a carried control is summarised from its own
+    session's windows and a control measured here from this session's.
+    """
+    from playtest.preflight.freshness import analyze_freshness
+
+    segments = result["input_field_segments"]
+    result["freshness"] = analyze_freshness(
+        result["idle_fields"], [segment["samples"] for segment in segments],
+        input_controls=[segment["control"] for segment in segments],
+        later_idle_windows=result["later_idle_windows"])
+    result["action_summaries"] = [
+        summarize_action(action, [trial for trial in result["trials"]
+                                  if trial.get("control") == action["control"]]) for action in actions]
+
+
 async def measure(client: BridgeClient, selected: dict[str, Any], *,
-                  on_plan: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+                  on_plan: Callable[[dict[str, Any]], None] | None = None,
+                  restore: Any = None, prior: dict[str, Any] | None = None) -> dict[str, Any]:
     """Calibrate the selected entity's controls and return the local record.
 
     `on_plan` is called with the plan, budget included, once the controls are known and before the
-    first trial, so a host can size its own limits from the same numbers the record keeps.
+    first trial, so a host can size its own limits from the same numbers the record keeps. `restore` is
+    the calibration's generic restore, called as `restore(trial=, evidence=, client=)` when a trial
+    measured the game changing its own state; without one, such a trial stops the calibration instead of
+    leaving it to measure a stopped game.
+
+    `prior` is what earlier passes of the same session measured, shaped as `load_prior_state_changes`
+    returns it. Within one play session no reset that keeps the measurement alive is a genuine reset, so a
+    new pass starts from a fresh play session and is told what earlier passes settled: the controls that
+    changed the game's state, and the controls whose whole trial set an earlier pass finished. Neither is
+    pressed again, and their trials, field windows and idle baselines are carried into this record with
+    `prior_pass` set, so the record still holds every fact with the evidence of the session that measured it.
+    Only the controls still outstanding are measured, and each control's measurement comes from one session.
+
+    A game can also change its own state between two trials, with no input: the body the trials have been
+    moving reaches a hazard, a trigger, a conversation or the end of the level, and the game stops its clock
+    or replaces its scene. That is not any control's effect: it is recorded as an unattributed session event
+    in this record's trials, with its readings, and the pass ends without pressing another control.
     """
     if selected.get("status") != "identified" or not isinstance(selected.get("entity_id"), str):
         raise ValueError("a completed stage 2 entity record is required")
@@ -834,6 +1643,9 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
     cap = {"limit": MAX_ACTIONS, "observed": len(actions), "returned": min(len(actions), MAX_ACTIONS),
            "truncated": len(actions) > MAX_ACTIONS}
     budget = measurement_budget(cap["returned"])
+    carried = carried_trials(prior)
+    carried_count = len(carried)
+    baselines = carried_idle_windows(prior)
     result: dict[str, Any] = {"schema_version": 1, "status": "inconclusive", "error": None,
         "entity_id": entity_id, "entity": entity, "coordinate_frame": "Unity world space",
         "units": "Unity world units", "physical_unit": None,
@@ -849,11 +1661,18 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
         "action_cap": cap, "actions": actions[:MAX_ACTIONS], "unsupported_bindings": unsupported,
         "discovery_coverage": discovery["inspection_coverage"], "idle_fields": [],
         "later_idle_windows": [], "input_field_segments": [], "field_sampling_gap": None,
-        "trials": [], "action_summaries": [],
+        "trials": list(carried), "action_summaries": [],
         "freshness": None, "clock": None, "reset": None, "runtime_errors": None}
     if cap["truncated"] or not actions:
         result["error"] = "action candidates are incomplete" if cap["truncated"] else "no drivable input controls"
         return result
+    # Each carried session keeps its own idle windows, in pass order. A carried measurement is analysed only
+    # against the baseline its own session sampled: the windows stay separate windows of one record, and no
+    # interval is ever compared across a window edge, so nothing is measured against another session's idle.
+    result["later_idle_windows"] = [window for baseline in baselines for window in baseline["windows"]]
+    result["input_field_segments"] = carried_field_segments(prior)
+    if baselines:
+        result["plan"]["prior_sessions"] = baseline_index(baselines)
     if on_plan is not None:
         on_plan(result["plan"])
     started = time.perf_counter()
@@ -866,11 +1685,20 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
             if initial_errors:
                 raise ValueError("the game logged errors before the first calibration action")
             unsupported_controls: set[str] = set()
+            # Controls this pass does not press. A control the measured clock and scene evidence showed to
+            # change the game's state stays in the record as a fact and is not pressed again, because every
+            # further trial would measure a stopped or replaced game instead of the input's effect. A control
+            # an earlier pass settled — it changed the game's state, or that pass finished its whole trial set
+            # — is not pressed either: its measurement belongs to the session that produced it, and this one
+            # is not that session.
+            settled_controls: set[str] = {trial["control"] for trial in carried}
             previous_trial: dict[str, Any] | None = None
+            previous_settled: Any = None
+            after_restore = False
             for hold in HOLD_S:
                 for repeat in range(FIELD_REPEATS if hold == HOLD_S[-1] else REPEATS):
                     for action in actions:
-                        if action["control"] in unsupported_controls:
+                        if action["control"] in unsupported_controls or action["control"] in settled_controls:
                             continue
                         quiet = await _quiet_window(client, entity_id)
                         if quiet is None:
@@ -892,9 +1720,21 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                                 if segment.get("action_id") == previous_trial.get("action_id"):
                                     segment["samples"] = []
                                     segment["excluded_reason"] = "game errors were logged after this input"
-                        if action["control"] in unsupported_controls:
+                        if action["control"] in unsupported_controls or action["control"] in settled_controls:
                             continue
                         observation = await client.observe_once()
+                        # Before this press, did the game still run? The body the earlier trials moved has had
+                        # time to reach something in the world, and a game that stopped its clock or changed
+                        # its scene between then and now did so with no input: the control about to be pressed
+                        # is not its cause. A restore is a new play session, so the trial after one is not
+                        # compared with the trial before it.
+                        if previous_trial is not None and not after_restore:
+                            between = between_trial_window(previous_trial, previous_settled, before, observation)
+                            if between is not None and between["verdict"] in BETWEEN_TRIAL_CHANGES:
+                                event = session_event(between, previous_trial, len(result["trials"]),
+                                                      len(result["trials"]) - 1)
+                                result["trials"].append(event)
+                                raise SessionStopped(event)
                         action_id = f"calibration-{action['control']}-{hold}-{repeat + 1}"
                         kwargs = {"action_id": action_id, "choice_id": action_id, "action": action["action"],
                                   "based_on_seq": observation.seq, "max_age_s": 2.0, "lease_s": hold}
@@ -909,7 +1749,8 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                         terminal = records[-1]
                         if terminal.status.value == "rejected":
                             unsupported_controls.add(action["control"])
-                            result["trials"][-1].update(valid=False, error="the bridge rejected this control",
+                            result["trials"][-1].update(valid=False, rejected=True,
+                                error="the bridge rejected this control",
                                 execution=[r.model_dump(mode="json") for r in records])
                             previous_trial = None
                             continue
@@ -918,8 +1759,10 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                         await asyncio.sleep(0.08)
                         after = await _read_entity(client, entity_id)
                         # The view is read from observations, as the entity is read from transforms: the one
-                        # that bound the action and one taken after the same settle as the entity read.
-                        view_before, view_after = view_reading(observation), view_reading(await client.observe_once())
+                        # that bound the action and one taken after the same settle as the entity read. The
+                        # second observation also reports the scene and pause state the input left behind.
+                        settled = await client.observe_once()
+                        view_before, view_after = view_reading(observation), view_reading(settled)
                         observed, game_errors = _new_runtime_errors(after, seen_errors)
                         seen_errors = observed
                         result["runtime_errors"] = after["runtime_errors"]
@@ -927,12 +1770,39 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                         trial.update(control=action["control"], action_id=action_id, observation_seq=observation.seq,
                                      game_errors=game_errors, error=None, view_before=view_before,
                                      view_after=view_after, view_delta=view_turn(view_before, view_after))
+                        # What the trial's own readings say about the game: a clock that stopped advancing, or
+                        # a scene that changed, makes the displacement across it meaningless. This loop sends
+                        # no clock request, so the bridge's clock is realtime here unless an observation says
+                        # otherwise, and a bridge-initiated pause is not a game state change.
+                        window = clock_window(_window_reading(before, observation),
+                                              _window_reading(after, settled), bridge_paused=False)
+                        trial.update(clock=window, state_change=None)
+                        if window["valid"] is not True:
+                            note = window["reason"] or "the trial's clock and scene were not measured"
+                            trial["valid"] = False
+                            trial["error"] = f"{trial['error']}; {note}" if trial["error"] else note
                         if game_errors:
                             trial["valid"] = False
                             trial["error"] = "game errors were logged during or shortly after this input"
                             unsupported_controls.add(action["control"])
                         result["trials"][-1] = trial
-                        previous_trial = trial
+                        previous_trial, previous_settled, after_restore = trial, settled, False
+                        if window["verdict"] == "unknown":
+                            # The readings cannot say whether the game still runs. Measuring on is a guess, and
+                            # the guess would be recorded as a measurement, so the calibration stops here.
+                            raise ValueError(
+                                "the trial's clock and scene evidence is unmeasured, so the state of the game "
+                                "cannot be trusted: " + (window["reason"] or "no reason was measured"))
+                        if window["state_change"]:
+                            change = state_change_record(action, action_id, hold, window, len(result["trials"]))
+                            trial["state_change"] = change
+                            settled_controls.add(action["control"])
+                            # Restore a running game before the next trial, and require that it runs. A
+                            # calibration with no generic restore stops here instead of measuring a stopped game.
+                            client, change["restore"] = await restore_running_game(
+                                restore, client=client, entity_id=entity_id,
+                                trial=len(result["trials"]) - 1, evidence=window)
+                            after_restore = True
                         if hold == HOLD_S[-1]:
                             inspection_evidence = [{"wall_utc": response.wall_utc.isoformat(),
                                 "real_time_s": response.data.get("real_time_s"),
@@ -967,13 +1837,7 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
             result["clock"] = await measure_clock(client, entity_id, scene_id, start=boundary)
             latest = result["clock"].get("running_after_resume") or result["clock"].get("after_resume") or boundary
             result["runtime_errors"] = latest["runtime_errors"]
-            segments = result["input_field_segments"]
-            result["freshness"] = analyze_freshness(
-                result["idle_fields"], [segment["samples"] for segment in segments],
-                input_controls=[segment["control"] for segment in segments],
-                later_idle_windows=result["later_idle_windows"])
-            result["action_summaries"] = [summarize_action(action,
-                [trial for trial in result["trials"] if trial["control"] == action["control"]]) for action in actions]
+            _summarize(result, actions)
             if not any(trial.get("valid") is True for trial in result["trials"]):
                 result["error"] = "no action produced a valid measurement"
             elif not any(len(segment["samples"]) >= 3 for segment in result["input_field_segments"]):
@@ -986,23 +1850,41 @@ async def measure(client: BridgeClient, selected: dict[str, Any], *,
                     result["status"] = "measured_with_gaps"
             else:
                 result["status"] = "measured_with_gaps"
+    except SessionStopped as stop:
+        # The event is already in this record's trials, with the readings that measured it. Everything the
+        # pass did finish is still summarised over all carried and new measurements, so a later pass can carry
+        # the completed controls forward and the final record still holds their evidence.
+        result["error"] = ("the game changed its own state between two trials, after this pass's inputs had been "
+                           f"released: {stop}; the pass ended without pressing another control")
+        try:
+            _summarize(result, actions)
+        except ValueError as exc:
+            result["field_sampling_gap"] = f"the measured windows could not be summarised: {exc}"
     except (BridgeError, ValueError) as exc:
         result["error"] = str(exc)
     except TimeoutError:
         result["error"] = f"the calibration exceeded its wall-clock budget of {budget['wall_budget_s']:.0f} s"
     finally:
         budget["elapsed_s"] = time.perf_counter() - started
-        budget["trials_recorded"] = len(result["trials"])
+        # What this pass recorded, not what it carried in from earlier passes. A session event is a recorded
+        # fact about the session, not a trial, so it is not counted as one.
+        budget["trials_recorded"] = sum(1 for trial in result["trials"][carried_count:]
+                                        if isinstance(trial, dict) and not trial.get("unattributed"))
     return result
 
 
-async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None = None) -> dict[str, Any]:
+async def _run(project: Path, selected: dict[str, Any], plan_output: Path | None = None,
+               prior: dict[str, Any] | None = None) -> dict[str, Any]:
     client = await BridgeClient.connect_from_project(project, timeout_s=120.0)
+    # A generic restore ends this session and connects a new one; the last connection is the one whose
+    # verified release closes the calibration.
+    adopted: list[BridgeClient] = []
     try:
         publish = None if plan_output is None else (lambda plan: write_plan(plan_output, plan))
-        result = await measure(client, selected, on_plan=publish)
+        result = await measure(client, selected, on_plan=publish, restore=session_restore(project, adopted),
+                               prior=prior)
     finally:
-        stop = await client.aclose()
+        stop = await (adopted[-1] if adopted else client).aclose()
     result["stop"] = stop.model_dump(mode="json") if stop is not None else None
     if stop is None or stop.release_verified is not True:
         result.update(status="inconclusive", error="bridge shutdown did not verify input release")
@@ -1017,6 +1899,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-output", type=Path,
                         help="new file outside the Unity project that receives the wall-clock plan before the first "
                              "trial, so the hosting Editor can size its own timeout from it")
+    parser.add_argument("--prior-state-changes", type=Path,
+                        help="a JSON file of what earlier passes measured, shaped "
+                             '{"schema_version": 1, "state_changes": [<trial record>, ...], "sessions": [...]}: '
+                             "the controls that changed the game's state are not pressed again and their trials "
+                             "are carried into this record, and the controls earlier passes finished measuring are "
+                             "carried with their own trials, field windows and idle baseline instead of being "
+                             "measured again")
     args = parser.parse_args(argv)
     project, output = args.project.resolve(), args.output.resolve()
     plan_output = args.plan_output.resolve() if args.plan_output is not None else None
@@ -1029,7 +1918,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--plan-output must be a new file outside the Unity project, different from --output")
     try:
         selected = json.loads(args.entity.read_text(encoding="utf-8"))
-        result = asyncio.run(_run(project, selected, plan_output))
+        # Read before the session is touched: a prior file that cannot be trusted stops here, rather than
+        # after a session has been spent pressing controls whose effects may already be known.
+        prior = (load_prior_state_changes(args.prior_state_changes)
+                 if args.prior_state_changes is not None else None)
+        result = asyncio.run(_run(project, selected, plan_output, prior))
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(result, stream, indent=2, allow_nan=False)
@@ -1038,7 +1931,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"calibration failed: {exc}", file=sys.stderr)
         return 1
     print(f"calibration saved to {output}: {result['status']}")
-    return 0 if result["status"] == "measured_with_gaps" else 1
+    if result["status"] == "measured_with_gaps":
+        return 0
+    return EXIT_PASS_ENDED_BY_STATE_CHANGE if pass_ended_by_state_change(result) else 1
+
+
+# A pass that this session's own evidence ended, by a control that changed the game's state or by a change the
+# game made between trials, saved a complete record by design; a fresh pass continues from it. The exit code says
+# so structurally, so a host need not reinterpret the record (or an error message) to tell it from a failure.
+EXIT_PASS_ENDED_BY_STATE_CHANGE = 3
+
+
+def pass_ended_by_state_change(record: dict[str, Any]) -> bool:
+    """Whether this record's own session, not a carried earlier one, ended on a measured state change."""
+    for entry in record.get("trials") or []:
+        if not isinstance(entry, dict) or entry.get("prior_pass") is not None:
+            continue
+        if entry.get("unattributed") is True:
+            return True
+        change = entry.get("state_change")
+        if isinstance(change, dict) and change.get("control"):
+            return True
+    return False
 
 
 if __name__ == "__main__":

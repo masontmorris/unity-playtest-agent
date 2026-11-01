@@ -72,6 +72,7 @@ param(
     [string]$Objective,
     [string]$ObjectivePath,
     [string]$DiscoveryPath,
+    [string]$ScenePath,
     [string]$ManifestOrigin,
     [switch]$Frontier,
     [int]$MaxFrontierCalls = 0,
@@ -158,6 +159,13 @@ $invariant = [Globalization.CultureInfo]::InvariantCulture
 # The Editor owns Play Mode for this run. `play-session-supervisor.ps1` launches it with
 # -executeMethod Playtest.Bridge.Editor.PlayModeSessionHost.Start, waits for the host's measured
 # initial readiness, and only then starts the client. The mailbox lives outside the game project.
+if (-not $ScenePath) {
+    $entityDocument = Get-Content -LiteralPath $entity -Raw | ConvertFrom-Json
+    $ScenePath = [string]$entityDocument.entity.scene_path
+    if (-not $ScenePath) { throw 'The entity record has no selected scene; provide -ScenePath.' }
+}
+[IO.File]::WriteAllText((Join-Path $output 'starting-scene.json'),
+    (@{ scene_path = $ScenePath } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
 $controlDirectory = Join-Path $output 'control'
 New-Item -ItemType Directory -Path $controlDirectory | Out-Null
 $runId = [guid]::NewGuid().ToString('D')
@@ -172,7 +180,7 @@ $sessionConfig = [ordered]@{
 }
 [IO.File]::WriteAllText((Join-Path $controlDirectory 'config.json'), ($sessionConfig | ConvertTo-Json -Compress),
     (New-Object Text.UTF8Encoding($false)))
-$names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
+$names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
@@ -181,6 +189,7 @@ $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 $recorder = $null
 try {
+    $env:UPA_SCENE_PATH = $ScenePath
     $env:UPA_BENCH_OUTPUT = Join-Path $output 'run.json'
     $env:UPA_BENCH_PYTHON = $python
     $env:UPA_BENCH_ENTITY = $entity

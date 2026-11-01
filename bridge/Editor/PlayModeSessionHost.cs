@@ -504,7 +504,7 @@ namespace Playtest.Bridge.Editor
 
         private static string BuildScenePath()
         {
-            string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
+            string scenePath = BuildSceneSelection.Resolve();
             if (string.IsNullOrWhiteSpace(scenePath))
             {
                 throw new InvalidOperationException(

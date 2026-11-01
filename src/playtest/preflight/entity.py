@@ -20,6 +20,8 @@ from playtest.core.bridge_lock import BridgeLockError
 
 
 KEY_PATH = re.compile(r"^<Keyboard>/([a-zA-Z][a-zA-Z0-9]*)$", re.IGNORECASE)
+# Input System control layouts that carry a direction or magnitude; their key parts are candidates.
+DIRECTIONAL_CONTROL_TYPES = frozenset({"Axis", "Vector2", "Vector3", "Stick", "Dpad"})
 MAX_CONTROLS = 32
 MEASUREMENT_BUDGET_S = 150
 LEASE_S = 0.4
@@ -36,12 +38,16 @@ VIEWPOINT_MATCH_RELATIVE = 0.02
 
 
 def candidate_controls(discovery: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Find keyboard paths from vector-valued bindings; preserve unsupported evidence."""
+    """Find keyboard paths from value actions; preserve unsupported evidence."""
     controls: dict[str, dict[str, Any]] = {}
     unsupported: list[dict[str, Any]] = []
     for section in ("bindings", "input_asset_bindings"):
         for binding in discovery.get(section, []):
-            if binding.get("expected_control_type") != "Vector2" or binding.get("binding_is_composite"):
+            if binding.get("binding_is_composite"):
+                continue
+            # The action's declared control shape decides, not its action type: a Value action with no
+            # declared shape is unknown and stays out, because it is as likely a button as an axis.
+            if binding.get("expected_control_type") not in DIRECTIONAL_CONTROL_TYPES:
                 continue
             path = binding.get("binding_effective_path")
             match = KEY_PATH.fullmatch(path) if isinstance(path, str) else None

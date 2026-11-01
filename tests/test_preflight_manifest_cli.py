@@ -1,5 +1,6 @@
 """The CLI writes a durable attempt ledger and never fabricates a partial manifest."""
 
+import hashlib
 import json
 import pytest
 
@@ -69,6 +70,95 @@ def test_end_to_end_writes_each_call_and_a_validated_manifest(tmp_path, monkeypa
     ledger.write_text(original, encoding="utf-8")
     (tmp_path / "frame.png").write_bytes(b"\x89PNG\r\n\x1a\nchanged")
     assert validate_cli.main(check) == 1
+
+
+def test_a_projected_packet_writes_its_sidecar_beside_the_manifest(tmp_path, monkeypatch):
+    """Every row the packet leaves out is written beside the manifest, before any request."""
+    from playtest.contracts.bridge import InspectResult
+    from playtest.contracts.calibration import CalibrationRecord
+    from playtest.preflight import packet as pack
+    from test_preflight_offer_budget import evidence as offer_evidence
+
+    snapshot, calibration = offer_evidence(field_count=1100)
+    inventory = dict(snapshot, stage="inventory", data={}, caps={})
+    project = tmp_path / "game"
+    project.mkdir()
+    paths = {}
+    for name, data in (("inventory", inventory), ("discovery", snapshot), ("calibration", calibration)):
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(data), encoding="utf-8")
+    image = tmp_path / "frame.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    output = tmp_path / "manifest.json"
+    built = pack.build(InspectResult.model_validate(inventory), InspectResult.model_validate(snapshot),
+                       CalibrationRecord.model_validate(calibration),
+                       image=pack.Screenshot(image.read_bytes(), "image/png", "fixture capture"))
+    assert built.sidecar is not None
+
+    args = ["--project", str(project), "--inventory", str(paths["inventory"]),
+            "--discovery", str(paths["discovery"]), "--calibration", str(paths["calibration"]),
+            "--screenshot", str(image), "--screenshot-mime", "image/png",
+            "--screenshot-provenance", "fixture capture", "--output", str(output),
+            "--ledger", str(tmp_path / "ledger.jsonl"), "--approved-calls", "12",
+            "--approved-estimate-usd", "16.64", "--model", "muse-spark-1.3"]
+    token = next(iter(built.field_bindings))
+    answers = iter([
+        {"stage_4": {"readers": [{"field_id": token, "alias": "speed", "why": "read"}],
+                     "unobservable": []}, "stage_5": None, "stage_6": None},
+        {"stage_4": None, "stage_5": {"actions": [{"name": "move", "intent": "move", "hold_s": 0.2,
+         "inputs": [{"control_id": "w", "x": None, "y": None}], "preconditions": []}],
+         "skills": [], "uncontrollable": []}, "stage_6": None},
+        {"stage_4": None, "stage_5": None, "stage_6": {"progress": [], "invariants": [],
+         "unjudgeable": ["no progress field"]}},
+    ])
+    monkeypatch.setattr(manifest_cli.provider, "Muse", lambda _, **__: lambda *_: stages.CallResult(
+        json.dumps(next(answers)), None,
+        {"model": "muse-spark-1.3", "resolved_model": "muse-spark-1.3", "usage": None}))
+    assert manifest_cli.main(args) == 0
+    # The sidecar sits beside the manifest and outside the inspected project, holding exactly the
+    # rows the packet does not carry and recording the hash and count the packet names.
+    sidecar_path = tmp_path / "manifest.sidecar.json"
+    assert sidecar_path.exists() and not sidecar_path.is_relative_to(project)
+    detail = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    data = json.loads(built.text)
+    offered = set(built.field_bindings.values())
+    missing = [row["id"] for row in snapshot["data"]["fields"] if row["id"] not in offered]
+    assert [row["source_field_id"] for row in detail["fields"]] == missing
+    assert len(detail["fields"]) == data["sidecar"]["field_rows"] == data["sidecar"]["rows"]
+    assert detail["objects"] == [] and data["sidecar"]["object_rows"] == 0
+    assert data["sidecar"]["sha256"] == hashlib.sha256(built.sidecar.encode("utf-8")).hexdigest()
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved["selection"]["unoffered_fields"] == data["unoffered_fields"]
+    check = ["--manifest", str(output), "--ledger", str(tmp_path / "ledger.jsonl"),
+             "--inventory", str(paths["inventory"]), "--discovery", str(paths["discovery"]),
+             "--calibration", str(paths["calibration"]), "--screenshot", str(image),
+             "--expected-model", "muse-spark-1.3"]
+    assert validate_cli.main(check) == 0
+
+
+def test_a_sidecar_that_already_exists_stops_before_any_request(tmp_path, monkeypatch):
+    from test_preflight_offer_budget import evidence as offer_evidence
+
+    snapshot, calibration = offer_evidence(field_count=1100)
+    inventory = dict(snapshot, stage="inventory", data={}, caps={})
+    project = tmp_path / "game"
+    project.mkdir()
+    paths = {}
+    for name, data in (("inventory", inventory), ("discovery", snapshot), ("calibration", calibration)):
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(data), encoding="utf-8")
+    image = tmp_path / "frame.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    (tmp_path / "manifest.sidecar.json").write_text("{}", encoding="utf-8")
+    args = ["--project", str(project), "--inventory", str(paths["inventory"]),
+            "--discovery", str(paths["discovery"]), "--calibration", str(paths["calibration"]),
+            "--screenshot", str(image), "--screenshot-mime", "image/png",
+            "--screenshot-provenance", "fixture capture", "--output", str(tmp_path / "manifest.json"),
+            "--ledger", str(tmp_path / "ledger.jsonl"), "--approved-calls", "12",
+            "--approved-estimate-usd", "16.64"]
+    monkeypatch.setattr(manifest_cli.provider, "Muse", lambda _, **__: (_ for _ in ()).throw(AssertionError("called")))
+    assert manifest_cli.main(args) == 1
+    assert not (tmp_path / "ledger.jsonl").exists() and not (tmp_path / "manifest.json").exists()
 
 
 def test_failure_keeps_ledger_and_does_not_write_manifest(tmp_path, monkeypatch):

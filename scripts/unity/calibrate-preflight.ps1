@@ -44,6 +44,8 @@ try {
     if ($UnityPath) { $runnerArgs += @('-UnityPath', $UnityPath) }
     & powershell.exe @runnerArgs
     if ($LASTEXITCODE -ne 0) { throw "The calibration run failed (exit $LASTEXITCODE). Review any saved output and Unity log." }
+    # A state-changing pass ends before reset trials; the PlayMode host verified and saved it.
+    if (-not [IO.File]::Exists($reset)) { Write-Host 'Calibration ended before reset trials; saved calibration evidence.'; return }
     & $python -m playtest.preflight.calibration_record --project $project --calibration $calibration --reset $reset --output $record
     if ($LASTEXITCODE -ne 0) { throw 'Could not combine the calibration and reset evidence.' }
     Write-Host "Saved calibration record: $record"

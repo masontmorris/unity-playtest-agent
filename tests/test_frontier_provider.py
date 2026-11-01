@@ -8,6 +8,7 @@ answer is rejected whole.
 from __future__ import annotations
 
 import base64
+import email.message
 import hashlib
 import io
 import json
@@ -747,24 +748,83 @@ def test_send_meta_posts_once_with_the_env_credential(monkeypatch):
     assert secret not in repr((status, data, latency, problem))
 
 
-def test_send_meta_does_not_read_or_return_an_error_body(monkeypatch):
+def test_send_meta_records_only_the_structured_fields_of_an_error_body(monkeypatch):
     calls = []
 
     def fake_urlopen(request, timeout=None):
         calls.append(request)
         raise urllib.error.HTTPError(
-            provider.URL, 429, "Too Many Requests", None, io.BytesIO(b'{"error":{"message":"secret"}}')
+            provider.URL, 429, "Too Many Requests",
+            email.message.Message(),
+            io.BytesIO(b'{"error":{"type":"rate_limit","code":429,"param":"messages","message":"secret",'
+                       b'"request":{"messages":[{"content":"the whole request"}]}}}')
         )
 
     monkeypatch.setenv("META_API_KEY", "sk-test-secret-value")
     monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
     status, data, latency, problem = provider.send_meta({"messages": []})
     assert status == 429
-    assert data is None
     assert problem == "HTTP error"
     assert isinstance(latency, float)
     assert "secret" not in (problem or "")
     assert len(calls) == 1
+    # The body is read for the provider's own structured error only: its type, code, param and a
+    # bounded message. Nothing else in it is kept or returned, and the problem text stays generic.
+    detail = data["error_detail"]
+    assert detail["type"] == "rate_limit" and detail["code"] == 429 and detail["param"] == "messages"
+    assert detail["message"] == "secret" and detail["message_truncated"] is False
+    assert set(data) == {"error_detail"}
+    assert "the whole request" not in json.dumps(data)
+    assert "sk-test-secret-value" not in json.dumps(data)
+
+
+def test_an_error_message_is_bounded_and_the_structured_fields_are_kept():
+    message = "x" * (provider.ERROR_MESSAGE_CHARS + 25)
+    detail = provider.error_detail(
+        json.dumps({"error": {"type": "invalid_request", "code": "bad_schema", "param": "response_format",
+                              "message": message, "internal": "do not keep"}}).encode())
+    assert detail["type"] == "invalid_request" and detail["code"] == "bad_schema"
+    assert detail["param"] == "response_format"
+    assert detail["message"] == "x" * provider.ERROR_MESSAGE_CHARS
+    assert detail["message_truncated"] is True
+    assert "internal" not in detail
+    assert provider.ERROR_MESSAGE_CHARS == 300
+
+
+def test_a_body_that_is_not_a_json_error_contributes_only_its_length_and_type():
+    raw = b"<html>gateway says no</html>"
+    detail = provider.error_detail(raw, "text/html")
+    assert detail == {"body_bytes": len(raw), "content_type": "text/html"}
+    # JSON without an `error` object is no better: nothing in it is structured evidence.
+    assert provider.error_detail(b'{"detail":"nope"}', "application/json") == {
+        "body_bytes": 17, "content_type": "application/json"}
+    assert provider.error_detail(b'{"error":"not an object"}') == {"body_bytes": 25, "content_type": None}
+    # An error object with no message keeps explicit unknowns rather than dropping the fields.
+    detail = provider.error_detail(b'{"error":{"type":"server_error"}}')
+    assert detail["type"] == "server_error"
+    assert detail["code"] is None and detail["param"] is None
+    assert detail["message"] is None and detail["message_truncated"] is False
+
+
+def test_send_meta_records_a_non_json_error_body_by_length_and_type_only(monkeypatch):
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(provider.URL, 502, "Bad Gateway", email.message.Message(),
+                                     io.BytesIO(b"<html>" + b"z" * 4000 + b"</html>"))
+
+    monkeypatch.setenv("META_API_KEY", "sk-test-secret-value")
+    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    status, data, _, problem = provider.send_meta({"messages": []})
+    assert (status, problem) == (502, "HTTP error")
+    assert data == {"error_detail": {"body_bytes": 4013, "content_type": None}}
+    assert "z" * 4000 not in json.dumps(data)
+
+
+def test_reported_error_reads_a_transports_detail_or_a_bodys_own_error():
+    assert provider.reported_error(None) is None
+    assert provider.reported_error({"choices": []}) is None
+    assert provider.reported_error({"error_detail": {"body_bytes": 0}}) == {"body_bytes": 0}
+    reported = provider.reported_error({"error": {"type": "rate_limit", "message": "slow down"}})
+    assert reported["type"] == "rate_limit" and reported["message"] == "slow down"
 
 
 def test_send_meta_reports_transport_and_malformed_responses(monkeypatch):

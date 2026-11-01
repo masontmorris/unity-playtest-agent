@@ -64,6 +64,13 @@ namespace Playtest.Bridge.Editor.Preflight
             return result;
         }
 
+        internal static SceneDiscoveryResult CollectValues(int maxComponents, int maxFields, int maxBindings)
+        {
+            var result = new SceneDiscoveryResult();
+            new Collector(result, maxComponents, maxFields, maxBindings, true).Run();
+            return result;
+        }
+
         /// <summary>
         /// Stable scene id from the path and the loaded-scene index. Shared with every stage that
         /// must join a discovery row, so the derivation exists once.
@@ -102,6 +109,7 @@ namespace Playtest.Bridge.Editor.Preflight
             private readonly int _maxComponents;
             private readonly int _maxFields;
             private readonly int _maxBindings;
+            private readonly bool _valuesOnly;
 
             private readonly List<object> _scenes = new List<object>();
             private readonly List<object> _objects = new List<object>();
@@ -139,9 +147,10 @@ namespace Playtest.Bridge.Editor.Preflight
             private bool _objectsTruncated;
             private bool _objectsStopped;
 
-            public Collector(SceneDiscoveryResult result, int maxComponents, int maxFields, int maxBindings)
+            public Collector(SceneDiscoveryResult result, int maxComponents, int maxFields, int maxBindings, bool valuesOnly = false)
             {
                 _result = result;
+                _valuesOnly = valuesOnly;
                 _maxComponents = maxComponents;
                 _maxFields = maxFields;
                 _maxBindings = maxBindings;
@@ -624,6 +633,7 @@ namespace Playtest.Bridge.Editor.Preflight
                 CollectedComponent owner)
             {
                 string fieldId = FieldId(owner.Id, field);
+                if (_valuesOnly) return DescribeFieldValue(component, field, owner, fieldId);
                 string fieldTypeName = TypeName(field.FieldType);
                 string fieldAssembly = AssemblyName(field.FieldType);
                 bool nonSerialized = field.IsNotSerialized ||
@@ -743,6 +753,42 @@ namespace Playtest.Bridge.Editor.Preflight
                 }
 
                 if (failed) entry["bindings_complete"] = null;
+                return entry;
+            }
+
+            private Dictionary<string, object> DescribeFieldValue(Component component, FieldInfo field,
+                CollectedComponent owner, string fieldId)
+            {
+                var entry = new Dictionary<string, object>
+                {
+                    ["id"] = fieldId,
+                    ["scene_id"] = owner.Entry["scene_id"],
+                    ["object_id"] = owner.Entry["object_id"],
+                    ["value_state"] = "error",
+                    ["value_kind"] = "error",
+                    ["value"] = null,
+                    ["is_null"] = null,
+                    ["destroyed"] = null,
+                    ["value_length"] = null,
+                    ["value_truncated"] = null,
+                    ["enum_name"] = null,
+                    ["read_error"] = null,
+                };
+                try
+                {
+                    object value = field.GetValue(component);
+                    DescribeValue(entry, value, InputKind(field.FieldType), out _);
+                }
+                catch (Exception ex)
+                {
+                    string error = Describe(ex);
+                    entry["value_state"] = "error";
+                    entry["value_kind"] = "error";
+                    entry["value"] = null;
+                    entry["is_null"] = null;
+                    entry["read_error"] = error;
+                    _result.Errors.Add("field " + fieldId + ": value: " + error);
+                }
                 return entry;
             }
 
@@ -1592,17 +1638,23 @@ namespace Playtest.Bridge.Editor.Preflight
             {
                 try
                 {
-                    int matching = 0;
-                    for (Type current = component.GetType(); IsManagedBehaviour(current); current = current.BaseType)
-                        if (current.GetField(field.Name, BindingFlags.Instance | BindingFlags.Public |
-                            BindingFlags.NonPublic | BindingFlags.DeclaredOnly) != null) matching++;
-                    if (matching > 1)
-                    {
-                        _result.Errors.Add("field " + fieldId + ": serialization is ambiguous across base types");
-                        return null;
-                    }
                     using (var serialized = new SerializedObject(component))
-                        return serialized.FindProperty(field.Name) != null;
+                    {
+                        // No serialized property by this name means no field of that name is serialized
+                        // anywhere in the chain, so a name shared across base types is only ambiguous
+                        // when the serializer actually holds a property under it.
+                        if (serialized.FindProperty(field.Name) == null) return false;
+                        int matching = 0;
+                        for (Type current = component.GetType(); IsManagedBehaviour(current); current = current.BaseType)
+                            if (current.GetField(field.Name, BindingFlags.Instance | BindingFlags.Public |
+                                BindingFlags.NonPublic | BindingFlags.DeclaredOnly) != null) matching++;
+                        if (matching > 1)
+                        {
+                            _result.Errors.Add("field " + fieldId + ": serialization is ambiguous across base types");
+                            return null;
+                        }
+                        return true;
+                    }
                 }
                 catch (Exception ex)
                 {

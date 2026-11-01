@@ -7,14 +7,19 @@ what to do with it. The core stays name-blind: readers, rules and metrics come f
 ## Readers in the observation
 
 The manifest's stage 4 readers are installed when a session starts (`playtest.runner.readers.FieldReaders`).
-Before each turn's observation the runner reads them all with one Editor `inspect("fields")`, and the loop
-installs the values in that observation's `public.<alias>` (`playtest.core.readers.install`). The reading is
-taken before the observation, never between it and the act, so it adds nothing to the age an action is bound to.
+Identity is static and values change, so install verifies each reader's full descriptor once, with one Editor
+`inspect("discovery")` (the stage whose field rows still carry it), before any paid call. Before each turn's
+observation the runner then reads their values with one `inspect("fields")`, and the loop installs them in that
+observation's `public.<alias>` (`playtest.core.readers.install`). The reading is taken before the observation,
+never between it and the act, so it adds nothing to the age an action is bound to.
 It costs one inspection a turn (the FPSKit scene's 312 field rows are about 390 kB of JSON); a bridge-side producer would be
 atomic with the observation and is the long-term home. This is the stopgap.
 
-- A reader is matched by its field id, and the live row must still carry the manifest's descriptor (scene,
-  object, component, declaring type, field type). Otherwise it is unknown with the reason.
+- A reader is matched by its field id. Install compares every identity key the manifest recorded (scene, object,
+  component, declaring type and assembly, field name, field type and assembly) against the live full descriptor,
+  and a reader that fails there is never read later. A per-turn values-only row carries only `id`, `object_id` and
+  `scene_id`, so a turn compares just those keys; a static key the row omits is unmeasured for that turn, never a
+  difference and never a match. Either way the reader is unknown with the reason.
 - A reader that cannot be read is `null` in `public` and has a `reader_errors` entry saying why: not in the
   live scene, descriptor differs, value null, destroyed, unsupported, not finite, truncated, or a different
   kind than the manifest declares. It is never zero, false or an earlier value. A name the bridge already

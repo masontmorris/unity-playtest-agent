@@ -45,6 +45,7 @@ namespace Playtest.Bridge.Tests
             probe.Number = 42;
 
             SceneDiscoveryResult discovery = SceneDiscoveryCollector.Collect(10000, 10000, 10000);
+            probe.Number = 43;
             InspectionDocument sample = SceneFieldsCollector.Collect(10000, 10000, 10000);
 
             var discoveryObjectIds = new HashSet<string>(
@@ -62,10 +63,14 @@ namespace Playtest.Bridge.Tests
                 "the fields stage must return exactly the discovery field ids");
 
             Dictionary<string, object> parentRow = DiscoveryNamed(discovery, parent.name);
-            Dictionary<string, object> number = Rows(sample, "fields").Single(row =>
+            Dictionary<string, object> declared = DiscoveryRows(discovery, "fields").Single(row =>
                 (string)row["name"] == "Number" &&
                 (string)row["object_id"] == (string)parentRow["id"]);
-            Assert.That(number["value"], Is.EqualTo(42L));
+            Dictionary<string, object> number = Rows(sample, "fields").Single(row =>
+                (string)row["id"] == (string)declared["id"]);
+            Assert.That(number["value"], Is.EqualTo(43L));
+            Assert.That(number.ContainsKey("serialized"), Is.False);
+            Assert.That(number.ContainsKey("binding_count"), Is.False);
 
             Assert.That(sample.Data.Keys, Is.EquivalentTo(new[]
             {
