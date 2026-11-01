@@ -176,6 +176,18 @@ def test_real_record_smoke(capsys):
     offered = [action for action in manifest["actions"] if action.get("execution_supported")]
     primitives = primitives_from_calibration(record, offered, catalog=manifest["actions"])
 
+    # The live runner uses exported, typed declarations rather than manifest dictionaries.
+    from playtest.contracts.manifest import PreflightManifest
+    from playtest.runner.choices import build_choices
+    from playtest.contracts.loop import ChoiceKind
+    built = build_choices(PreflightManifest.model_validate(manifest))
+    live = primitives_from_calibration(
+        record, [c.action for c in built.choices if c.kind is ChoiceKind.action and c.action],
+        catalog=built.catalog.actions,
+    )
+    assert {d.label for d in live.directions} == {"+x", "-x"}
+    assert live.can_hop
+
     with capsys.disabled():
         print("\n--- measured primitives, DragonBlaze calibration-07/05 ---")
         print(primitives.statement())

@@ -142,7 +142,7 @@ namespace Playtest.Bridge.Tests
         [Test]
         public void Result_UnplacedCarriesOnlyItsReason()
         {
-            string json = ResultJson(placed: false, reason: "the project is not playing");
+            string json = ResultJson(placed: false, reason: "\"the project is not playing\"");
 
             Assert.That(
                 BridgeProtocol.TryReadPlaceResult(json, out PlaceResultMessage result, out ProtocolError error),
@@ -157,7 +157,7 @@ namespace Playtest.Bridge.Tests
         [Test]
         public void Result_PlacedWithAReason_IsRejected()
         {
-            string json = ResultJson(placed: true, position: "[1.0, 2.0, 3.0]", moved: "0.0", reason: "not really");
+            string json = ResultJson(placed: true, position: "[1.0, 2.0, 3.0]", moved: "0.0", reason: "\"not really\"");
 
             Assert.That(BridgeProtocol.TryReadPlaceResult(json, out PlaceResultMessage _, out ProtocolError error), Is.False);
             Assert.That(error.Code, Is.EqualTo(BridgeErrorCode.Invalid));

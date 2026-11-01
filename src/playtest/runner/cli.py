@@ -438,7 +438,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             from .options.primitives import primitives_from_calibration
             from .options.memory import OutcomeMemory
             primitives = primitives_from_calibration(calibration or {},
-                [c.action for c in built.choices if c.kind is ChoiceKind.action and c.action], catalog=built.catalog)
+                [c.action for c in built.choices if c.kind is ChoiceKind.action and c.action], catalog=built.catalog.actions)
             steps = [d.step for d in primitives.directions if d.step is not None and d.step > 0]
             if not steps:
                 raise ValueError("options require a measured short movement step for outcome memory")
