@@ -22,6 +22,14 @@ Law 1 branches:
 - escalate / delegate: at most one helper request is open. A repeat while one is open is recorded
   and starts nothing. `while_pending` runs exactly the choice S1 named; a missing or invalid one
   defaults to `wait` and records `policy_default`, while the valid primary survives.
+- option: when its measured outcome ends `blocked` or `succeeded` and the decision that chose it
+  carries S1's own answer for that branch, the next turn executes that answer with no provider call:
+  the context it would have been sent is still built and recorded, the decision names
+  `source: "contingent"`, `from_turn` and `condition`, and there is no `s1_call`. The answer is used
+  only while the condition still holds — the scene did not change, no help is pending, and the id is
+  still offered — and never twice in a row: it carries no branches of its own, so the turn after
+  asks S1 afresh. Any other ending, a boundary, pending help or a withdrawn id also asks afresh and
+  records why.
 
 A finished helper's result is adopted once, after a later turn's observation passes the epoch check
 and before facts and context are built, and shown to S1 with its source and age. A boundary discards
@@ -129,6 +137,25 @@ def _elapsed_s(since: datetime | None, now: datetime) -> float | None:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# The measured option endings S1 answered a conditional question for. Any other ending asks S1 afresh.
+_CONTINGENT_CONDITIONS = ("blocked", "succeeded")
+
+
+def _contingent_answer(decision: Decision, terminated_by: Any, turn: int, decided: int | None) -> dict[str, Any] | None:
+    """The id S1 already selected for the branch this option measurably ended in, or `None`.
+
+    Nothing is inferred: both the measured termination and S1's own non-null answer for exactly that
+    branch are required. The returned record names the deciding turn so a replay can check the link.
+    """
+    contingent = decision.contingent
+    if contingent is None or terminated_by not in _CONTINGENT_CONDITIONS:
+        return None
+    choice_id = contingent.for_condition(terminated_by)
+    if choice_id is None:
+        return None
+    return {"from_turn": turn, "condition": terminated_by, "choice_id": choice_id, "decided": decided}
 
 
 @dataclass
@@ -250,6 +277,7 @@ class TurnLoop:
         self._retired_helpers: set[asyncio.Task[HelpResult]] = set()
         self._adoptions: list[Any] = []
         self._guidance: list[_Guidance] = []
+        self._contingent: dict[str, Any] | None = None  # S1's own answer for the branch the last option ended in
         self._cancelled_helpers = 0
         self._halt: str | None = None
         self._stopped = False
@@ -387,6 +415,12 @@ class TurnLoop:
         self._set_version += 1
         offered = self._emit(TraceKind.choice_set, choice_set.model_dump(mode="json"), TraceAuthor.core, turn, [observed])
         noticed = self._notice(observation, sample, turn, observed, stated=not scripted)
+        # S1's conditional answer from the turn that ended an option is good for the very next turn only,
+        # and only if this observation still offers it; otherwise it is spent and S1 is asked afresh.
+        candidate, self._contingent = self._contingent, None
+        contingent_turn, contingent_skipped = (
+            (None, None) if candidate is None or scripted
+            else self._contingent_for(candidate, choice_set, boundary))
 
         payload: dict[str, Any] | None = None
         context: int | None = None
@@ -440,21 +474,36 @@ class TurnLoop:
                 {"sha256": _sha256(canonical(payload)), "payload": payload},
                 TraceAuthor.core, turn, [observed, offered],
             )
-            answer = await self._ask(payload, view.image if view is not None else None, view is not None)
-            calls = [self._emit(TraceKind.s1_call, call.body(), TraceAuthor.s1, turn, [context])
-                     for call in answer.calls]
+            if contingent_turn is not None:
+                # S1 already said what to do in this branch: the context above is the one it would have
+                # been sent and is recorded as such, but the turn spends no provider call.
+                answer = S1Answer(answer={"choice_id": contingent_turn["choice_id"],
+                                          "set_version": choice_set.set_version})
+            else:
+                answer = await self._ask(payload, view.image if view is not None else None, view is not None)
+                calls = [self._emit(TraceKind.s1_call, call.body(), TraceAuthor.s1, turn, [context])
+                         for call in answer.calls]
 
         parsed = parse_decision(answer.answer, choice_set, self._clock_mode)
+        decision_body: dict[str, Any] = {
+            "answer": _json_ready(answer.answer),
+            "clock_mode": self._clock_mode.value,
+            "valid": parsed.valid,
+            "error": parsed.error,
+            "policy_default": parsed.policy_default,
+            "decision": parsed.decision.trace_body() if parsed.decision is not None else None,
+        }
+        if parsed.contingent_problems:
+            # Only a dropped branch writes this key, so a turn S1 answered cleanly keeps the same bytes.
+            decision_body["contingent_problems"] = list(parsed.contingent_problems)
+        if contingent_turn is not None:
+            decision_body.update(source="contingent", from_turn=contingent_turn["from_turn"],
+                                 condition=contingent_turn["condition"])
+        elif contingent_skipped is not None:
+            decision_body["contingent_skipped"] = contingent_skipped
         decided = self._emit(
             TraceKind.decision,
-            {
-                "answer": _json_ready(answer.answer),
-                "clock_mode": self._clock_mode.value,
-                "valid": parsed.valid,
-                "error": parsed.error,
-                "policy_default": parsed.policy_default,
-                "decision": parsed.decision.model_dump(mode="json") if parsed.decision is not None else None,
-            },
+            decision_body,
             TraceAuthor.core, turn, [offered, *calls],
         )
         raw_choice = answer.answer.get("choice_id") if isinstance(answer.answer, dict) else None
@@ -504,6 +553,7 @@ class TurnLoop:
                                    TraceAuthor.core, turn, [decided])
                 option_refs.append(entry)
                 outcome, executed_id = TurnOutcome.executed, selected.option_id
+                self._contingent = _contingent_answer(decision, body.get("terminated_by"), turn, decided)
             elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
                     selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
@@ -644,6 +694,22 @@ class TurnLoop:
 
     # --- waiting ----------------------------------------------------------------------------
 
+    def _contingent_for(self, candidate: dict[str, Any], choice_set: ChoiceSet,
+                        boundary: bool) -> tuple[dict[str, Any] | None, str | None]:
+        """Use S1's conditional answer for this turn, or say why S1 is asked afresh instead.
+
+        Executing it is adherence only while the condition that selected it still holds: an unchanged
+        scene, no pending help, and the very id S1 named still offered by this observation's own set.
+        """
+        if boundary:
+            return None, ("the observation crossed a scene boundary after the option ended; asked S1 afresh")
+        if self._pending is not None:
+            return None, "help is pending after the option ended; asked S1 afresh"
+        if choice_set.get(candidate["choice_id"]) is None:
+            return None, (f"S1's {candidate['condition']} answer {candidate['choice_id']!r} is no longer "
+                          f"offered; asked S1 afresh")
+        return candidate, None
+
     async def _wait_out(self, choice: Choice, observation: Observation) -> None:
         """Sleep a wait choice's `duration_game_s` of game time. No input is sent; only the next observation waits."""
         seconds = self._wait_s(choice, observation)
@@ -783,6 +849,7 @@ class TurnLoop:
         self._guidance.clear()
         self._unshown.clear()
         self._pending = None
+        self._contingent = None
         self._generation = outcome.to_generation
         for port in (self._view, self._readers, self._watch, self._effects, self._help, self._facts):
             rebind = getattr(port, "rebind", None)

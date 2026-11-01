@@ -1,0 +1,9 @@
+{
+  "choice_id": "c7",
+  "set_version": 57,
+  "reason": "crossing toward the far edge",
+  "contingent": {
+    "if_blocked": "c1",
+    "if_succeeded": "c9"
+  }
+}

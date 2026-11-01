@@ -96,6 +96,7 @@ param(
     [switch]$S1ContinuousInput,
     [switch]$Options,
     [switch]$Placement,
+    [switch]$Contingent,
     [ValidateRange(0.0, 1.0)][double]$PacingBurst = 0,
     [ValidateSet('end', 'send')][string]$PacingAnchor = 'end',
     [string]$UnityPath
@@ -149,6 +150,10 @@ if ($S1Context -eq 'compact-menu' -and -not $Options) {
 if ($S1Context -eq 'compact-menu' -and $S1Layout -ne 'full') { throw '-S1Context compact-menu sends its own state; it cannot be combined with -S1Layout.' }
 if ($S1Context -eq 'compact-menu' -and $S1CompactState -ne 'off') { throw '-S1Context compact-menu sends its own state; it cannot be combined with -S1CompactState.' }
 if ($S1Context -eq 'compact-menu' -and $S1PendingQuestion -ne 'follow_up') { throw '-S1Context compact-menu asks its own pending question beside next_action; it cannot be combined with -S1PendingQuestion.' }
+if ($Contingent -and $S1Context -ne 'compact-menu') {
+    # The branch answers this acts on are the compact menu's own if_blocked/if_succeeded questions.
+    throw '-Contingent needs -S1Context compact-menu: no other mode asks S1 what to do if an option ends blocked.'
+}
 if ($Frontier -and [string]::IsNullOrEmpty($env:META_API_KEY)) { throw 'META_API_KEY is not set in this session.' }
 $packages = Get-Content -LiteralPath (Join-Path $project 'Packages/manifest.json') -Raw | ConvertFrom-Json
 $expected = 'file:' + (Join-Path $repoRoot 'bridge').Replace('\', '/')
@@ -218,7 +223,7 @@ $names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_
            'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
            'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS', 'UPA_RUN_S1_CONTEXT',
            'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
-           'UPA_RUN_OPTIONS', 'UPA_RUN_PLACEMENT', 'UPA_CONTROLLED_ENTITY')
+           'UPA_RUN_OPTIONS', 'UPA_RUN_CONTINGENT', 'UPA_RUN_PLACEMENT', 'UPA_CONTROLLED_ENTITY')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 $recorder = $null
@@ -252,6 +257,7 @@ try {
     $env:UPA_RUN_FINISH_LABEL = $FinishLabel
     $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
     $env:UPA_RUN_OPTIONS = if ($Options) { '1' } else { '' }
+    $env:UPA_RUN_CONTINGENT = if ($Contingent) { '1' } else { '' }
     $env:UPA_RUN_PLACEMENT = if ($Placement) { '1' } else { '' }
     $controlledEntityDocument = Get-Content -LiteralPath $entity -Raw | ConvertFrom-Json
     $env:UPA_CONTROLLED_ENTITY = [string]$controlledEntityDocument.entity.path

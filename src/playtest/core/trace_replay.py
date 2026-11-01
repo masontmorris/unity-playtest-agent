@@ -136,6 +136,7 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             if row.turn not in observed_at:
                 issue("a suspicion precedes the observation of its turn", row, row.turn)
 
+    contingent_turns: set[int] = set()
     for turn_no in sorted(groups):
         group = groups[turn_no]
         kinds = [x.kind for x in group]
@@ -174,7 +175,14 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             issue("turn is missing observation, choice_set, context, or decision", record_row, turn_no)
             continue
         calls = [x for x in group if x.kind is TraceKind.s1_call]
-        if not 1 <= len(calls) <= 2:
+        contingent_turn = decrow is not None and decrow.body.get("source") == "contingent"
+        if contingent_turn:
+            if calls:
+                issue("a contingent turn spends no provider call", record_row, turn_no)
+            if turn_no - 1 in contingent_turns:
+                issue("a contingent turn follows another without a fresh S1 call", record_row, turn_no)
+            contingent_turns.add(turn_no)
+        elif not 1 <= len(calls) <= 2:
             issue("turn must have one or two s1_call entries", record_row, turn_no)
         if len([x for x in group if x.kind is TraceKind.execution]) > 2:
             issue("turn has more than two executions", record_row, turn_no)
@@ -270,6 +278,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                     pass
             if got != expected:
                 issue(f"decision {field} differs from parse_decision", decrow, turn_no)
+        if decision_body.get("contingent_problems", []) != list(parsed.contingent_problems):
+            issue("decision contingent_problems differs from parse_decision", decrow, turn_no)
         answer = decision_body.get("answer")
         raw = answer.get("choice_id") if isinstance(answer, dict) and isinstance(answer.get("choice_id"), str) else None
         selected = choices.get(expected_decision.choice_id) if expected_decision else None
@@ -321,6 +331,10 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
         else:
             outcome = TurnOutcome.rejected_invalid
         expected_effective = selected.id if selected else None
+        if contingent_turn:
+            _check_contingent_source(decision_body, expected_effective, turn_no, groups, decrow, issue)
+        elif "from_turn" in decision_body or "condition" in decision_body:
+            issue("a turn that called S1 carries no contingent source", decrow, turn_no)
         decision = expected_decision
         pending = decision.while_pending if decision else None
         actual_pending = record.while_pending
@@ -378,3 +392,36 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
     for violation in check_adherence(turn_records):
         issue(f"adherence: {violation.problem}", turn=violation.turn)
     return problems
+
+
+_CONDITIONS = ("blocked", "succeeded")
+
+
+def _check_contingent_source(body: dict[str, Any], expected_effective: str | None, turn_no: int,
+                             groups: dict[int, list[TraceEntry]], row: TraceEntry, issue: Any) -> None:
+    """A turn with no provider call must be S1's own earlier conditional answer, for the condition that happened.
+
+    The earlier decision must hold that id for exactly this condition, and that turn's option must have
+    measurably ended in it. Anything else is code choosing an action.
+    """
+    condition, from_turn = body.get("condition"), body.get("from_turn")
+    if condition not in _CONDITIONS:
+        issue("a contingent decision names no measured condition", row, turn_no)
+        return
+    if not isinstance(from_turn, int) or isinstance(from_turn, bool) or from_turn >= turn_no:
+        issue("a contingent decision does not name an earlier turn", row, turn_no)
+        return
+    source = groups.get(from_turn, [])
+    source_decision = next((x for x in source if x.kind is TraceKind.decision), None)
+    source_option = next((x for x in source if x.kind is TraceKind.option), None)
+    answered = (((source_decision.body.get("decision") if source_decision is not None else None) or {})
+                .get("contingent") or {})
+    named = answered.get(f"if_{condition}")
+    if named is None:
+        issue(f"turn {from_turn} holds no contingent answer for {condition}", row, turn_no)
+    elif named != expected_effective:
+        issue(f"the executed choice differs from S1's {condition} answer", row, turn_no)
+    ended = (((source_option.body.get("outcome") if source_option is not None else None) or {})
+             .get("terminated_by"))
+    if ended != condition:
+        issue(f"turn {from_turn} did not end {condition}: its option ended {ended!r}", row, turn_no)

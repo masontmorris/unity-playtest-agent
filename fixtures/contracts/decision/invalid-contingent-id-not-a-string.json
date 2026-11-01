@@ -1,0 +1,8 @@
+{
+  "choice_id": "c1",
+  "set_version": 57,
+  "contingent": {
+    "if_blocked": 7,
+    "if_succeeded": "c9"
+  }
+}

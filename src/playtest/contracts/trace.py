@@ -63,6 +63,7 @@ class TraceExecutionRequest(Strict):
 
 
 _KEEP_REQUEST_FIELDS = {"turn", "seq", "game_s"}
+_DECISION_OPTIONAL = {"contingent_problems", "source", "from_turn", "condition", "contingent_skipped"}
 _KEEP_FIELDS = {"directive_id", "requested", "deadline_game_s", "expires_in_game_s", "adopted_turn",
                 "closed_at_game_s", "closed_by_deadline", "request_before_deadline"}
 
@@ -158,7 +159,8 @@ class TraceEntry(Strict):
             if (self.kind is TraceKind.investigation and "keep" not in self.body
                     and self.body.get("event") != "keep"):
                 keys = keys - {"keep"}  # traces written before keep rows existed stay readable
-            if set(self.body) != keys:
+            optional: set[str] = _DECISION_OPTIONAL if self.kind is TraceKind.decision else set()
+            if keys - set(self.body) or set(self.body) - keys - optional:
                 raise ValueError(f"{self.kind.value} body keys must be exactly {sorted(keys)}")
             if self.kind is TraceKind.execution and self.body["purpose"] not in ("choice", "while_pending"):
                 raise ValueError("execution purpose must be choice or while_pending")
@@ -198,6 +200,28 @@ class TraceEntry(Strict):
                 decision = Decision.model_validate(body["decision"]) if body["decision"] is not None else None
                 if body["valid"] != (decision is not None):
                     raise ValueError("decision valid must be true exactly when decision is non-null")
+                problems = body.get("contingent_problems", [])
+                if not isinstance(problems, list) or any(not isinstance(item, str) for item in problems):
+                    raise ValueError("decision contingent_problems must be a list of strings")
+                if "source" in body:
+                    # A contingent turn reuses an earlier answer instead of calling S1; nothing else may claim it.
+                    if body["source"] != "contingent":
+                        raise ValueError("decision source must be contingent when present")
+                    for name in ("from_turn", "condition"):
+                        if name not in body:
+                            raise ValueError(f"a contingent decision needs {name}")
+                    turn = body["from_turn"]
+                    if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
+                        raise ValueError("decision from_turn must be a non-negative turn number")
+                    if body["condition"] not in ("blocked", "succeeded"):
+                        raise ValueError("decision condition must be blocked or succeeded")
+                    if "contingent_skipped" in body:
+                        raise ValueError("a contingent decision cannot also be skipped")
+                elif {"from_turn", "condition"} & set(body):
+                    raise ValueError("only a contingent decision names a source turn and condition")
+                skipped = body.get("contingent_skipped")
+                if skipped is not None and not isinstance(skipped, str):
+                    raise ValueError("decision contingent_skipped must be a string")
             if self.kind is TraceKind.s1_call:
                 body = self.body
                 # Null when the port failed before naming a question.

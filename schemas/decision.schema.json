@@ -1,5 +1,39 @@
 {
   "$defs": {
+    "Contingent": {
+      "additionalProperties": false,
+      "description": "S1's own answers to the batched conditional questions, made in the same request as its primary choice.\n\nEach field is a choice id from the same `set_version`, or null when S1 gave no answer for that branch.\nA branch is what S1 selected for that outcome when it answered, so executing it once its condition has\nmeasurably occurred is adherence, not substitution; a null branch is never filled in by code.",
+      "properties": {
+        "if_blocked": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "If Blocked"
+        },
+        "if_succeeded": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "If Succeeded"
+        }
+      },
+      "title": "Contingent",
+      "type": "object"
+    },
     "WhilePending": {
       "additionalProperties": false,
       "properties": {
@@ -40,6 +74,17 @@
       "minLength": 1,
       "title": "Choice Id",
       "type": "string"
+    },
+    "contingent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Contingent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "distribution": {
       "anyOf": [

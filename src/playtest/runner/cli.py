@@ -191,6 +191,11 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_CONTINUOUS_INPUT", switch, False),
                         help="Decide while explicitly selected keyboard holds run (opt in)")
     parser.add_argument("--options", action="store_true", default=_env("UPA_RUN_OPTIONS", switch, False))
+    parser.add_argument("--contingent", action="store_true", default=_env("UPA_RUN_CONTINGENT", switch, False),
+                        help="act on S1's own if_blocked/if_succeeded answers, which the compact menu already asks "
+                             "beside next_action: when an option ends blocked or succeeded the next turn executes "
+                             "that answer with no further call. Requires --s1-context compact-menu "
+                             "(also UPA_RUN_CONTINGENT=1)")
     parser.add_argument("--placement", action="store_true", default=_env("UPA_RUN_PLACEMENT", switch, False))
     parser.add_argument("--pacing-burst", type=float, default=_env("UPA_RUN_PACING_BURST", float, 0.0),
                         help="the share of the per-minute token budget S1's calls may use before pacing spaces "
@@ -308,6 +313,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.s1_game_view and IMAGE_TRANSPORT[args.s1_arm] != "images":
             parser.error(f"--s1-context compact-menu: S1 arm {args.s1_arm!r} does not take a plain images array, "
                          f"so the menu cannot attach its game view")
+    elif args.contingent:
+        parser.error("--contingent requires --s1-context compact-menu: the branch answers it acts on are that "
+                     "request's own if_blocked/if_succeeded questions")
     for variable in replay.ARMS[args.s1_arm][1:]:
         if variable and not os.environ.get(variable):
             parser.error(f"{variable} is not set in the environment")
@@ -383,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["continuous_input"] = True
         if args.options:
             plan["options"] = True
+        if args.contingent:
+            plan["contingent"] = True
         if args.placement:
             plan["placement"] = True
         if args.pacing_burst:
@@ -482,7 +492,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         s1 = SystemOneS1(ledger, max_calls=args.max_calls, arm=args.s1_arm, budget=budget,
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
                           compact_state=args.s1_compact_state, pending_question=args.s1_pending_question,
-                          s1_context=args.s1_context, menu_memory=memory)
+                          s1_context=args.s1_context, menu_memory=memory, contingent=args.contingent)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)

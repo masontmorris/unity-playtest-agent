@@ -23,7 +23,14 @@ Every entry of a turn carries that turn's number. Within a turn the order is as 
   failed before naming one.
 - `decision` (core; refs the choice set and every `s1_call` of the turn):
   `{"answer": <the exact object passed to parse_decision, or null>, "clock_mode", "valid", "error",
-  "policy_default", "decision": <Decision or null>}`.
+  "policy_default", "decision": <Decision or null>}`, plus `"contingent_problems": [<one line per
+  conditional branch that was dropped>]` only when the parser dropped a branch. A turn that spends no
+  provider call executes S1's own earlier conditional answer instead: its `answer` is the id it names,
+  and the body adds `"source": "contingent"`, `"from_turn"` (the turn whose option ended in that
+  condition) and `"condition"` (`blocked` or `succeeded`), with no `s1_call` entry. That turn's
+  `context` is still the payload it would have been sent, so the answer's real provenance is the
+  `from_turn` context. A turn that asked S1 afresh although it held such an answer adds
+  `"contingent_skipped"` saying why.
 - `execution` (bridge; refs the decision): zero, one or two per turn:
   `{"purpose": "choice" | "while_pending", "request": {"action_id", "choice_id", "action", "params",
   "based_on_seq", "max_age_s", "depends_on", "lease_s"}, "records": [<every ExecutionRecord the
@@ -73,8 +80,12 @@ A replay (#30) re-derives every turn from these entries and fails on any differe
 - The choice set is bound to its observation, and `set_version` increases from turn to turn.
 - The context hash matches its payload; the payload's `as_of.seq`, `choice_set_version` and
   `choices` match the turn's observation and set; the payload has a `pending_help` key.
-- `parse_decision(answer, choice_set, clock_mode)` reproduces `valid`, `error`, `policy_default`
-  and `decision`.
+- `parse_decision(answer, choice_set, clock_mode)` reproduces `valid`, `error`, `policy_default`,
+  `contingent_problems` and `decision`.
+- A turn with no `s1_call` is S1's own conditional answer: its decision body names
+  `source: "contingent"`, and `from_turn`/`condition` name an earlier turn whose decision holds that
+  id in `contingent` for that condition and whose option measurably ended in it. Two contingent turns
+  never follow one another. Every other turn has one or two `s1_call` entries.
 - The turn record agrees with those entries: `set_version`, `based_on_seq`, `raw_choice` (the
   answer's `choice_id` when it is a string), `effective_choice`, `executed_action` (the choice id
   of the execution the bridge did not reject) and `outcome`.

@@ -4,7 +4,8 @@ It is not the replay (#30). It re-derives what it can from the entries and lists
 test can assert that a trace the loop wrote is clean: contiguous sequence numbers, the entry order and
 refs of each turn, bodies with the documented keys, the choice set bound to its observation, the
 context hash, `parse_decision` reproducing each decision, the turn record agreeing with its entries,
-the adherence check, and the help lifecycle (one open request, each adopted or cancelled once).
+the adherence check, the help lifecycle (one open request, each adopted or cancelled once), and that a
+turn with no provider call really is S1's own earlier conditional answer for the condition that ended.
 """
 
 from __future__ import annotations
@@ -43,11 +44,15 @@ BODY_KEYS = {
     "stop": {"reason", "result", "error"},
     "end": {"status", "error", "turns", "redactions"},
 }
+# A contingent turn names where its answer came from; a turn that held one and asked S1 anyway says why, and
+# a branch S1 named that the parser dropped is recorded beside the answer it was dropped from.
+OPTIONAL_KEYS = {"decision": {"source", "from_turn", "condition", "contingent_skipped", "contingent_problems"}}
 REQUEST_KEYS = {"action_id", "choice_id", "action", "params", "based_on_seq", "max_age_s", "depends_on", "lease_s"}
 TOKENS = {"observation": "O", "choice_set": "S", "context": "C", "s1_call": "1", "decision": "D",
           "execution": "X", "option": "Q", "effect": "E", "turn": "T", "suspicion": "P", "finding": "F", "restart": "R"}
 # New traces check the observation epoch before adoption/cancellation; historical traces may resolve first.
-ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1*D(?:H?(?:X(?:EP*)?){0,2}|RR|Q)T$")
+# A contingent turn executes S1's earlier answer and so carries no `1` of its own.
+ORDER = re.compile(r"^(?:[AK]?O|O[AK]?)SP*C1{0,2}D(?:H?(?:X(?:EP*)?){0,2}|RR|Q)T$")
 
 
 def problems(entries: list[dict[str, Any]]) -> list[str]:
@@ -60,7 +65,10 @@ def problems(entries: list[dict[str, Any]]) -> list[str]:
         if entry["author"] != AUTHORS[entry["kind"]] and entry["author"] not in EXTRA_AUTHORS.get(entry["kind"], ()):
             found.append(f"entry {index} ({entry['kind']}) is authored by {entry['author']}")
         keys = BODY_KEYS.get(entry["kind"])
-        if keys is not None and set(entry["body"]) != keys:
+        if keys is not None and not keys <= set(entry["body"]):
+            found.append(f"entry {index} ({entry['kind']}) has body keys {sorted(entry['body'])}")
+        extra = set(entry["body"]) - keys if keys is not None else set()
+        if extra - OPTIONAL_KEYS.get(entry["kind"], set()):
             found.append(f"entry {index} ({entry['kind']}) has body keys {sorted(entry['body'])}")
         if entry["kind"] == "execution" and set(entry["body"]["request"]) != REQUEST_KEYS:
             found.append(f"entry {index} execution request has keys {sorted(entry['body']['request'])}")
@@ -88,7 +96,7 @@ def problems(entries: list[dict[str, Any]]) -> list[str]:
         if "recent_history" in context and tokens.startswith("A"):
             found.append(f"turn {number} adopts help before checking its observation epoch")
         try:
-            found += _turn(number, group, previous_version, records)
+            found += _turn(number, group, previous_version, records, by_turn)
             previous_version = ChoiceSet.model_validate(_one(group, "choice_set")["body"]).set_version
         except (KeyError, TypeError, ValueError) as exc:
             found.append(f"turn {number} has a malformed entry: {type(exc).__name__}: {exc}")
@@ -113,7 +121,8 @@ def _all(group: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
     return [e for e in group if e["kind"] == kind]
 
 
-def _turn(number: int, group: list[dict[str, Any]], previous_version: int, records: list[TurnRecord]) -> list[str]:
+def _turn(number: int, group: list[dict[str, Any]], previous_version: int, records: list[TurnRecord],
+          by_turn: dict[int, list[dict[str, Any]]]) -> list[str]:
     found: list[str] = []
     obs, offered = _one(group, "observation"), _one(group, "choice_set")
     context, decision = _one(group, "context"), _one(group, "decision")
@@ -121,6 +130,11 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
     calls, executions = _all(group, "s1_call"), _all(group, "execution")
     restarts = _all(group, "restart")
     options = _all(group, "option")
+    contingent = decision["body"].get("source") == "contingent"
+    if contingent and calls:
+        found.append(f"turn {number}: a contingent turn spends no provider call")
+    if not contingent and not 1 <= len(calls) <= 2:
+        found.append(f"turn {number}: needs one or two s1_call entries, has {len(calls)}")
     refs = {
         "observation": ([], obs), "choice_set": ([obs["trace_seq"]], offered),
         "context": ([obs["trace_seq"], offered["trace_seq"]], context),
@@ -179,10 +193,12 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
 
     body = decision["body"]
     parsed = parse_decision(body["answer"], choice_set, ClockMode(body["clock_mode"]))
-    again = parsed.decision.model_dump(mode="json") if parsed.decision is not None else None
+    again = parsed.decision.trace_body() if parsed.decision is not None else None
     if (parsed.valid, parsed.error, parsed.policy_default, again) != (
             body["valid"], body["error"], body["policy_default"], body["decision"]):
         found.append(f"turn {number}: parse_decision does not reproduce the decision entry")
+    if body.get("contingent_problems", []) != list(parsed.contingent_problems):
+        found.append(f"turn {number}: the decision does not record the branches the parser dropped")
 
     record = TurnRecord.model_validate(turn_entry["body"])
     records.append(record)
@@ -222,6 +238,10 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
         expected_outcome = "finished"
     if record.outcome.value != expected_outcome:
         found.append(f"turn {number}: outcome {record.outcome.value}, entries say {expected_outcome}")
+    if contingent:
+        found += _contingent(number, body, record, by_turn)
+    elif "from_turn" in body or "condition" in body:
+        found.append(f"turn {number}: a turn that called S1 names no contingent source")
     if restarts:
         done = restarts[1]["body"]
         operation = record.operation
@@ -237,6 +257,30 @@ def _turn(number: int, group: list[dict[str, Any]], previous_version: int, recor
                 found.append(f"turn {number}: operation outcome differs from the restart entries")
     elif record.operation is not None:
         found.append(f"turn {number}: a non-restart turn carries an operation outcome")
+    return found
+
+
+def _contingent(number: int, body: dict[str, Any], record: TurnRecord,
+                by_turn: dict[int, list[dict[str, Any]]]) -> list[str]:
+    """A contingent turn executes exactly the id its source turn's decision holds for the condition that happened."""
+    found: list[str] = []
+    condition, from_turn = body.get("condition"), body.get("from_turn")
+    if condition not in ("blocked", "succeeded"):
+        return [f"turn {number}: a contingent decision names no measured condition"]
+    if not isinstance(from_turn, int) or isinstance(from_turn, bool) or from_turn >= number:
+        return [f"turn {number}: a contingent decision does not name an earlier turn"]
+    source = by_turn.get(from_turn, [])
+    earlier = next((e["body"] for e in source if e["kind"] == "decision"), {})
+    answered = (earlier.get("decision") or {}).get("contingent") or {}
+    named = answered.get(f"if_{condition}")
+    if named is None:
+        found.append(f"turn {number}: turn {from_turn} holds no contingent answer for {condition}")
+    elif named != record.effective_choice or named != record.executed_action:
+        found.append(f"turn {number}: executed {record.executed_action!r}, S1's {condition} answer is {named!r}")
+    option = next((e["body"] for e in source if e["kind"] == "option"), {})
+    ended = (option.get("outcome") or {}).get("terminated_by")
+    if ended != condition:
+        found.append(f"turn {number}: turn {from_turn}'s option did not end {condition} ({ended!r})")
     return found
 
 

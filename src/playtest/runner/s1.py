@@ -40,6 +40,13 @@ codec and option ordering rather than combining with them. Positions are accumul
 cleared at a reset boundary: the loop rebinds its own scene-bound ports after a host restart but not this
 adapter, so it reads the loop's `reset_summary` (present on the first context after a restart) and, when an
 observation carries one, a changed `session` id.
+
+`contingent` is opt-in, off by default, and needs the compact menu, whose request asks `if_blocked` and
+`if_succeeded` beside `next_action` over the same criteria. When it is on, the adapter reads those two
+answers out of the response it already has and puts them in the decision (`Decision.contingent`), so the
+loop can execute what S1 chose for the branch that measurably happened without asking again. The request
+is unchanged and the response is already recorded in the `s1_call` entry; the loop's `parse_decision`
+binds each id to the offered set and nulls a branch that names nothing offered.
 """
 
 from __future__ import annotations
@@ -199,15 +206,18 @@ class _Reply:
     """One call's outcome: its `s1_call` record, the choice it named, and why there is none.
 
     `conditional` is the batched `while_pending` answer as the ledger records it, or `None` when none was asked.
+    `branches` is the compact menu's `if_blocked`/`if_succeeded` answers, or `None` when they were not asked.
     """
 
-    __slots__ = ("call", "choice", "distribution", "failure", "halt", "conditional")
+    __slots__ = ("call", "choice", "distribution", "failure", "halt", "conditional", "branches")
 
     def __init__(self, call: S1Call, choice: str | None = None, distribution: Any = None,
                  failure: str | None = None, halt: str | None = None,
-                 conditional: dict[str, Any] | None = None) -> None:
+                 conditional: dict[str, Any] | None = None,
+                 branches: dict[str, str] | None = None) -> None:
         self.call, self.choice, self.distribution, self.failure, self.halt = call, choice, distribution, failure, halt
         self.conditional = conditional
+        self.branches = branches
 
 
 class SystemOneS1:
@@ -231,6 +241,7 @@ class SystemOneS1:
         compact_state: str | Sequence[str] | None = None,
         s1_context: str = FULL_CONTEXT,
         menu_memory: Any = None,
+        contingent: bool = False,
     ) -> None:
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
@@ -302,6 +313,11 @@ class SystemOneS1:
                 raise ValueError(f"S1 arm {arm!r} does not take a plain images array; the compact menu cannot "
                                  f"attach its game view")
         self._menu_memory = menu_memory
+        if contingent and not self._menu:
+            # The branch answers are asked only by the compact menu's own request; in every other mode
+            # there is nothing to surface, and a flag that quietly did nothing would be a false claim.
+            raise ValueError("contingent answers require the compact menu (--s1-context compact-menu)")
+        self._contingent = contingent
         self._menu_positions: list[list[float]] = []
         self._menu_session: str | None = None
         self._game_view = game_view
@@ -411,6 +427,11 @@ class SystemOneS1:
         if first.distribution is not None:
             answer["distribution"] = first.distribution
         halt = first.halt
+        if self._contingent and first.branches:
+            # The menu's own request asked what to do if the chosen option ends blocked or succeeded, in the
+            # same call. Those ids are S1's answers to questions about the same offered set; the loop's
+            # parser binds them to that set and nulls any branch that names nothing offered.
+            answer["contingent"] = dict(first.branches)
         if batch:
             secondary = (first.conditional or {}).get("choice")
             if kinds[first.choice] in _HELP_KINDS and secondary is not None:
@@ -597,6 +618,7 @@ class SystemOneS1:
         note = _without_image(problem or answer_problem, image)
         resolved = _without_image((data or {}).get("model"), image)
         batch_fields = {}
+        branches = None
         if pending_criteria is not None:
             secondary, secondary_distribution, secondary_problem = replay.parse_answer(
                 self._as_next_action(data if status == 200 else None, FOLLOW_UP), set(pending_criteria))
@@ -604,6 +626,16 @@ class SystemOneS1:
                 "problem": secondary_problem, "condition": ("unknown" if choice is None else "met" if
                 next((x["kind"] for x in context["choices"] if x["id"] == choice), None) in _HELP_KINDS
                 else "condition not met")}
+        if self._contingent and menu_payload is not None:
+            # Only when the flag is on: the two branch answers are read out of this same response, which the
+            # `s1_call` entry already records in full. Nothing about the request changes.
+            branches = {}
+            for field, question in (("if_blocked", menu.BLOCKED_QUESTION),
+                                    ("if_succeeded", menu.SUCCEEDED_QUESTION)):
+                branch, _, branch_problem = replay.parse_answer(
+                    self._as_next_action(data if status == 200 else None, question), set(criteria))
+                if branch is not None and branch_problem is None:
+                    branches[field] = branch
         row = reservation.finish(**batch_fields, http_status=status, choice=choice, distribution=distribution, problem=note,
                                  latency_ms=latency_ms, resolved_model=resolved, usage=usage, cost_usd=cost)
         # The provider's response is recorded as received: its `while_pending` answer is already in it.
@@ -613,7 +645,7 @@ class SystemOneS1:
         if choice is None:
             failure = (note or "no usable answer") + (f" (HTTP {status})" if status not in (None, 200) else "")
         halt = "a provider-reported cost exceeded the per-call bound" if row["cost_bound_exceeded"] else None
-        return _Reply(call, choice, distribution, failure, halt, batch_fields.get("conditional_answer"))
+        return _Reply(call, choice, distribution, failure, halt, batch_fields.get("conditional_answer"), branches)
 
     def _count_tokens(self, usage: Any, request_text: str, has_image: bool, *, sent_ago: float = 0.0) -> None:
         """Report what a sent call used: the provider's own count, else an estimate marked as one.
