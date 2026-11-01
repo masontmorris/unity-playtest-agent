@@ -21,19 +21,21 @@ wait as a fact in that turn's context (`PacingFacts`).
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from playtest.contracts.bridge import StopResult
-from playtest.contracts.loop import ChoiceKind, OperationOutcome, OperationStatus
+from playtest.contracts.loop import Choice, ChoiceKind, OperationOutcome, OperationStatus
 from playtest.core.adherence import Violation, check_adherence
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.context import INSTRUCTIONS
 from playtest.core.ports import (
     EffectProbe,
+    Executed,
     FactsSource,
     HelpPort,
     ReaderPort,
@@ -96,6 +98,140 @@ def continuous_choice_ids(built: ManifestChoices) -> list[str]:
     return ids
 
 
+# The choices the turn loop executes itself, through its own effect path. An option is not one of them: the
+# option executor measures and files its own outcome where it runs.
+_PLAIN_KINDS = (ChoiceKind.action, ChoiceKind.skill)
+
+
+def _measured(value: Any) -> list[float] | None:
+    """A measured vector as floats, or `None` when it is not one (unknown is never zero)."""
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return None
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        number = float(item)
+        if not math.isfinite(number):
+            return None
+        out.append(number)
+    return out or None
+
+
+def _advance(displacement: Sequence[float], unit: Sequence[float]) -> float | None:
+    """The measured displacement along a unit direction, or `None` when their lengths differ."""
+    if len(displacement) != len(unit):
+        return None
+    return sum(a * b for a, b in zip(displacement, unit))
+
+
+def calibrated_direction(primitives: Any, choice_id: str) -> Any:
+    """The measured direction whose offered action is this choice, or `None` when calibration measured none.
+
+    A choice with a calibrated direction is one the primitives can say where it moves; a skill or a chord
+    (an action combining controls) usually has none, and is then only known by how far it went.
+    """
+    for direction in getattr(primitives, "directions", ()) or ():
+        if direction.action == choice_id:
+            return direction
+        if any(action == choice_id for action, _control in direction.alternatives):
+            return direction
+    return None
+
+
+def success_margin(primitives: Any, speed: float | None) -> float | None:
+    """One measured short step, or the measured speed over one observation period: the executor's own margin.
+
+    `runner.options.executor.OptionExecutor._success_margin` is the rule this mirrors, from the same two
+    measured quantities; an executor is not built here, so the rule is stated once for both. `None` when
+    neither quantity is measured: an unknown margin decides nothing, and is never zero.
+    """
+    from .options.executor import PERIOD_S, SUCCESS_MARGIN_STEPS
+
+    step = getattr(primitives, "short_step", None)
+    if isinstance(step, (int, float)) and not isinstance(step, bool) and math.isfinite(step) and step > 0:
+        return float(step) * SUCCESS_MARGIN_STEPS
+    if speed:
+        return float(speed) * PERIOD_S
+    return None
+
+
+def _termination(executed: Executed, displacement: list[float] | None, direction: Any,
+                 primitives: Any) -> str:
+    """How one executed choice ended, by the rule an option's ending uses: did the body measurably get anywhere.
+
+    A rejected input never ran, and an effect with no measured displacement says nothing about the body, so
+    both are recorded as such. Otherwise the displacement along the calibrated direction is compared with the
+    executor's success margin; with no calibrated direction the displacement's own magnitude is used, so the
+    record still says whether the body got one measured step anywhere, and stays silent about which way.
+    """
+    if executed.execution is None or executed.execution.rejected:
+        return "rejected"
+    if displacement is None:
+        return "unmeasured"
+    margin = success_margin(primitives, None if direction is None else direction.speed)
+    if margin is None:
+        return "unmeasured"
+    if direction is None:
+        reached = math.dist(displacement, (0.0,) * len(displacement))
+    else:
+        reached = _advance(displacement, direction.unit)
+        if reached is None:
+            return "unmeasured"
+    return "succeeded" if reached >= margin else "blocked"
+
+
+def choice_outcome(choice: Choice, executed: Executed, *, primitives: Any,
+                   scene: str | None) -> OptionOutcome:
+    """One executed plain action or skill as the same record an option's outcome takes.
+
+    The place, the displacement and the ending come from the effect the turn loop measured, so this memory
+    covers the choices that ran and not only the options that ran. Unknown parts stay `None`: an effect that
+    measured no position leaves the record unplaced rather than filed under a guessed cell, and a choice with
+    no calibrated direction carries none, so its best advance stays unknown instead of invented.
+    """
+    from .options.model import OptionOutcome
+
+    observed = executed.effect.observed if executed.effect is not None else None
+    fields = observed if isinstance(observed, Mapping) else {}
+    displacement = _measured(fields.get("displacement"))
+    direction = calibrated_direction(primitives, choice.id)
+    params: dict[str, Any] = {}
+    if direction is not None:
+        params["direction"] = [float(value) for value in direction.unit]
+    duration = fields.get("applied_duration_s")
+    measured_duration = (float(duration) if isinstance(duration, (int, float))
+                         and not isinstance(duration, bool) and math.isfinite(duration) else None)
+    return OptionOutcome(
+        option_id=choice.id,
+        template=choice.kind.value,  # "action" or "skill": the record says which kind of choice ran
+        params=params,
+        start_position=_measured(fields.get("from_position")),
+        end_position=_measured(fields.get("to_position")),
+        displacement=displacement,
+        terminated_by=_termination(executed, displacement, direction, primitives),
+        duration_s=measured_duration,
+        receipts=[],
+        scene=scene,
+    )
+
+
+def remember_executed(memory: Any, primitives: Any, report: Any) -> None:
+    """File every plain action and skill one turn executed under the cell it started from.
+
+    Options file their own outcome inside the option port, so this adds the turn loop's own executions and
+    changes nothing about the option path. A run without option memory records nothing.
+    """
+    if not getattr(report, "executed", ()):
+        return
+    scene = getattr(getattr(report, "observation", None), "scene", None)
+    for executed in report.executed:
+        choice = getattr(executed, "choice", None)
+        if choice is None or choice.kind not in _PLAIN_KINDS:
+            continue
+        memory.record(choice_outcome(choice, executed, primitives=primitives, scene=scene))
+
+
 async def run_session(
     client: BridgeClient,
     built: ManifestChoices,
@@ -133,6 +269,10 @@ async def run_session(
     With `restart`, an S1-selected host operation runs outside decision turns under the smaller of the
     remaining wall time and the operation's own bound. Its budgets, pacing and deadlines persist; a
     non-ready outcome ends the run closed and is never retried or resumed.
+
+    With `option_memory`, every executed plain action and skill is recorded in the same shape an option's
+    outcome takes, so a place's history covers what ran there and not only the options: an action that was
+    blocked eleven times stops reading `untried`. The option port records its own outcomes, unchanged.
 
     `instructions` is the one question text every payload carries; its default keeps today's bytes.
     """
@@ -208,6 +348,8 @@ async def run_session(
             record = await loop.run_turn()
             report = loop.last_report
             assert report is not None
+            if option_memory is not None and option_primitives is not None:
+                remember_executed(option_memory, option_primitives, report)
             failures = failures + 1 if report.provider_failed else 0
             total_failures += 1 if report.provider_failed else 0
             if record.operation is not None:
