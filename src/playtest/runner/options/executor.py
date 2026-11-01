@@ -207,7 +207,10 @@ class _Progress:
         value = self.along(position)
         self.points.append((now, value))
         horizon = now - self.window_s
-        while len(self.points) > 1 and self.points[0][0] < horizon:
+        # Keep the newest point at or before the horizon, so the measured span covers the whole window. Dropping
+        # every point older than the horizon left a span always just short of it under a real, jittery clock, so
+        # a check that needs a full window (a stall) could never fire.
+        while len(self.points) > 1 and self.points[1][0] <= horizon:
             self.points.pop(0)
         self.best = max(self.best, value)
         return value

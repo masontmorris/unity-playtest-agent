@@ -232,3 +232,31 @@ def test_hop_toward_a_gap_in_a_game_without_coyote_time_falls_honestly():
     _, primitives, spec = build("hop+x", world)
     outcome = run_spec(world, primitives, spec)
     assert outcome.terminated_by in ("fell", "state_changed"), outcome.receipts
+
+
+def _jittered(world):
+    """A real clock is never on the observation grid: each read lands a little after the physics step."""
+    reads = {"n": 0}
+    def clock():
+        reads["n"] += 1
+        return world.now + 0.0007 * (reads["n"] % 7)
+    return clock
+
+
+def test_a_stall_is_detected_under_a_jittery_clock():
+    """live-11: with timestamps off the observation grid the stall window never filled, so a body pressed against
+    a wall timed out instead of ending blocked."""
+    world = FakeWorld(x=2.9)
+    _, primitives, spec = build("traverse+x")
+    executor = OptionExecutor(world, primitives, clock=_jittered(world), sleep=world.sleep)
+    outcome = asyncio.run(executor.run(spec))
+    assert outcome.terminated_by == "blocked", outcome.receipts
+
+
+def test_hop_against_the_step_clears_it_under_a_jittery_clock():
+    world = FakeWorld(x=2.9)
+    _, primitives, spec = build("hop+x")
+    executor = OptionExecutor(world, primitives, clock=_jittered(world), sleep=world.sleep)
+    outcome = asyncio.run(executor.run(spec))
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert outcome.end_position is not None and outcome.end_position[0] > 3.0 and outcome.end_position[1] > 0.5
