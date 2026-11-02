@@ -226,6 +226,11 @@ class ReproCheck(Strict):
     two position snapshots. It shows an action that stops having its effect, which leaves the readers as they are
     at rest. It takes `<`, `<=`, `>` or `>=` and a finite number, and no tolerance; the other comparators have
     nothing to compare a displacement with.
+
+    `after_action`, on a reader field, conditions the check on one action: it is scored on the reading taken right
+    after each replayed execution of that action, and `changed` and `unchanged` compare with the reading taken right
+    before it. It shows an input that has none of its effect, a state the reset already leaves the readers in,
+    which the start-of-replay baseline can never show. An effect field already names its action and takes none.
     """
 
     field: str = Field(min_length=1, description="Dotted path into the observation, e.g. public.<reader>; or "
@@ -233,6 +238,10 @@ class ReproCheck(Strict):
     op: Comparator
     value: Any = None
     tolerance: float | None = Field(None, ge=0, description="Only for numeric == or !=")
+    after_action: str | None = Field(None, min_length=1, exclude_if=lambda value: value is None,
+                                     description="Score the reading right after each replayed execution of this "
+                                                 "action; changed and unchanged compare with the reading right "
+                                                 "before it. Reader fields only.")
 
     @model_validator(mode="after")
     def _value_needed(self) -> "ReproCheck":
@@ -256,6 +265,8 @@ class ReproCheck(Strict):
             raise ValueError("an effect check compares with a finite number")
         if self.tolerance is not None:
             raise ValueError("an effect check takes no tolerance")
+        if self.after_action is not None:
+            raise ValueError("an effect check already names its action and takes no after_action")
         return self
 
 
