@@ -710,6 +710,11 @@ class TurnLoop:
                 if while_pending.mode == "continue":
                     target = choice_set.get(while_pending.choice_id or "")
                     if target is not None and target.kind in _EXECUTABLE_KINDS:
+                        # The input S1 named while help is pending replaces whatever runs in the background.
+                        if self._running_move is not None and self._running_move.choice.id != target.id:
+                            finished_move = await self._settle_move(stop=True)
+                        if self._running_option is not None:
+                            finished_option = await self._settle_option(turn, f"S1 chose {target.id}")
                         executed, entry, effect_entry = await self._send(
                             target, observation, "while_pending", decided, turn, observed, raw_choice,
                             selected.id, help_event)
@@ -833,20 +838,9 @@ class TurnLoop:
     async def _send_background(self, choice: Choice, observation: Observation, decided: int | None, turn: int,
                                observed: int | None, raw_choice: str | None,
                                help_event: str | None) -> tuple[Executed, int | None, int | None]:
-        """Send a background move; one `stale_age` rejection is sent once more, bound to a fresh reading.
-
-        The choice is S1's; settling the move it replaces can outlast the staleness bound, so the bridge's own
-        refusal says the reading aged, not that the choice was wrong. A second refusal stands. Both attempts
-        are traced.
-        """
-        sent = await self._send(choice, observation, "choice", decided, turn, observed, raw_choice, choice.id,
+        """Send a background move bound to the observation S1 chose it from; a stale rejection stands, as in `_send`."""
+        return await self._send(choice, observation, "choice", decided, turn, observed, raw_choice, choice.id,
                                 help_event)
-        records = sent[0].execution.records if sent[0].execution is not None else ()
-        reason = getattr(records[-1], "reject_reason", None) if records else None
-        if not sent[0].execution.rejected or getattr(reason, "value", reason) != "stale_age":
-            return sent
-        fresh = await self._client.observe_once()
-        return await self._send(choice, fresh, "choice", decided, turn, observed, raw_choice, choice.id, help_event)
 
     async def _settle_move(self, *, stop: bool) -> tuple[Choice, Executed] | None:
         """Collect the background action or skill; with `stop`, release it first, verified, if it still runs.

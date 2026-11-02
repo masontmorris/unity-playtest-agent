@@ -177,3 +177,25 @@ def test_decide_during_options_runs_a_plain_move_in_the_background_and_files_it_
             await r.loop.stop('finish')
             await r.close()
     run(main)
+
+
+def test_a_while_pending_input_stops_the_background_option_before_it_runs():
+    """S1 asks for help and names an input to run meanwhile: the running option is interrupted first, so only one runs."""
+    from loop_fakes import FakeHelp
+
+    async def main():
+        port = InterruptiblePort()
+        answer = {"choice_id": "h", "while_pending": {"mode": "continue", "choice_id": "c1"}}
+        r = await rig('traverse+x', answer, 'f', choices=[*base_choices(), option()], option_port=port,
+                      decide_during_options=True, help=FakeHelp())
+        try:
+            await r.loop.run_turn()
+            await asyncio.sleep(0)
+            await r.loop.run_turn()
+            assert port.interrupted == ['S1 chose c1']
+            assert r.loop.reports[-1].finished_option[1]['terminated_by'] == 'interrupted'
+            assert r.loop.turns[-1].executed_action == 'c1'
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)

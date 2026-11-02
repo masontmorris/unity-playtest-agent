@@ -1227,3 +1227,34 @@ def test_the_detectors_are_opt_in_and_the_plan_records_the_bounds_they_measure_a
     assert recorded["fell_out"]["rise_peak"] == "unknown"      # this calibration measured no rise
     assert "no measured rise peak" in recorded["fell_out"]["silent"]
     assert recorded["reader_over_max"]["silent"].endswith("the manifest needs a declared maximum")
+
+
+def test_scene_after_close_reads_the_running_scene_or_records_why_it_could_not():
+    import asyncio
+    from types import SimpleNamespace
+    from playtest.runner.cli import scene_after_close
+
+    class Client:
+        def __init__(self, scene=None, fail=False):
+            self.scene, self.fail, self.closed = scene, fail, False
+        async def observe_once(self):
+            if self.fail:
+                raise RuntimeError("no session")
+            return SimpleNamespace(scene=self.scene, seq=4, wall_utc=None)
+        async def stop(self, reason):
+            return None
+        async def aclose(self):
+            self.closed = True
+
+    client = Client("Level2")
+    async def connect():
+        return client
+    assert asyncio.run(scene_after_close(connect)) == {"scene": "Level2", "seq": 4, "wall_utc": None}
+    assert client.closed
+    async def refused():
+        raise OSError("refused")
+    assert asyncio.run(scene_after_close(refused))["scene"] is None
+    failing = Client(fail=True)
+    async def connect_failing():
+        return failing
+    assert asyncio.run(scene_after_close(connect_failing))["error"].startswith("RuntimeError")

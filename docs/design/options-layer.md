@@ -204,3 +204,25 @@ class OutcomeMemory:
 
 W1b wires these into choices, the turn loop and the trace. W3's `BridgeClient.place(position, settle_s)` returns a
 typed `PlaceResult`. W1a's `place` template calls it, and tests use a fake client.
+
+## 8. Clearing a level from first principles (2026-11-02)
+
+Live-38 completed DragonBlaze Level1 through gameplay: Unity loaded `Level2` after S1's `sweep` option pressed
+the game's interact control at the level's end. The agent holds no knowledge of the level. Each piece below is
+opt-in, and a run that sets none of them keeps its bytes.
+
+| Flag (env) | What it adds |
+|---|---|
+| `--measure-air-rise` (`UPA_RUN_MEASURE_AIR_RISE`) | Before play, the rise is pressed from rest, then again at the apex it measured (`runner/options/air_rise.py`). `hop2±x` is offered only when every second press rose more than a quarter higher. Both hop labels then show measured flight numbers (`air T s, peak P`). DragonBlaze: 2.71 → 5.43. |
+| `--decide-during-options` (`UPA_RUN_DECIDE_DURING_OPTIONS`) | Options, actions and skills run in the background, and S1 is asked again at once. Re-picking the running one keeps it going; any other non-help choice stops it first (`interrupted`, released, measured). A hop or a sweep is committed: the loop waits for it to finish before it observes and asks again. |
+| `--keep-help-across-restart` (`UPA_RUN_KEEP_HELP_ACROSS_RESTART`) | An open help request survives S1's own restart into the same scene. Its answer is kept, and its directive is re-anchored to the new session. |
+| `--frontier-advice` (`UPA_RUN_FRONTIER_ADVICE`) | The frontier is asked for gameplay advice (`roles.frontier.ADVICE_SYSTEM`), including an untried choice when everything tried at a place failed. |
+| `--hold-met-directive` (`UPA_RUN_HOLD_MET_DIRECTIVE`) | A directive whose setpoint was met stays shown, marked `(met)`, until its own deadline. |
+
+Always on:
+
+- A plain action or skill that drops past the options' fall bound (`executor.fell_bound`) is `fell`, and so is a hop that lands that far below its take-off. A fall never sets a cell's `best`.
+- One `stale_age` rejection of an option's own input is sent once more on a fresh reading. A plain action's or skill's stale rejection stands.
+- The `sweep` template is offered by `choices.sweep_spec` at a place where at least three choices were tried, with the plain controls never tried there, least calibrated motion first. It presses each once and ends `state_changed` on a scene change, else `blocked`. Every control it pressed is filed as tried at that place.
+- Labels carry measured facts only: the escalate label's run help record, restart "drops the open advice", finish "scene unchanged since the run began", untried labels "N others tried here, none got on". Choice rows no longer repeat what their label already says.
+- When the bridge closes the session (it does so on a scene change), one fresh connection reads the running scene. A scene different from the run's start ends the run `complete` with `ending: scene_changed`, and nothing is replayed.

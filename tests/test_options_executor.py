@@ -629,3 +629,28 @@ def test_a_sweep_ends_state_changed_at_the_first_control_the_scene_changes_on():
     outcome = run_spec(world, primitives, sweep)
     assert outcome.terminated_by == "state_changed" and "changed the scene" in str(outcome.receipts)
     assert [row["action"] for row in outcome.measured["tried"]] == ["move_left"]
+
+
+def test_a_sweep_is_committed_so_an_interrupt_lets_its_presses_finish():
+    world, primitives, _ = build("traverse+x")
+    sweep = OptionSpec(option_id="sweep", template="sweep", params={"actions": ["rise_up", "move_left"]},
+                       intent="try each untried control once")
+
+    async def yielding(seconds):
+        await world.sleep(seconds)
+        await asyncio.sleep(0)
+
+    async def main():
+        executor = OptionExecutor(world, primitives, clock=world.clock, sleep=yielding, wall_clock=world.wall_clock)
+        task = asyncio.create_task(executor.run(sweep))
+        for _ in range(2000):
+            if executor.committed or task.done():
+                break
+            await asyncio.sleep(0)
+        assert executor.committed
+        executor.interrupt("S1 chose wait")
+        return await task
+
+    outcome = asyncio.run(main())
+    assert outcome.terminated_by == "blocked"
+    assert [row["action"] for row in outcome.measured["tried"]] == ["rise_up", "move_left"]

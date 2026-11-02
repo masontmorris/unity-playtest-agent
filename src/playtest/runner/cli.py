@@ -31,7 +31,7 @@ import math
 import os
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -583,6 +583,26 @@ def _plan_memory(run_dir: Path, facts: Mapping[str, Any]) -> None:
         return
 
 
+async def scene_after_close(connect: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
+    """The scene a fresh bridge connection observes after the run's session closed, or the error that stopped it."""
+    try:
+        client = await connect()
+    except Exception as exc:  # noqa: BLE001 - nothing to observe is a recorded fact, not a failure of the run
+        return {"scene": None, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        observation = await client.observe_once()
+        return {"scene": observation.scene, "seq": observation.seq,
+                "wall_utc": observation.wall_utc.isoformat() if observation.wall_utc else None}
+    except Exception as exc:  # noqa: BLE001
+        return {"scene": None, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        try:
+            await client.stop("finish")
+        except Exception:  # noqa: BLE001
+            pass
+        await client.aclose()
+
+
 async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoices, objective: str,
                ledger: call_budget.Ledger, approval: dict[str, Any], args: argparse.Namespace,
                manifest_sha: str, catalog_sha: str, calibration: dict[str, Any] | None = None,
@@ -702,6 +722,14 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 keep_help_across_restart=args.keep_help_across_restart,
                 decide_during_options=args.decide_during_options)
             closing = (result.status, result.error)
+            after_close = None
+            if result.error is not None and "closed" in result.error:
+                # The bridge closes the session when the active scene changes. One fresh connection reads which
+                # scene is running now; a different one is the run's measured ending, never assumed.
+                after_close = await scene_after_close(
+                    lambda: BridgeClient.connect_from_project(project, timeout_s=10.0))
+                if after_close.get("scene") is not None and after_close["scene"] != scene:
+                    closing = ("complete", None)
             turns = result.loop.turns
             summary = {
                 "version": 1, "status": result.status, "ending": result.ending, "error": result.error,
@@ -744,6 +772,12 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 },
                 "trace": TRACE_FILE,
             }
+            if after_close is not None:
+                summary["scene_after_close"] = after_close
+                if after_close.get("scene") is not None and after_close["scene"] != scene:
+                    summary.update(status="complete", ending="scene_changed", error=None,
+                                   scene_changed={"from": scene, "to": after_close["scene"],
+                                                  "closed_with": result.error})
         except BaseException as exc:  # the loop has stopped and released its inputs; the trace still gets its end
             closing = ("inconclusive", _describe(exc))
             raise

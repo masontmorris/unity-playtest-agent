@@ -598,7 +598,7 @@ class OptionExecutor:
         self._interrupted.set()
 
     async def until_landed(self) -> None:
-        """Return once no hop is under way (at once when none is)."""
+        """Return once no committed option (a hop or a sweep) is under way (at once when none is)."""
         await self._uncommitted.wait()
 
     @property
@@ -621,7 +621,12 @@ class OptionExecutor:
         elif spec.template in ("traverse", "retreat"):
             await self._move(run)
         elif spec.template == "sweep":
-            await self._sweep(run)
+            # Committed like a hop: each press is a measurement, and a press cut short measures nothing.
+            self._uncommitted.clear()
+            try:
+                await self._sweep(run)
+            finally:
+                self._uncommitted.set()
         else:  # OptionSpec already rejects an unknown template; this is the fail-closed remainder.
             run.end("rejected", f"no executor for template {spec.template!r}")
 
