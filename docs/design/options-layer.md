@@ -237,7 +237,8 @@ The same layer runs on a first-person body whose moves turn with it. Nothing in 
 - On a 3D probe only, the menu states:
   - where a tilted floor rises. It marks the move whose measured turn faces it ("floor rises this way"), or else the nearest turn, with what is left.
   - "no floor found D ahead", or a floor ahead lower than the highest measured jump peak. This goes on every straight-ahead choice and replaces the rising mark on that path.
-  - the height now against the highest reached, on the finish label.
 - A restart that times out with the run's wall time used up ends the run `wall_limit`. The loop bounds a restart by the remaining time.
 
 FPSKit live-08 to live-11 each climbed the long staircase to its top (y 7.1 to 7.3). S1 then stepped off the end each time: the strip moves step a fixed 2.0 units, and finish ranked second (0.16 and 0.12) behind a move. Choosing to finish there stays S1's decision.
+
+A finish label carrying "height now H, highest reached M" (live-10 to live-11) was removed. A label matcher reads "now at the highest point reached" as completion whatever the objective. It said so on flat ground at every run's start, and in the FPSKit bug-hunt sessions S1 finished early with that label on the menu. A highest point also counts mid-jump readings, so it is not a standing height.
