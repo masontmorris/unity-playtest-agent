@@ -682,3 +682,21 @@ def test_a_body_relative_traverse_with_no_measured_facing_is_rejected():
                       intent="traverse forward")
     outcome = run_spec(world, primitives, body)
     assert outcome.terminated_by == "rejected" and "facing is unmeasured" in str(outcome.receipts)
+
+
+def test_a_body_relative_hop_resolves_its_direction_from_the_measured_yaw_and_clears_the_step():
+    """Forward in the entity's basis at yaw 90 is world +x: the same hop as hop+x, measured the same way."""
+    world, primitives, spec = build("hop+x")
+    body = OptionSpec(option_id="hop:forward", template="hop",
+                      params={**spec.params, "direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward",
+                              "run_up_action": "move_left"},
+                      intent="hop forward")
+    original = world.observe_once
+
+    async def facing_plus_x():
+        return (await original()).model_copy(update={"view": {"yaw_deg": 90.0, "pitch_deg": 0.0}})
+
+    world.observe_once = facing_plus_x  # type: ignore[method-assign]
+    outcome = run_spec(world, primitives, body)
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert [round(v, 6) for v in outcome.measured["world_direction"]] == [1.0, 0.0, 0.0]

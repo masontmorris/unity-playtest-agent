@@ -226,3 +226,18 @@ Always on:
 - The `sweep` template is offered by `choices.sweep_spec` at a place where at least three choices were tried, with the plain controls never tried there, least calibrated motion first. It presses each once and ends `state_changed` on a scene change, else `blocked`. Every control it pressed is filed as tried at that place.
 - Labels carry measured facts only: the escalate label's run help record, restart "drops the open advice", finish "scene unchanged since the run began", untried labels "N others tried here, none got on". Choice rows no longer repeat what their label already says.
 - When the bridge closes the session (it does so on a scene change), one fresh connection reads the running scene. A scene different from the run's start ends the run `complete` with `ending: scene_changed`, and nothing is replayed.
+
+### 3D bodies (FPSKit, 2026-11-02)
+
+The same layer runs on a first-person body whose moves turn with it. Nothing in it names a game:
+
+- A direction measured in the entity's own basis (calibration `world_right`/`world_forward`) is offered as `traverse:<label>`, `hop:<label>` and `hop2:<label>`, resolved against the facing at the option's start. FPSKit: a forward hop peaks at 1.94, a double one at 3.97.
+- Background work that ended before a turn is collected at that turn's start and filed (memory, `recent`) before S1 is asked, so the question that follows a fall states it. The coverage fact counts background moves and options.
+- Plain moves started in the background are dispatched inside the turn, so the input reaches the bridge as fresh as the decision.
+- On a 3D probe only, the menu states:
+  - where a tilted floor rises. It marks the move whose measured turn faces it ("floor rises this way"), or else the nearest turn, with what is left.
+  - "no floor found D ahead", or a floor ahead lower than the highest measured jump peak. This goes on every straight-ahead choice and replaces the rising mark on that path.
+  - the height now against the highest reached, on the finish label.
+- A restart that times out with the run's wall time used up ends the run `wall_limit`. The loop bounds a restart by the remaining time.
+
+FPSKit live-08 to live-11 each climbed the long staircase to its top (y 7.1 to 7.3). S1 then stepped off the end each time: the strip moves step a fixed 2.0 units, and finish ranked second (0.16 and 0.12) behind a move. Choosing to finish there stays S1's decision.

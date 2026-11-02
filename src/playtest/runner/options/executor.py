@@ -1032,6 +1032,17 @@ class OptionExecutor:
         if unit is None:
             run.end("rejected", "the option carries no measured direction")
             return
+        if params.get("basis") == "body":
+            # Measured in the entity's own basis: resolved once against its facing now, as a traverse is.
+            if await self._tick(run) is None:
+                return
+            world = _body_to_world(unit, self._last_obs)
+            if world is None:
+                run.end("rejected", "the entity's facing is unmeasured, so a body-relative direction has no "
+                                    "world direction")
+                return
+            unit = world
+            run.measured["world_direction"] = list(world)
         direction = self._primitives.aligned(unit)
         move_action = params.get("action") or (direction.action if direction else None)
         if not move_action:

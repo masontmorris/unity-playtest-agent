@@ -137,3 +137,23 @@ def test_a_rise_that_gains_nothing_still_labels_the_plain_hop_with_its_measured_
     air, _ = measured(air_presses=0)
     derived = with_air_rise(primitives(), air)
     assert derived.rest_flight_s == air.rest_airtime_s and derived.air_rise_peak is None
+
+
+def test_a_measured_flight_supplies_the_rise_airtime_calibration_left_unknown_and_enables_a_body_hop():
+    """No airtime from calibration: the probe's flights from rest supply it, and a body-relative chord hops."""
+    from playtest.runner.options.primitives import Direction
+    forward = Direction(label="forward", action="move_forward", control="w", unit=(0.0, 0.0, 1.0), speed=5.0,
+                        spread=None, step=0.4, trials=2, basis="body")
+    back = Direction(label="back", action="move_back", control="s", unit=(0.0, 0.0, -1.0), speed=5.0,
+                     spread=None, step=0.4, trials=2, basis="body")
+    rise = Primitive(action="jump", control="space", kind="rise", vector=(0.0, 1.0, 0.0), spread=None, trials=2)
+    base = Primitives(body_directions=(forward, back), rise=rise, rise_duration_s=None, rise_peak=1.9,
+                      chords=(("move_forward", "jump", "running_jump"),))
+    assert not base.can_hop
+    body = Body(air_presses=0)
+    air = asyncio.run(measure_air_rise(body, base, clock=body.clock, sleep=body.sleep))
+    derived = with_air_rise(base, air)
+    assert derived.rise_duration_s == air.rest_airtime_s and derived.can_hop
+    specs = {spec.option_id: spec for spec in option_specs(derived)}
+    hop = specs["hop:forward"].params
+    assert hop["basis"] == "body" and hop["chord"] == "running_jump" and hop["run_up_action"] == "move_back"

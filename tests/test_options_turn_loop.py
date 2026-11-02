@@ -241,3 +241,31 @@ def test_a_committed_hop_runs_to_its_end_before_the_next_question():
             await r.loop.stop('finish')
             await r.close()
     run(main)
+
+
+def test_background_work_that_ended_is_filed_before_the_next_question():
+    """A hop that ended (here: fell) is handed to the settle hook before S1 is asked, so the question states it."""
+    async def main():
+        port = InterruptiblePort()
+        settled: list = []
+        r = await rig('hop+x', lambda context: (settled and 'c1') or 'f', 'f',
+                      choices=[*base_choices(), hop()], option_port=port, decide_during_options=True,
+                      on_settled=settled.append)
+        try:
+            await r.loop.run_turn()                       # the hop starts in the background
+            asyncio.get_running_loop().call_later(0.05, port.release.set)
+            second = await r.loop.run_turn()              # waits, files the hop, then asks: S1 already sees it
+            assert second.effective_choice == 'c1'
+            (early,) = settled
+            assert early.record is None and early.selected is None and early.option_running
+            assert early.finished_option[0].id == 'hop+x' and early.finished_option[1]['terminated_by'] == 'succeeded'
+            report = r.loop.reports[-1]
+            assert report.settled_before_decision and report.finished_option[0].id == 'hop+x'
+            await asyncio.wait({r.loop._running_move.task})  # c1 ends before the next turn starts
+            await r.loop.run_turn()                       # so finish's turn collects c1 before its question too
+            assert [s.finished_move[0].id for s in settled[1:]] == ['c1']
+            assert r.loop.reports[-1].settled_before_decision
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)

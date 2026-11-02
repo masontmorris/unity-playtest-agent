@@ -232,6 +232,48 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
         for row in payload["choices"]:
             if row["label"].endswith(UNTRIED):
                 row["label"] = f"{row['label']}{SEPARATOR}{tried} others tried here, none got on"
+    drop = forward_drop(probe, _jump_peak(offered))
+    if drop is not None:
+        # The floor ahead along the facing ends, or lies lower than the highest measured jump: stated on every
+        # choice that goes straight ahead, since that is the path the probe measured, and on the progress line
+        # when it does not already say where the floor edge is.
+        distance, depth = drop
+        stated = (f"no floor found {_n(distance)} ahead" if depth is None
+                  else f"floor drops {_n(depth)} at {_n(distance)} ahead")
+        if depth is not None:
+            payload["progress"] += f"; {stated}"
+        for row in payload["choices"]:
+            if _goes_ahead(next((c for c in offered if c.id == row["id"]), None)):
+                row["label"] = f"{row['label']}{SEPARATOR}{stated}"
+    uphill = uphill_bearing(probe)
+    if uphill is not None:
+        # The floor under the body measurably tilts: where it rises, relative to facing, is stated on the progress
+        # line, and on the one choice whose measured turn faces it. A measurement, not a recommendation.
+        side = "right" if uphill > 0 else "left"
+        payload["progress"] += f"; floor rises {abs(uphill):.0f}° {side} of facing"
+        # A path the forward probe measured ending is not marked as rising: that direct reading is the one stated.
+        turns = [(abs(turn - uphill), row) for row in payload["choices"]
+                 for choice in [next((c for c in offered if c.id == row["id"]), None)]
+                 for turn in [_measured_turn(choice)]
+                 if turn is not None and not (drop is not None and _goes_ahead(choice))]
+        if turns:
+            gap, row = min(turns, key=lambda item: item[0])
+            if gap <= UPHILL_MATCH_DEG:
+                row["label"] = f"{row['label']}{SEPARATOR}floor rises this way"
+            elif gap < abs(uphill):
+                # No measured turn faces it: the one that turns nearest says how far off its new facing it still is.
+                turn = _measured_turn(next(c for c in offered if c.id == row["id"]))
+                rest = "right" if uphill - turn > 0 else "left"
+                row["label"] = f"{row['label']}{SEPARATOR}floor rises {gap:.0f}° {rest} of where this faces"
+    heights = _heights(measured, position, probe)
+    if heights is not None:
+        # On a 3D floor the height is measured too: where the body is now against the highest point it reached.
+        for row in payload["choices"]:
+            if row["kind"] == ChoiceKind.finish.value:
+                now, highest = _n(heights[0]), _n(heights[1])
+                stated = (f"now at the highest point reached, {now}" if now == highest
+                          else f"height now {now}, highest reached {highest}")
+                row["label"] = f"{row['label']}{SEPARATOR}{stated}"
     if start_scene is not None and scene == start_scene:
         # What finishing would end, measured: the run is still in the scene it began in. A completed scene loads
         # the next one, so an unchanged scene is the one completion fact the run measures.
@@ -592,6 +634,112 @@ def _grounded(probe: Any, cell: float) -> bool | None:
         return None
     delta = _num(under.get("delta_y"))
     return True if delta is not None and abs(delta) <= GROUNDED_FRACTION * cell else None
+
+
+UPHILL_TILT = math.sin(math.radians(8.0))  # a floor tilted less than this states no uphill direction
+UPHILL_MATCH_DEG = 12.0  # the choice whose measured turn is within this of the uphill bearing is marked
+_TURN = re.compile(r"turn (left|right) [0-9.]+° \(measured inputs total ([0-9.]+)°\)")
+_VIEW_TURN = re.compile(r"calibrated view turn yaw (-?[0-9.]+) degrees")
+
+
+def uphill_bearing(probe: Any) -> float | None:
+    """Degrees from the probe's facing to where the floor under the body rises (right positive), or None.
+
+    Only a 3D probe states it: the floor normal under the body, tilted past `UPHILL_TILT`, points down the slope,
+    so the slope rises against its horizontal part. A flat, unmeasured or 2D floor states nothing.
+    """
+    if not isinstance(probe, Mapping):
+        return None
+    basis = probe.get("basis") if isinstance(probe.get("basis"), Mapping) else {}
+    under = probe.get("under") if isinstance(probe.get("under"), Mapping) else {}
+    if basis.get("plane") != "3d" or under.get("hit") is not True:
+        return None
+    normal, forward = _vector(under.get("normal")), _vector(basis.get("forward"))
+    if normal is None or forward is None or len(normal) < 3 or len(forward) < 3:
+        return None
+    up = (-normal[0], -normal[2])
+    tilt = math.hypot(*up)
+    if tilt < UPHILL_TILT or math.hypot(forward[0], forward[2]) <= 0:
+        return None
+    angle = math.atan2(up[0] * forward[2] - up[1] * forward[0], up[0] * forward[0] + up[1] * forward[2])
+    return math.degrees(angle)
+
+
+def forward_drop(probe: Any, peak: float | None) -> tuple[float, float] | None:
+    """The nearest distance ahead where the floor ends or lies lower than `peak` across the whole probed width.
+
+    Only a 3D probe states it. A distance where no sample found a floor returns (distance, None). A floor found
+    lower than the highest measured jump, one the body measurably cannot jump back up to, returns (distance,
+    how far below); with no measured jump peak only the first kind is stated. None when neither is measured.
+    """
+    if not isinstance(probe, Mapping):
+        return None
+    basis = probe.get("basis") if isinstance(probe.get("basis"), Mapping) else {}
+    if basis.get("plane") != "3d":
+        return None
+    rows: dict[float, list[float | None]] = {}
+    for sample in probe.get("samples") or ():
+        if not isinstance(sample, Mapping) or sample.get("hit") not in (True, False):
+            continue
+        ahead, delta = _num(sample.get("forward")), _num(sample.get("delta_y"))
+        if ahead is None or ahead <= 0:
+            continue
+        if sample.get("hit") is False:
+            rows.setdefault(ahead, []).append(None)  # no floor within the probe's reach
+        elif delta is not None:
+            rows.setdefault(ahead, []).append(delta)
+    for ahead in sorted(rows):
+        found = [delta for delta in rows[ahead] if delta is not None]
+        if not found:
+            return ahead, None
+        if peak is not None and len(found) == len(rows[ahead]) and max(found) < -peak:
+            return ahead, -max(found)
+    return None
+
+
+def _heights(measured: Sequence[Sequence[float]], position: Any, probe: Any) -> tuple[float, float] | None:
+    """(height now, highest height measured this run) for a 3D probe with a measured position, else None."""
+    basis = probe.get("basis") if isinstance(probe, Mapping) and isinstance(probe.get("basis"), Mapping) else {}
+    current = _vector(position)
+    if basis.get("plane") != "3d" or current is None or len(current) < 2:
+        return None
+    return current[1], max([current[1], *(value[1] for value in measured if len(value) > 1)])
+
+
+def _jump_peak(offered: Sequence[Any]) -> float | None:
+    """The highest measured jump peak any offered hop states, or None when no hop is offered."""
+    peaks = [value for choice in offered if _kind(choice) is ChoiceKind.option
+             for key in ("air_peak", "rise_peak")
+             for value in [_num((getattr(choice, "params", None) or {}).get(key))] if value is not None]
+    return max(peaks) if peaks else None
+
+
+def _goes_ahead(choice: Any) -> bool:
+    """A choice that moves straight along the facing: a pointing move with no turn, or a body-forward option."""
+    if choice is None:
+        return False
+    if _kind(choice) is ChoiceKind.option:
+        params = getattr(choice, "params", None) or {}
+        return params.get("basis") == "body" and params.get("label") == "forward"
+    return "(straight ahead)" in (getattr(choice, "label", "") or "")
+
+
+def _measured_turn(choice: Any) -> float | None:
+    """The measured turn a choice's own label states (right positive); straight ahead is 0.
+
+    A pointing choice states its turn; an action that turns the view in place states its calibrated yaw. An
+    action that also moves, or turns by zero, states no turn here.
+    """
+    label = getattr(choice, "label", "") or ""
+    if "(straight ahead)" in label:
+        return 0.0
+    match = _TURN.search(label)
+    if match is not None:
+        return float(match.group(2)) * (1 if match.group(1) == "right" else -1)
+    view = _VIEW_TURN.search(label)  # an action's calibrated turn, right positive as the bridge measures yaw
+    if view is not None and _EFFECT.search(label) is not None and float(_EFFECT.search(label).group(1)) == 0.0:
+        return float(view.group(1)) or None
+    return None
 
 
 def _probe_summary(probe: Any) -> str | None:

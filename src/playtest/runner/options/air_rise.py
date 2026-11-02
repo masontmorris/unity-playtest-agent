@@ -25,6 +25,7 @@ SETTLE_S = 2.0            # longest wait for the body to come to rest between ri
 SETTLED_READINGS = 3      # consecutive still readings that count as at rest
 MAX_AGE_S = 1.0
 PROBE_ID = "air-rise"
+UNMEASURED_RISE_LEASE_S = 0.5  # the press held when calibration measured no airtime for the rise
 
 
 @dataclass(frozen=True)
@@ -167,9 +168,11 @@ async def measure_air_rise(client: Any, primitives: Any, *, clock: Callable[[], 
                            sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep) -> AirRise | None:
     """Measure rises from rest, then rises pressed again at their measured apex. `None` without a measured rise."""
     rise = getattr(primitives, "rise", None)
-    lease = getattr(primitives, "rise_duration_s", None)
+    # The rise is held through its measured airtime; with none measured, through a bounded press, and this
+    # probe then measures the airtime itself.
+    lease = getattr(primitives, "rise_duration_s", None) or UNMEASURED_RISE_LEASE_S
     peak = getattr(primitives, "rise_peak", None)
-    if rise is None or not lease or not peak:
+    if rise is None or not peak:
         return None
     eps = max(1e-3, 0.02 * float(peak))
     probe = _Probe(client, rise.action, float(lease), eps, clock, sleep)
@@ -198,6 +201,9 @@ def with_air_rise(primitives: Any, air: AirRise | None) -> Any:
     if air is None:
         return primitives
     rest = dataclasses.replace(primitives, rest_rise_peak=air.rest_peak, rest_flight_s=air.rest_airtime_s)
+    if rest.rise_duration_s is None and air.rest_airtime_s is not None:
+        # Calibration measured no airtime for the rise; this probe's flights from rest did.
+        rest = dataclasses.replace(rest, rise_duration_s=air.rest_airtime_s)
     if not air.gained:
         return rest
     return dataclasses.replace(rest, air_rise_peak=air.pressed_peak, air_press_s=air.press_s,
