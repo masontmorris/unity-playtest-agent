@@ -268,9 +268,10 @@ class Primitives:
         """A hop needs a measured rise time, a measured move direction and a declared chord."""
         if self.rise is None or self.rise_duration_s is None or self.rise_peak is None:
             return False
-        if not self.directions:
+        moves = (*self.directions, *self.body_directions)
+        if not moves:
             return False
-        return any(self.chorded_move(item) is not None for item in self.directions)
+        return any(self.chorded_move(item) is not None for item in moves)
 
     # --- chords --------------------------------------------------------------------------
 
@@ -284,7 +285,7 @@ class Primitives:
         if not catalog:
             return self
         move_controls: dict[str, str] = {}
-        for item in self.directions:
+        for item in (*self.directions, *self.body_directions):
             if item.control is not None:
                 move_controls.setdefault(item.control, item.action)
             for action, control in item.alternatives:
@@ -926,6 +927,42 @@ def option_specs(primitives: Primitives) -> list[OptionSpec]:
                     intent=(f"hop ×2 {direction.label}: run-up {_text(run_up, 2)}, "
                             f"rise {_text(primitives.air_flight_s, 2)} s, "
                             f"peak {_text(primitives.air_rise_peak, 2)}"),
+                ))
+
+    if primitives.can_hop:
+        by_label = {d.label: d for d in primitives.body_directions}
+        back_of = {"forward": "back", "back": "forward", "left": "right", "right": "left"}
+        for direction in primitives.body_directions:
+            # A hop measured in the entity's own basis: the chord that presses its move with the rise, and the
+            # run-up on the opposite body move. Resolved to a world direction when the option starts.
+            chorded = primitives.chorded_move(direction)
+            back = by_label.get(back_of[direction.label])
+            if chorded is None or back is None:
+                continue
+            move_action, chord = chorded
+            run_up = primitives.run_up(direction)
+            body = {"direction": list(direction.unit), "basis": "body", "label": direction.label,
+                    "action": move_action, "rise_action": primitives.rise.action if primitives.rise else None,
+                    "chord": chord, "run_up": run_up, "run_up_action": back.action,
+                    "launch_distance": primitives.launch_distance(direction),
+                    "speed": direction.speed, "step": direction.step}
+            specs.append(OptionSpec(
+                option_id=f"hop:{direction.label}", template="hop",
+                params={**body, "flight_s": primitives.rise_duration_s, "rise_peak": primitives.rise_peak,
+                        **({"air_s": primitives.rest_flight_s, "air_peak": primitives.rest_rise_peak}
+                           if primitives.rest_flight_s is not None and primitives.rest_rise_peak is not None
+                           else {})},
+                intent=(f"hop {direction.label}: run-up {_text(run_up, 2)}, "
+                        f"rise {_text(primitives.rise_duration_s, 2)} s, peak {_text(primitives.rise_peak, 2)}"),
+            ))
+            if primitives.air_rise_peak is not None and primitives.air_press_s and primitives.air_flight_s:
+                specs.append(OptionSpec(
+                    option_id=f"hop2:{direction.label}", template="hop",
+                    params={**body, "flight_s": primitives.air_flight_s, "rise_peak": primitives.air_rise_peak,
+                            "air_press_s": primitives.air_press_s, "air_s": primitives.air_flight_s,
+                            "air_peak": primitives.air_rise_peak},
+                    intent=(f"hop \u00d72 {direction.label}: run-up {_text(run_up, 2)}, "
+                            f"rise {_text(primitives.air_flight_s, 2)} s, peak {_text(primitives.air_rise_peak, 2)}"),
                 ))
 
     for direction in primitives.body_directions:

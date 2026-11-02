@@ -64,3 +64,13 @@ def test_the_wrapper_appends_one_line_after_the_inner_facts_and_forwards_the_res
 def test_the_line_recommends_nothing():
     line = coverage_line([report(sent("move"))], OFFERED).lower()
     assert not any(word in line for word in ("should", "try", "next", "recommend", "consider"))
+
+
+def test_background_moves_and_options_a_report_collected_are_counted():
+    moved = SimpleNamespace(executed=(), finished_move=(SimpleNamespace(id="move"), sent("move")),
+                            finished_option=(SimpleNamespace(id="hop:forward"), {}), option_outcome=None)
+    rejected = SimpleNamespace(executed=(), finished_move=(SimpleNamespace(id="turn"), sent("turn", rejected=True)))
+    ran = SimpleNamespace(executed=(), selected=SimpleNamespace(id="traverse+x"), option_outcome={})
+    assert coverage_line([moved, rejected, ran], OFFERED) == (
+        "Inputs sent so far this run, by choice: hop:forward 1, move 1, traverse+x 1. "
+        "Offered actions and skills not sent yet this run: turn, use, hop.")

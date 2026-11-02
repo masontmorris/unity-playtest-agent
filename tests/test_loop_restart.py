@@ -352,3 +352,26 @@ def test_kept_help_survives_a_restart_into_the_same_scene_and_is_adopted_after_i
             await game.stop()
 
     asyncio.run(scenario())
+
+
+def test_a_restart_timed_out_by_the_runs_own_end_is_the_wall_limit_and_an_early_one_an_error():
+    async def scenario(spent: float) -> str:
+        fake = FakeTime(start=1000.0)
+
+        def spend(context: dict[str, Any]) -> str:
+            fake.now += spent
+            return RESTART_ID
+
+        restart = FakeRestart(status=OperationStatus.timeout)
+        r = await rig(spend, choices=[*choices(), restart_choice()], restart=restart, generation=G0)
+        built = ManifestChoices(choices=[*choices(), restart_choice()], expected={}, leases={})
+        try:
+            result = await run_session(
+                r.client, built, s1=r.s1, objective="Exercise the controls.", restart=restart,
+                generation=G0, wall_limit_s=10.0, clock=fake.clock, sleep=fake.sleep)
+            return result.ending
+        finally:
+            await r.close()
+
+    assert asyncio.run(scenario(9.8)) == "wall_limit"   # its deadline was the 0.2 s the run had left
+    assert asyncio.run(scenario(4.0)) == "error"        # six seconds left: a host that did not answer

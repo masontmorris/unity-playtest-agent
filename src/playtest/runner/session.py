@@ -21,6 +21,7 @@ wait as a fact in that turn's context (`PacingFacts`).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import math
 import time
 from collections import Counter
@@ -53,6 +54,9 @@ from .resources import SessionFacts
 
 MAX_PROVIDER_FAILURES = 3
 WALL_LIMIT_S = 600.0
+# A restart that timed out with no more than this much wall time left was cut by the run's own end: the
+# loop's restart deadline is the run's remaining wall time, so its timeout is the wall limit, not a host fault.
+RESTART_WALL_SLACK_S = 0.5
 # The oldest observation the bridge will still run an action against. The action can only be as fresh as
 # S1's decision is fast. The age it measured at the bridge (observation to act) was:
 # - 29 Oct reader run: median 0.41 s, 95th percentile 0.65 s;
@@ -348,6 +352,14 @@ async def run_session(
             choices = options_choices(list(choices), option_primitives, option_memory, observation,
                                       placement=placement, regions=reach_regions)
         return choices
+
+    def file_settled(report):
+        # Background work collected before S1 is asked: filed now, so this turn's question states its result.
+        if option_memory is not None and option_primitives is not None:
+            remember_executed(option_memory, option_primitives, report)
+            note = getattr(s1, "note_turn", None)
+            if note is not None:
+                note(report, option_primitives)
     loop = TurnLoop(
         client, choices=configured.choices, max_age_s=max_age_s, leases=configured.leases,
         objective=objective, s1=s1, view=view, help=help, facts=paced if paced is not None else resources,
@@ -364,6 +376,7 @@ async def run_session(
         instructions=instructions,
         keep_help_across_restart=keep_help_across_restart,
         decide_during_options=decide_during_options,
+        on_settled=file_settled if decide_during_options else None,
     )
     bind = getattr(probe, "bind_observation_source", None)
     if bind is not None:  # the probe states the surroundings of the observation each action was bound to
@@ -391,6 +404,8 @@ async def run_session(
             report = loop.last_report
             assert report is not None
             if option_memory is not None and option_primitives is not None:
+                if report.settled_before_decision:  # its finished work was filed before the decision
+                    report = dataclasses.replace(report, finished_option=None, finished_move=None)
                 remember_executed(option_memory, option_primitives, report)
                 # The same measured verdict, offered to an adapter that states the last choices: a port
                 # without the hook is unaffected, and this records nothing itself.
@@ -401,6 +416,11 @@ async def run_session(
             total_failures += 1 if report.provider_failed else 0
             if record.operation is not None:
                 restarts.append(record.operation)
+                if (record.operation.status is OperationStatus.timeout
+                        and deadline - clock() <= RESTART_WALL_SLACK_S):
+                    # The loop bounds a restart by the run's remaining wall time: it ran out mid-restart.
+                    ending = "wall_limit"
+                    break
                 if record.operation.status is not OperationStatus.ready:
                     reason = record.operation.reason or "no reason was recorded"
                     ending, error = "error", f"restart_play_mode {record.operation.status.value}: {reason}"
