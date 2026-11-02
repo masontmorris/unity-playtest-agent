@@ -7,7 +7,8 @@ becomes one choice, in the manifest's order (its actions, then its skills), name
 action is an `action` choice and a skill is a `skill` choice, and the request names the declaration. So a
 chord, a stick or mouse value, or an ordered skill reaches the bridge as declared or is rejected by it;
 nothing is reduced to its first input, ranked, reordered, rewritten or inferred (S1 ownership: S1 chooses
-among the declarations as declared). The four core choices (wait, escalate, delegate, finish) come after.
+among the declarations as declared). Core choices come after. A live caller supplies its configured
+help kinds: an unconfigured help operation is not executable and is recorded in `not_offered`.
 A declaration with `execution_supported` false is not offered and is listed with the reason. The wait
 choice names its duration (`duration_game_s`), which the turn loop honors in real time.
 
@@ -21,6 +22,8 @@ its label says so. The effect of a single control is never reported as the effec
 """
 
 from __future__ import annotations
+
+import re
 
 import json
 from dataclasses import dataclass, field
@@ -119,23 +122,61 @@ def options_choices(choices: list[Choice], primitives: Any, memory: Any, observa
         for index, point in enumerate(unique[:8]):
             specs.append(OptionSpec(f"place:{index}", "place", {"position": point},
                                     f"place at {point}"))
+    sweep = sweep_spec(retained, memory, scene, position)
+    if sweep is not None:
+        specs.append(sweep)
     offered = [Choice(id=s.option_id, kind=ChoiceKind.option, option_id=s.option_id, template=s.template,
                       params=s.params, label=f"{s.intent} — {memory.suffix(scene, position, s.option_id)}",
                       source=ChoiceSource.manifest) for s in specs]
     return [*retained, *offered]
 
 
+SWEEP_AFTER_TRIED = 3  # choices tried at a place before the controls never tried there are offered as one option
+_CALIBRATED = re.compile(r"calibrated net displacement\s+(-?\d+(?:\.\d+)?)")
+
+
+def sweep_spec(choices: list[Choice], memory: Any, scene: Any, position: Any) -> Any:
+    """One option that sends each plain control never tried at this place once, or `None`.
+
+    Offered only at a place where at least `SWEEP_AFTER_TRIED` choices were tried, and only with the controls the
+    place's measured history does not list. The order is by calibrated displacement, smallest first (unknown
+    last), so the controls that do not move the body run while it is still at the place. Nothing is chosen here.
+    """
+    from .options.model import OptionSpec
+
+    summary = memory.place_summary(scene, position) if hasattr(memory, "place_summary") else None
+    if not summary or len(summary) < SWEEP_AFTER_TRIED:
+        return None
+    def moved(choice: Choice) -> float:
+        match = _CALIBRATED.search(choice.label or "")
+        return abs(float(match.group(1))) if match else float("inf")
+    untried = [c for c in choices if c.kind is ChoiceKind.action and c.action and c.id not in summary
+               and not c.id.endswith(".held")]
+    if not untried:
+        return None
+    actions = [c.action for c in sorted(untried, key=moved)]
+    return OptionSpec("sweep", "sweep", {"actions": actions},
+                      f"resolve what blocks progress here by trying each untried control once: {len(actions)} untried")
+
+
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
                   finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
                   point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),
-                  calibration: dict | None = None) -> ManifestChoices:
+                  calibration: dict | None = None, help_kinds: frozenset[str] | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
     default leaves every choice, its order and its wording exactly as before.
+    `help_kinds` names the configured help handlers, independently of gameplay and remaining budget.
+    None preserves the full menu for callers that provide their own helper or resolve help externally.
     """
-    core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
-    reserved = {choice.id for choice in core} | {RESTART_ID}
+    all_core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
+    reserved = {choice.id for choice in all_core} | {RESTART_ID}
+    if help_kinds is not None and help_kinds - {"escalate", "delegate"}:
+        raise ValueError("help_kinds must contain only configured escalate or delegate handlers")
+    unavailable = [c for c in all_core if c.kind in (ChoiceKind.escalate, ChoiceKind.delegate)
+                   and help_kinds is not None and c.kind.value not in help_kinds]
+    core = [c for c in all_core if c not in unavailable]
     if sum((turn_sizes, point_turns, point_moves)) > 1:
         raise ValueError("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
     catalog = (export(manifest, point_turns=point_turns, point_moves=point_moves, calibration=calibration, capture_size=capture_size)
@@ -143,7 +184,10 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
     choices: list[Choice] = []
     expected: dict[str, dict[str, Any] | None] = {}
     leases: dict[str, float] = {}
-    not_offered: list[dict[str, str]] = []
+    not_offered: list[dict[str, str]] = [
+        {"kind": c.kind.value, "name": c.id, "reason": f"No configured handler supports {c.kind.value}."}
+        for c in unavailable
+    ]
 
     for action in manifest.actions:
         if not action.execution_supported:

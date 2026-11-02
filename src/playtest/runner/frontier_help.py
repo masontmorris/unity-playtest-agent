@@ -341,7 +341,22 @@ class _StagedResult:
     finding_evidence: _FindingEvidence | None
 
 
+def _reanchor(directive_row: dict[str, Any] | None) -> None:
+    """Bind a kept request's directive to the session it reaches: forget the earlier session's frame and game time.
+
+    The tracker takes the new session, deadline and any change baseline from the first context that states it.
+    """
+    if directive_row is None:
+        return
+    directive_row["last_frame"] = None
+    directive_row["last_game_s"] = None
+    directive_row["kept_across_restart"] = True
+
+
 class FrontierHelp:
+    # Delegation is a distinct bounded-task operation, not an alias for escalation.
+    supported_kinds = frozenset({"escalate"})
+
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
@@ -350,7 +365,8 @@ class FrontierHelp:
                  effects: Mapping[str, frontier.Effect] | None = None,
                  generation: str | None = None, session: str | None = None,
                  clip_window_s: float = media.WINDOW_S,
-                 progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None) -> None:
+                 progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None,
+                 advice: bool = False) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
@@ -361,6 +377,7 @@ class FrontierHelp:
         self.started_utc, self.send, self.capture = started_utc, send, capture
         self.generation = generation
         self.clip_window_s = clip_window_s
+        self.advice = advice  # opt in: the request asks for gameplay advice (`roles.frontier.ADVICE_SYSTEM`)
         self.session = session
         # S1 keeps choosing while this request is pending, so the two arms' calls overlap by design.
         self.ledger = call_budget.Ledger(directory, approval, provider.MODEL, concurrent_arms=True)
@@ -373,6 +390,7 @@ class FrontierHelp:
         self._staged: dict[int, _StagedResult] = {}
         self._adopted: dict[int, tuple[HelpResult, HelpResult]] = {}
         self._discarded: set[int] = set()  # also prevents a still-running request from staging later
+        self._kept: set[int] = set()  # requests the loop kept through a restart (`keep_request`)
         self.findings: list[dict[str, Any]] = []  # candidate findings written to the trace
         self.progress = declared_progress(getattr(manifest, "reach_regions", ()))
         self.progress_probe = (progress if progress is not None
@@ -401,8 +419,13 @@ class FrontierHelp:
         self.started_utc = observation.wall_utc
         self.session = getattr(client, "session", self.session) if client is not None else self.session
         for turn in (*self._staged, *self._adopted):
-            self._discarded.add(turn)
+            if turn not in self._kept or turn in self._adopted:
+                self._discarded.add(turn)
+        kept = {turn: staged for turn, staged in self._staged.items() if turn in self._kept}
         self._staged.clear()
+        self._staged.update(kept)
+        for staged in kept.values():
+            _reanchor(staged.directive_row)
         self._adopted.clear()
         self.tracker.rebind(client=client, observation=observation, generation=generation)
         for row in self.hypotheses.values():
@@ -412,7 +435,21 @@ class FrontierHelp:
                 row["invalidated_generation"] = generation
         self._shown.clear()
 
+    def keep_request(self, request_turn: int) -> None:
+        """The loop kept this open request through a restart into the same scene (`--keep-help-across-restart`).
+
+        Its answer, staged or still running, is not discarded at the next `rebind`, and its directive is
+        re-anchored to the new session when it stages: the earlier session's frame and game time would read as a
+        clock reset and invalidate it at once. Its text, setpoint and relative deadline are unchanged.
+        """
+        self._kept.add(request_turn)
+
     async def run(self, request: Any) -> Any:
+        if request.kind not in self.supported_kinds:
+            return HelpResult(source="frontier", result={
+                "error": f"unsupported help kind: {request.kind}",
+                "supported_kinds": sorted(self.supported_kinds),
+            })
         context = copy.deepcopy(request.context)
         as_of, raw_obs = context["as_of"], context["observation"]
         seq = int(as_of["seq"])
@@ -471,7 +508,7 @@ class FrontierHelp:
         # The live S1 context does not expose the bridge frame number. Do not send the
         # placeholder needed by Observation's local constructor as if it were measured.
         packet.payload["observation"].pop("frame", None)
-        body = provider.build_request(role_manifest, packet, clip_path=clip.path)
+        body = provider.build_request(role_manifest, packet, clip_path=clip.path, advice=self.advice)
         # Preserve the complete body before any POST. Keep disk I/O off the bridge/S1 event loop.
         request_artifact = await asyncio.to_thread(preserve_request, self.directory, body)
         reservation = self.ledger.reserve(
@@ -560,6 +597,8 @@ class FrontierHelp:
                                resolved_model=result.resolved_model, usage=result.usage,
                                parse_valid=True, answer=answer.model_dump(mode="json"))
             completed = HelpResult(source="frontier", result=copy.deepcopy(result_payload))
+            if request.turn in self._kept:
+                _reanchor(directive_row)
             if request.turn not in self._discarded and request.turn not in self._adopted:
                 self._staged[request.turn] = _StagedResult(
                     result=completed, payload=copy.deepcopy(result_payload), directive_row=directive_row,

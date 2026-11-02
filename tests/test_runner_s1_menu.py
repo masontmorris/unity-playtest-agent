@@ -225,3 +225,37 @@ def test_the_menu_carries_the_same_game_view_note_and_image(tmp_path: Path):
     asyncio.run(port.decide(context(game_view="Game view unknown; no image attached.",
                                     game_view_sha256=None, game_view_status="missing")))
     assert "images" not in send.bodies[1] and port.view_counts["omitted"] == 1
+
+
+def test_contingent_answers_do_not_relabel_the_primary_call_or_replace_its_choice(tmp_path):
+    # Different heads intentionally disagree; only next_action selects this turn's choice.
+    helper_id = next(c.id for c in choices() if c.kind.value == "escalate")
+    reply = lambda body: (200, {"answers": {
+        "if_succeeded": {"type": "choice", "choice": "c2"},
+        "if_blocked": {"type": "choice", "choice": helper_id},
+        "next_action": {"type": "choice", "choice": "c1"}}}, 10.0, None)
+    port, send, ledger = adapter(tmp_path, reply, contingent=True)
+    got = decide(port, context())
+    assert got.answer["choice_id"] == "c1"
+    assert got.answer["contingent"] == {"if_blocked": helper_id, "if_succeeded": "c2"}
+    assert len(got.calls) == 1 and got.calls[0].question == "next_action"
+    assert ledger.arm_rows()[0]["question"] == "next_action"
+    assert got.calls[0].request_sha256 == digest(canonical(send.bodies[0]))
+
+
+def test_measured_restart_counts_survive_position_history_reset(tmp_path):
+    from types import SimpleNamespace
+    from playtest.contracts.loop import Choice, ChoiceKind, TurnOutcome
+    reply = lambda body: (200, {"answers": {
+        "next_action": {"type": "choice", "choice": "c1"}}}, 10.0, None)
+    port, send, _ = adapter(tmp_path, reply)
+    selected = Choice(id="restart", kind=ChoiceKind.restart_play_mode, label="Restart", source="core")
+    for status in ("ready", "failed"):
+        record = SimpleNamespace(effective_choice="restart", outcome=TurnOutcome.restarted,
+                                 operation=SimpleNamespace(status=status))
+        port.note_turn(SimpleNamespace(selected=selected, record=record))
+    decide(port, context(position=(9, 0, 0), reset_summary={"to_generation": "new"}))
+    state = send.bodies[0]["state"]
+    assert state["run_resets"] == {"requested": 2, "ready": 1}
+    assert "start 9.0" in state["progress"]  # reset coordinates stay separate from run-wide counts
+    assert "escalate" not in state["run_resets"]  # measured counts do not select or recommend help

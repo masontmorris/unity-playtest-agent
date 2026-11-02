@@ -357,7 +357,7 @@ def frontier_request(public: dict, *, seq: int = 7, game_s: float = 2.0, scene: 
                                "public": public},
                "choice_set_version": 0, "choices": [choice.model_dump(mode="json") for choice in offered],
                "objective": OBJECTIVE, "facts": []}
-    return SimpleNamespace(turn=0, choice_id=escalate.id, context=context)
+    return SimpleNamespace(kind="escalate", turn=0, choice_id=escalate.id, context=context)
 
 
 def frontier_content(expected: dict | None = None, deadline_s: float | None = None) -> str:

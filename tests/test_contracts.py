@@ -59,6 +59,41 @@ def test_schema_not_drifted(name):
     assert committed.read_text(encoding="utf-8") == render(name), "schema drifted: run `uv run playtest-export-schemas`"
 
 
+@pytest.mark.parametrize("measured", [{}, {"wall_min_height": 1.35}])
+def test_serialized_option_outcome_is_a_valid_trace_entry(measured):
+    from playtest.runner.options.model import OptionOutcome
+
+    row = json.loads((FIXTURES / "trace_entry" / "valid-option.json").read_text(encoding="utf-8"))
+    body = row["body"]
+    outcome = OptionOutcome(**body["outcome"], measured=measured).to_json()
+    body["receipts"] = outcome.pop("receipts")
+    body["outcome"] = outcome
+    entry = CONTRACTS["trace_entry"].model_validate_json(json.dumps(row))
+    assert entry.body["outcome"]["measured"] == measured
+    assert entry.body["outcome"]["params"] == body["params"]
+
+
+def test_option_measurements_fixture_fails_for_its_intended_rule():
+    path = FIXTURES / "trace_entry" / "invalid-option-measured-not-an-object.json"
+    with pytest.raises(ValidationError, match="option outcome measured must be an object"):
+        CONTRACTS["trace_entry"].model_validate_json(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("change", ["unknown_key", "missing_duration", "changed_params"])
+def test_option_measurements_preserve_outcome_shape_and_identity(change):
+    row = json.loads((FIXTURES / "trace_entry" / "valid-option-measured.json").read_text(encoding="utf-8"))
+    outcome = row["body"]["outcome"]
+    if change == "unknown_key":
+        outcome["extra"] = {}
+    elif change == "missing_duration":
+        outcome.pop("duration_s")
+    else:
+        outcome["params"]["measured"] = outcome.pop("measured")
+    reason = "identity differs" if change == "changed_params" else "incorrect keys"
+    with pytest.raises(ValidationError, match=reason):
+        CONTRACTS["trace_entry"].model_validate(row)
+
+
 def test_inspection_caps_fail_for_their_intended_rule():
     """Cap fixtures must fail on the cross-field rule, not on a missing field or bad type."""
     reasons = {

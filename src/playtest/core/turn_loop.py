@@ -190,6 +190,29 @@ class _Pending:
     finished_wall: datetime | None = None
 
 
+@dataclass
+class _RunningOption:
+    """The one option running in the background (`decide_during_options`), and the decision that started it."""
+
+    choice: Choice
+    task: "asyncio.Task[Any]"
+    turn: int
+    decided: int | None
+    decision: Any
+    cell: Any
+    started: float
+
+
+@dataclass
+class _RunningMove:
+    """The one plain action or skill running in the background (`decide_during_options`)."""
+
+    choice: Choice
+    task: "asyncio.Task[Any]"
+    turn: int
+    started: float
+
+
 @dataclass(frozen=True)
 class _Guidance:
     """An adopted helper result. It stays in S1's context, with a growing age, once adopted."""
@@ -236,6 +259,8 @@ class TurnLoop:
         option_port: Any = None,
         contingent_cell: float | None = None,
         instructions: str = INSTRUCTIONS,
+        keep_help_across_restart: bool = False,
+        decide_during_options: bool = False,
     ) -> None:
         if continuous_input and clock_mode is not ClockMode.realtime:
             raise ValueError("continuous input requires a realtime clock")
@@ -244,6 +269,18 @@ class TurnLoop:
         if restart is not None and not any(choice.kind is ChoiceKind.restart_play_mode for choice in choices):
             raise ValueError("a loop with a restart port must offer the restart choice")
         self._continuous = continuous_input
+        # Opt in: a restart returns the same scene to its start, so an open help request still describes the
+        # level S1 is playing. It is then kept through the restart's reset boundary instead of cancelled.
+        self._keep_help_across_restart = keep_help_across_restart
+        self._help_kept_for_reset = False
+        # Opt in: an option runs in the background and the turn ends at once, so S1 decides again at its own
+        # speed. Choosing the running option again keeps it going; choosing any other non-help choice
+        # interrupts it first. Its measured outcome is filed on the turn that collects it.
+        self._decide_during_options = decide_during_options
+        self._running_option: _RunningOption | None = None
+        # The same for a plain action or skill: it runs in the background, re-picking it keeps it going, and any
+        # other non-help choice stops it (the bridge cancels the run and reports it) before that choice runs.
+        self._running_move: _RunningMove | None = None
         self._continuous_choices = frozenset(continuous_choices)
         self._continuous_labels = continuous_labels
         self._active = None
@@ -378,6 +415,11 @@ class TurnLoop:
         scripted = decide is not _NO_SOURCE
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
+        if self._running_option is not None and not self._running_option.task.done():
+            # A hop is committed from run-up to landing, so the next reading and question wait for it to land.
+            landed = getattr(self._option_port, "until_landed", None)
+            if landed is not None:
+                await landed()
         if self._continuous:
             now = time.perf_counter()
             if self._last_started is not None:
@@ -395,7 +437,7 @@ class TurnLoop:
                 ready = pending.resolved
             elif pending.task is not None and pending.task.done():
                 ready = pending.task
-        if self._effects is not None:
+        if self._effects is not None and self._running_move is None:  # a running move keeps its own baseline
             await self._effects.before_turn(turn)
         sample = await self._readers.read() if self._readers is not None else None  # before the observation, never between it and the act
         started = time.perf_counter()
@@ -491,6 +533,13 @@ class TurnLoop:
             if view is not None:
                 payload["game_view_sha256"] = view.sha256
                 payload["game_view_status"] = view.status
+            running = self._running_option or self._running_move
+            if running is not None:  # only a run with a running option or move grows the context
+                payload["running_option"] = {
+                    "choice_id": running.choice.id,
+                    "started_turn": running.turn,
+                    "running_s": round(time.perf_counter() - running.started, 3),
+                }
             context = self._emit(
                 TraceKind.context,
                 {"sha256": _sha256(canonical(payload)), "payload": payload},
@@ -564,6 +613,9 @@ class TurnLoop:
         restart_refs: list[int | None] = []
         option_refs: list[int | None] = []
         measured_option: dict[str, Any] | None = None  # an option turn's measured outcome, for the report
+        finished_option: tuple[Choice, dict[str, Any], int | None] | None = None  # a background option collected
+        finished_move: tuple[Choice, Executed] | None = None  # a background action or skill collected
+        option_running = False  # this turn started, or kept going, a background option
 
         if not parsed.valid or parsed.decision is None:
             if self._continuous:
@@ -573,10 +625,35 @@ class TurnLoop:
             decision = parsed.decision
             selected = choice_set.get(decision.choice_id)
             assert selected is not None
+            if (self._running_option is not None and selected.kind is not ChoiceKind.option
+                    and selected.kind not in _HELP_KINDS):
+                # S1 chose something else while an option runs: that option is interrupted, measured, first.
+                finished_option = await self._settle_option(turn, f"S1 chose {selected.id}")
+            if (self._running_move is not None and selected.id != self._running_move.choice.id
+                    and selected.kind not in _HELP_KINDS):
+                finished_move = await self._settle_move(stop=True)
             if selected.kind is ChoiceKind.restart_play_mode:
                 operation, restart_entries = await self._restart_turn(selected, decided, turn)
                 restart_refs = restart_entries
                 outcome = TurnOutcome.restarted
+            elif selected.kind is ChoiceKind.option and self._decide_during_options:
+                if self._option_port is None:
+                    raise RuntimeError("an option was selected without an option port")
+                running = self._running_option
+                if running is not None and not running.task.done() and running.choice.id == selected.id:
+                    outcome, executed_id = TurnOutcome.executed, selected.option_id  # kept going
+                    option_running = True
+                else:
+                    finished_option = await self._settle_option(turn, "another option was chosen")
+                    if self._continuous:
+                        await self._release_active("user")
+                    task = asyncio.create_task(self._option_port.run(selected))
+                    self._option_task = task
+                    self._running_option = _RunningOption(choice=selected, task=task, turn=turn, decided=decided,
+                                                          decision=decision, cell=cell,
+                                                          started=time.perf_counter())
+                    outcome, executed_id = TurnOutcome.executed, selected.option_id
+                    option_running = True
             elif selected.kind is ChoiceKind.option:
                 if self._option_port is None:
                     raise RuntimeError("an option was selected without an option port")
@@ -598,6 +675,19 @@ class TurnLoop:
                 outcome, executed_id = TurnOutcome.executed, selected.option_id
                 measured_option = body  # what this option measurably did, for the turn report
                 self._contingent = _contingent_answer(decision, body.get("terminated_by"), turn, decided, cell)
+            elif (selected.kind in _EXECUTABLE_KINDS and self._decide_during_options
+                    and not (self._continuous and selected.id in self._continuous_choices)):
+                running = self._running_move
+                if running is None or running.task.done() or running.choice.id != selected.id:
+                    if running is not None:
+                        finished_move = await self._settle_move(stop=False)
+                    task = asyncio.create_task(self._send_background(
+                        selected, observation, decided, turn, observed, raw_choice, help_event))
+                    self._running_move = _RunningMove(choice=selected, task=task, turn=turn,
+                                                      started=time.perf_counter())
+                # Started or kept going: whether the bridge accepted it is read when it is collected.
+                outcome, executed_id = TurnOutcome.executed, selected.id
+                option_running = True
             elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
                     selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
@@ -638,6 +728,12 @@ class TurnLoop:
                 if selected.kind is ChoiceKind.wait:
                     await self._wait_out(selected, observation)
 
+        if finished_option is None and self._running_option is not None and self._running_option.task.done():
+            finished_option = await self._settle_option(turn, "")  # it ended by itself: nothing is interrupted
+        if finished_option is not None and finished_option[2] is not None:
+            option_refs.append(finished_option[2])
+        if finished_move is None and self._running_move is not None and self._running_move.task.done():
+            finished_move = await self._settle_move(stop=False)
         record = TurnRecord(
             turn=turn,
             set_version=choice_set.set_version,
@@ -666,6 +762,9 @@ class TurnLoop:
             executed=tuple(sent),
             halt=answer.halt,
             option_outcome=measured_option,
+            finished_option=(finished_option[0], finished_option[1]) if finished_option is not None else None,
+            finished_move=finished_move,
+            option_running=option_running,
         )
         self._reports.append(report)
         if operation is not None and operation.status is OperationStatus.ready:
@@ -694,6 +793,86 @@ class TurnLoop:
         else:
             raise RuntimeError(f"script did not finish within {max_turns} turns")
         return self.turns
+
+    async def _settle_option(self, turn: int, reason: str) -> tuple[Choice, dict[str, Any], int | None] | None:
+        """Collect the background option: interrupt it if it still runs, then file its measured outcome.
+
+        The option trace entry is written on this turn and refs the decision that started it. An option port
+        with no `interrupt` is cancelled instead, and then nothing measured is filed.
+        """
+        running = self._running_option
+        if running is None:
+            return None
+        if not running.task.done():
+            interrupt = getattr(self._option_port, "interrupt", None)
+            if interrupt is not None:
+                interrupt(reason)
+            else:
+                running.task.cancel()
+        try:
+            await asyncio.gather(running.task, return_exceptions=True)
+        finally:
+            self._running_option = None
+            self._option_task = None
+        if running.task.cancelled() or running.task.exception() is not None:
+            if not running.task.cancelled():
+                raise running.task.exception()
+            return None
+        body = dict(running.task.result())
+        receipts = body.pop("receipts")
+        selected = running.choice
+        if (body.get("option_id"), body.get("template"), body.get("params")) != (selected.option_id, selected.template, selected.params):
+            raise ValueError("option outcome differs from selected choice")
+        entry = self._emit(TraceKind.option, {"option_id": selected.option_id, "template": selected.template,
+                           "params": selected.params, "outcome": body, "receipts": receipts},
+                           TraceAuthor.core, turn, [running.decided])
+        self._contingent = _contingent_answer(running.decision, body.get("terminated_by"), running.turn,
+                                              running.decided, running.cell)
+        return selected, body, entry
+
+    async def _send_background(self, choice: Choice, observation: Observation, decided: int | None, turn: int,
+                               observed: int | None, raw_choice: str | None,
+                               help_event: str | None) -> tuple[Executed, int | None, int | None]:
+        """Send a background move; one `stale_age` rejection is sent once more, bound to a fresh reading.
+
+        The choice is S1's; settling the move it replaces can outlast the staleness bound, so the bridge's own
+        refusal says the reading aged, not that the choice was wrong. A second refusal stands. Both attempts
+        are traced.
+        """
+        sent = await self._send(choice, observation, "choice", decided, turn, observed, raw_choice, choice.id,
+                                help_event)
+        records = sent[0].execution.records if sent[0].execution is not None else ()
+        reason = getattr(records[-1], "reject_reason", None) if records else None
+        if not sent[0].execution.rejected or getattr(reason, "value", reason) != "stale_age":
+            return sent
+        fresh = await self._client.observe_once()
+        return await self._send(choice, fresh, "choice", decided, turn, observed, raw_choice, choice.id, help_event)
+
+    async def _settle_move(self, *, stop: bool) -> tuple[Choice, Executed] | None:
+        """Collect the background action or skill; with `stop`, release it first, verified, if it still runs.
+
+        Its execution and effect entries were written by `_send` on the turn that started it.
+        """
+        running = self._running_move
+        if running is None:
+            return None
+        if stop and not running.task.done():
+            result = await self._client.stop("release")  # the bridge cancels the run and reports it cancelled
+            self._emit(TraceKind.stop, {"reason": "release",
+                                        "result": result.model_dump(mode="json") if result is not None else None,
+                                        "error": None}, TraceAuthor.core, None)
+            if result is None or not result.release_verified:
+                raise RuntimeError("input release was not verified")
+        try:
+            await asyncio.gather(running.task, return_exceptions=True)
+        finally:
+            self._running_move = None
+        if running.task.cancelled():
+            return None
+        if running.task.exception() is not None:
+            raise running.task.exception()
+        executed, _entry, _effect = running.task.result()
+        return running.choice, executed
 
     # --- the S1 port ------------------------------------------------------------------------
 
@@ -814,10 +993,16 @@ class TurnLoop:
         return limit
 
     async def _release_for_restart(self, turn: int) -> bool:
-        """Invalidate pending help, then release every held input; only a verified release permits dispatch."""
+        """Invalidate pending help (or keep it, when opted in), then release every held input.
+
+        Only a verified release permits dispatch.
+        """
         pending = self._pending
         if pending is not None:
-            self._cancel_pending(pending, "restart", turn=turn)
+            if self._keep_help_across_restart:
+                self._help_kept_for_reset = True
+            else:
+                self._cancel_pending(pending, "restart", turn=turn)
         self._memory.mark_boundary("reset")
         if self._continuous:
             await self._release_active("reset")
@@ -908,6 +1093,7 @@ class TurnLoop:
         """
         assert outcome.client is not None and outcome.observation is not None
         assert outcome.to_generation is not None
+        previous_scene = getattr(self._store.latest(), "scene", None)
         self._continuous_lease = None
         self._last_started = None
         self._intervals = []
@@ -922,7 +1108,15 @@ class TurnLoop:
         self._previous = None
         self._guidance.clear()
         self._unshown.clear()
-        self._pending = None
+        pending = self._pending
+        if pending is not None and not (self._help_kept_for_reset and outcome.observation.scene == previous_scene):
+            # Kept help is only the request this loop's own restart kept, into the scene it left.
+            self._cancel_pending(pending, "restart", turn=turn)
+        elif pending is not None:
+            keep = getattr(self._help, "keep_request", None)
+            if keep is not None:  # before the ports rebind below, so the helper keeps this request's answer
+                keep(pending.turn)
+        self._help_kept_for_reset = False
         self._contingent = None
         self._generation = outcome.to_generation
         for port in (self._view, self._readers, self._watch, self._effects, self._help, self._facts):
@@ -1300,6 +1494,10 @@ class TurnLoop:
             task = self._option_task
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if self._running_move is not None:
+            move, self._running_move = self._running_move.task, None
+            move.cancel()
+            await asyncio.gather(move, return_exceptions=True)
         if self._continuous:
             await self._release_active(reason)
         self._stopped = True

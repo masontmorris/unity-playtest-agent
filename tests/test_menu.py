@@ -18,6 +18,7 @@ from playtest.contracts.investigation import Comparator, Directive, Expected
 from playtest.contracts.loop import Choice, ChoiceKind, ChoiceSet, ChoiceSource
 from playtest.core.context import canonical
 from playtest.runner.menu import (
+    LABEL_LIMIT,
     BLOCKED_QUESTION,
     PRIMARY,
     SEPARATOR,
@@ -216,6 +217,31 @@ def test_compact_menu_payload_has_no_ui_dump_and_no_variance():
     assert all("calibrated" not in item["label"] for item in payload["choices"])
 
 
+def test_the_restart_label_says_it_drops_the_open_advice():
+    """A restart invalidates the open directive; its label states that, and only while one is open."""
+    built = {"objective": "o", "observation": observation(), "choices": choices(),
+             "memory": OutcomeMemory(cell=CELL)}
+    directive = Directive(directive_id="d1", model="m", based_on_seq=3, text="Jump the gap.")
+    restart = lambda payload: next(row["label"] for row in payload["choices"] if row["id"] == "restart_play_mode")
+    assert restart(compact_menu(**built)) == "restart · restart the session from the start"
+    assert restart(compact_menu(**built, directive=directive)) == (
+        "restart · restart the session from the start · drops the open advice")
+
+
+def test_the_escalate_label_states_the_runs_help_record():
+    """Asked and advised counts, and an open request, on the escalate label; nothing before the first request."""
+    built = {"objective": "o", "observation": observation(), "choices": choices(),
+             "memory": OutcomeMemory(cell=CELL)}
+    escalate = lambda payload: next(row["label"] for row in payload["choices"] if row["id"] == "escalate")
+    assert escalate(compact_menu(**built)) == "escalate · ask for help"
+    assert escalate(compact_menu(**built, help_record=(0, 0))) == "escalate · ask for help"
+    assert escalate(compact_menu(**built, help_record=(14, 0))) == (
+        "escalate · ask for help · so far: 14 asked, 0 gave advice")
+    pending = compact_menu(**built, help_record=(3, 1), pending_help={"kind": "escalate", "opened_turn": 9})
+    assert escalate(pending) == "escalate · ask for help · so far: 3 asked, 1 gave advice; one pending"
+    assert len(escalate(pending)) <= LABEL_LIMIT
+
+
 def test_compact_menu_refuses_choices_bound_to_another_reading():
     with pytest.raises(ValueError):
         compact_menu(objective="o", observation=observation(seq=5), choices=choices(seq=4),
@@ -351,4 +377,102 @@ def test_eight_option_menu_stays_small():
                            positions=[(0.0, 0.0, 0.0), (-8.8, -0.8, 0.0)])
     text = canonical(payload)
     assert len(text) < 6000, (len(text), text)
-    assert len(canonical(menu_request(payload, "liquid-d1-ultra", contingent=True))) < 8000
+    assert len(canonical(menu_request(payload, "liquid-d1-ultra", contingent=True))) < 10000
+
+
+def test_a_long_skill_keeps_its_scope_and_measured_history():
+    memory = OutcomeMemory(cell=CELL)
+    memory.record(OptionOutcome("combo", "skill", {}, [0, 0, 0], [6, -28, 0], [6, -28, 0],
+                                "unmeasured", 1.5, scene="scene-a"))
+    scope = "Effect outside the measured starting location is unmeasured."
+    description = ("A measured compound input sequence " * 4) + ": " + scope
+    skill = Choice(id="combo", kind=ChoiceKind.skill, skill="combo", label=description, source="manifest")
+    offered = ChoiceSet(set_version=3, built_from_seq=4, choices=[skill])
+    payload = compact_menu(objective="Explore.", observation=observation(), choices=offered, memory=memory)
+    row = payload["choices"][0]
+    assert row["id"] == "combo" and row["kind"] == "skill"
+    assert row["details"] == description and scope in row["details"]
+    assert "unmeasured 1" in row["label"] and "history" not in row   # the label carries it: not repeated
+    assert len(row["label"]) <= 90
+    request = menu_request(payload, "liquid-d1-ultra", contingent=True)
+    assert request["questions"]["next_action"]["criteria"] == {"combo": row["label"]}
+    assert "unused for action and skill" in request["questions"]["if_blocked"]["instructions"]
+
+
+def test_conditional_finish_wording_remains_visible_in_compact_state():
+    guard = "Finish only after the objective's completion conditions are measured as met."
+    offered = ChoiceSet(set_version=3, built_from_seq=4, choices=[
+        Choice(id="finish", kind=ChoiceKind.finish, label=guard, source="core")])
+    row = compact_menu(objective="Explore.", observation=observation(), choices=offered,
+                       memory=OutcomeMemory(cell=CELL))["choices"][0]
+    assert row["details"] == guard and row["kind"] == "finish"
+
+
+def test_a_raised_pivot_does_not_claim_the_body_is_airborne():
+    seen = observation(probe={"under": {"hit": True, "delta_y": -1.2}})
+    payload = compact_menu(objective="Explore.", observation=seen, choices=choices(),
+                           memory=OutcomeMemory(cell=CELL), facts=["A declared contact reader reports true."])
+    assert "not grounded" not in payload["progress"]
+    assert payload["facts"] == ["A declared contact reader reports true."]
+
+
+def test_a_held_met_directive_shows_its_setpoint_as_met():
+    built = {"objective": "o", "observation": observation(), "choices": choices(),
+             "memory": OutcomeMemory(cell=CELL)}
+    directive = {"directive_id": "d1", "text": "Jump the gap.", "outcome": "met",
+                 "expected": {"field": "public.grounded", "op": "==", "value": False}}
+    assert compact_menu(**built, directive=directive)["directive"]["setpoint"].endswith("(met)")
+    directive["outcome"] = "open"
+    assert not compact_menu(**built, directive=directive)["directive"]["setpoint"].endswith("(met)")
+
+
+def test_a_running_move_is_a_state_fact_and_never_changes_its_label():
+    built = {"objective": "o", "observation": observation(), "choices": choices(),
+             "memory": OutcomeMemory(cell=CELL)}
+    plain = compact_menu(**built)
+    running = compact_menu(**built, running={"choice_id": "hop+x", "running_s": 1.234})
+    assert [row["label"] for row in running["choices"]] == [row["label"] for row in plain["choices"]]
+    assert running["running"]["id"] == "hop+x" and running["running"]["s"] == 1.2
+    assert "running" not in plain
+
+
+def test_a_hop_that_presses_again_in_the_air_is_named_apart():
+    double = option("hop2+x", "hop", {"direction": [1, 0, 0], "action": "m", "chord": "c", "run_up": 11.3,
+                                      "flight_s": 1.9, "rise_peak": 5.3, "air_press_s": 0.3},
+                    "hop ×2 +x: run-up 11.30, rise 1.90 s, peak 5.30")
+    label = option_label(double, OutcomeMemory(cell=CELL), "scene-a", (0.0, 0.0, 0.0))
+    assert label.startswith("hop ×2 +x") and "peak 5.30" in label
+
+
+def test_a_fall_never_sets_the_best_advance():
+    """Ground covered while falling below the route is not an advance: only an ending that held it counts."""
+    memory = OutcomeMemory(cell=CELL)
+    memory.record(outcome("hop+x", "fell"))
+    memory.record(outcome("hop+x", "fell"))
+    assert memory.suffix("scene-a", [0.0, 0.0, 0.0], "hop+x") == "here: 2 tried — fell 2"
+    memory.record(outcome("hop+x", "succeeded"))
+    assert "best +1" in memory.suffix("scene-a", [0.0, 0.0, 0.0], "hop+x")
+
+
+def test_the_finish_label_states_that_the_scene_has_not_changed():
+    built = {"objective": "o", "observation": observation(scene="scene-a"), "choices": choices(),
+             "memory": OutcomeMemory(cell=CELL)}
+    finish = lambda payload: next(row["label"] for row in payload["choices"] if row["id"] == "finish")
+    assert finish(compact_menu(**built)) == "finish · end the session now"
+    assert finish(compact_menu(**built, start_scene="scene-a")).endswith("scene unchanged since the run began")
+    assert finish(compact_menu(**built, start_scene="scene-0")) == "finish · end the session now"
+
+
+def test_untried_labels_say_when_nothing_tried_here_got_on():
+    """Every choice tried here failed, or only went back toward the start: the untried labels say so."""
+    memory = OutcomeMemory(cell=CELL)
+    built = {"objective": "o", "observation": observation(position=(0.0, 0.0, 0.0)), "choices": choices(),
+             "memory": memory, "positions": [(-60.0, 0.0, 0.0)]}
+    hop = lambda payload: next(row["label"] for row in payload["choices"] if row["id"] == "move_forward")
+    assert "none got on" not in hop(compact_menu(**built))
+    for option_id in ("hop+x", "traverse+x"):
+        memory.record(outcome(option_id, "blocked"))
+    memory.record(outcome("retreat+x:1.2", "succeeded", direction=(-1.0, 0.0, 0.0)))  # back toward the start
+    assert hop(compact_menu(**built)).endswith("3 others tried here, none got on")
+    memory.record(outcome("traverse+x", "succeeded"))                                  # onward: not a dead end
+    assert "none got on" not in hop(compact_menu(**built))

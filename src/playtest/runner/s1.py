@@ -70,6 +70,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Protocol
 
 from playtest.bench import call_budget, replay
@@ -249,7 +250,25 @@ def _recent_entry(report: Any, primitives: Any = None) -> dict[str, Any] | None:
                       body.get("duration_s"), body.get("terminated_by"))
     if kind in _PLAIN_KINDS:
         seconds, result = _plain_verdict(report, choice, primitives)
-        return _entry(record.effective_choice, seconds, result)
+        entry = _entry(record.effective_choice, seconds, result)
+        if entry is None:
+            return None
+        executed = next((sent for sent in getattr(report, "executed", ())
+                         if getattr(getattr(sent, "choice", None), "id", None) == choice.id
+                         and getattr(sent, "purpose", None) == "choice"), None)
+        if executed is not None:
+            observed = executed.effect.observed if executed.effect is not None else None
+            fields = observed if isinstance(observed, Mapping) else {}
+            for source, target in (("displacement", "displacement"), ("to_position", "end_position")):
+                value = fields.get(source)
+                if isinstance(value, (list, tuple)) and value:
+                    if all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value):
+                        entry[target] = list(value)
+            terminal = executed.execution.terminal if executed.execution is not None else None
+            if terminal is not None:
+                entry["execution_status"] = terminal.status.value
+            entry["goal_outcome"] = None
+        return entry
     if kind is ChoiceKind.wait:
         return _entry(record.effective_choice, None, "wait")
     return _entry(record.effective_choice, None, getattr(record.outcome, "value", record.outcome))
@@ -326,6 +345,7 @@ class SystemOneS1:
         menu_memory: Any = None,
         contingent: bool = False,
         requests_dir: Path | str | None = None,
+        hold_met_directive: bool = False,
     ) -> None:
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
@@ -397,6 +417,11 @@ class SystemOneS1:
                 raise ValueError(f"S1 arm {arm!r} does not take a plain images array; the compact menu cannot "
                                  f"attach its game view")
         self._menu_memory = menu_memory
+        # Opt in: a met setpoint is not the advice carried out (a check any movement meets closes at once), so the
+        # compact menu keeps showing the newest directive that closed `met` until its own deadline. Directives
+        # listed before a reset boundary belong to an earlier session and are never held.
+        self._hold_met_directive = hold_met_directive
+        self._stale_directives: set[str] = set()
         if contingent and not self._menu:
             # The branch answers are asked only by the compact menu's own request; in every other mode
             # there is nothing to surface, and a flag that quietly did nothing would be a false claim.
@@ -406,6 +431,12 @@ class SystemOneS1:
         self._menu_session: str | None = None
         # The last measured choices, oldest first: what `note_turn` was told, newest last, at most six.
         self._recent: list[dict[str, Any]] = []
+        self._menu_resets = {"requested": 0, "ready": 0}
+        # The run's help record, kept across resets like the restart counts: the requests S1 opened, by the
+        # turn each opened on, and the directives that reached it, by id. The escalate label states both.
+        self._help_opened: set[int] = set()
+        self._start_scene: str | None = None  # the scene the first context read; a restart returns to it
+        self._help_directives: set[str] = set()
         self._game_view = game_view
         self._view_sent = self._view_omitted = self._view_stale = 0
         self._instructions = instructions
@@ -550,14 +581,30 @@ class SystemOneS1:
         observation = context.get("observation")
         observation = observation if isinstance(observation, Mapping) else {}
         self._menu_clear_at_boundary(context, observation)
+        pending = context.get("pending_help")
+        if isinstance(pending, Mapping) and isinstance(pending.get("opened_turn"), int):
+            self._help_opened.add(pending["opened_turn"])
+        directive = context.get("directive")
+        if directive is None and self._hold_met_directive:
+            directive = self._held_directive(context)
+        ident = (directive.get("directive_id") if isinstance(directive, Mapping)
+                 else getattr(directive, "directive_id", None))
+        if isinstance(ident, str) and ident:
+            self._help_directives.add(ident)
+        if self._start_scene is None and isinstance((context.get("observation") or {}).get("scene"), str):
+            self._start_scene = context["observation"]["scene"]
         choices = ChoiceSet(set_version=context["choice_set_version"],
                             built_from_seq=context["as_of"]["seq"],
                             choices=[Choice.model_validate(item) for item in context["choices"]])
         payload = menu.compact_menu(
             objective=context["objective"], observation=observation, choices=choices,
-            memory=self._menu_memory, directive=context.get("directive"),
+            memory=self._menu_memory, directive=directive,
             pending_help=context.get("pending_help"), facts=context.get("facts") or (),
-            game_view=context.get("game_view"), positions=self._menu_positions, recent=self._recent)
+            game_view=context.get("game_view"), positions=self._menu_positions, recent=self._recent,
+            help_record=(len(self._help_opened), len(self._help_directives)),
+            running=context.get("running_option"), start_scene=self._start_scene)
+        if self._menu_resets["requested"]:
+            payload["run_resets"] = dict(self._menu_resets)
         position = menu.measured_position(observation)
         if position is not None:
             self._menu_positions.append(list(position))
@@ -571,10 +618,52 @@ class SystemOneS1:
         own `terminated_by` and `duration_s`, a plain action's or skill's verdict from the same rule the
         memory records, and the turn's own outcome for a wait, finish, escalate, delegate or restart. A turn
         that selected nothing records nothing. `recent` holds the newest six, oldest first.
+        Restart operation counts persist separately; clearing a position epoch does not reset these facts.
         """
+        selected, record = getattr(report, "selected", None), getattr(report, "record", None)
+        if getattr(selected, "kind", None) is ChoiceKind.restart_play_mode:
+            self._menu_resets["requested"] += 1
+            operation = getattr(record, "operation", None)
+            status = getattr(operation, "status", None)
+            if getattr(status, "value", status) == "ready":
+                self._menu_resets["ready"] += 1
+        finished = getattr(report, "finished_option", None)
+        if finished is not None:  # a background option collected on this turn, before this turn's own choice
+            choice, body = finished
+            done = _entry(getattr(choice, "option_id", None) or getattr(choice, "id", None),
+                          body.get("duration_s"), body.get("terminated_by"))
+            if done is not None:
+                self._recent = [*self._recent, done][-menu.RECENT_LIMIT:]
+        moved = getattr(report, "finished_move", None)
+        if moved is not None:  # a background action or skill collected on this turn, read as its own turn would be
+            choice, executed = moved
+            done = _recent_entry(SimpleNamespace(
+                record=SimpleNamespace(effective_choice=choice.id, executed_action=choice.id, outcome=None),
+                selected=choice, executed=(executed,), option_outcome=None), primitives)
+            if done is not None:
+                self._recent = [*self._recent, done][-menu.RECENT_LIMIT:]
+        if getattr(report, "option_running", False):
+            return  # started or kept going in the background: its measured outcome is filed when collected
         entry = _recent_entry(report, primitives)
         if entry is not None:
             self._recent = [*self._recent, entry][-menu.RECENT_LIMIT:]
+
+    def _held_directive(self, context: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """The newest closed directive when it closed `met` in this session and its deadline is still ahead.
+
+        Measured only: its outcome, its anchored `deadline_game_s` against this context's game time, and whether
+        it was listed before the last reset. Unknown time or deadline holds nothing; nothing is rescored.
+        """
+        history = context.get("directive_history") or ()
+        last = history[-1] if history else None
+        if not isinstance(last, Mapping) or last.get("outcome") != "met":
+            return None
+        if last.get("directive_id") in self._stale_directives:
+            return None
+        deadline, now = last.get("deadline_game_s"), (context.get("as_of") or {}).get("game_s")
+        numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                      for v in (deadline, now))
+        return last if numbers and now < deadline else None
 
     def _menu_clear_at_boundary(self, context: Mapping[str, Any], observation: Mapping[str, Any]) -> None:
         """Forget the position history when this turn follows a reset, so no distance spans two sessions.
@@ -587,6 +676,9 @@ class SystemOneS1:
         if context.get("reset_summary") is not None or (isinstance(session, str) and self._menu_session is not None
                                                         and session != self._menu_session):
             self._menu_positions = []
+            for item in (*(context.get("directive_history") or ()), context.get("directive")):
+                if isinstance(item, Mapping) and isinstance(item.get("directive_id"), str):
+                    self._stale_directives.add(item["directive_id"])
         if isinstance(session, str):
             self._menu_session = session
 
@@ -742,10 +834,10 @@ class SystemOneS1:
             # Only when the flag is on: the two branch answers are read out of this same response, which the
             # `s1_call` entry already records in full. Nothing about the request changes.
             branches = {}
-            for field, question in (("if_blocked", menu.BLOCKED_QUESTION),
-                                    ("if_succeeded", menu.SUCCEEDED_QUESTION)):
+            for field, branch_question in (("if_blocked", menu.BLOCKED_QUESTION),
+                                           ("if_succeeded", menu.SUCCEEDED_QUESTION)):
                 branch, _, branch_problem = replay.parse_answer(
-                    self._as_next_action(data if status == 200 else None, question), set(criteria))
+                    self._as_next_action(data if status == 200 else None, branch_question), set(criteria))
                 if branch is not None and branch_problem is None:
                     branches[field] = branch
         row = reservation.finish(**batch_fields, http_status=status, choice=choice, distribution=distribution, problem=note,

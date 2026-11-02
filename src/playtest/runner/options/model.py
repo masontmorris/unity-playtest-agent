@@ -9,8 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-TERMINATIONS = ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured")
-TEMPLATES = ("traverse", "retreat", "hop", "wait", "place")
+TERMINATIONS = ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured", "interrupted")
+TEMPLATES = ("traverse", "retreat", "hop", "wait", "place", "sweep")
 
 
 @dataclass(frozen=True)

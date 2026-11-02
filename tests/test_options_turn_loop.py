@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from loop_fakes import choices as base_choices
 from loop_fakes import rig, run
 from turn_trace_check import problems
 from playtest.contracts.loop import Choice
@@ -85,5 +86,94 @@ def test_stop_cancels_running_option():
             assert cancelled.is_set() and result.release_verified
             await asyncio.gather(task, return_exceptions=True)
         finally:
+            await r.close()
+    run(main)
+
+
+class InterruptiblePort:
+    """An option that runs until released or interrupted, and reports which, as a measured outcome would."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.interrupted: list[str] = []
+        self.runs = 0
+
+    async def run(self, choice):
+        self.runs += 1
+        await self.release.wait()
+        ended = 'interrupted' if self.interrupted else 'succeeded'
+        return {'option_id': choice.option_id, 'template': choice.template, 'params': choice.params,
+                'start_position': None, 'end_position': None, 'displacement': None,
+                'terminated_by': ended, 'duration_s': 1.5, 'scene': None, 'receipts': []}
+
+    def interrupt(self, reason):
+        self.interrupted.append(reason)
+        self.release.set()
+
+
+def test_decide_during_options_keeps_going_on_a_repeat_and_interrupts_on_another_choice():
+    """The option runs while S1 decides again: the same id keeps it going, another choice interrupts it."""
+    async def main():
+        port = InterruptiblePort()
+        r = await rig('traverse+x', 'traverse+x', 'c1', 'f', choices=[*base_choices(), option()],
+                      option_port=port, decide_during_options=True)
+        try:
+            first = await r.loop.run_turn()           # starts it and ends the turn at once
+            await asyncio.sleep(0)                    # the background task takes its first step
+            assert first.executed_action == 'traverse+x' and port.runs == 1
+            assert r.loop.reports[-1].option_running and r.loop.reports[-1].finished_option is None
+            second = await r.loop.run_turn()          # S1 chose it again: kept going, not restarted
+            assert port.runs == 1 and port.interrupted == [] and second.executed_action == 'traverse+x'
+            assert 'running_option' in r.sink.of_kind('context')[-1]['body']['payload']
+            await r.loop.run_turn()                   # another choice: interrupted first, then executed
+            assert port.interrupted == ['S1 chose c1']
+            report = r.loop.reports[-1]
+            assert report.finished_option[1]['terminated_by'] == 'interrupted'
+            assert report.record.executed_action == 'c1' and report.option_running  # c1 runs in the background too
+            option_rows = r.sink.of_kind('option')
+            assert len(option_rows) == 1 and option_rows[0]['body']['outcome']['terminated_by'] == 'interrupted'
+            assert option_rows[0]['refs'] == [r.sink.of_kind('decision')[0]['trace_seq']]
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)
+
+
+def test_a_background_option_that_ends_by_itself_is_collected_without_an_interrupt():
+    async def main():
+        port = InterruptiblePort()
+        r = await rig('traverse+x', 'f', choices=[*base_choices(), option()],
+                      option_port=port, decide_during_options=True)
+        try:
+            await r.loop.run_turn()
+            port.release.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+            await r.loop.run_turn()                   # finish: nothing is running, so nothing is interrupted
+            assert port.interrupted == []
+            assert r.loop.reports[-1].finished_option[1]['terminated_by'] == 'succeeded'
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)
+
+
+def test_decide_during_options_runs_a_plain_move_in_the_background_and_files_it_when_collected():
+    """A plain action starts and the turn ends; the next turn collects it, so its execution is still filed."""
+    async def main():
+        r = await rig('c1', 'c2', 'f', choices=base_choices(), decide_during_options=True)
+        try:
+            first = await r.loop.run_turn()
+            assert first.executed_action == 'c1' and r.loop.reports[-1].option_running
+            assert r.loop.reports[-1].executed == ()            # not yet collected
+            await r.loop.run_turn()                             # c2: c1 is collected (stopped if still running)
+            moved = r.loop.reports[-1].finished_move
+            assert moved is not None and moved[0].id == 'c1' and not moved[1].execution.rejected
+            await r.loop.run_turn()                             # finish collects c2
+            assert r.loop.reports[-1].finished_move[0].id == 'c2'
+            executions = [e['body']['request']['choice_id'] for e in r.sink.of_kind('execution')]
+            assert executions[:2] == ['c1', 'c2']
+        finally:
+            await r.loop.stop('finish')
             await r.close()
     run(main)

@@ -165,6 +165,7 @@ def build_request(
     *,
     clip_path: Path | None = None,
     max_tokens: int = 4096,
+    advice: bool = False,
 ) -> dict[str, Any]:
     """Build the one request for this packet. The answer schema is stable for the whole run."""
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
@@ -178,6 +179,8 @@ def build_request(
     else:
         packet_content = [{"type": "text", "text": text}, video]
     system = frontier.SYSTEM + (frontier.PROGRESS_SYSTEM if manifest.progress else "") + (frontier.DECLARED_SYSTEM if manifest.declared is not None else "")
+    if advice:
+        system += frontier.ADVICE_SYSTEM
     return {
         "model": MODEL,
         "messages": [

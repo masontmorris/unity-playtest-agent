@@ -18,7 +18,8 @@ where an obstruction or the floor's edge is. An axis nobody measured says unmeas
 `compact_menu` returns the state payload: objective, progress, the open directive and any pending help, the
 facts the caller chose to pass, the same game-view note the full layout uses, the labelled choices, and, when
 the caller passes any, `recent`: the last six choices with the duration each measurably took and the result it
-measurably had. Every entry is three quantities and no advice; a result nobody measured stays `unmeasured`. It
+measurably had, plus any measured displacement, endpoint and execution status. An unmeasured goal stays null.
+No motion magnitude stands in for an uncalibrated skill's purpose. A result nobody measured stays `unmeasured`. It
 carries `set_version` and `built_from_seq` so a replay can bind it to the choice set and observation it came
 from. It drops the UI dump, per-choice calibration arithmetic and the full layout's recent-history block by
 design.
@@ -45,21 +46,25 @@ from typing import Any
 
 from playtest.contracts.loop import ChoiceKind
 from playtest.runner.image_transport import attach_images
-from playtest.runner.options.memory import MINUS, OutcomeMemory
+from playtest.runner.options.memory import MINUS, UNTRIED, OutcomeMemory
 
 # The one question text the compact menu sends. It is short because the labels carry the state; it is stated
 # once, in the question, because the payload no longer carries an `instructions` copy.
 MENU_INSTRUCTIONS = (
     "Choose exactly one id from choices: the one that best advances the objective now or resolves an "
     "uncertainty blocking it. Facts are measured; null means unknown, never zero. `recent` lists the last "
-    "choices and what each measurably did."
+    "choices and what each measurably did. Input completion and displacement do not establish objective "
+    "completion; goal_outcome null means unmeasured."
 )
-IF_BLOCKED = "If the option you choose ends blocked, what next?"
-IF_SUCCEEDED = "If the option you choose ends succeeded, what next?"
+IF_BLOCKED = ("For a choice with kind=option only: if it ends blocked, what next? "
+              "This branch is unused for action and skill choices.")
+IF_SUCCEEDED = ("For a choice with kind=option only: if it ends succeeded, what next? "
+                "This branch is unused for action and skill choices.")
 PRIMARY = "next_action"
 BLOCKED_QUESTION = "if_blocked"
 SUCCEEDED_QUESTION = "if_succeeded"
 
+DEAD_END_TRIED = 3  # choices tried at a place, all failed, before its untried labels say so
 LABEL_LIMIT = 90  # past this a label stops being comparable at a glance; a longer history is clipped and marked
 RECENT_LIMIT = 6  # measured choices the payload states: the newest six, newest last
 UNMEASURED = "unmeasured"  # a result nobody measured, never a claimed success or failure
@@ -175,7 +180,8 @@ def _facing(positions: Sequence[Sequence[float]], now: Sequence[float] | None) -
 def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
                  directive=None, pending_help: Mapping | None = None, facts: Sequence[str] = (),
                  game_view: str | None = None, positions: Sequence[Sequence[float]] = (),
-                 recent: Sequence[Mapping] = ()) -> dict:
+                 recent: Sequence[Mapping] = (), help_record: tuple[int, int] | None = None,
+                 running: Mapping | None = None, start_scene: str | None = None) -> dict:
     """The S1 state payload: what the objective is, how far the run got, and the labelled choices.
 
     `observation` is an `Observation` or its JSON mapping; it is read for the controlled pose, the scene, the
@@ -212,20 +218,98 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
         "game_view": game_view,
         "set_version": int(getattr(choices, "set_version", 0) or 0),
         "built_from_seq": int(built_from if isinstance(built_from, int) else 0),
-        "choices": [{"id": choice.id, "label": option_label(choice, memory, scene, position)}
-                    for choice in offered],
+        "choices": [_choice_view(choice, memory, scene, position) for choice in offered],
     }
+    if isinstance(running, Mapping) and isinstance(running.get("running_s"), (int, float)):
+        # What is running is a state fact, not a label: a label that advertised it became the best match to re-pick.
+        payload["running"] = {"id": running.get("choice_id"), "s": round(float(running["running_s"]), 1),
+                              "note": "choosing it again keeps it going; another choice stops it first"}
+    summary = memory.place_summary(scene, position) if hasattr(memory, "place_summary") else None
+    tried = _onward_failures(summary, offered, measured, position)
+    if tried is not None and tried >= DEAD_END_TRIED:
+        # A place where nothing tried got on: each untried label says so, measured, since what was never tried
+        # here is the one thing this place has not ruled out. Nothing is ranked or hidden.
+        for row in payload["choices"]:
+            if row["label"].endswith(UNTRIED):
+                row["label"] = f"{row['label']}{SEPARATOR}{tried} others tried here, none got on"
+    if start_scene is not None and scene == start_scene:
+        # What finishing would end, measured: the run is still in the scene it began in. A completed scene loads
+        # the next one, so an unchanged scene is the one completion fact the run measures.
+        for row in payload["choices"]:
+            if row["kind"] == ChoiceKind.finish.value:
+                row["label"] = f"{row['label']}{SEPARATOR}scene unchanged since the run began"
+    if help_record is not None and help_record[0]:
+        # The escalate label carries its own history, as every other label does: the requests opened this
+        # run and the directives that reached S1. Nothing here opens, repeats or refuses a request.
+        asked, advised = help_record
+        tail = f"so far: {asked} asked, {advised} gave advice"
+        if pending_help is not None:
+            tail += "; one pending"
+        for row in payload["choices"]:
+            if row["kind"] == ChoiceKind.escalate.value:
+                row["label"] = f"{row['label']}{SEPARATOR}{tail}"
+    if payload["directive"] is not None:
+        # A restart invalidates the open directive (`DirectiveTracker.rebind`): the restart label states that
+        # consequence, as every other label states what its choice measurably does.
+        for row in payload["choices"]:
+            if row["kind"] == ChoiceKind.restart_play_mode.value:
+                row["label"] = f"{row['label']}{SEPARATOR}drops the open advice"
     rows = recent_rows(recent)
     if rows:  # only a run that measured choices grows the state; a payload without them keeps its bytes
         payload["recent"] = rows
     return payload
 
 
+def _onward_failures(summary: Mapping[str, int] | None, offered, positions, position) -> int | None:
+    """How many choices were tried here with none getting on, or `None` when one did or nothing says.
+
+    Getting on is any `succeeded` ending except one along a direction back toward where the run started: going
+    back the way the run came is always possible and rules nothing out ahead. The way back is measured, from the
+    run's first position to this one; with no such measurement every success counts.
+    """
+    if not summary:
+        return None
+    now, first = _vector(position), (_vector(positions[0]) if positions else None)
+    back = None
+    if now is not None and first is not None:
+        back = [a - b for a, b in zip(first, now)]
+    directions = {getattr(choice, "option_id", None) or choice.id: _vector((getattr(choice, "params", None) or {})
+                                                                            .get("direction"))
+                  for choice in offered}
+    for option_id, succeeded in summary.items():
+        if not succeeded:
+            continue
+        direction = directions.get(option_id)
+        if back is None or direction is None or sum(a * b for a, b in zip(direction, back)) <= 0:
+            return None
+    return len(summary)
+
+
+def _choice_view(choice, memory: OutcomeMemory, scene, position) -> dict:
+    """Short scoring label plus the scope and history that shortening must not erase."""
+    kind = _kind(choice)
+    label = option_label(choice, memory, scene, position)
+    row = {"id": choice.id, "kind": kind.value if kind is not None else None, "label": label}
+    # Each row goes out on every turn, 30 or so per request, so nothing the label already says is repeated: the
+    # history only when the label does not carry all of it, the full text only when the label was clipped or is a
+    # finish guard the fixed label cannot state. That outcomes are not objective completion is said once, in the
+    # question (`MENU_INSTRUCTIONS`).
+    if kind in (ChoiceKind.option, ChoiceKind.action, ChoiceKind.skill):
+        history = _suffix(memory, scene, position, choice.option_id or choice.id)
+        if history not in label:
+            row["history"] = history
+    full = getattr(choice, "label", "") or ""
+    if full and (kind is ChoiceKind.finish or "\u2026" in label):
+        row["details"] = full
+    return row
+
+
 def recent_rows(recent: Sequence[Mapping]) -> list[dict]:
-    """The newest `RECENT_LIMIT` measured choices, newest last, each as `id`, `s` and `result` only.
+    """The newest `RECENT_LIMIT` measured choices, with known motion and execution facts beside the result.
 
     `s` is the measured duration in seconds, or `null` when nothing measured one; `result` is the measured
-    outcome the caller recorded, and `unmeasured` when it recorded none. Nothing is inferred, ranked or
+    outcome the caller recorded, and `unmeasured` when it recorded none. A skill's input completion is not
+    objective success. Optional vectors and execution status stay distinct from its unmeasured goal. Nothing is inferred, ranked or
     shortened: an entry with no id says nothing and is left out rather than named.
     """
     rows: list[dict] = []
@@ -234,8 +318,18 @@ def recent_rows(recent: Sequence[Mapping]) -> list[dict]:
         if not isinstance(ident, str) or not ident:
             continue
         result = _field(item, "result")
-        rows.append({"id": ident, "s": _num(_field(item, "s")),
-                     "result": result if isinstance(result, str) and result else UNMEASURED})
+        row = {"id": ident, "s": _num(_field(item, "s")),
+               "result": result if isinstance(result, str) and result else UNMEASURED}
+        for key in ("displacement", "end_position"):
+            measured = _vector(_field(item, key))
+            if measured is not None:
+                row[key] = list(measured)
+        status = _field(item, "execution_status")
+        if isinstance(status, str):
+            row["execution_status"] = status
+        if "goal_outcome" in item:
+            row["goal_outcome"] = None  # no objective outcome is measured by these receipts
+        rows.append(row)
     return rows
 
 
@@ -293,9 +387,13 @@ def _option_intent(choice) -> str:
         return f"wait {seconds:g} s" if seconds is not None else "wait"
     if template == "place":
         return "place"
+    if template == "sweep":
+        return "resolve what blocks progress here by trying each untried control once"
     label = _direction(params.get("direction"))
     if template in ("hop", "traverse"):
-        return f"{template} {label}" if label is not None else _first_clause(getattr(choice, "label", "") or "")
+        # A hop that presses the rise again in the air (`options.air_rise`) is named apart from the one that does not.
+        name = "hop ×2" if template == "hop" and params.get("air_press_s") else template
+        return f"{name} {label}" if label is not None else _first_clause(getattr(choice, "label", "") or "")
     if template == "retreat":
         back = params.get("from")
         if isinstance(back, str) and back:
@@ -309,6 +407,8 @@ def _option_intent(choice) -> str:
 def _option_expected(choice) -> str:
     template = getattr(choice, "template", None)
     params = getattr(choice, "params", None) or {}
+    if template == "sweep":
+        return f"{len(params.get('actions') or ())} untried"
     if template == "wait":
         return "no input"
     if template == "place":
@@ -316,6 +416,11 @@ def _option_expected(choice) -> str:
         return "at (" + ", ".join(_n(value) for value in point) + ")" if point is not None else "position unmeasured"
     if template == "hop":
         parts = [f"run-up {_n(value)}" for value in (_num(params.get("run_up")),) if value is not None]
+        air, high = _num(params.get("air_s")), _num(params.get("air_peak"))
+        if air is not None and high is not None:
+            # A measured flight (`options.air_rise`): the same basis for a hop and a hop that presses again.
+            parts += [f"air {air:.2f} s", f"peak {high:.2f}"]
+            return ", ".join(parts)
         flight = _num(params.get("flight_s"))
         peak = _num(params.get("rise_peak"))
         if flight is not None:
@@ -355,7 +460,8 @@ def _fit(intent: str, expected: str, suffix: str) -> str:
     suffix is never mistaken for the whole measured record.
     """
     if len(intent) >= LABEL_LIMIT:
-        return intent[:LABEL_LIMIT - 1] + "\u2026"
+        # Leave room for expectation/history; the unabridged details are kept in the state.
+        intent = intent[:LABEL_LIMIT // 2 - 1] + "\u2026"
     text = SEPARATOR.join(part for part in (intent, expected, suffix) if part)
     if len(text) <= LABEL_LIMIT:
         return text
@@ -441,7 +547,12 @@ def _directive_view(directive: Any) -> dict | None:
         expected, tolerance = getattr(directive, "expected", None), getattr(directive, "tolerance", None)
     if not isinstance(ident, str) or not ident or not isinstance(text, str) or not text:
         raise ValueError("a directive the payload shows needs an id and a text")
-    return {"id": ident, "text": text, "setpoint": _setpoint(expected, tolerance)}
+    outcome = directive.get("outcome") if isinstance(directive, Mapping) else getattr(directive, "outcome", None)
+    outcome = outcome.value if isinstance(outcome, Enum) else outcome
+    setpoint = _setpoint(expected, tolerance)
+    if setpoint is not None and outcome == "met":  # a held directive: its check is met, its advice still stands
+        setpoint = f"{setpoint} (met)"
+    return {"id": ident, "text": text, "setpoint": setpoint}
 
 
 def _setpoint(expected: Any, tolerance: Any) -> str | None:
@@ -479,7 +590,7 @@ def _grounded(probe: Any, cell: float) -> bool | None:
     if not isinstance(under, Mapping) or under.get("hit") is not True:
         return None
     delta = _num(under.get("delta_y"))
-    return abs(delta) <= GROUNDED_FRACTION * cell if delta is not None else None
+    return True if delta is not None and abs(delta) <= GROUNDED_FRACTION * cell else None
 
 
 def _probe_summary(probe: Any) -> str | None:

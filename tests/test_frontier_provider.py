@@ -875,3 +875,10 @@ def test_declared_system_is_conditional():
     declared = provider.build_request(replace(manifest(), declared={"values": []}), sample())["messages"][0]["content"]
     assert plain == frontier.SYSTEM
     assert declared == plain + frontier.DECLARED_SYSTEM
+
+
+def test_advice_appends_the_gameplay_advice_text_and_changes_nothing_else():
+    plain, advised = provider.build_request(manifest(), sample()), provider.build_request(manifest(), sample(), advice=True)
+    assert advised["messages"][0]["content"] == plain["messages"][0]["content"] + frontier.ADVICE_SYSTEM
+    assert advised["messages"][1:] == plain["messages"][1:]
+    assert {k: v for k, v in advised.items() if k != "messages"} == {k: v for k, v in plain.items() if k != "messages"}

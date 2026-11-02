@@ -149,12 +149,22 @@ def test_hop_without_a_declared_chord_is_rejected_with_the_reason():
 
 
 def test_a_rejected_input_ends_the_option_rejected():
-    world = FakeWorld(reject_acts=1)
+    """A stale reading is re-bound once; rejected twice running, the option ends rejected."""
+    world = FakeWorld(reject_acts=2)
     _, primitives, spec = build("traverse+x")
     outcome = run_spec(world, primitives, spec)
     assert outcome.terminated_by == "rejected"
     rejected = [row for row in outcome.receipts if row.get("status") == "rejected"]
-    assert rejected and rejected[0]["reject_reason"] == "stale_age"
+    assert len(rejected) == 2 and rejected[0]["reject_reason"] == "stale_age"
+
+
+def test_one_stale_rejection_is_sent_once_more_on_a_fresh_reading():
+    world = FakeWorld(reject_acts=1)
+    _, primitives, spec = build("traverse+x")
+    outcome = run_spec(world, primitives, spec)
+    assert outcome.terminated_by != "rejected"
+    assert any("sent once more" in row.get("reason", "") for row in outcome.receipts
+               if row.get("type") == "option_note")
 
 
 def test_no_pose_is_unmeasured():
@@ -246,13 +256,16 @@ def test_hop_toward_a_gap_in_a_game_without_coyote_time_falls_honestly():
     assert outcome.terminated_by in ("fell", "state_changed"), outcome.receipts
 
 
-def test_hop_keeps_its_run_up_on_the_floor_it_started_on():
+@pytest.mark.parametrize("floor_behind", ["pit", "lower_floor"])
+def test_hop_keeps_its_run_up_on_the_floor_it_started_on(floor_behind):
     """live-13: a hop backed up its whole run-up, walked off the ledge it had just climbed and failed from
     below, seven times. The floor behind is measured, so the run-up stops at its edge and the note says how
     much run-up was actually available."""
-    # A three-unit top with a drop behind it and a taller face ahead; the body starts on the top.
+    # A lower surface is also the end of this floor, even when the drop is smaller than a jump.
+    # The live probe hits the lower surface; a pit alone only exercises a ray that misses.
+    pit = {"pit_from": -9.0, "pit_to": 0.0} if floor_behind == "pit" else {}
     world = FakeWorld(x=2.6, y=1.0, step_x=0.0, step_width=3.0, step_height=1.0,
-                      wall_x=3.0, wall_height=2.0, pit_from=-9.0, pit_to=0.0)
+                      wall_x=3.0, wall_height=2.0, **pit)
     _, primitives, spec = build("hop+x", world)
     heights: list[float] = []
     original = world.observe_once
@@ -519,3 +532,100 @@ def test_a_hop_measures_its_flight_and_later_hops_use_it():
     assert "measured obstacle at" in note and "took off" in note and "apex" in note
     second = OptionExecutor(FakeWorld(x=2.9), primitives, flight=flight)
     assert second._measured_apex_s() == flight["time_to_apex_s"][0]
+
+
+def test_an_interrupted_option_ends_interrupted_with_its_input_released_and_its_motion_measured():
+    """S1 chose something else mid-move: the option stops at its next await, measured and released."""
+    world = FakeWorld(step_x=None)
+    _, primitives, spec = build("traverse+x")
+
+    async def yielding(seconds):                 # a real bridge yields on every wait; the fake world does not
+        await world.sleep(seconds)
+        await asyncio.sleep(0)
+
+    async def main():
+        executor = OptionExecutor(world, primitives, clock=world.clock, sleep=yielding,
+                                  wall_clock=world.wall_clock)
+        task = asyncio.create_task(executor.run(spec))
+        for _ in range(5):                        # the run starts holding the move
+            await asyncio.sleep(0)
+        executor.interrupt("S1 chose wait")
+        return await task
+
+    outcome = asyncio.run(main())
+    assert_valid(outcome, spec)
+    assert outcome.terminated_by == "interrupted"
+    assert world.held == set() and world.stops[-1] == "release"
+    assert any(row.get("reason") == "S1 chose wait" for row in outcome.receipts if row.get("type") == "option_note")
+
+
+def test_an_interrupt_during_a_hops_flight_waits_for_the_landing():
+    """Physics owns the flight: an interrupt sent while airborne lets the hop land and end on its own measure."""
+    world = FakeWorld()
+    _, primitives, spec = build("hop+x", world)
+
+    async def yielding(seconds):
+        await world.sleep(seconds)
+        await asyncio.sleep(0)
+
+    async def main():
+        executor = OptionExecutor(world, primitives, clock=world.clock, sleep=yielding,
+                                  wall_clock=world.wall_clock)
+        task = asyncio.create_task(executor.run(spec))
+        for _ in range(2000):
+            if executor.committed or task.done():
+                break
+            await asyncio.sleep(0)
+        assert executor.committed, "the hop never took off"
+        executor.interrupt("S1 chose wait")
+        return await task
+
+    outcome = asyncio.run(main())
+    assert_valid(outcome, spec)
+    assert outcome.terminated_by in ("succeeded", "blocked")
+    assert world.held == set()
+
+
+def test_a_hop_that_presses_again_releases_then_presses_the_chord_once_more_in_the_air():
+    world = FakeWorld()
+    _, primitives, spec = build("hop+x", world)
+    double = OptionSpec(option_id="hop2+x", template="hop",
+                        params={**spec.params, "air_press_s": 0.2, "flight_s": 1.0}, intent=spec.intent)
+    outcome = run_spec(world, primitives, double)
+    chords = [row for row in world.requests if row["action"] == "chord_right"]
+    assert len(chords) == 2                                   # take-off, then the press in the air
+    assert any("pressed the rise again" in row.get("reason", "") for row in outcome.receipts
+               if row.get("type") == "option_note")
+    plain = run_spec(FakeWorld(), primitives, spec)
+    assert "pressed the rise again" not in str(plain.receipts)
+
+
+def test_a_sweep_presses_each_listed_control_once_and_ends_blocked_when_nothing_changes():
+    world, primitives, _ = build("traverse+x")
+    sweep = OptionSpec(option_id="sweep", template="sweep", params={"actions": ["rise_up", "move_left"]},
+                       intent="try each untried control once")
+    outcome = run_spec(world, primitives, sweep)
+    assert outcome.terminated_by == "blocked"
+    assert [row["action"] for row in outcome.measured["tried"]] == ["rise_up", "move_left"]
+    assert [row["action"] for row in world.requests] == ["rise_up", "move_left"]
+
+
+def test_a_sweep_ends_state_changed_at_the_first_control_the_scene_changes_on():
+    world, primitives, _ = build("traverse+x")
+    original, pressed = world.observe_once, []
+    original_start = world.start_act
+
+    async def start_act(**request):
+        pressed.append(request["action"])
+        return await original_start(**request)
+
+    async def observe_once():
+        observation = await original()
+        return observation.model_copy(update={"scene": "fixture:next"}) if pressed[-1:] == ["move_left"] else observation
+
+    world.start_act, world.observe_once = start_act, observe_once  # type: ignore[method-assign]
+    sweep = OptionSpec(option_id="sweep", template="sweep", params={"actions": ["move_left", "rise_up"]},
+                       intent="try each untried control once")
+    outcome = run_spec(world, primitives, sweep)
+    assert outcome.terminated_by == "state_changed" and "changed the scene" in str(outcome.receipts)
+    assert [row["action"] for row in outcome.measured["tried"]] == ["move_left"]

@@ -69,6 +69,20 @@ def _meta_reply(_body):
                            "prompt_tokens_details": {"cached_tokens": 0}}}, 1.0, None
 
 
+def test_frontier_backend_refuses_delegation_without_reinterpreting_or_calling_provider(tmp_path):
+    sink = MemorySink()
+    stub = SimpleNamespace(readers=[], actions=[], skills=[])
+    def forbidden(**kwargs):
+        pytest.fail("unsupported delegation must not capture or call the escalation provider")
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub, directory=tmp_path / "run",
+                          approval=_approval(), sink=sink, tracker=DirectiveTracker(sink),
+                          started_utc=datetime.now(timezone.utc), send=forbidden, capture=forbidden)
+    request = SimpleNamespace(kind="delegate", context={})
+    result = asyncio.run(helper.run(request))
+    assert result.result == {"error": "unsupported help kind: delegate", "supported_kinds": ["escalate"]}
+    assert helper.calls == 0 and request.kind == "delegate"
+
+
 def test_live_help_port_offline_end_to_end_escalates_then_adopts_hypothesis_and_scores_directive(tmp_path: Path):
     async def main():
         game, client = await connected()
@@ -659,7 +673,7 @@ def _escalation_request(turn: int, counter: int) -> SimpleNamespace:
                                "public": {"counter": counter}},
                "choice_set_version": 0, "choices": [c.model_dump(mode="json") for c in offered],
                "objective": OBJECTIVE, "facts": []}
-    return SimpleNamespace(turn=turn, choice_id=escalate.id, context=context)
+    return SimpleNamespace(kind="escalate", turn=turn, choice_id=escalate.id, context=context)
 
 
 def _frontier_asks(expected: dict, deadline_s: float | None):
@@ -1006,6 +1020,34 @@ def test_a_restart_withdraws_open_hypotheses_and_discards_staged_results(tmp_pat
     # Nothing held for the earlier generation can still be adopted or staged.
     assert helper._staged == {} and helper._adopted == {}   # noqa: SLF001
     assert {0, 3} <= helper._discarded                     # noqa: SLF001
+
+
+def test_a_kept_request_keeps_its_staged_answer_through_a_restart_and_its_directive_is_reanchored(tmp_path: Path):
+    """The loop kept request 0 through the restart: its answer survives rebind, re-anchored; nothing else does."""
+    from playtest.runner.frontier_help import _StagedResult
+    stub_manifest = SimpleNamespace(readers=[SimpleNamespace(alias="counter", kind="number")],
+                                    actions=two_actions().actions, skills=[])
+    helper = FrontierHelp(project=tmp_path, status=None, manifest=stub_manifest, directory=tmp_path / "run",
+                          approval=_approval(), sink=MemorySink(), tracker=DirectiveTracker(MemorySink()),
+                          started_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          send=lambda body: _meta_reply(body),
+                          capture=lambda **_kwargs: Clip(None, None, "offline fake", None), max_calls=1,
+                          session="before", generation="g-1")
+    row = {"directive_id": "d-0", "scene": "scene", "last_frame": 400, "last_game_s": 30.0}
+    kept = _StagedResult(result=object(), payload={"hypotheses": []}, directive_row=row, keep_row=None,
+                         based_on_seq=7, evidence_trace_seq=None, candidate=None, finding_evidence=None)
+    helper._staged[0] = kept           # noqa: SLF001 - the kept request's answer, staged before the restart
+    helper._staged[1] = object()       # noqa: SLF001 - another request's, not kept
+    helper.keep_request(0)
+    after = Observation(session="after", seq=2, game_s=1.0, wall_utc=datetime.now(timezone.utc),
+                        clock_mode="realtime", scene="scene", playing=True, paused=False, time_scale=1.0, frame=2)
+
+    helper.rebind(client=SimpleNamespace(session="after"), observation=after, generation="g-2")
+
+    assert helper._staged == {0: kept}                          # noqa: SLF001
+    assert 0 not in helper._discarded and 1 in helper._discarded  # noqa: SLF001
+    # The earlier session's frame and game time would read as a clock reset; the tracker re-takes them.
+    assert (row["last_frame"], row["last_game_s"], row["kept_across_restart"]) == (None, None, True)
 
 
 def test_a_reused_bridge_sequence_resolves_to_the_current_sessions_observation():

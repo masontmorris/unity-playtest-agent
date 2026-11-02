@@ -758,8 +758,10 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
     summary = json.loads(files.summary.read_text(encoding="utf-8"))
     assert (summary["status"], summary["ending"], summary["turns"]) == ("complete", "finish", 3)
     assert summary["adherence"] == {"rate": 1.0, "violations": []} and summary["stop"]["release_verified"] is True
-    assert summary["s1"]["calls"] == 3 and summary["s1"]["call_cap"] == 6 and summary["manifest"]["not_offered"] == []
-    assert summary["manifest"]["offered"] == ["move", "look", "wait", "escalate", "delegate", "finish"]
+    assert summary["s1"]["calls"] == 3 and summary["s1"]["call_cap"] == 6
+    assert [row["name"] for row in summary["manifest"]["not_offered"]] == ["escalate", "delegate"]
+    assert not {"escalate", "delegate"}.intersection(summary["manifest"]["offered"])
+    assert summary["manifest"]["offered"] == ["move", "look", "wait", "finish"]
     assert summary["manifest"]["catalog_sha256"] == files.catalog_sha     # the run says which catalog the host served
     assert summary["game_worktree_changed"] is False and summary["provider_failures"] == 0
     # The trace is the file writer's: read back strictly and replayed, it has nothing to report.
@@ -1087,6 +1089,7 @@ def test_a_frontier_session_builds_its_helper_with_the_calibration_record(tmp_pa
         built.update(kwargs)
         return real(**kwargs)
 
+    capture.supported_kinds = real.supported_kinds
     monkeypatch.setattr(cli, "FrontierHelp", capture)
     with GameThread(CatalogGame, catalog=export(two_actions()), effects={"move": (6.0, 0.0, 0.0)}) as thread:
         files = Project(tmp_path, thread.port, git=True)

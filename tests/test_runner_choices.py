@@ -75,6 +75,28 @@ def test_the_wait_choice_names_the_game_seconds_it_waits():
     assert all(c.params == {} for c in others)                   # no other core choice carries a duration
 
 
+@pytest.mark.parametrize("kinds, offered, unavailable", [
+    (frozenset({"escalate"}), ["escalate"], ["delegate"]),
+    (frozenset({"delegate"}), ["delegate"], ["escalate"]),
+    (frozenset(), [], ["escalate", "delegate"]),
+])
+def test_only_configured_help_operations_are_offered(kinds, offered, unavailable):
+    built = build_choices(manifest(action("move", holds=[hold(0.2)])), help_kinds=kinds)
+    assert offered_ids(built) == ["move", "wait", *offered, "finish"]
+    assert [row["name"] for row in built.not_offered] == unavailable
+    assert all("No configured handler" in row["reason"] for row in built.not_offered)
+    for choice in built.choices:
+        if choice.id in offered:
+            assert choice.kind.value == choice.id  # never rewrite delegation into escalation
+
+
+def test_help_capabilities_are_validated_and_disabled_names_stay_reserved():
+    with pytest.raises(ValueError, match="help_kinds"):
+        build_choices(manifest(), help_kinds=frozenset({"move"}))
+    with pytest.raises(ValueError, match="collides with the core choice"):
+        build_choices(manifest(action("delegate", holds=[hold(0.2)])), help_kinds=frozenset())
+
+
 def test_a_tap_hold_is_the_requested_hold_and_the_lease():
     built = build_choices(manifest(action("tap", "w", hold_s=None, tap_hold_s=0.1, holds=[hold(0.1)])))
     assert built.choices[0].params == {} and built.leases == {"tap": 0.1}
@@ -335,3 +357,23 @@ def test_a_label_states_a_declared_number_exactly_and_never_rounds_it():
     assert "a 0.123456789-second hold of Gamepad leftStick (x=0.123456789, y=-0.987654321)" in fine.label
     assert "hold w for 0.123456789 s, then wait 1.23e-05 s" in slow.label
     assert built.catalog.actions["fine"].inputs[0].x == 0.123456789 and built.leases == {"fine": 0.123456789}
+
+
+def test_a_sweep_is_offered_only_at_a_tried_place_with_the_controls_untried_there_smallest_effect_first():
+    from playtest.contracts.loop import Choice
+    from playtest.runner.choices import sweep_spec
+    from playtest.runner.options.memory import OutcomeMemory
+    from playtest.runner.options.model import OptionOutcome
+
+    def action(name, label):
+        return Choice(id=name, kind="action", action=name, label=label, source="manifest")
+    offered = [action("walk", "Walk: calibrated net displacement 3.2 world units"),
+               action("use", "Use: calibrated net displacement 0.0 world units"),
+               action("odd", "Odd: no calibrated effect")]
+    memory = OutcomeMemory(cell=0.5)
+    here = [0.0, 0.0, 0.0]
+    assert sweep_spec(offered, memory, "s", here) is None
+    for option_id in ("hop+x", "traverse+x", "walk"):
+        memory.record(OptionOutcome(option_id, "hop", {}, here, here, [0, 0, 0], "blocked", 0.5, scene="s"))
+    spec = sweep_spec(offered, memory, "s", here)
+    assert spec.template == "sweep" and spec.params["actions"] == ["use", "odd"]

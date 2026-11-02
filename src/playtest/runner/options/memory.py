@@ -274,7 +274,9 @@ class OutcomeMemory:
         history.count(outcome.terminated_by)
         direction = _vector(outcome.params.get("direction"))
         displacement = _vector(outcome.displacement)
-        if direction is not None and displacement is not None:
+        # A fall's ground covered is not an advance the body holds: it ended below the route it was on, so a fall
+        # never sets `best` (a hop that always falls would otherwise read as the biggest gain).
+        if direction is not None and displacement is not None and outcome.terminated_by != "fell":
             advance = _dot(displacement, direction)
             if advance is not None and (history.best_advance is None or advance > history.best_advance):
                 history.best_advance = advance
@@ -569,6 +571,16 @@ class OutcomeMemory:
         if not tail:
             return f"here: {head}"
         return f"here: {head} \u2014 {', '.join(tail)}"
+
+    def place_summary(self, scene: str | None, position: Sequence[float] | None) -> dict[str, int] | None:
+        """Each choice tried at this place, by id, with how many times it ended `succeeded` here."""
+        measured = _vector(position) if position is not None else None
+        if measured is None:
+            return None
+        cell = self.cell_of(measured)
+        return {option_id: history.terminations.get("succeeded", 0)
+                for (other_scene, other_cell, option_id), history in self._history.items()
+                if other_scene == scene and other_cell == cell and history.tries}
 
     def cell_line(self, scene: str | None, position: list[float] | None) -> str | None:
         """One fact line for this place across every option, or `None` when this place has no history."""

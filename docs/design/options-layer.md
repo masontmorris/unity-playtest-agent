@@ -91,6 +91,10 @@ is pressed, report it; don't fake it with alternating presses.
 Parameters come from primitives: run-up distance from measured speed times the measured rise time; launch
 distance and flight-time bound from the rise primitive's measured duration. Each constant names its source.
 
+During a hop's run-up, a down-ray hitting a lower surface ends the current floor when the drop exceeds
+the landing tolerance. The jump-height fall bound does not define floor continuity: a reachable lower
+floor can still cost the hop its take-off height.
+
 A hop backs up on the floor it starts on. With a probe, the back-up stops at the last sample whose ray one
 step further back still reaches floor within the `fell` bound, and the note says
 `run-up N.NN available of M.MM (floor edge)`. Without a probe it stops when the body has dropped below where
@@ -114,8 +118,14 @@ itself does not change.
 ```json
 {"option_id": "...", "template": "...", "params": {...},
  "start_position": [...] | null, "end_position": [...] | null, "displacement": [...] | null,
- "terminated_by": "...", "duration_s": ..., "receipts": [<bridge execution records>]}
+ "terminated_by": "...", "duration_s": ..., "scene": "..." | null,
+ "measured": {...}, "receipts": [<bridge execution records>]}
 ```
+
+`params` stays exactly as requested by S1. Additional measurements belong in `measured`, an object
+that may be empty; older traces may omit it. The trace entry keeps `receipts` beside `outcome`, not
+inside it. The trace validator checks this shape and option identity; these checks are not encoded
+in the exported JSON Schema.
 
 ## 5. Outcome memory and labels (runner, owner W2)
 

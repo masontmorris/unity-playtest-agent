@@ -163,6 +163,14 @@ class Primitives:
     rise: Primitive | None = None
     rise_duration_s: float | None = None    # measured airtime: hold time whose rise returns to zero
     rise_peak: float | None = None          # measured peak rise: the largest +y displacement sampled
+    # The rise pressed again at its measured apex (`options.air_rise`): set only when that measurably rose
+    # higher than a rise from rest. Its peak, when after take-off it was pressed, and its measured airtime.
+    air_rise_peak: float | None = None
+    air_press_s: float | None = None
+    air_flight_s: float | None = None
+    # The same probe's flight from rest: airtime and peak of an actual rise, the basis both hop labels share.
+    rest_rise_peak: float | None = None
+    rest_flight_s: float | None = None
     classified: tuple[Primitive, ...] = ()
     chords: tuple[tuple[str, str, str], ...] = ()   # (move action, rise action, chord action)
     notes: tuple[str, ...] = ()
@@ -837,11 +845,37 @@ def option_specs(primitives: Primitives) -> list[OptionSpec]:
                     "rise_peak": primitives.rise_peak,
                     "speed": direction.speed,
                     "step": direction.step,
+                    **({"air_s": primitives.rest_flight_s, "air_peak": primitives.rest_rise_peak}
+                       if primitives.rest_flight_s is not None and primitives.rest_rise_peak is not None else {}),
                 },
                 intent=(f"hop {direction.label}: run-up {_text(run_up, 2)}, "
                         f"rise {_text(primitives.rise_duration_s, 2)} s, "
                         f"peak {_text(primitives.rise_peak, 2)}"),
             ))
+            if primitives.air_rise_peak is not None and primitives.air_press_s and primitives.air_flight_s:
+                # The same hop, pressing the rise again at the measured apex: its own measured peak and airtime.
+                specs.append(OptionSpec(
+                    option_id=f"hop2{direction.label}",
+                    template="hop",
+                    params={
+                        "direction": list(direction.unit),
+                        "action": move_action,
+                        "rise_action": primitives.rise.action if primitives.rise else None,
+                        "chord": chord,
+                        "run_up": run_up,
+                        "launch_distance": launch,
+                        "flight_s": primitives.air_flight_s,
+                        "rise_peak": primitives.air_rise_peak,
+                        "air_press_s": primitives.air_press_s,
+                        "speed": direction.speed,
+                        "step": direction.step,
+                        "air_s": primitives.air_flight_s,
+                        "air_peak": primitives.air_rise_peak,
+                    },
+                    intent=(f"hop ×2 {direction.label}: run-up {_text(run_up, 2)}, "
+                            f"rise {_text(primitives.air_flight_s, 2)} s, "
+                            f"peak {_text(primitives.air_rise_peak, 2)}"),
+                ))
 
     for direction in primitives.directions:
         back = primitives.opposite(direction.unit)

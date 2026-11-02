@@ -169,19 +169,24 @@ class TraceEntry(Strict):
                 body = self.body
                 if not isinstance(body["option_id"], str) or not body["option_id"]:
                     raise ValueError("option_id must be non-empty")
-                if body["template"] not in ("traverse", "retreat", "hop", "wait", "place"):
+                if body["template"] not in ("traverse", "retreat", "hop", "wait", "place", "sweep"):
                     raise ValueError("unknown option template")
                 if not isinstance(body["params"], dict) or not isinstance(body["outcome"], dict) or not isinstance(body["receipts"], list):
                     raise ValueError("option params and outcome must be objects and receipts a list")
                 if "receipts" in body["outcome"]:
                     raise ValueError("receipts belong outside outcome")
                 outcome = body["outcome"]
-                if set(outcome) != {"option_id", "template", "params", "start_position", "end_position",
-                                    "displacement", "terminated_by", "duration_s", "scene"}:
+                required = {"option_id", "template", "params", "start_position", "end_position",
+                            "displacement", "terminated_by", "duration_s", "scene"}
+                # `measured` is what the option measured about the place beside what it was asked to do
+                # (OptionOutcome.measured): optional, an object when present, kept apart from params.
+                if set(outcome) - {"measured"} != required:
                     raise ValueError("option outcome has incorrect keys")
+                if "measured" in outcome and not isinstance(outcome["measured"], dict):
+                    raise ValueError("option outcome measured must be an object")
                 if any(outcome[k] != body[k] for k in ("option_id", "template", "params")):
                     raise ValueError("option outcome identity differs from option")
-                if outcome["terminated_by"] not in ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured"):
+                if outcome["terminated_by"] not in ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured", "interrupted"):
                     raise ValueError("unknown option termination")
             if self.kind is TraceKind.execution:
                 TraceExecutionRequest.model_validate(self.body["request"])

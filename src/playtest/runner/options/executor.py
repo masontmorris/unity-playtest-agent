@@ -42,6 +42,8 @@ PERIOD_S = 1.0 / OBSERVATION_HZ
 # A request bound to a reading older than ten ticks is stale: the bridge rejects it rather than applying
 # input to a state nobody measured. Ten observation periods.
 MAX_AGE_S = 10 * PERIOD_S
+SWEEP_HOLD_S = 0.2     # one press of each control a sweep tries
+SWEEP_SETTLE_S = 0.6   # how long after each press a sweep watches for a change
 
 # A block is called only over a window long enough for one fast tick to be noise: six observation
 # periods, a bit under a third of a second.
@@ -137,6 +139,12 @@ def _position(value: Any) -> tuple[float, float, float] | None:
     return (parts[0], parts[1], parts[2])  # type: ignore[index]
 
 
+def _pose(observation: Any) -> tuple[float, float, float] | None:
+    """The controlled entity's measured position in an observation, or None."""
+    controlled = _controlled(observation) if observation is not None else None
+    return _position(controlled.get("position")) if controlled else None
+
+
 def _public_value(public: Mapping[str, Any], path: str) -> Any:
     """One declared reader's value from `observation.public`, by dotted path; None when it is absent."""
     value: Any = public
@@ -165,6 +173,22 @@ def _dead(value: Any, marker: Any) -> bool:
     if bound <= 0:
         return number <= 0.0
     return number >= bound
+
+
+def fell_bound(primitives: Any) -> float | None:
+    """The vertical drop that counts as a fall: the measured rise peak, or two measured short steps.
+
+    Shared with the turn loop's plain actions and skills (`playtest.runner.session`), so a drop means the same
+    thing whatever choice made it. `None` when neither quantity is measured.
+    """
+    candidates: list[float] = []
+    peak = getattr(primitives, "rise_peak", None)
+    if peak is not None:
+        candidates.append(peak * FELL_SHARE_OF_RISE)
+    step = getattr(primitives, "short_step", None)
+    if step is not None:
+        candidates.append(step * FELL_MIN_STEPS)
+    return max(candidates) if candidates else None
 
 
 def _dump(record: Any) -> dict[str, Any]:
@@ -261,13 +285,13 @@ def _rays_toward(probe: Mapping[str, Any], back: Sequence[float] | None) -> list
 
 
 def _floor_behind(probe: Any, step: float, horizon: float,
-                  fell: float | None, back: Sequence[float] | None = None) -> tuple[bool | None, float | None]:
+                  floor_tolerance: float, back: Sequence[float] | None = None) -> tuple[bool | None, float | None]:
     """Whether the floor the body stands on continues behind it, reading every backward ray that matters.
 
     The stop must land before the body can leave the floor, not after: between one sample and the next the
     body travels `horizon` backwards (`step` in one observation period plus however far a probe sample can
     age), so every ray inside that distance is a place the floor could already have ended. A ray that
-    misses has no floor under it; a ray that hits a surface more than the fell bound below the anchor is
+    misses has no floor under it; a ray that hits a surface below the current floor by more than the landing tolerance is
     standing on nothing that continues this floor; any other measured hit is floor. Rays between the next
     step and the horizon are read together, and the nearest one that ends the floor comes back with it,
     minus the horizon's travel, as the floor still available now. When no ray lies inside the horizon the
@@ -295,7 +319,7 @@ def _floor_behind(probe: Any, step: float, horizon: float,
             if height is None:                  # inside geometry: an obstruction, not a floor to run up on
                 unknown = True
                 continue
-            if fell is not None and height < -fell:
+            if height < -floor_tolerance:
                 return False, behind
             continue
         if hit is False:
@@ -462,8 +486,9 @@ class _Hop:
     launch: float
     rise_duration: float
     flight_bound: float
-    fell: float | None
+    floor_tolerance: float
     probe_wall: float | None = None
+    air_press_s: float | None = None  # pressed again this long after take-off (`options.air_rise`), or never
 
 
 class OptionExecutor:
@@ -499,6 +524,13 @@ class OptionExecutor:
         # Flights measured by earlier hops in this run, shared by the caller across executors. A hop's take-off
         # lead uses the measured time to apex once one exists, instead of the symmetric-flight assumption.
         self._flight = flight if flight is not None else {}
+        # Set by `interrupt`: S1 chose something else while this option ran (`--decide-during-options`).
+        self._interrupted = asyncio.Event()
+        self._interrupt_reason: str | None = None
+        # Cleared for a whole hop, run-up and flight: a hop cut short anywhere is a jump that falls short, so an
+        # interrupt takes effect when it has landed (or ended on its own measure).
+        self._uncommitted = asyncio.Event()
+        self._uncommitted.set()
         self._last_tick: float | None = None
         self._last_obs: Observation | None = None
         # The observation stream's own timing, measured rather than assumed: how often an observation
@@ -523,25 +555,75 @@ class OptionExecutor:
         self._probe_changed_at = None
         self._probe_intervals = []
         self._pose_age_s = None
+        work: asyncio.Future | None = None
         try:
-            if spec.template == "wait":
-                await self._wait(run)
-            elif spec.template == "place":
-                await self._place(run)
-            elif spec.template == "hop":
-                await self._hop(run)
-            elif spec.template in ("traverse", "retreat"):
-                await self._move(run)
-            else:  # OptionSpec already rejects an unknown template; this is the fail-closed remainder.
-                run.end("rejected", f"no executor for template {spec.template!r}")
+            work = asyncio.ensure_future(self._template(run))
+            stop = asyncio.ensure_future(self._interrupted.wait())
+            try:
+                done, _ = await asyncio.wait({work, stop}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.cancel()
+            if work not in done and not self._uncommitted.is_set():
+                # Committed: the hop runs to its landing, or to its own measured ending, before it stops.
+                landing = asyncio.ensure_future(self._uncommitted.wait())
+                try:
+                    await asyncio.wait({work, landing}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    landing.cancel()
+                done = {work} if work.done() else set()
+            if work in done:
+                work.result()  # the template's own errors reach the handlers below
+            else:
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
+                run.end("interrupted", self._interrupt_reason or "interrupted")
         except BridgeError as exc:
             run.end("rejected" if exc.code != "closed" else "unmeasured",
                     f"bridge error {exc.code}: {exc.message}")
         except asyncio.TimeoutError:
             run.end("unmeasured", "no observation arrived in time")
         finally:
+            if work is not None and not work.done():  # this run itself was cancelled: so is its template
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
             await self._release(run)
         return self._outcome(run)
+
+    def interrupt(self, reason: str) -> None:
+        """End the running option at its next await, as `interrupted`, with its inputs released and measured.
+
+        A hop is committed from its run-up to its landing: the interrupt takes effect then (or when it ends).
+        """
+        self._interrupt_reason = reason
+        self._interrupted.set()
+
+    async def until_landed(self) -> None:
+        """Return once no hop is under way (at once when none is)."""
+        await self._uncommitted.wait()
+
+    @property
+    def committed(self) -> bool:
+        """Whether an interrupt would wait: a hop is under way."""
+        return not self._uncommitted.is_set()
+
+    async def _template(self, run: _Run) -> None:
+        spec = run.spec
+        if spec.template == "wait":
+            await self._wait(run)
+        elif spec.template == "place":
+            await self._place(run)
+        elif spec.template == "hop":
+            self._uncommitted.clear()
+            try:
+                await self._hop(run)
+            finally:
+                self._uncommitted.set()
+        elif spec.template in ("traverse", "retreat"):
+            await self._move(run)
+        elif spec.template == "sweep":
+            await self._sweep(run)
+        else:  # OptionSpec already rejects an unknown template; this is the fail-closed remainder.
+            run.end("rejected", f"no executor for template {spec.template!r}")
 
     # --- outcome -------------------------------------------------------------------------
 
@@ -698,23 +780,37 @@ class OptionExecutor:
 
     async def _hold(self, run: _Run, action: str, observation: Observation, lease_s: float) -> bool:
         """Start one held input with a lease, and keep its receipts."""
-        run.acts += 1
-        action_id = f"{run.spec.option_id}.{run.acts}"
-        try:
-            records = await self._client.start_act(
-                action_id=action_id,
-                choice_id=run.spec.option_id,
-                action=action,
-                params={},
-                based_on_seq=observation.seq,
-                max_age_s=MAX_AGE_S,
-                lease_s=lease_s,
-            )
-        except BridgeError as exc:
-            run.end("rejected", f"the bridge refused {action!r}: {exc.code}: {exc.message}")
-            return False
-        for record in records:
-            run.receipts.append(_dump(record))
+        for attempt in (0, 1):
+            run.acts += 1
+            action_id = f"{run.spec.option_id}.{run.acts}"
+            try:
+                records = await self._client.start_act(
+                    action_id=action_id,
+                    choice_id=run.spec.option_id,
+                    action=action,
+                    params={},
+                    based_on_seq=observation.seq,
+                    max_age_s=MAX_AGE_S,
+                    lease_s=lease_s,
+                )
+            except BridgeError as exc:
+                run.end("rejected", f"the bridge refused {action!r}: {exc.code}: {exc.message}")
+                return False
+            for record in records:
+                run.receipts.append(_dump(record))
+            stale = (getattr(records[-1].status, "value", records[-1].status) == "rejected"
+                     and getattr(records[-1].reject_reason, "value", records[-1].reject_reason) == "stale_age")
+            if not stale or attempt:
+                break
+            # The reading aged past the bound while the bridge served other requests: the same input once more,
+            # bound to a fresh reading. A second stale rejection ends the option as rejected.
+            try:
+                observation = await self._client.observe_once()
+            except BridgeError as exc:
+                run.end("rejected", f"observation failed: {exc.code}: {exc.message}")
+                return False
+            self._last_obs = observation
+            run.note(f"{action!r} was rejected stale_age; sent once more bound to seq {observation.seq}")
         status = records[-1].status
         if getattr(status, "value", status) == "rejected":
             run.end("rejected", f"{action!r} was rejected: {records[-1].reject_reason}")
@@ -766,12 +862,7 @@ class OptionExecutor:
             self._flight.setdefault("time_to_apex_s", []).append(elapsed)
 
     def _fell_bound(self) -> float | None:
-        candidates: list[float] = []
-        if self._primitives.rise_peak is not None:
-            candidates.append(self._primitives.rise_peak * FELL_SHARE_OF_RISE)
-        if self._primitives.short_step is not None:
-            candidates.append(self._primitives.short_step * FELL_MIN_STEPS)
-        return max(candidates) if candidates else None
+        return fell_bound(self._primitives)
 
     def _success_margin(self, speed: float | None) -> float:
         step = self._primitives.short_step
@@ -786,6 +877,52 @@ class OptionExecutor:
         return max(1e-6, peak * LANDING_EPS_SHARE)
 
     # --- the templates -------------------------------------------------------------------
+
+    async def _sweep(self, run: _Run) -> None:
+        """Each listed control once, with a settle between: ends at the first one the scene or session changed on.
+
+        A scene change, or a session that ends right after a press, is `state_changed`; motion is measured and
+        noted per control. Nothing pressed changing anything measured is `blocked`. Every control pressed is
+        listed in `measured["tried"]`, so the place's history counts it as tried.
+        """
+        actions = [a for a in (run.spec.params or {}).get("actions") or () if isinstance(a, str) and a]
+        tried: list[dict[str, Any]] = []
+        run.measured["tried"] = tried
+        first = await self._tick(run)
+        if first is None:
+            return
+        scene = self._last_obs.scene
+        for action in actions:
+            before = self._observation()
+            start = _pose(before)
+            if not await self._hold(run, action, before, lease_s=SWEEP_HOLD_S):
+                return
+            ended = None
+            settle_until = self._clock() + SWEEP_SETTLE_S
+            while self._clock() < settle_until:
+                await self._pace()
+                try:
+                    observation = await self._client.observe_once()
+                except BridgeError as exc:
+                    ended = f"the session ended after {action!r}: {exc.code}"
+                    break
+                self._last_obs = observation
+                position = _pose(observation)
+                if position is not None:
+                    run.end_position = list(position)
+                if observation.scene != scene:
+                    ended = f"{action!r} changed the scene from {scene!r} to {observation.scene!r}"
+                    break
+            if ended is None:
+                await self._client.stop("release")
+                run.held = None
+            end = _pose(self._last_obs)
+            tried.append({"action": action, "start": list(start) if start else None,
+                          "end": list(end) if end else None})
+            if ended is not None:
+                run.end("state_changed", ended)
+                return
+        run.end("blocked", f"none of {len(tried)} controls changed the scene")
 
     async def _wait(self, run: _Run) -> None:
         """Hold nothing for the requested seconds. Always succeeds, by the spec's own table."""
@@ -901,7 +1038,8 @@ class OptionExecutor:
             launch=launch,
             rise_duration=rise_duration,
             flight_bound=min(OPTION_MAX_S, rise_duration * FLIGHT_BOUND_FACTOR),
-            fell=self._fell_bound(),
+            floor_tolerance=self._landing_eps(),
+            air_press_s=_finite(params.get("air_press_s")),
         )
 
         start = await self._tick(run)
@@ -1006,7 +1144,7 @@ class OptionExecutor:
                     return False
                 staleness, estimated = self._probe_staleness_s()
                 margin = (hop.speed or 0.0) * (staleness + self._period_s)
-                holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, hop.fell,
+                holds, edge = _floor_behind(_probe(self._last_obs), step, margin + step, hop.floor_tolerance,
                                             back=tuple(-c for c in hop.unit))
                 if holds is False and edge is not None:
                     note = (f"run-up {backed_up:.2f} available of {hop.run_up:.2f} "
@@ -1083,14 +1221,28 @@ class OptionExecutor:
         """Phase 3: the flight. The chord holds the move and the rise inputs together for its lease."""
         if not await self._hold(run, hop.chord, self._observation(), lease_s=hop.flight_bound):
             return
+        await self._hop_flight(run, hop, obstacle, launch_at, progress, lead)
+
+    async def _hop_flight(self, run: _Run, hop: _Hop, obstacle: Sequence[float] | None,
+                          launch_at: tuple[float, float, float], progress: _Progress,
+                          lead: _Lead | None = None) -> None:
         flight_start = self._clock()
         landing = _Landing(hop.rise_duration, self._landing_eps())
         apex: tuple[float, float] | None = None  # (elapsed, height) of the highest sample this flight
+        pressed_again = hop.air_press_s is None
         while run.terminated_by is None:
             position = await self._tick(run)
             if position is None:
                 return
             now = self._clock()
+            if not pressed_again and now - flight_start >= hop.air_press_s:
+                # Release, then the chord again: a new press of the rise with the body in the air, as measured.
+                pressed_again = True
+                await self._client.stop("release")
+                run.note(f"pressed the rise again {now - flight_start:.2f} s after take-off")
+                if not await self._hold(run, hop.chord, self._observation(),
+                                        lease_s=max(PERIOD_S, hop.flight_bound - (now - flight_start))):
+                    return
             progress.update(now, position)
             if apex is None or position[UP] > apex[1]:
                 apex = (now - flight_start, position[UP])
@@ -1107,6 +1259,12 @@ class OptionExecutor:
         self._record_apex(apex, launch_at)
         margin = self._success_margin(hop.speed)
         apex_height = None if apex is None else apex[1] - launch_at[UP]
+        bound = self._fell_bound()
+        if bound is not None and launch_at[UP] - landed_at[UP] > bound:
+            # Landing far below the take-off is a fall off the route, however far along it came down.
+            run.end("fell", f"landed {launch_at[UP] - landed_at[UP]:.3f} u below its take-off, past the measured "
+                            f"bound {bound:.3f}")
+            return
         if obstacle is not None:
             # Cleared means landing past the measured obstacle, not merely past the take-off point.
             reference = _Progress(hop.unit, obstacle, BLOCK_WINDOW_S)

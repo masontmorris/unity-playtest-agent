@@ -118,16 +118,16 @@ def test_an_action_that_moved_nothing_records_blocked():
         "here: 1 tried \u2014 blocked 1, best +0.0")
 
 
-def test_an_uncalibrated_direction_reads_the_same_counts_without_a_best():
-    """A choice calibration gave no direction for still counts its blocked tries, and claims no best."""
+def test_an_uncalibrated_direction_records_an_unmeasured_result_without_a_best():
+    """No effect criterion: a stationary input is not automatically a blocked action."""
     choice = plain("press_left")
     prims = primitives("some_other_action")  # nothing measured points this choice's way
     outcome = choice_outcome(choice, ran(choice, observed([1.0, 2.0, 0.0], [1.0, 2.0, 0.0])),
                              primitives=prims, scene=SCENE)
-    assert outcome.terminated_by == "blocked" and outcome.params == {}
+    assert outcome.terminated_by == "unmeasured" and outcome.params == {}
     memory = OutcomeMemory(cell=STEP)
     memory.record(outcome)
-    assert memory.suffix(SCENE, [1.0, 2.0, 0.0], "press_left") == "here: 1 tried \u2014 blocked 1"
+    assert memory.suffix(SCENE, [1.0, 2.0, 0.0], "press_left") == "here: 1 tried \u2014 unmeasured 1"
 
 
 def test_a_blocked_action_accumulates_tries_at_the_one_cell():
@@ -171,8 +171,8 @@ def test_an_unmeasured_effect_records_unmeasured_and_is_never_placed():
         assert memory.unplaced[(SCENE, "press_left")] == {"unmeasured": 1}
 
 
-def test_a_skill_without_a_calibrated_direction_reads_from_its_magnitude_and_claims_no_best():
-    """A skill has no measured direction: its distance says succeeded or blocked, and nothing says which way."""
+def test_a_skill_without_a_calibrated_direction_keeps_motion_separate_from_success():
+    """Neither a large nor small displacement proves the intended effect of an uncalibrated skill."""
     choice = plain("combo", "skill")
     prims = primitives("press_left")  # the skill is not one of the calibrated directions
     far = choice_outcome(choice, ran(choice, observed([0.0, 0.0, 0.0], [0.9, 0.0, 0.0])),
@@ -180,13 +180,32 @@ def test_a_skill_without_a_calibrated_direction_reads_from_its_magnitude_and_cla
     near = choice_outcome(choice, ran(choice, observed([0.0, 0.0, 0.0], [0.1, 0.0, 0.0])),
                           primitives=prims, scene=SCENE)
     assert (far.template, near.template) == ("skill", "skill")
-    assert (far.terminated_by, near.terminated_by) == ("succeeded", "blocked")
+    assert (far.terminated_by, near.terminated_by) == ("unmeasured", "unmeasured")
+    assert far.displacement == [0.9, 0.0, 0.0] and near.displacement == [0.1, 0.0, 0.0]
     assert "direction" not in far.params and "direction" not in near.params
     memory = OutcomeMemory(cell=STEP)
     memory.record(far)
     memory.record(near)
     assert memory.suffix(SCENE, [0.0, 0.0, 0.0], "combo") == (
-        "here: 2 tried \u2014 succeeded 1, blocked 1")
+        "here: 2 tried \u2014 unmeasured 2")
+
+
+def test_a_drop_past_the_fall_bound_records_fell_for_any_choice():
+    """The options' fall rule applies to a skill and to a calibrated move: a measured drop needs no purpose."""
+    skill = plain("combo", "skill")
+    prims = primitives("press_left")  # no rise measured: the bound is two short steps
+    pit = choice_outcome(skill, ran(skill, observed([9.0, 8.2, 0.0], [15.0, -40.0, 0.0])),
+                         primitives=prims, scene=SCENE)
+    step_down = choice_outcome(skill, ran(skill, observed([9.0, 8.2, 0.0], [9.5, 8.2 - STEP, 0.0])),
+                               primitives=prims, scene=SCENE)
+    assert (pit.terminated_by, step_down.terminated_by) == ("fell", "unmeasured")
+    move = plain("press_left")
+    over_edge = recorded(move, observed([0.0, 8.0, 0.0], [1.0, 0.0, 0.0]))
+    assert over_edge.terminated_by == "fell"
+    memory = OutcomeMemory(cell=STEP)
+    memory.record(pit)
+    memory.record(pit)
+    assert memory.suffix(SCENE, [9.0, 8.2, 0.0], "combo") == "here: 2 tried — fell 2"
 
 
 def test_an_unmeasured_margin_records_unmeasured_rather_than_zero():
@@ -265,7 +284,7 @@ def test_a_session_records_what_the_actions_it_executed_did():
             assert memory.suffix(scenes[move["turn"]], moved, "move") == (
                 "here: 1 tried \u2014 succeeded 1, best +6.0")
             assert memory.suffix(scenes[look["turn"]], stopped, "look") == (
-                "here: 1 tried \u2014 blocked 1")
+                "here: 1 tried \u2014 unmeasured 1")
             assert "move 1 tried" in (memory.cell_line(scenes[move["turn"]], moved) or "")
             assert "look 1 tried" in (memory.cell_line(scenes[look["turn"]], stopped) or "")
             assert memory.unplaced == {}  # both measured effects were placed, none went astray

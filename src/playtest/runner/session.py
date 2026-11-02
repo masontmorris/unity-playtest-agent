@@ -156,28 +156,42 @@ def success_margin(primitives: Any, speed: float | None) -> float | None:
     return None
 
 
+def _fell(displacement: Sequence[float] | None, primitives: Any) -> bool:
+    """Whether the body dropped past the options' measured fall bound, whatever the choice was for.
+
+    `runner.options.executor.fell_bound` is the rule an option's `fell` ending uses. A drop is measured
+    without knowing a skill's purpose, so it is the one ending an uncalibrated choice can still have.
+    """
+    from .options.executor import UP, fell_bound
+
+    bound = fell_bound(primitives)
+    if bound is None or displacement is None or len(displacement) <= UP:
+        return False
+    return -displacement[UP] > bound
+
+
 def _termination(executed: Executed, displacement: list[float] | None, direction: Any,
                  primitives: Any) -> str:
     """How one executed choice ended, by the rule an option's ending uses: did the body measurably get anywhere.
 
     A rejected input never ran, and an effect with no measured displacement says nothing about the body, so
-    both are recorded as such. Otherwise the displacement along the calibrated direction is compared with the
-    executor's success margin; with no calibrated direction the displacement's own magnitude is used, so the
-    record still says whether the body got one measured step anywhere, and stays silent about which way.
+    both are recorded as such. A drop past the measured fall bound is `fell` for any choice, as it is for an
+    option. Displacement along a calibrated direction can be compared with the executor's success margin.
+    Without a direction there is no effect criterion: moving far does not verify the purpose of an arbitrary
+    action or skill. Its measured displacement stays in the outcome separately.
     """
     if executed.execution is None or executed.execution.rejected:
         return "rejected"
-    if displacement is None:
+    if _fell(displacement, primitives):
+        return "fell"
+    if displacement is None or direction is None:
         return "unmeasured"
-    margin = success_margin(primitives, None if direction is None else direction.speed)
+    margin = success_margin(primitives, direction.speed)
     if margin is None:
         return "unmeasured"
-    if direction is None:
-        reached = math.dist(displacement, (0.0,) * len(displacement))
-    else:
-        reached = _advance(displacement, direction.unit)
-        if reached is None:
-            return "unmeasured"
+    reached = _advance(displacement, direction.unit)
+    if reached is None:
+        return "unmeasured"
     return "succeeded" if reached >= margin else "blocked"
 
 
@@ -222,10 +236,12 @@ def remember_executed(memory: Any, primitives: Any, report: Any) -> None:
     Options file their own outcome inside the option port, so this adds the turn loop's own executions and
     changes nothing about the option path. A run without option memory records nothing.
     """
-    if not getattr(report, "executed", ()):
+    moved = getattr(report, "finished_move", None)  # a background action or skill collected on this turn
+    sent = (*getattr(report, "executed", ()), *((moved[1],) if moved is not None else ()))
+    if not sent:
         return
     scene = getattr(getattr(report, "observation", None), "scene", None)
-    for executed in report.executed:
+    for executed in sent:
         choice = getattr(executed, "choice", None)
         if choice is None or choice.kind not in _PLAIN_KINDS:
             continue
@@ -260,6 +276,8 @@ async def run_session(
     placement: bool = False,
     reach_regions: Any = (),
     instructions: str = INSTRUCTIONS,
+    keep_help_across_restart: bool = False,
+    decide_during_options: bool = False,
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
 
@@ -290,15 +308,35 @@ async def run_session(
     option_port = None
     if option_primitives is not None:
         from .options.executor import OptionExecutor
-        from .options.model import OptionSpec
+        from .options.model import OptionOutcome, OptionSpec
         class RunnerOptionPort:
             flight: dict = {}  # measured flights shared by every option this run
 
+            running: Any = None  # the executor of the option now running, for `interrupt`
+
             async def run(self, choice):
                 executor = OptionExecutor(loop.client, option_primitives, flight=self.flight)
-                result = await executor.run(OptionSpec(choice.option_id, choice.template, choice.params, choice.label))
+                self.running = executor
+                try:
+                    result = await executor.run(OptionSpec(choice.option_id, choice.template, choice.params,
+                                                           choice.label))
+                finally:
+                    self.running = None
                 option_memory.record(result)
+                for row in result.measured.get("tried", []) if result.template == "sweep" else ():
+                    start, end = row.get("start"), row.get("end")
+                    moved = [b - a for a, b in zip(start, end)] if start and end else None
+                    option_memory.record(OptionOutcome(row["action"], "action", {}, start, end, moved,
+                                                       "unmeasured", None, scene=result.scene))
                 return result.to_json()
+
+            def interrupt(self, reason):
+                if self.running is not None:
+                    self.running.interrupt(reason)
+
+            async def until_landed(self):
+                if self.running is not None:
+                    await self.running.until_landed()
 
         option_port = RunnerOptionPort()
 
@@ -324,6 +362,8 @@ async def run_session(
         # The same measured step the option memory files places by: a reused conditional answer is bound to it.
         contingent_cell=getattr(option_memory, "cell", None),
         instructions=instructions,
+        keep_help_across_restart=keep_help_across_restart,
+        decide_during_options=decide_during_options,
     )
     bind = getattr(probe, "bind_observation_source", None)
     if bind is not None:  # the probe states the surroundings of the observation each action was bound to

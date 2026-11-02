@@ -201,6 +201,27 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_CONTINUOUS_INPUT", switch, False),
                         help="Decide while explicitly selected keyboard holds run (opt in)")
     parser.add_argument("--options", action="store_true", default=_env("UPA_RUN_OPTIONS", switch, False))
+    parser.add_argument("--frontier-advice", action="store_true",
+                        default=_env("UPA_RUN_FRONTIER_ADVICE", switch, False),
+                        help="ask the frontier for gameplay advice when S1 escalates (opt in; also "
+                             "UPA_RUN_FRONTIER_ADVICE)")
+    parser.add_argument("--measure-air-rise", action="store_true",
+                        default=_env("UPA_RUN_MEASURE_AIR_RISE", switch, False),
+                        help="before play, measure the rise pressed again at its apex and offer a hop that does so "
+                             "when it rose higher (needs --options; also UPA_RUN_MEASURE_AIR_RISE)")
+    parser.add_argument("--decide-during-options", action="store_true",
+                        default=_env("UPA_RUN_DECIDE_DURING_OPTIONS", switch, False),
+                        help="run options, actions and skills in the background so S1 decides again at once: picking "
+                             "the running one again keeps it going, another choice interrupts it; a hop in flight is "
+                             "waited out (opt in; also UPA_RUN_DECIDE_DURING_OPTIONS)")
+    parser.add_argument("--hold-met-directive", action="store_true",
+                        default=_env("UPA_RUN_HOLD_MET_DIRECTIVE", switch, False),
+                        help="keep a directive whose setpoint was met in S1's context, marked met, until its own "
+                             "deadline (opt in; also UPA_RUN_HOLD_MET_DIRECTIVE)")
+    parser.add_argument("--keep-help-across-restart", action="store_true",
+                        default=_env("UPA_RUN_KEEP_HELP_ACROSS_RESTART", switch, False),
+                        help="keep S1's open help request through a restart into the same scene instead of "
+                             "cancelling it (opt in; also UPA_RUN_KEEP_HELP_ACROSS_RESTART)")
     parser.add_argument("--memory-dir", type=Path, default=_env("UPA_RUN_MEMORY_DIR", Path, None),
                         help="the folder that keeps the options layer's outcome memory between runs, beside the "
                              "preflight cache; default off, so nothing is read or written and the run is "
@@ -418,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
                               finish_label=FINISH_LABELS[args.finish_label],
                               turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
                               capture_size=(args.capture_width, args.capture_height),
+                              help_kinds=FrontierHelp.supported_kinds if args.frontier else frozenset(),
                               calibration=calibration if args.turn_sizes or args.point_turns or args.point_moves else None)
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256,
                                    turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
@@ -463,6 +485,16 @@ def main(argv: list[str] | None = None) -> int:
             plan["continuous_input"] = True
         if args.options:
             plan["options"] = True
+        if args.keep_help_across_restart:
+            plan["keep_help_across_restart"] = True
+        if args.frontier_advice:
+            plan["frontier_advice"] = True
+        if args.hold_met_directive:
+            plan["hold_met_directive"] = True
+        if args.decide_during_options:
+            plan["decide_during_options"] = True
+        if args.measure_air_rise:
+            plan["measure_air_rise"] = True
         if args.contingent:
             plan["contingent"] = True
         if args.placement:
@@ -578,6 +610,14 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         snapshot = make_snapshot(client, manifest.entity_id)
         await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
+        if primitives is not None and args.measure_air_rise:
+            from .options.air_rise import measure_air_rise, with_air_rise
+
+            # The rise measured once more in the state it creates (airborne), before any paid call; a hop that
+            # presses it again is offered only when that measurably rose higher. The record stays in the run.
+            air = await measure_air_rise(client, primitives)
+            replay._save(run_dir / "air-rise.json", air.to_json() if air is not None else {"measured": None})
+            primitives = with_air_rise(primitives, air)
         memory_facts: dict[str, Any] | None = None
         if memory is not None and args.memory_dir is not None:
             from .options.memory import memory_file
@@ -611,7 +651,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
                           compact_state=args.s1_compact_state, pending_question=args.s1_pending_question,
                           s1_context=args.s1_context, menu_memory=memory, contingent=args.contingent,
-                          requests_dir=run_dir / "requests" / "s1")
+                          requests_dir=run_dir / "requests" / "s1", hold_met_directive=args.hold_met_directive)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)
@@ -644,7 +684,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
                                   effects=action_effects(built.expected), generation=generation,
                                   session=getattr(client, "session", None), progress=progress_probe,
-                                  clip_window_s=args.frontier_clip_s, declared=declared)
+                                  clip_window_s=args.frontier_clip_s, declared=declared,
+                                  advice=args.frontier_advice)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
@@ -657,7 +698,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,
                 continuous_input=args.continuous_input, instructions=instructions,
                 option_primitives=primitives, option_memory=memory, placement=args.placement,
-                reach_regions=manifest.reach_regions)
+                reach_regions=manifest.reach_regions,
+                keep_help_across_restart=args.keep_help_across_restart,
+                decide_during_options=args.decide_during_options)
             closing = (result.status, result.error)
             turns = result.loop.turns
             summary = {

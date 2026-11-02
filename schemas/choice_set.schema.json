@@ -92,7 +92,8 @@
                 "retreat",
                 "hop",
                 "wait",
-                "place"
+                "place",
+                "sweep"
               ],
               "type": "string"
             },

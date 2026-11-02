@@ -321,3 +321,34 @@ def test_two_s1_selections_are_two_verified_cycles_and_keep_one_budget():
                 await game.stop()
 
     asyncio.run(scenario())
+
+
+def test_kept_help_survives_a_restart_into_the_same_scene_and_is_adopted_after_it():
+    """Opted in, S1's open request is not cancelled by its own restart; its answer is adopted afterwards."""
+    async def scenario() -> None:
+        game, client, observation = await new_session()
+        restart = SequentialRestart([(G1, client, observation)])
+        help_port = FakeHelp()
+        kept: list[int] = []
+        help_port.keep_request = kept.append  # the helper is told which request survives, before it rebinds
+        r = await rig("d", RESTART_ID, "f", choices=[*choices(), restart_choice()], restart=restart,
+                      generation=G0, help=help_port, keep_help_across_restart=True)
+        try:
+            await r.loop.run_turn()  # opens help
+            await r.loop.run_turn()  # restarts; the request stays open
+            assert r.loop.generation == G1 and kept == [0]
+            help_port.release.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            await r.loop.run_turn()  # the reset boundary keeps it, and the finished answer is adopted
+            events = [entry["body"]["event"] for entry in r.sink.of_kind("help")]
+            assert help_port.cancelled is False
+            assert "cancelled" not in events and events[-1] == "adopted"
+        finally:
+            await r.loop.stop("finish")
+            await r.close()
+            await game.stop()
+
+    asyncio.run(scenario())
