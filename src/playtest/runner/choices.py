@@ -106,8 +106,13 @@ def options_choices(choices: list[Choice], primitives: Any, memory: Any, observa
     scene = observation.scene
     controlled = observation.public.get("controlled") or {}
     position = controlled.get("position") if isinstance(controlled, dict) else None
-    movement = {p.action for p in primitives.classified if p.kind in ("move", "rise")}
-    retained = [c for c in choices if not (c.kind is ChoiceKind.action and c.action in movement)]
+    # Only the movement an option replaces leaves the menu: the actions measured as an option's direction, and the
+    # rise when a hop offers it. A move with no option (one whose direction turns with the body, say) stays offered.
+    replaced = {d.action for d in primitives.directions}
+    replaced |= {action for d in primitives.directions for action, _control in d.alternatives}
+    if primitives.can_hop and primitives.rise is not None:
+        replaced.add(primitives.rise.action)
+    retained = [c for c in choices if not (c.kind is ChoiceKind.action and c.action in replaced)]
     specs = list(option_specs(primitives))
     if placement:
         points = list(memory.settled_points(scene))

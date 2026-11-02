@@ -56,7 +56,8 @@ def test_option_labels_and_placement(monkeypatch):
         def observe(self, observation): pass
         def suffix(self, scene, position, option_id): return str(position)
         def settled_points(self, scene): return [[1, 2, 3]]
-    p = SimpleNamespace(classified=[SimpleNamespace(action='walk', kind='move')])
+    p = SimpleNamespace(classified=[SimpleNamespace(action='walk', kind='move')],
+                        directions=[SimpleNamespace(action='walk', alternatives=())], can_hop=False, rise=None)
     choices = [Choice(id='walk', kind='action', action='walk', label='Walk', source='manifest'),
                Choice(id='use', kind='action', action='use', label='Use', source='manifest')]
     a = SimpleNamespace(scene='scene', public={'controlled': {'position': [0, 0, 0]}})
@@ -199,3 +200,20 @@ def test_a_while_pending_input_stops_the_background_option_before_it_runs():
             await r.loop.stop('finish')
             await r.close()
     run(main)
+
+
+def test_a_move_no_option_replaces_stays_offered(monkeypatch):
+    """A move whose direction turns with the body has no option, so its plain action stays on the menu."""
+    from playtest.runner.options import primitives
+    monkeypatch.setattr(primitives, 'option_specs', lambda _: [])
+    class Memory:
+        def observe(self, observation): pass
+        def suffix(self, scene, position, option_id): return 'here: untried'
+        def place_summary(self, scene, position): return {}
+    p = SimpleNamespace(classified=[SimpleNamespace(action='walk', kind='move'),
+                                    SimpleNamespace(action='forward', kind='move')],
+                        directions=[SimpleNamespace(action='walk', alternatives=())], can_hop=False, rise=None)
+    choices = [Choice(id='walk', kind='action', action='walk', label='Walk', source='manifest'),
+               Choice(id='forward', kind='action', action='forward', label='Forward', source='manifest')]
+    seen = SimpleNamespace(scene='scene', public={'controlled': {'position': [0, 0, 0]}})
+    assert [c.id for c in options_choices(choices, p, Memory(), seen)] == ['forward']
