@@ -265,15 +265,6 @@ def compact_menu(*, objective: str, observation, choices, memory: OutcomeMemory,
                 turn = _measured_turn(next(c for c in offered if c.id == row["id"]))
                 rest = "right" if uphill - turn > 0 else "left"
                 row["label"] = f"{row['label']}{SEPARATOR}floor rises {gap:.0f}° {rest} of where this faces"
-    heights = _heights(measured, position, probe)
-    if heights is not None:
-        # On a 3D floor the height is measured too: where the body is now against the highest point it reached.
-        for row in payload["choices"]:
-            if row["kind"] == ChoiceKind.finish.value:
-                now, highest = _n(heights[0]), _n(heights[1])
-                stated = (f"now at the highest point reached, {now}" if now == highest
-                          else f"height now {now}, highest reached {highest}")
-                row["label"] = f"{row['label']}{SEPARATOR}{stated}"
     if start_scene is not None and scene == start_scene:
         # What finishing would end, measured: the run is still in the scene it began in. A completed scene loads
         # the next one, so an unchanged scene is the one completion fact the run measures.
@@ -695,15 +686,6 @@ def forward_drop(probe: Any, peak: float | None) -> tuple[float, float] | None:
         if peak is not None and len(found) == len(rows[ahead]) and max(found) < -peak:
             return ahead, -max(found)
     return None
-
-
-def _heights(measured: Sequence[Sequence[float]], position: Any, probe: Any) -> tuple[float, float] | None:
-    """(height now, highest height measured this run) for a 3D probe with a measured position, else None."""
-    basis = probe.get("basis") if isinstance(probe, Mapping) and isinstance(probe.get("basis"), Mapping) else {}
-    current = _vector(position)
-    if basis.get("plane") != "3d" or current is None or len(current) < 2:
-        return None
-    return current[1], max([current[1], *(value[1] for value in measured if len(value) > 1)])
 
 
 def _jump_peak(offered: Sequence[Any]) -> float | None:

@@ -571,7 +571,7 @@ def test_a_floor_ahead_below_the_measured_jump_peak_is_stated_on_the_forward_cho
     assert stated in payload["progress"]
 
 
-def test_no_floor_found_ahead_is_stated_on_the_forward_choice_and_finish_states_the_height():
+def test_no_floor_found_ahead_is_stated_on_the_forward_choice_and_finish_states_no_height():
     from playtest.runner.menu import forward_drop
     edge = {"basis": {"plane": "3d", "forward": [0.0, 0.0, 1.0]},
             "under": {"hit": True, "delta_y": -0.08, "normal": [0.0, 1.0, 0.0]},
@@ -590,17 +590,10 @@ def test_no_floor_found_ahead_is_stated_on_the_forward_choice_and_finish_states_
                            positions=[(3.6, 0.08, -16.2), (9.4, 6.68, 4.0)])
     labels = {row["id"]: row["label"] for row in payload["choices"]}
     assert labels["move.strip5"].endswith("no floor found 0.6 ahead")
-    assert labels["finish"].endswith("now at the highest point reached, 7.3")
+    # A highest point reached reads as completion to a label matcher, whatever the objective: never stated.
+    assert "height" not in labels["finish"] and "highest" not in labels["finish"]
     assert "floor edge 0.6 ahead" in payload["progress"] and "no floor found" not in payload["progress"]
 
-    fallen = compact_menu(objective="o", observation=observation(position=(9.7, 0.08, 10.4), probe=edge),
-                          choices=offered, memory=OutcomeMemory(cell=CELL),
-                          positions=[(3.6, 0.08, -16.2), (9.5, 7.29, 5.9)])
-    assert {r["id"]: r["label"] for r in fallen["choices"]}["finish"].endswith("height now 0.1, highest reached 7.3")
-    flat = compact_menu(objective="o", observation=observation(position=(1.0, 2.0, 0.0),
-                                                               probe={**edge, "basis": {"plane": "2d"}}),
-                        choices=offered, memory=OutcomeMemory(cell=CELL))
-    assert "height" not in {r["id"]: r["label"] for r in flat["choices"]}["finish"]   # a 2D probe states none
 
 
 def test_a_forward_path_measured_ending_is_not_marked_as_rising():
