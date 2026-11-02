@@ -702,3 +702,40 @@ def test_a_stopped_action_replays_for_the_time_it_held_and_a_stopped_sequence_is
     inputs, skipped = recorded_inputs([stopped, sequence], 99, frozenset({"walk"}))
     assert [(i["action"], i["lease_s"]) for i in inputs] == [("walk", 0.25)]
     assert skipped == {"cancelled_skill": 1}
+
+
+def _conditioned_plan(tmp_path: Path, check: dict[str, Any]) -> dict[str, Any]:
+    plan = reproduce.build_plan(_trace(tmp_path, check=check), _manifest(tmp_path), attempts=1)
+    plan.update(start_settle_s=0.0, settle_s=0.02, sample_interval_s=0.01)
+    for item in plan["inputs"]:
+        item["offset_s"] = item["offset_s"] / 100
+    return plan
+
+
+def test_an_input_conditioned_check_scores_the_reading_right_after_each_execution_of_its_action(tmp_path):
+    # "speed stays unchanged after move": a state the reset already leaves, which the baseline rule cannot show.
+    check = {"field": "public.speed", "op": "unchanged", "value": None, "after_action": "move"}
+    plan = _conditioned_plan(tmp_path, check)
+    assert plan["repro_check"]["after_action"] == "move"
+    assert [item.get("scored", False) for item in plan["inputs"]] == [True, True]
+
+    # Reads: baseline, then before and after each move. Both moves left speed as it was: reproduced.
+    attempt = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([0.0, 0.0, 0.0, 0.0, 0.0]))
+    assert attempt["valid"] and attempt["result"] == "reproduced"
+    assert [r["before_value"] for r in attempt["readings"] if "after_action" in r] == [0.0, 0.0]
+
+    # One move changed it, as on a correct build: not reproduced, whatever the other one did.
+    attempt = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([0.0, 0.0, 0.0, 0.0, 5.0]))
+    assert attempt["valid"] and attempt["result"] == "not_reproduced"
+    assert reproduce.summarize(plan, [attempt])["basis"] == reproduce.CONDITIONED_BASIS
+
+
+def test_an_input_conditioned_check_is_refused_when_its_action_never_ran_before_the_evidence(tmp_path):
+    check = {"field": "public.speed", "op": "unchanged", "value": None, "after_action": "jump"}
+    with pytest.raises(ValueError, match="input-conditioned check has nothing to score"):
+        reproduce.build_plan(_trace(tmp_path, check=check), _manifest(tmp_path))
+
+
+def test_an_unset_input_condition_is_left_out_of_the_check_as_written():
+    from playtest.contracts.investigation import ReproCheck
+    assert "after_action" not in ReproCheck(field="public.speed", op=">=", value=9).model_dump(mode="json")
