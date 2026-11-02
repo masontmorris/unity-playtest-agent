@@ -21,6 +21,18 @@ def build_review_packet(trace_rows, manifest, discovery):
     observations = {row["turn"]: row["body"] for row in trace_rows if row["kind"] == "observation"}
     turns = {row["body"]["turn"]: row["body"] for row in trace_rows if row["kind"] == "turn"}
     effects = {row["turn"]: row["body"] for row in trace_rows if row["kind"] == "effect"}
+    # An option's entry is written on the turn that collected it and refs the decision that started it, so its
+    # measured outcome belongs to the decision's turn.
+    decided = {row["trace_seq"]: row["turn"] for row in trace_rows if row["kind"] == "decision"}
+    options = {}
+    for row in trace_rows:
+        if row["kind"] != "option":
+            continue
+        started = next((decided[ref] for ref in row.get("refs") or () if ref in decided), row["turn"])
+        outcome = row["body"].get("outcome") or {}
+        options[started] = {"terminated_by": outcome.get("terminated_by"),
+                            "displacement": _round(outcome.get("displacement")),
+                            "duration_s": _round(outcome.get("duration_s"))}
     public = lambda turn: (observations.get(turn) or {}).get("public") or {}
     # A reference may be null in one observation and populated in another.
     reference_names = {key for obs in observations.values() for key, value in
@@ -42,16 +54,23 @@ def build_review_packet(trace_rows, manifest, discovery):
                         "displacement": _round(((effects.get(turn) or {}).get("observed") or {}).get("net_displacement")),
                         "surroundings_before": describe_surroundings(before.get("probe")),
                         "changed": changed})
+        if turn in options:
+            actions[-1]["option_outcome"] = options[turn]
     intents = {a["name"]: a["intent"] for a in manifest["actions"]} | {
         s["name"]: s["purpose"] for s in manifest["skills"]}
+    first = next((public(turn) for turn in sorted(observations) if public(turn)), {})
+    start = (first.get("probe") or {}).get("anchor", {}).get("position")
     return {"intents": intents, "declared_configuration": declared_configuration(discovery, manifest["entity_id"]),
-            "actions": actions}
+            "start_height": _round(start[1]) if start else None, "actions": actions}
 
 
 SYSTEM = (
     "You review one finished playtest session of a game. Code measured, for every action the player sent, which "
     "public readers changed between the observation before the action and the next one, the entity's height "
-    "before it (the ground is about 0.08), whether an attachment was held, the net displacement, and the measured surroundings before it (casts ahead at two heights above the feet, and the ground's height ahead against the ground under the feet). You also get "
+    "before it (start_height is where it stood when the session began), whether an attachment was held, the net "
+    "displacement, for a multi-input option its own measured ending (option_outcome), and the measured surroundings "
+    "before it (casts ahead at two heights above the feet, and the ground's height ahead against the ground under "
+    "the feet). You also get "
     "each action's stated intent and the values the game's authors set (declared_configuration), read before play. "
     "Find behaviour that is wrong: an action that has none of its effect in a situation where someone playing "
     "would expect it to work; the same action or a like one producing an effect in one situation and not in "

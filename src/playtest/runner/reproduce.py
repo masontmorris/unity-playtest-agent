@@ -5,11 +5,17 @@ model. Making the same engine a choice S1 can take mid-session is #127.
 
 **`plan`** reads a finished session's trace. It takes a finding (the latest candidate, unless one is named)
 and its `repro_check`, the predicate a replay must show. Then it lists the inputs that reached the game before
-the finding's last cited evidence entry: every execution, in trace order, whose terminal record completed. An
-input sent after that entry cannot have caused what it shows, and replaying it could undo it. For each input
+the finding's last cited evidence entry, in the order the bridge started them:
+- every execution whose terminal record completed;
+- every plain action that was stopped early (cancelled, release verified), replayed with a lease of the time it
+  measurably held;
+- every input an option sent (its `request` receipts), replayed with a lease of the time it measurably held: until
+  the option's next input superseded it, or until the option's release.
+An input sent after that entry cannot have caused what it shows, and replaying it could undo it. For each input
 it keeps the action, its params, its lease, and its start time relative to the first input, as the bridge
 measured it. Inputs that were rejected or failed sent nothing in the session, so they are listed as skipped,
-never replayed. When the evidence is an observation, the plan also keeps its time relative to the first input.
+never replayed. So are a stopped skill (a lease cannot cut a sequence short) and an option input whose request
+was not recorded. When the evidence is an observation, the plan also keeps its time relative to the first input.
 
 **`run`** executes the plan inside a PlayMode host that serves the manifest's catalog and reloads the scene on
 request. Each attempt:
@@ -134,32 +140,95 @@ def evidence_turn(entries: Sequence[Mapping[str, Any]], evidence: Sequence[int])
     return max(turns)
 
 
-def recorded_inputs(entries: Sequence[Mapping[str, Any]], before_seq: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """The inputs that executed before entry `before_seq`, with offsets from the first; and the skipped ones by status."""
+def recorded_inputs(entries: Sequence[Mapping[str, Any]], before_seq: int,
+                    actions: frozenset[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """The inputs that executed before entry `before_seq`, in start order with offsets from the first; and the
+    skipped ones by status. `actions` names the declared single-hold actions, the only inputs a lease can cut
+    short; with None, no stopped input is replayed."""
     inputs: list[dict[str, Any]] = []
     skipped: Counter[str] = Counter()
     for entry in entries:
-        if entry.get("kind") != "execution" or not isinstance(entry.get("turn"), int) or entry["trace_seq"] >= before_seq:
+        if not isinstance(entry.get("turn"), int) or entry["trace_seq"] >= before_seq:
+            continue
+        if entry.get("kind") == "option":
+            option_inputs(entry, inputs, skipped)
+            continue
+        if entry.get("kind") != "execution":
             continue
         body = entry["body"]
         records = body.get("records") or []
         terminal = records[-1] if records else None
         status = terminal.get("status") if isinstance(terminal, dict) else None
         start = _number(terminal.get("input_start_wall_s")) if isinstance(terminal, dict) else None
-        if status != "completed" or start is None or terminal.get("release_verified") is not True:
+        request = body["request"]
+        applied = _number(terminal.get("applied_duration_s")) if isinstance(terminal, dict) else None
+        lease = request.get("lease_s")
+        verified = isinstance(terminal, dict) and terminal.get("release_verified") is True
+        if status == "cancelled" and verified and start is not None and applied is not None:
+            if actions is None or request["action"] not in actions:
+                skipped["cancelled_skill"] += 1
+                continue
+            lease = applied  # stopped early: it held this long, and a lease of that length holds it as long
+        elif status != "completed" or start is None or not verified:
             skipped[str(status or "unrecorded")] += 1
             continue
-        request = body["request"]
         inputs.append({"turn": entry["turn"], "trace_seq": entry["trace_seq"], "purpose": body.get("purpose"),
                        "action": request["action"], "choice_id": request.get("choice_id"),
-                       "params": request.get("params") or {}, "lease_s": request.get("lease_s"),
-                       "recorded_start_wall_s": start,
-                       "recorded_applied_s": _number(terminal.get("applied_duration_s"))})
+                       "params": request.get("params") or {}, "lease_s": lease,
+                       "recorded_start_wall_s": start, "recorded_applied_s": applied})
+    inputs.sort(key=lambda item: item["recorded_start_wall_s"])
     if inputs:
         first = inputs[0]["recorded_start_wall_s"]
         for item in inputs:
             item["offset_s"] = round(item["recorded_start_wall_s"] - first, 6)
     return inputs, dict(skipped)
+
+
+def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skipped: Counter[str]) -> None:
+    """Append the inputs one option entry sent, each with the lease of the time it measurably held.
+
+    An option holds one input at a time: each new input supersedes the last, and the release ends the final one.
+    So an input held until the next one's measured start, or, for the last, for the duration its release reported.
+    """
+    body = entry["body"]
+    receipts = [r for r in body.get("receipts") or () if isinstance(r, Mapping)]
+    requests = {r.get("action_id"): r for r in receipts if r.get("type") == "request"}
+    last: dict[str, Mapping[str, Any]] = {}
+    order: list[str] = []
+    for record in receipts:
+        if record.get("type") != "execution" or not isinstance(record.get("action_id"), str):
+            continue
+        if record["action_id"] not in last:
+            order.append(record["action_id"])
+        last[record["action_id"]] = record
+    started = []
+    for action_id in order:
+        if last[action_id].get("status") == "rejected":
+            skipped["rejected"] += 1
+        else:
+            started.append((action_id, _number(last[action_id].get("input_start_wall_s"))))
+    for index, (action_id, start) in enumerate(started):
+        record, request = last[action_id], requests.get(action_id)
+        if request is None or not isinstance(request.get("action"), str):
+            skipped["option_unrecorded"] += 1
+            continue
+        if start is None:
+            skipped["unrecorded"] += 1
+            continue
+        following = next((s for _, s in started[index + 1:] if s is not None), None)
+        if following is not None:
+            held = following - start
+        elif record.get("release_verified") is True:
+            held = _number(record.get("applied_duration_s"))
+        else:
+            held = None
+        if held is None or held <= 0:
+            skipped["option_unmeasured"] += 1
+            continue
+        inputs.append({"turn": entry["turn"], "trace_seq": entry["trace_seq"], "purpose": "option",
+                       "action": request["action"], "choice_id": body.get("option_id"), "params": {},
+                       "lease_s": round(held, 6), "recorded_start_wall_s": start,
+                       "recorded_applied_s": round(held, 6)})
 
 
 def evidence_offset(entries: Sequence[Mapping[str, Any]], evidence_seq: int, first_start_wall_s: float) -> float | None:
@@ -252,7 +321,7 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         raise ValueError(f"repro_check field {check.field!r} is not one of the manifest's readers")
     through = evidence_turn(entries, finding.evidence_seq)
     last_evidence = max(finding.evidence_seq)
-    inputs, skipped = recorded_inputs(entries, last_evidence)
+    inputs, skipped = recorded_inputs(entries, last_evidence, frozenset(item.name for item in manifest.actions))
     if not inputs:
         raise ValueError("no input completed before the finding's evidence; there is nothing to replay")
     effect = effect_plan(manifest, action, inputs) if action is not None else None
