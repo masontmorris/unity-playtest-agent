@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ProjectPath,
     [Parameter(Mandatory = $true)][string]$EntityPath,
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
-    [string]$UnityPath
+    [string]$UnityPath,
+    [switch]$BothSigns
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,10 +32,11 @@ $python = (& uv run --directory $repoRoot python -c 'import sys; print(sys.execu
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($python)) { throw 'Could not locate the repository Python executable.' }
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $runner = Join-Path $PSScriptRoot 'run-editmode-tests.ps1'
-$names = @('UPA_CALIBRATION_OUTPUT', 'UPA_CALIBRATION_PYTHON', 'UPA_CALIBRATION_ENTITY', 'UPA_CALIBRATION_RESET_OUTPUT')
+$names = @('UPA_CALIBRATION_BOTH_SIGNS', 'UPA_CALIBRATION_OUTPUT', 'UPA_CALIBRATION_PYTHON', 'UPA_CALIBRATION_ENTITY', 'UPA_CALIBRATION_RESET_OUTPUT')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
+    $env:UPA_CALIBRATION_BOTH_SIGNS = if ($BothSigns) { '1' } else { '' }
     $env:UPA_CALIBRATION_OUTPUT = $calibration
     $env:UPA_CALIBRATION_PYTHON = $python
     $env:UPA_CALIBRATION_ENTITY = $entity
@@ -44,6 +46,8 @@ try {
     if ($UnityPath) { $runnerArgs += @('-UnityPath', $UnityPath) }
     & powershell.exe @runnerArgs
     if ($LASTEXITCODE -ne 0) { throw "The calibration run failed (exit $LASTEXITCODE). Review any saved output and Unity log." }
+    # A state-changing pass ends before reset trials; the PlayMode host verified and saved it.
+    if (-not [IO.File]::Exists($reset)) { Write-Host 'Calibration ended before reset trials; saved calibration evidence.'; return }
     & $python -m playtest.preflight.calibration_record --project $project --calibration $calibration --reset $reset --output $record
     if ($LASTEXITCODE -ne 0) { throw 'Could not combine the calibration and reset evidence.' }
     Write-Host "Saved calibration record: $record"

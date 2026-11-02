@@ -72,6 +72,7 @@ param(
     [string]$Objective,
     [string]$ObjectivePath,
     [string]$DiscoveryPath,
+    [string]$ScenePath,
     [string]$ManifestOrigin,
     [switch]$Frontier,
     [int]$MaxFrontierCalls = 0,
@@ -79,11 +80,30 @@ param(
     [switch]$RecordFrames,
     [switch]$S1GameView,
     [switch]$CoverageFacts,
+    [switch]$PatternFacts,
+    [switch]$TravelFacts,
+    [switch]$TurnSizes,
+    [switch]$PointTurns,
+    [switch]$PointMoves,
+    [ValidateRange(1, 16384)][int]$CaptureWidth = 640,
+    [ValidateRange(1, 16384)][int]$CaptureHeight = 480,
     [ValidateSet('full', 'dup-state-ref/1')][string]$S1Layout = 'full',
+    [ValidateSet('off', 'object', 'format', 'default', 'all')][string]$S1CompactState = 'off',
+    [ValidateSet('follow_up', 'batched')][string]$S1PendingQuestion = 'follow_up',
+    [ValidateSet('full', 'compact-menu')][string]$S1Context = 'full',
+    [ValidateSet('policy/1', 'direct/1', 'policy/2', 'policy/3')][string]$S1Instructions = 'policy/1',
+    [ValidateSet('plain', 'conditional')][string]$FinishLabel = 'plain',
+    [switch]$S1ContinuousInput,
+    [switch]$Options,
+    [switch]$Placement,
+    [switch]$Contingent,
+    [ValidateRange(0.0, 1.0)][double]$PacingBurst = 0,
+    [ValidateSet('end', 'send')][string]$PacingAnchor = 'end',
     [string]$UnityPath
 )
 
 $ErrorActionPreference = 'Stop'
+if (($TurnSizes -and $PointTurns) -or ($PointMoves -and ($PointTurns -or $TurnSizes))) { throw '-PointMoves, -PointTurns and -TurnSizes are mutually exclusive.' }
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $project = [IO.Path]::GetFullPath($ProjectPath).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $entity = [IO.Path]::GetFullPath($EntityPath)
@@ -123,6 +143,17 @@ foreach ($variable in $s1Credentials[$S1Arm]) {
 }
 if ($Frontier -and $MaxFrontierCalls -lt 1) { throw '-Frontier needs -MaxFrontierCalls of at least 1: no frontier call starts without a cap.' }
 if (-not $Frontier -and $MaxFrontierCalls -ne 0) { throw '-MaxFrontierCalls needs -Frontier.' }
+if ($S1Context -eq 'compact-menu' -and -not $Options) {
+    # The menu's measured cell comes from the options layer's outcome memory; the runner refuses this too.
+    throw '-S1Context compact-menu needs -Options: the menu''s measured cell comes from the options layer.'
+}
+if ($S1Context -eq 'compact-menu' -and $S1Layout -ne 'full') { throw '-S1Context compact-menu sends its own state; it cannot be combined with -S1Layout.' }
+if ($S1Context -eq 'compact-menu' -and $S1CompactState -ne 'off') { throw '-S1Context compact-menu sends its own state; it cannot be combined with -S1CompactState.' }
+if ($S1Context -eq 'compact-menu' -and $S1PendingQuestion -ne 'follow_up') { throw '-S1Context compact-menu asks its own pending question beside next_action; it cannot be combined with -S1PendingQuestion.' }
+if ($Contingent -and $S1Context -ne 'compact-menu') {
+    # The branch answers this acts on are the compact menu's own if_blocked/if_succeeded questions.
+    throw '-Contingent needs -S1Context compact-menu: no other mode asks S1 what to do if an option ends blocked.'
+}
 if ($Frontier -and [string]::IsNullOrEmpty($env:META_API_KEY)) { throw 'META_API_KEY is not set in this session.' }
 $packages = Get-Content -LiteralPath (Join-Path $project 'Packages/manifest.json') -Raw | ConvertFrom-Json
 $expected = 'file:' + (Join-Path $repoRoot 'bridge').Replace('\', '/')
@@ -142,7 +173,13 @@ New-Item -ItemType Directory -Path $output | Out-Null
 # declarations with exact release-verified execution evidence. Its digest is pinned for the host and the client.
 $catalogFile = Join-Path $output 'catalog.json'
 Push-Location $repoRoot
-try { & $python -m playtest.preflight.catalog --manifest $manifestFile --output $catalogFile }
+try {
+    $catalogArgs = @()
+    if ($TurnSizes) { $catalogArgs += @('--turn-sizes', '--calibration', $calibration) }
+    if ($PointMoves) { $catalogArgs += @('--point-moves', '--calibration', $calibration, '--capture-width', $CaptureWidth, '--capture-height', $CaptureHeight) }
+    if ($PointTurns) { $catalogArgs += @('--point-turns', '--calibration', $calibration, '--capture-width', $CaptureWidth, '--capture-height', $CaptureHeight) }
+    & $python -m playtest.preflight.catalog --manifest $manifestFile --output $catalogFile @catalogArgs
+}
 finally { Pop-Location }
 if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($catalogFile)) {
     throw 'Could not export the manifest catalog, so there is nothing for the host to serve. Fix the manifest and choose a new output directory.'
@@ -158,6 +195,13 @@ $invariant = [Globalization.CultureInfo]::InvariantCulture
 # The Editor owns Play Mode for this run. `play-session-supervisor.ps1` launches it with
 # -executeMethod Playtest.Bridge.Editor.PlayModeSessionHost.Start, waits for the host's measured
 # initial readiness, and only then starts the client. The mailbox lives outside the game project.
+if (-not $ScenePath) {
+    $entityDocument = Get-Content -LiteralPath $entity -Raw | ConvertFrom-Json
+    $ScenePath = [string]$entityDocument.entity.scene_path
+    if (-not $ScenePath) { throw 'The entity record has no selected scene; provide -ScenePath.' }
+}
+[IO.File]::WriteAllText((Join-Path $output 'starting-scene.json'),
+    (@{ scene_path = $ScenePath } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
 $controlDirectory = Join-Path $output 'control'
 New-Item -ItemType Directory -Path $controlDirectory | Out-Null
 $runId = [guid]::NewGuid().ToString('D')
@@ -172,15 +216,19 @@ $sessionConfig = [ordered]@{
 }
 [IO.File]::WriteAllText((Join-Path $controlDirectory 'config.json'), ($sessionConfig | ConvertTo-Json -Compress),
     (New-Object Text.UTF8Encoding($false)))
-$names = @('UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
+$names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_ENTITY', 'UPA_BENCH_CALIBRATION', 'UPA_BENCH_MODULE',
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
-           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS')
+           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
+           'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS', 'UPA_RUN_S1_CONTEXT',
+           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
+           'UPA_RUN_OPTIONS', 'UPA_RUN_CONTINGENT', 'UPA_RUN_PLACEMENT', 'UPA_CONTROLLED_ENTITY')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 $recorder = $null
 try {
+    $env:UPA_SCENE_PATH = $ScenePath
     $env:UPA_BENCH_OUTPUT = Join-Path $output 'run.json'
     $env:UPA_BENCH_PYTHON = $python
     $env:UPA_BENCH_ENTITY = $entity
@@ -202,6 +250,26 @@ try {
     $env:UPA_RUN_S1_ARM = $S1Arm
     $env:UPA_RUN_S1_GAME_VIEW = if ($S1GameView) { '1' } else { '' }
     $env:UPA_RUN_S1_LAYOUT = $S1Layout
+    $env:UPA_RUN_S1_COMPACT_STATE = $S1CompactState
+    $env:UPA_RUN_S1_PENDING_QUESTION = $S1PendingQuestion
+    $env:UPA_RUN_S1_CONTEXT = $S1Context
+    $env:UPA_RUN_S1_INSTRUCTIONS = $S1Instructions
+    $env:UPA_RUN_FINISH_LABEL = $FinishLabel
+    $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
+    $env:UPA_RUN_OPTIONS = if ($Options) { '1' } else { '' }
+    $env:UPA_RUN_CONTINGENT = if ($Contingent) { '1' } else { '' }
+    $env:UPA_RUN_PLACEMENT = if ($Placement) { '1' } else { '' }
+    $controlledEntityDocument = Get-Content -LiteralPath $entity -Raw | ConvertFrom-Json
+    $env:UPA_CONTROLLED_ENTITY = [string]$controlledEntityDocument.entity.path
+    $env:UPA_RUN_PACING_BURST = $PacingBurst.ToString($invariant)
+    $env:UPA_RUN_PACING_ANCHOR = $PacingAnchor
+    $env:UPA_RUN_POINT_MOVES = if ($PointMoves) { '1' } else { '' }
+    $env:UPA_RUN_POINT_TURNS = if ($PointTurns) { '1' } else { '' }
+    $env:UPA_RUN_CAPTURE_WIDTH = [string]$CaptureWidth
+    $env:UPA_RUN_CAPTURE_HEIGHT = [string]$CaptureHeight
+    $env:UPA_RUN_TURN_SIZES = if ($TurnSizes) { '1' } else { '' }
+    $env:UPA_RUN_PATTERN_FACTS = if ($PatternFacts) { '1' } else { '' }
+    $env:UPA_RUN_TRAVEL_FACTS = if ($TravelFacts) { '1' } else { '' }
     $env:UPA_RUN_COVERAGE_FACTS = if ($CoverageFacts) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }

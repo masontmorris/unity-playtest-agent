@@ -3,6 +3,11 @@
 For every turn, the choice the loop acted on is the choice S1 returned, and the input that reached
 the bridge is that choice, or on a help turn exactly the `while_pending` choice S1 named. Any
 difference is a bug and fails the run.
+
+A contingent turn is one S1 answered ahead of time, so its `raw_choice` is that earlier answer's id:
+`effective_choice` and `executed_action` must equal it exactly as on any other turn. The replay and
+the trace checker prove that id really is the one the earlier decision holds for the condition its
+option ended in; this check proves nothing else was executed in its place.
 """
 
 from __future__ import annotations

@@ -27,6 +27,7 @@ namespace Playtest.Bridge.Transport
         private readonly IBridgeInputBackend _input;
         private readonly IBridgeClock _clock;
         private readonly IBridgeInspectionSource _inspection;
+        private readonly IBridgePlacementSource _placement;
         private readonly BridgeObservationHistory _history = new BridgeObservationHistory();
         private readonly BridgeActionLease _lease;
         private readonly string _token;
@@ -108,6 +109,25 @@ namespace Playtest.Bridge.Transport
             IBridgeClock clock,
             IBridgeInspectionSource inspection,
             string token)
+            : this(options, status, observations, actions, input, clock, inspection, null, token)
+        {
+        }
+
+        /// <summary>
+        /// Full constructor with the placement source. The source is called from the transport
+        /// thread and must marshal to the Unity main thread itself; transport never calls Unity
+        /// APIs. Without a source, place requests get a clear internal error and no invented pose.
+        /// </summary>
+        public BridgeServer(
+            BridgeServerOptions options,
+            IBridgeStatusSource status,
+            IBridgeObservationSource observations,
+            BridgeActionCatalog actions,
+            IBridgeInputBackend input,
+            IBridgeClock clock,
+            IBridgeInspectionSource inspection,
+            IBridgePlacementSource placement,
+            string token)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _status = status ?? throw new ArgumentNullException(nameof(status));
@@ -116,6 +136,7 @@ namespace Playtest.Bridge.Transport
             _input = input;
             _clock = clock;
             _inspection = inspection;
+            _placement = placement;
             if (string.IsNullOrEmpty(token))
             {
                 throw new ArgumentException("token must not be empty", nameof(token));
@@ -505,6 +526,12 @@ namespace Playtest.Bridge.Transport
                 return;
             }
 
+            if (string.Equals(type, "place", StringComparison.Ordinal))
+            {
+                HandlePlace(session, line, requestSeq);
+                return;
+            }
+
             string label = string.IsNullOrEmpty(type) ? "(missing)" : type;
             WriteSessionError(
                 session,
@@ -716,6 +743,140 @@ namespace Playtest.Bridge.Transport
         }
 
         /// <summary>
+        /// Moves the configured controlled entity and answers with what was measured. Every held
+        /// input is released and verified first, exactly as <c>stop("release")</c> does, so a place
+        /// never fights an input the session still holds. A refusal to run is a result with
+        /// <c>placed</c> false and a reason; the wire error is reserved for a placement that could
+        /// not be attempted or answered at all.
+        /// </summary>
+        private void HandlePlace(ClientSession session, string line, long? requestSeq)
+        {
+            if (!_running)
+            {
+                return;
+            }
+
+            if (!BridgeProtocol.TryReadPlaceRequest(line, out PlaceRequestMessage request, out ProtocolError error))
+            {
+                WriteSessionError(session, requestSeq, error.Code, error.Message);
+                return;
+            }
+
+            if (_placement == null)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "no placement source is attached to this bridge");
+                return;
+            }
+
+            if (session.Stopping)
+            {
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Invalid,
+                    "the session is stopping, so it cannot place");
+                return;
+            }
+
+            string releaseError = ReleaseHeldInput();
+            if (releaseError != null)
+            {
+                WritePlaceResult(session, request, BridgePlacementResult.Unplaced(releaseError));
+                return;
+            }
+
+            BridgePlacementResult result;
+            try
+            {
+                result = _placement.Place(new BridgePlacementRequest
+                {
+                    Position = request.Position,
+                    SettleS = request.SettleS,
+                });
+            }
+            catch (BridgePlacementUnavailableException ex)
+            {
+                WriteSessionError(session, request.Seq, BridgeErrorCode.Internal, ex.Message);
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke("placement source failed: " + ex.GetType().Name);
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the placement source failed");
+                return;
+            }
+
+            WritePlaceResult(session, request, result);
+        }
+
+        /// <summary>
+        /// Releases every input the session holds and verifies the release without closing the
+        /// session or writing a stopped result. Returns null when nothing is held or the release is
+        /// verified, and the reason a place must not run otherwise. The lease waits for device
+        /// reads on the Unity main thread, so no gate is held here.
+        /// </summary>
+        private string ReleaseHeldInput()
+        {
+            _lease?.Stop("place", emitCancelled: true);
+
+            if (!VerifyRelease(_options.ReleaseVerifyTimeoutMs))
+            {
+                return "held input could not be verified as released, so nothing was placed";
+            }
+
+            return null;
+        }
+
+        private void WritePlaceResult(
+            ClientSession session,
+            PlaceRequestMessage request,
+            BridgePlacementResult result)
+        {
+            var message = new PlaceResultMessage
+            {
+                Session = session.Session,
+                Seq = 0,
+                GameS = null,
+                WallUtc = DateTime.UtcNow,
+                Placed = result != null && result.Placed,
+                PositionAfterSettle = result?.PositionAfterSettle,
+                MovedDuringSettle = result?.MovedDuringSettle,
+                Reason = result?.Reason,
+            };
+
+            if (!BridgePlacementRules.TryValidate(message, out string invalid))
+            {
+                Log?.Invoke("placement source returned an invalid result: " + invalid);
+                WriteSessionError(
+                    session,
+                    request.Seq,
+                    BridgeErrorCode.Internal,
+                    "the placement source returned an invalid result: " + invalid);
+                return;
+            }
+
+            bool written = TryWrite(session, seq =>
+            {
+                message.Seq = seq;
+                message.WallUtc = DateTime.UtcNow;
+                return message;
+            });
+
+            if (!written)
+            {
+                session.Close();
+            }
+        }
+
+        /// <summary>
         /// Stops the active session for a bridge-side reason (scene change, user, reset, error).
         /// Sends a stopped result when the caller is still connected, releases every input and
         /// verifies the release before closing. Safe to call from the Unity main thread.
@@ -751,9 +912,12 @@ namespace Playtest.Bridge.Transport
             // below takes it, or is dropped.
             lock (_freshnessGate)
             {
-                session.Stopping = true;
-                session.StopStream();
-                _clock?.Reset();
+                if (reason != "release")
+                {
+                    session.Stopping = true;
+                    session.StopStream();
+                    _clock?.Reset();
+                }
             }
 
             // The lease releases the inputs and waits for device reads, which the Unity main thread
@@ -765,7 +929,7 @@ namespace Playtest.Bridge.Transport
             {
                 lock (_gate)
                 {
-                    if (ReferenceEquals(_active, session))
+                    if (reason != "release" && ReferenceEquals(_active, session))
                     {
                         _active = null;
                     }
@@ -805,7 +969,7 @@ namespace Playtest.Bridge.Transport
                 }
             }
 
-            session.Close();
+            if (reason != "release" || !verified) session.Close();
             Log?.Invoke("stop (" + reason + "): released=" + released.Count + " verified=" + verified);
             return result;
         }

@@ -161,12 +161,144 @@ namespace Playtest.Bridge.Unity
     }
 
     /// <summary>
+    /// Reads the same probe through Unity's 2D physics, for an anchor that moves in a plane. A cast
+    /// keeps x and y and drops z, which is all a planar world has; the vertical part of every probe
+    /// ray is still the world's up, so the downward casts, the grid and the two blocker heights mean
+    /// exactly what they mean in 3D. Colliders of the anchor and of its descendants are skipped the
+    /// same way, and triggers are skipped by inspecting the collider rather than by changing a global
+    /// query setting.
+    /// </summary>
+    public sealed class Physics2DProbeRaycasts : IProbeRaycasts
+    {
+        /// <summary>Most colliders one cast or overlap can consider.</summary>
+        public const int MaxColliders = 32;
+
+        private readonly Transform _anchor;
+
+        private readonly RaycastHit2D[] _rayHits = new RaycastHit2D[MaxColliders];
+
+        private readonly Collider2D[] _overlaps = new Collider2D[MaxColliders];
+
+        public Physics2DProbeRaycasts(Transform anchor)
+        {
+            _anchor = anchor;
+        }
+
+        public bool Raycast(Vector3 origin, Vector3 direction, float maxDistance, out ProbeRayHit hit)
+        {
+            hit = default(ProbeRayHit);
+            var from = new Vector2(origin.x, origin.y);
+            var toward = new Vector2(direction.x, direction.y);
+            if (toward.sqrMagnitude <= 0f)
+            {
+                return false;
+            }
+
+            int count = Physics2D.RaycastNonAlloc(
+                from,
+                toward.normalized,
+                _rayHits,
+                maxDistance,
+                Physics2D.DefaultRaycastLayers);
+            ProbeRayHit nearest = default(ProbeRayHit);
+            ProbeRayHit nearestSelf = default(ProbeRayHit);
+            bool found = false;
+            bool foundSelf = false;
+            for (int i = 0; i < count; i++)
+            {
+                RaycastHit2D candidate = _rayHits[i];
+                if (candidate.collider == null || candidate.collider.isTrigger)
+                {
+                    continue;
+                }
+
+                var reading = new ProbeRayHit
+                {
+                    Hit = true,
+                    // A planar collider has no extent along z, so the point reported is the one in the
+                    // plane the cast was taken in: it keeps the cast's z rather than a made-up one.
+                    Point = new Vector3(candidate.point.x, candidate.point.y, origin.z),
+                    Normal = new Vector3(candidate.normal.x, candidate.normal.y, 0f),
+                    Distance = Vector2.Distance(from, candidate.point),
+                    Self = IsSelf(candidate.collider.transform),
+                };
+
+                if (reading.Self)
+                {
+                    if (!foundSelf || reading.Distance < nearestSelf.Distance)
+                    {
+                        foundSelf = true;
+                        nearestSelf = reading;
+                    }
+                }
+                else if (!found || reading.Distance < nearest.Distance)
+                {
+                    found = true;
+                    nearest = reading;
+                }
+            }
+
+            if (found)
+            {
+                hit = nearest;
+                return true;
+            }
+
+            if (foundSelf)
+            {
+                hit = nearestSelf;
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool Overlap(Vector3 point, float radius)
+        {
+            int count = Physics2D.OverlapCircleNonAlloc(
+                new Vector2(point.x, point.y),
+                radius,
+                _overlaps,
+                Physics2D.DefaultRaycastLayers);
+            for (int i = 0; i < count; i++)
+            {
+                Collider2D candidate = _overlaps[i];
+                if (candidate == null || candidate.isTrigger || IsSelf(candidate.transform))
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool IsSelf(Transform transform)
+        {
+            if (_anchor == null || transform == null)
+            {
+                return false;
+            }
+
+            return transform == _anchor || transform.IsChildOf(_anchor);
+        }
+    }
+
+    /// <summary>
     /// The measured geometry a decision-maker reads under <c>public.probe</c>: the anchor the
     /// probe was taken from and the surfaces around it, in the anchor's own frame. Nine downward
     /// samples on a 3x3 grid of forward and lateral offsets give the height of whatever is under
-    /// each point, and two forward casts at fixed heights give the distance to the first
+    /// each point, three more rows at <c>-0.6</c>, <c>-1.2</c> and <c>-1.8</c> give the same for the
+    /// floor behind, and two forward casts at fixed heights give the distance to the first
     /// obstruction in front. Nothing here is summarised: a point, a height, a normal and a
     /// distance are raw facts, and a reading that could not be taken is null, never zero.
+    ///
+    /// The same shape is published for a planar anchor, cast through 2D physics: ahead is the
+    /// anchor's facing, the vertical axis is still the world's up, and the lateral offsets collapse
+    /// into the plane, so only the in-plane row of each offset is cast and published. The
+    /// <c>basis</c> field says which of the two was taken, which world direction the samples call
+    /// ahead, where that heading came from, and whether the lateral axis was sampled.
     ///
     /// Every grid <c>delta_y</c> is measured against the ground under the anchor (<c>under</c>), so
     /// flat ground is 0 and a surface one riser up is that riser's height, which is what a step
@@ -180,10 +312,11 @@ namespace Playtest.Bridge.Unity
     /// with the readings null and <c>inside</c> true, which is the only reading an obstruction
     /// taller than the cast or an overhang can give.
     ///
-    /// The anchor is resolved once and cached: <c>UPA_PROBE_ANCHOR</c> as a hierarchy path, then
-    /// the first enabled <see cref="CharacterController"/>, then the first enabled
-    /// <see cref="Rigidbody"/>. With none of them the probe is not published and the reason is
-    /// reported as a reader error.
+    /// The anchor is resolved once and cached: <c>UPA_PROBE_ANCHOR</c> as a hierarchy path (else the
+    /// session's configured <c>UPA_CONTROLLED_ENTITY</c>), then the first enabled
+    /// <see cref="CharacterController"/>, then the first enabled <see cref="Rigidbody"/>, then the
+    /// first <see cref="Rigidbody2D"/>. With none of them the probe is not published and the reason
+    /// is reported as a reader error.
     /// </summary>
     public sealed class UnityProbeField
     {
@@ -192,7 +325,7 @@ namespace Playtest.Bridge.Unity
 
         /// <summary>Why no probe is published when the scene offers no anchor.</summary>
         public const string NoAnchorReason =
-            "no anchor: set UPA_PROBE_ANCHOR or have an enabled CharacterController or Rigidbody in the scene";
+            "no anchor: set UPA_PROBE_ANCHOR or have an enabled CharacterController, Rigidbody or Rigidbody2D in the scene";
 
         public const string KindPath = "path";
 
@@ -200,8 +333,13 @@ namespace Playtest.Bridge.Unity
 
         public const string KindRigidbody = "rigidbody";
 
-        /// <summary>Shape version of the published probe.</summary>
-        public const int Version = 1;
+        public const string KindRigidbody2D = "rigidbody2d";
+
+        /// <summary>
+        /// Shape version of the published probe. Version 2 adds the <c>basis</c> frame and the
+        /// <c>backward</c> row of down-rays behind the anchor; every version 1 key keeps its meaning.
+        /// </summary>
+        public const int Version = 2;
 
         /// <summary>Height above each sample point the downward cast starts at.</summary>
         public const float CastHeight = 6f;
@@ -221,6 +359,12 @@ namespace Playtest.Bridge.Unity
         /// <summary>Forward offsets of the sample grid, outermost loop first.</summary>
         public static readonly float[] ForwardOffsets = { 0.6f, 1.2f, 1.8f };
 
+        /// <summary>
+        /// Offsets behind the anchor of the backward row, outermost loop first: the same distances as
+        /// the forward grid, so a run-up can see where the floor it starts on ends.
+        /// </summary>
+        public static readonly float[] BackwardOffsets = { -0.6f, -1.2f, -1.8f };
+
         /// <summary>Lateral offsets of the sample grid, innermost loop first.</summary>
         public static readonly float[] LateralOffsets = { -0.35f, 0f, 0.35f };
 
@@ -232,6 +376,8 @@ namespace Playtest.Bridge.Unity
         private IProbeRaycasts _anchorRays;
 
         private Transform _anchorRaysFor;
+
+        private bool _anchorRaysPlanar;
 
         private Transform _anchor;
 
@@ -291,17 +437,22 @@ namespace Playtest.Bridge.Unity
         public static bool TryFindAnchor(out Transform anchor, out string kind, out string reason)
         {
             string path = Environment.GetEnvironmentVariable(AnchorVariable);
+            if (string.IsNullOrEmpty(path)) path = Environment.GetEnvironmentVariable("UPA_CONTROLLED_ENTITY");
             Transform pathAnchor = string.IsNullOrEmpty(path) ? null : FindByPath(path);
             CharacterController controller = FirstEnabledController();
             Rigidbody body = FirstActiveBody();
-            return ChooseAnchor(
+            Rigidbody2D body2d = UnityEngine.Object.FindFirstObjectByType<Rigidbody2D>();
+            bool found = ChooseAnchor(
                 path,
                 pathAnchor,
                 controller == null ? null : controller.transform,
-                body == null ? null : body.transform,
+                body != null ? body.transform : (body2d == null ? null : body2d.transform),
                 out anchor,
                 out kind,
                 out reason);
+            if (found && string.IsNullOrEmpty(path) && controller == null && body == null && body2d != null)
+                kind = KindRigidbody2D;
+            return found;
         }
 
         /// <summary>
@@ -363,8 +514,9 @@ namespace Playtest.Bridge.Unity
         }
 
         /// <summary>
-        /// Samples the grid and the blockers around the cached anchor. Returns false with the
-        /// reason when there is no anchor; any failure from the seam is thrown to the caller.
+        /// Samples the rows and the blockers around the cached anchor, through 3D or 2D physics
+        /// depending on what the anchor is. Returns false with the reason when there is no anchor; any
+        /// failure from the seam is thrown to the caller.
         /// </summary>
         public bool TrySample(out Dictionary<string, object> probe, out string reason)
         {
@@ -381,8 +533,9 @@ namespace Playtest.Bridge.Unity
         }
 
         /// <summary>
-        /// Reads the grid and the blockers around <paramref name="anchor"/>, in the anchor's own
-        /// frame: its position, its forward and right directions with the vertical part removed.
+        /// Reads the rows and the blockers around <paramref name="anchor"/>, in the anchor's own
+        /// frame: its position, the direction it calls ahead, and the lateral axis when the world has
+        /// one. The published <c>basis</c> names that frame.
         /// </summary>
         public Dictionary<string, object> Sample(Transform anchor, string kind)
         {
@@ -392,28 +545,14 @@ namespace Playtest.Bridge.Unity
             }
 
             IProbeRaycasts rays = RaycastsFor(anchor);
+            bool planar = IsPlanar(anchor);
             Vector3 origin = anchor.position;
-            Vector3 forwardDir = Horizontal(anchor.forward, Vector3.forward);
-            Vector3 rightDir = Horizontal(anchor.right, Vector3.right);
+            Vector3 forwardDir = Forward(anchor, planar);
+            // A planar world has no lateral axis: there is nothing to cast across, so the lateral
+            // offsets collapse into the one ray in the plane and only its reading is published.
+            Vector3 rightDir = planar ? Vector3.zero : Horizontal(anchor.right, Vector3.right);
             ProbeSurface under = ReadSurface(rays, origin);
             double? groundY = under.Hit && !under.Inside ? under.Point.y : (double?)null;
-
-            var samples = new List<object>(ForwardOffsets.Length * LateralOffsets.Length);
-            for (int forwardIndex = 0; forwardIndex < ForwardOffsets.Length; forwardIndex++)
-            {
-                for (int lateralIndex = 0; lateralIndex < LateralOffsets.Length; lateralIndex++)
-                {
-                    Vector3 point = origin
-                        + forwardDir * ForwardOffsets[forwardIndex]
-                        + rightDir * LateralOffsets[lateralIndex];
-                    ProbeSurface surface = ReadSurface(rays, point);
-                    samples.Add(Entry(
-                        ForwardOffsets[forwardIndex],
-                        LateralOffsets[lateralIndex],
-                        surface,
-                        Relative(surface, groundY)));
-                }
-            }
 
             var blockers = new List<object>(BlockerHeights.Length);
             for (int i = 0; i < BlockerHeights.Length; i++)
@@ -433,10 +572,136 @@ namespace Playtest.Bridge.Unity
                         { "position", ToArray(origin) },
                     }
                 },
+                { "basis", Basis(forwardDir, planar) },
                 { "under", Entry(0f, 0f, under, Relative(under, origin.y)) },
-                { "samples", samples },
+                { "samples", Row(rays, origin, forwardDir, rightDir, ForwardOffsets, groundY) },
+                { "backward", Row(rays, origin, forwardDir, rightDir, BackwardOffsets, groundY) },
                 { "blockers", blockers },
             };
+        }
+
+        /// <summary>
+        /// One row of downward samples at the given offsets ahead of (or behind) the anchor, each
+        /// measured against the ground under the anchor. A planar probe casts the single in-plane ray
+        /// of each offset, so its row is one entry per offset rather than one per lateral step.
+        /// </summary>
+        private static List<object> Row(
+            IProbeRaycasts rays,
+            Vector3 origin,
+            Vector3 forwardDir,
+            Vector3 rightDir,
+            float[] offsets,
+            double? groundY)
+        {
+            bool lateral = rightDir.sqrMagnitude > MinimumHorizontalSqr;
+            var entries = new List<object>(offsets.Length * (lateral ? LateralOffsets.Length : 1));
+            for (int forwardIndex = 0; forwardIndex < offsets.Length; forwardIndex++)
+            {
+                if (!lateral)
+                {
+                    Vector3 straight = origin + forwardDir * offsets[forwardIndex];
+                    ProbeSurface surface = ReadSurface(rays, straight);
+                    entries.Add(Entry(offsets[forwardIndex], 0f, surface, Relative(surface, groundY)));
+                    continue;
+                }
+
+                for (int lateralIndex = 0; lateralIndex < LateralOffsets.Length; lateralIndex++)
+                {
+                    Vector3 point = origin
+                        + forwardDir * offsets[forwardIndex]
+                        + rightDir * LateralOffsets[lateralIndex];
+                    ProbeSurface surface = ReadSurface(rays, point);
+                    entries.Add(Entry(
+                        offsets[forwardIndex],
+                        LateralOffsets[lateralIndex],
+                        surface,
+                        Relative(surface, groundY)));
+                }
+            }
+
+            return entries;
+        }
+
+        /// <summary>
+        /// The frame the samples were taken in, published so a reading never has to be guessed at: the
+        /// plane, the world direction the samples call ahead, where that heading came from, and whether
+        /// the lateral axis was sampled (<c>grid</c>) or collapsed into the plane (<c>collapsed</c>).
+        /// </summary>
+        private static Dictionary<string, object> Basis(Vector3 forwardDir, bool planar)
+        {
+            return new Dictionary<string, object>
+            {
+                { "plane", planar ? "2d" : "3d" },
+                { "forward", ToArray(forwardDir) },
+                { "forward_source", planar ? "facing_scale" : "transform_forward" },
+                { "lateral", planar ? "collapsed" : "grid" },
+            };
+        }
+
+        /// <summary>
+        /// The heading the probe calls ahead. In 3D it is the transform's forward with the vertical part
+        /// removed. In a plane it is the transform's own right axis with the plane's third axis removed,
+        /// flipped by the sign of <c>localScale.x</c>, which is how a planar body publishes the way it
+        /// faces (a body mirrored on x faces the other way with the same rotation).
+        /// </summary>
+        public static Vector3 Forward(Transform anchor, bool planar)
+        {
+            if (anchor == null)
+            {
+                return Vector3.forward;
+            }
+
+            if (!planar)
+            {
+                return Horizontal(anchor.forward, Vector3.forward);
+            }
+
+            var facing = new Vector3(anchor.right.x, anchor.right.y, 0f);
+            if (facing.sqrMagnitude <= MinimumHorizontalSqr)
+            {
+                facing = Vector3.right;
+            }
+
+            facing = facing.normalized;
+            return anchor.localScale.x < 0f ? -facing : facing;
+        }
+
+        /// <summary>
+        /// Whether this anchor is measured in a plane. A 2D body on the anchor makes it planar, and so
+        /// does the configured controlled entity carrying one, since that is the body the session moves.
+        /// A 3D body on the anchor always wins: its own physics is what the readings must come from.
+        /// </summary>
+        public static bool IsPlanar(Transform anchor)
+        {
+            if (anchor == null)
+            {
+                return false;
+            }
+
+            if (anchor.GetComponent<Rigidbody>() != null)
+            {
+                return false;
+            }
+
+            if (anchor.GetComponent<Rigidbody2D>() != null || anchor.GetComponentInChildren<Rigidbody2D>() != null)
+            {
+                return true;
+            }
+
+            string path = UnityControlledEntity.ConfiguredPath();
+            GameObject entity = string.IsNullOrEmpty(path) ? null : GameObject.Find(path);
+            if (entity == null || entity == anchor.gameObject)
+            {
+                return false;
+            }
+
+            if (entity.GetComponent<Rigidbody>() != null)
+            {
+                return false;
+            }
+
+            return entity.GetComponent<Rigidbody2D>() != null
+                || entity.GetComponentInChildren<Rigidbody2D>() != null;
         }
 
         /// <summary>
@@ -461,10 +726,14 @@ namespace Playtest.Bridge.Unity
                 return _injected;
             }
 
-            if (_anchorRays == null || _anchorRaysFor != anchor)
+            bool planar = IsPlanar(anchor);
+            if (_anchorRays == null || _anchorRaysFor != anchor || _anchorRaysPlanar != planar)
             {
-                _anchorRays = new PhysicsProbeRaycasts(anchor);
+                _anchorRays = planar
+                    ? (IProbeRaycasts)new Physics2DProbeRaycasts(anchor)
+                    : new PhysicsProbeRaycasts(anchor);
                 _anchorRaysFor = anchor;
+                _anchorRaysPlanar = planar;
             }
 
             return _anchorRays;

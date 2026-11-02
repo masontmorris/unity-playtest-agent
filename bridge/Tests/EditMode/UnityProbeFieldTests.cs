@@ -28,11 +28,15 @@ namespace Playtest.Bridge.Tests
 
         private string _originalPath;
 
+        private string _originalEntity;
+
         [SetUp]
         public void SetUp()
         {
             _originalPath = Environment.GetEnvironmentVariable(UnityProbeField.AnchorVariable);
+            _originalEntity = Environment.GetEnvironmentVariable(UnityControlledEntity.VariableName);
             Environment.SetEnvironmentVariable(UnityProbeField.AnchorVariable, null);
+            Environment.SetEnvironmentVariable(UnityControlledEntity.VariableName, null);
             _rays = new FakeRaycasts();
         }
 
@@ -49,6 +53,7 @@ namespace Playtest.Bridge.Tests
 
             _created.Clear();
             Environment.SetEnvironmentVariable(UnityProbeField.AnchorVariable, _originalPath);
+            Environment.SetEnvironmentVariable(UnityControlledEntity.VariableName, _originalEntity);
         }
 
         [Test]
@@ -58,7 +63,7 @@ namespace Playtest.Bridge.Tests
 
             Dictionary<string, object> probe = new UnityProbeField(_rays).Sample(anchor, UnityProbeField.KindPath);
 
-            Assert.That(probe["version"], Is.EqualTo(1));
+            Assert.That(probe["version"], Is.EqualTo(UnityProbeField.Version));
             var facts = probe["anchor"] as IDictionary;
             Assert.That(facts, Is.Not.Null);
             Assert.That(facts["kind"], Is.EqualTo("path"));
@@ -303,6 +308,99 @@ namespace Playtest.Bridge.Tests
                 Assert.That(entry["point"], Is.Null);
                 Assert.That(entry["normal"], Is.Null);
             }
+        }
+
+        [Test]
+        public void Backward_IsARowOfDownRaysBehindTheAnchorAtTheSameDistances()
+        {
+            Transform anchor = CreateAnchor(new Vector3(0f, 2.5f, 0f));
+            _rays.RaycastHandler = (origin, direction, maxDistance) =>
+            {
+                if (maxDistance <= UnityProbeField.BlockerMaxDistance)
+                {
+                    return default(ProbeRayHit);
+                }
+
+                return new ProbeRayHit
+                {
+                    Hit = true,
+                    Point = new Vector3(origin.x, 2.5f, origin.z),
+                    Normal = Vector3.up,
+                    Distance = origin.y - 2.5f,
+                };
+            };
+
+            Dictionary<string, object> probe = new UnityProbeField(_rays).Sample(anchor, UnityProbeField.KindPath);
+
+            var backward = probe["backward"] as IList;
+            Assert.That(backward, Has.Count.EqualTo(9), "the same 3x3 row as the samples, behind the anchor");
+            float[] behind = { -0.6f, -1.2f, -1.8f };
+            float[] lateral = { -0.35f, 0f, 0.35f };
+            int index = 0;
+            for (int behindIndex = 0; behindIndex < behind.Length; behindIndex++)
+            {
+                for (int lateralIndex = 0; lateralIndex < lateral.Length; lateralIndex++)
+                {
+                    var entry = backward[index] as IDictionary;
+                    Assert.That(entry, Is.Not.Null);
+                    Assert.That((float)entry["forward"], Is.EqualTo(behind[behindIndex]).Within(Tolerance),
+                        "a distance behind is published as a negative offset");
+                    Assert.That((float)entry["lateral"], Is.EqualTo(lateral[lateralIndex]).Within(Tolerance));
+                    Assert.That(entry["hit"], Is.EqualTo(true));
+                    Assert.That((double)entry["delta_y"], Is.EqualTo(0.0).Within(1e-6));
+                    index++;
+                }
+            }
+        }
+
+        [Test]
+        public void Backward_FloorEndingBehindIsAMissWithNullReadings()
+        {
+            Transform anchor = CreateAnchor(Vector3.zero);
+            _rays.RaycastHandler = (origin, direction, maxDistance) =>
+            {
+                if (maxDistance <= UnityProbeField.BlockerMaxDistance || origin.z <= -1f)
+                {
+                    return default(ProbeRayHit);
+                }
+
+                return new ProbeRayHit
+                {
+                    Hit = true,
+                    Point = new Vector3(origin.x, 0f, origin.z),
+                    Normal = Vector3.up,
+                    Distance = origin.y,
+                };
+            };
+
+            Dictionary<string, object> probe = new UnityProbeField(_rays).Sample(anchor, UnityProbeField.KindPath);
+
+            var backward = probe["backward"] as IList;
+            var nearest = backward[0] as IDictionary;
+            Assert.That(nearest["hit"], Is.EqualTo(true), "0.6 behind is still the floor the anchor stands on");
+            Assert.That((double)nearest["delta_y"], Is.EqualTo(0.0).Within(1e-6));
+
+            var past = backward[3] as IDictionary;
+            Assert.That(past["hit"], Is.EqualTo(false), "the floor ends between 0.6 and 1.2 behind");
+            Assert.That(past["point"], Is.Null, "a miss is null, not a point of zero");
+            Assert.That(past["delta_y"], Is.Null, "a miss is null, not a height of zero");
+            Assert.That(past["normal"], Is.Null);
+            Assert.That(past["inside"], Is.EqualTo(false));
+        }
+
+        [Test]
+        public void Basis_NamesTheFrameTheSamplesWereTakenIn()
+        {
+            Transform anchor = CreateAnchor(Vector3.zero);
+
+            var basis = new UnityProbeField(_rays).Sample(anchor, UnityProbeField.KindPath)["basis"] as IDictionary;
+
+            Assert.That(basis, Is.Not.Null);
+            Assert.That(basis["plane"], Is.EqualTo("3d"));
+            Assert.That(basis["forward_source"], Is.EqualTo("transform_forward"));
+            Assert.That(basis["lateral"], Is.EqualTo("grid"));
+            var forward = basis["forward"] as IList;
+            Assert.That((float)forward[2], Is.EqualTo(1f).Within(Tolerance), "ahead is the transform's forward");
         }
 
         [Test]

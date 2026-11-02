@@ -1,0 +1,20 @@
+{
+  "set_version": 1,
+  "built_from_seq": 2,
+  "choices": [
+    {
+      "id": "sweep",
+      "kind": "option",
+      "label": "Try each untried control here once",
+      "option_id": "sweep",
+      "template": "sweep",
+      "params": {
+        "actions": [
+          "interact",
+          "attack"
+        ]
+      },
+      "source": "manifest"
+    }
+  ]
+}

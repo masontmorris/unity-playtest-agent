@@ -197,6 +197,43 @@ def test_spreading_waits_from_the_last_counted_call_and_never_before_the_first()
     assert ready(b) == 0.0                                # the turn itself took longer than the spacing
 
 
+def test_a_send_anchor_spaces_from_when_the_request_was_sent_not_when_the_reply_arrived():
+    b, fake = budget(60_000, spread=True, anchor="send")   # 1,000 tokens a second
+    b.record(2_000, sent_ago=0.4)                         # posted 0.4 s ago at the clock's second 1000
+    # The 2 s of spacing began at 999.6, so 1.6 s of it is left.
+    assert ready(b) == pytest.approx(1.6) and fake.slept == [pytest.approx(1.6)]
+
+
+def test_the_end_anchor_ignores_sent_ago_and_spaces_from_the_recorded_moment():
+    b, fake = budget(60_000, spread=True)                 # the default anchor
+    assert b.anchor == "end"
+    b.record(2_000, sent_ago=0.4)                         # the same call, and the same clock
+    assert ready(b) == pytest.approx(2.0)                 # spacing still starts at 1000, exactly as before
+
+
+def test_a_send_stamp_never_precedes_the_newest_entry_and_the_window_still_expires_in_order():
+    b, fake = budget(60_000, spread=True, anchor="send")
+    b.record(1_000)                                       # the newest entry, at the clock's second 1000
+    fake.now += 2.0
+    b.record(2_000, sent_ago=5.0)                         # would be 997; clamped to the newest entry's 1000
+    assert [at for at, _ in b._window] == [1000.0, 1000.0]   # still in time order for `_expire`
+    assert ready(b) == pytest.approx(0.0)                 # 1000 + 2 s of spacing is already spent
+    fake.now += 58.0                                      # 1000 + 60: both entries leave the window
+    assert b.in_window == 0 and ready(b) == 0.0
+
+
+def test_an_unknown_anchor_and_an_unusable_sent_ago_are_refused():
+    for bad in ("middle", "SEND", "end ", True, None, 1):
+        with pytest.raises(ValueError):
+            TokenBudget(1_000, anchor=bad)
+    b, _ = budget(60_000, anchor="send")
+    for bad in (-1, -0.001, float("nan"), float("inf"), True, "0.5", None):
+        with pytest.raises(ValueError):
+            b.record(1_000, sent_ago=bad)
+    b.record(1_000, sent_ago=0)                           # zero is a send and a record in the same instant
+    assert b.recorded == 1 and b.anchor == "send"
+
+
 # --- bad input ----------------------------------------------------------------------------
 
 

@@ -1,7 +1,7 @@
 """asyncio JSONL client for the bridge wire protocol.
 
 One TCP connection over loopback. The client speaks first (`hello`), then
-`observe` / `act` / `stop` / `clock` / `inspect`. A background reader demultiplexes
+`observe` / `act` / `stop` / `clock` / `inspect` / `place`. A background reader demultiplexes
 replies: observations go to the stream or once queues, execution records
 accumulate per `action_id`, and errors complete the matching request.
 
@@ -18,6 +18,7 @@ import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 from pydantic import ValidationError
 
@@ -33,6 +34,8 @@ from playtest.contracts.bridge import (
     InspectResult,
     Observation,
     ObserveRequest,
+    PlaceRequest,
+    PlaceResult,
     Status,
     StopRequest,
     StopResult,
@@ -52,6 +55,16 @@ def _finite_positive(value: float, name: str) -> float:
     if not math.isfinite(number) or number <= 0:
         raise ValueError(f"{name} must be a finite positive number")
     return number
+
+
+def _world_position(value: Sequence[float], name: str) -> list[float]:
+    """Three finite numbers on every axis, or an error: a malformed target is never a position."""
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"{name} must be a sequence of three finite numbers")
+    numbers = [float(component) for component in value]
+    if len(numbers) != 3 or not all(math.isfinite(component) for component in numbers):
+        raise ValueError(f"{name} must be a sequence of three finite numbers")
+    return numbers
 
 
 class BridgeError(Exception):
@@ -95,6 +108,7 @@ class BridgeClient:
         self._by_seq: dict[int, asyncio.Future] = {}
         self._status_future: asyncio.Future | None = None
         self._stop_future: asyncio.Future | None = None
+        self._place_future: asyncio.Future | None = None
         self._exec: dict[str, dict] = {}
         self._stream: asyncio.Queue[Observation] = asyncio.Queue()
         self._once: asyncio.Queue[Observation] = asyncio.Queue()
@@ -235,9 +249,9 @@ class BridgeClient:
         if self._by_seq.get(seq) is future:
             del self._by_seq[seq]
 
-    async def _await(self, seq: int, future: asyncio.Future) -> object:
+    async def _await(self, seq: int, future: asyncio.Future, *, timeout_s: float | None = None) -> object:
         try:
-            return await asyncio.wait_for(asyncio.shield(future), self._timeout_s)
+            return await asyncio.wait_for(asyncio.shield(future), self._timeout_s if timeout_s is None else timeout_s)
         except asyncio.TimeoutError as exc:
             self._forget(seq, future)
             if not future.done():
@@ -291,6 +305,8 @@ class BridgeClient:
                 message = ExecutionRecord.model_validate(body)
             elif kind == "stopped":
                 message = StopResult.model_validate(body)
+            elif kind == "placed":
+                message = PlaceResult.model_validate(body)
             elif kind == "inspection":
                 message = InspectResult.model_validate(body)
             elif kind == "error":
@@ -308,6 +324,8 @@ class BridgeClient:
             self._on_execution(message)
         elif isinstance(message, StopResult):
             self._on_stopped(message)
+        elif isinstance(message, PlaceResult):
+            self._on_placed(message)
         elif isinstance(message, InspectResult):
             self._on_inspection(message)
         else:
@@ -357,6 +375,12 @@ class BridgeClient:
 
     def _on_stopped(self, message: StopResult) -> None:
         future, self._stop_future = self._stop_future, None
+        if future is not None and not future.done():
+            future.set_result(message)
+        self._sweep()
+
+    def _on_placed(self, message: PlaceResult) -> None:
+        future, self._place_future = self._place_future, None
         if future is not None and not future.done():
             future.set_result(message)
         self._sweep()
@@ -553,6 +577,31 @@ class BridgeClient:
         assert isinstance(records, list) and records
         return records  # type: ignore[return-value]
 
+    async def start_act(self, **arguments: object) -> list[ExecutionRecord]:
+        """Send once, returning at apply acknowledgement; retain the terminal receipt.
+
+        Unlike act(), the connection lock is released while the input runs.
+        The owner must collect_act() after expiry, supersession or stop.
+        """
+        self._require_open()
+        async with self._lock:
+            request, done, first = self._prepare_act_locked(**arguments, with_first=True)
+            assert first is not None
+            await self._send(request)
+            await self._await(request.seq, first)
+            return list(self._exec[request.action_id]["records"])
+
+    def action_records(self, action_id: str) -> list[ExecutionRecord]:
+        """Received records only: elapsed time never proves an input is held."""
+        return list(self._exec[action_id]["records"])
+
+    async def collect_act(self, action_id: str) -> list[ExecutionRecord]:
+        entry = self._exec[action_id]
+        try:
+            return await asyncio.wait_for(asyncio.shield(entry["done"]), self._timeout_s)
+        finally:
+            self._exec.pop(action_id, None)
+
     async def act_with_inspections(
         self,
         *,
@@ -683,6 +732,41 @@ class BridgeClient:
         )
         return await self._request_status(request)
 
+    async def place(self, position: Sequence[float], settle_s: float) -> PlaceResult:
+        """Put the configured controlled entity at a position and let it settle.
+
+        The bridge releases every held input first, verified as `stop` does, sets the pose on the
+        entity the session configured, waits `settle_s` of game time and answers with what it
+        measured. A placement that could not run is a result with `placed` false and a `reason`,
+        not an exception to repair; a placement the body kept moving after is `placed` true with
+        its measured `moved_during_settle`. This is a tester's affordance and acts on nothing else.
+        """
+        settle = _finite_positive(settle_s, "settle_s")
+        request = PlaceRequest(
+            session=self._session,
+            seq=self._next_seq(),
+            game_s=None,
+            wall_utc=_utcnow(),
+            position=_world_position(position, "position"),
+            settle_s=settle,
+        )
+        loop = self._require_open()
+        async with self._lock:
+            future: asyncio.Future = loop.create_future()
+            self._place_future = future
+            self._register(request.seq, future)
+            try:
+                await self._send(request)
+                # The settle wait is the bridge's game time, so the reply is allowed to take
+                # longer than an ordinary request by exactly that wait.
+                result = await self._await(request.seq, future, timeout_s=self._timeout_s + settle)
+            finally:
+                self._forget(request.seq, future)
+                if self._place_future is future:
+                    self._place_future = None
+        assert isinstance(result, PlaceResult)
+        return result
+
     async def inspect(self, stage: str) -> InspectResult:
         """Request one Editor inspection snapshot.
 
@@ -765,8 +849,9 @@ class BridgeClient:
                 return self._stop_result
             assert isinstance(result, StopResult)
             self._stop_result = result
-            self._clean_close = True
-            self._connection_lost("stopped")
+            if reason != "release":
+                self._clean_close = True
+                self._connection_lost("stopped")
             return result
 
     async def aclose(self) -> StopResult | None:
@@ -789,10 +874,11 @@ class BridgeClient:
         for future in list(self._by_seq.values()):
             self._fail(future, exc)
         self._by_seq.clear()
-        for slot in [self._status_future, self._stop_future]:
+        for slot in [self._status_future, self._stop_future, self._place_future]:
             self._fail(slot, exc)
         self._status_future = None
         self._stop_future = None
+        self._place_future = None
         for entry in self._exec.values():
             self._fail(entry["done"], exc)
         self._exec.clear()

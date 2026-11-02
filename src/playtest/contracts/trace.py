@@ -26,6 +26,7 @@ class TraceKind(str, Enum):
     s1_call = "s1_call"
     decision = "decision"
     execution = "execution"
+    option = "option"
     effect = "effect"
     help = "help"
     restart = "restart"
@@ -62,6 +63,8 @@ class TraceExecutionRequest(Strict):
 
 
 _KEEP_REQUEST_FIELDS = {"turn", "seq", "game_s"}
+_DECISION_OPTIONAL = {"contingent_problems", "source", "from_turn", "condition", "contingent_skipped",
+                      "cell", "from_cell"}
 _KEEP_FIELDS = {"directive_id", "requested", "deadline_game_s", "expires_in_game_s", "adopted_turn",
                 "closed_at_game_s", "closed_by_deadline", "request_before_deadline"}
 
@@ -144,6 +147,7 @@ class TraceEntry(Strict):
                 TraceKind.s1_call: {"question", "provider", "model", "resolved_model", "request_sha256", "http_status", "latency_ms", "problem", "response", "usage"},
                 TraceKind.decision: {"answer", "clock_mode", "valid", "error", "policy_default", "decision"},
                 TraceKind.execution: {"purpose", "request", "records"},
+                TraceKind.option: {"option_id", "template", "params", "outcome", "receipts"},
                 TraceKind.effect: {"choice_id", "action", "expected", "observed"},
                 TraceKind.help: {"event", "choice_id", "kind", "opened_turn", "source", "result", "reason"},
                 TraceKind.restart: {"event", "ticket_id", "from_generation", "to_generation", "status",
@@ -156,10 +160,34 @@ class TraceEntry(Strict):
             if (self.kind is TraceKind.investigation and "keep" not in self.body
                     and self.body.get("event") != "keep"):
                 keys = keys - {"keep"}  # traces written before keep rows existed stay readable
-            if set(self.body) != keys:
+            optional: set[str] = _DECISION_OPTIONAL if self.kind is TraceKind.decision else set()
+            if keys - set(self.body) or set(self.body) - keys - optional:
                 raise ValueError(f"{self.kind.value} body keys must be exactly {sorted(keys)}")
             if self.kind is TraceKind.execution and self.body["purpose"] not in ("choice", "while_pending"):
                 raise ValueError("execution purpose must be choice or while_pending")
+            if self.kind is TraceKind.option:
+                body = self.body
+                if not isinstance(body["option_id"], str) or not body["option_id"]:
+                    raise ValueError("option_id must be non-empty")
+                if body["template"] not in ("traverse", "retreat", "hop", "wait", "place", "sweep"):
+                    raise ValueError("unknown option template")
+                if not isinstance(body["params"], dict) or not isinstance(body["outcome"], dict) or not isinstance(body["receipts"], list):
+                    raise ValueError("option params and outcome must be objects and receipts a list")
+                if "receipts" in body["outcome"]:
+                    raise ValueError("receipts belong outside outcome")
+                outcome = body["outcome"]
+                required = {"option_id", "template", "params", "start_position", "end_position",
+                            "displacement", "terminated_by", "duration_s", "scene"}
+                # `measured` is what the option measured about the place beside what it was asked to do
+                # (OptionOutcome.measured): optional, an object when present, kept apart from params.
+                if set(outcome) - {"measured"} != required:
+                    raise ValueError("option outcome has incorrect keys")
+                if "measured" in outcome and not isinstance(outcome["measured"], dict):
+                    raise ValueError("option outcome measured must be an object")
+                if any(outcome[k] != body[k] for k in ("option_id", "template", "params")):
+                    raise ValueError("option outcome identity differs from option")
+                if outcome["terminated_by"] not in ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured", "interrupted"):
+                    raise ValueError("unknown option termination")
             if self.kind is TraceKind.execution:
                 TraceExecutionRequest.model_validate(self.body["request"])
                 records = self.body["records"]
@@ -178,6 +206,34 @@ class TraceEntry(Strict):
                 decision = Decision.model_validate(body["decision"]) if body["decision"] is not None else None
                 if body["valid"] != (decision is not None):
                     raise ValueError("decision valid must be true exactly when decision is non-null")
+                problems = body.get("contingent_problems", [])
+                if not isinstance(problems, list) or any(not isinstance(item, str) for item in problems):
+                    raise ValueError("decision contingent_problems must be a list of strings")
+                if "source" in body:
+                    # A turn with no provider call says why: a contingent turn reuses an earlier answer, and an
+                    # only-choice turn had nothing to ask about because exactly one choice was offered. Nothing
+                    # else may claim either.
+                    if body["source"] == "only_choice":
+                        if {"from_turn", "condition", "contingent_skipped"} & set(body):
+                            raise ValueError("an only-choice decision names no source turn, condition or skip")
+                    elif body["source"] == "contingent":
+                        for name in ("from_turn", "condition"):
+                            if name not in body:
+                                raise ValueError(f"a contingent decision needs {name}")
+                        turn = body["from_turn"]
+                        if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
+                            raise ValueError("decision from_turn must be a non-negative turn number")
+                        if body["condition"] not in ("blocked", "succeeded"):
+                            raise ValueError("decision condition must be blocked or succeeded")
+                        if "contingent_skipped" in body:
+                            raise ValueError("a contingent decision cannot also be skipped")
+                    else:
+                        raise ValueError("decision source must be contingent or only_choice when present")
+                elif {"from_turn", "condition"} & set(body):
+                    raise ValueError("only a contingent decision names a source turn and condition")
+                skipped = body.get("contingent_skipped")
+                if skipped is not None and not isinstance(skipped, str):
+                    raise ValueError("decision contingent_skipped must be a string")
             if self.kind is TraceKind.s1_call:
                 body = self.body
                 # Null when the port failed before naming a question.

@@ -239,6 +239,18 @@ class ReaderWatch:
     def drift_readings(self) -> int:
         return self._drift
 
+    def reserve(self, count: int) -> list[str]:
+        """The next `count` suspicion ids, for a second watch that raises facts of its own in the same pass.
+
+        Ids are unique in the run, in the order raised, so a watch whose suspicions follow this one's in an
+        observation must not number its own from `s1` again: it reserves them here instead.
+        """
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("count must be a non-negative integer")
+        ids = [f"s{self._raised + index + 1}" for index in range(count)]
+        self._raised += count
+        return ids
+
     def rebind(self, *, client: Any = None, observation: Observation | None = None,
                generation: str | None = None) -> None:
         """Drop every scene-bound baseline after a restart; suspicions already raised stay historical."""

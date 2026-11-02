@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -43,6 +44,9 @@ PRICE_CACHED_INPUT_PER_MTOK = 0.15
 PRICE_OUTPUT_PER_MTOK = 4.25
 
 _TIMEOUT_S = 60
+# A provider error body is read for its structured fields only, and its message is cut here: a body
+# can quote the request, and a message can be arbitrarily long.
+ERROR_MESSAGE_CHARS = 300
 _MANIFEST_NOTE = (
     "A null value means unknown, not zero. Each seq is a bridge record number; game_s is game time. "
     "A directive setpoint must name one of these fields and use a value of its kind. Cite only the "
@@ -161,6 +165,7 @@ def build_request(
     *,
     clip_path: Path | None = None,
     max_tokens: int = 4096,
+    advice: bool = False,
 ) -> dict[str, Any]:
     """Build the one request for this packet. The answer schema is stable for the whole run."""
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
@@ -174,6 +179,8 @@ def build_request(
     else:
         packet_content = [{"type": "text", "text": text}, video]
     system = frontier.SYSTEM + (frontier.PROGRESS_SYSTEM if manifest.progress else "") + (frontier.DECLARED_SYSTEM if manifest.declared is not None else "")
+    if advice:
+        system += frontier.ADVICE_SYSTEM
     return {
         "model": MODEL,
         "messages": [
@@ -187,11 +194,56 @@ def build_request(
     }
 
 
+def structured_error(value: Any) -> dict[str, Any] | None:
+    """The provider's own structured error fields, or None when the body reports none.
+
+    Only `error.type`, `error.code`, `error.param` and a bounded `error.message` are kept: a
+    provider may quote part of the request in a message, and nothing else in the body is read.
+    """
+    error = value.get("error") if isinstance(value, dict) else None
+    if not isinstance(error, dict):
+        return None
+    detail: dict[str, Any] = {}
+    for key in ("type", "code", "param"):
+        item = error.get(key)
+        detail[key] = item if isinstance(item, str) or (isinstance(item, int) and not isinstance(item, bool)) else None
+    message = error.get("message")
+    detail["message"] = message[:ERROR_MESSAGE_CHARS] if isinstance(message, str) else None
+    detail["message_truncated"] = isinstance(message, str) and len(message) > ERROR_MESSAGE_CHARS
+    return detail
+
+
+def error_detail(raw: bytes, content_type: str | None = None) -> dict[str, Any]:
+    """What an HTTP error body may contribute: its structured fields, or only its size and type."""
+    summary: dict[str, Any] = {"body_bytes": len(raw), "content_type": content_type}
+    try:
+        value = json.loads(raw, parse_constant=_reject_constant)
+    except (ValueError, UnicodeDecodeError):
+        return summary
+    structured = structured_error(value)
+    return summary if structured is None else {**summary, **structured}
+
+
+def reported_error(data: Any) -> dict[str, Any] | None:
+    """The error detail a failed call should record, from what the transport returned, or None.
+
+    A transport failure carries its own `error_detail`; a body on a successful status can report a
+    structured error too, which is read the same way. Neither can carry the request or a credential.
+    """
+    if not isinstance(data, dict):
+        return None
+    detail = data.get("error_detail")
+    if isinstance(detail, dict):
+        return detail
+    return structured_error(data)
+
+
 def send_meta(body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
     """POST once to Muse. Returns status, decoded object, latency and a non-secret problem.
 
     The credential comes from `META_API_KEY` and is never returned, logged or included in a
-    problem. An HTTP error's body is not read: it can echo the request.
+    problem. An HTTP error's body is read only for the provider's own structured error fields
+    (`error_detail`), never returned whole: a body can echo the request.
     """
     if not isinstance(body, dict) or not body:
         raise ValueError("the request body must be a non-empty object")
@@ -209,7 +261,15 @@ def send_meta(body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, 
         with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as exc:
-        return exc.code, None, (time.monotonic() - started) * 1000.0, "HTTP error"
+        latency = (time.monotonic() - started) * 1000.0
+        try:
+            raw = exc.read()
+        except (OSError, ValueError, http.client.HTTPException):
+            raw = b""
+        headers = exc.headers
+        content_type = headers.get("Content-Type") if headers is not None else None
+        return (exc.code, {"error_detail": error_detail(raw, content_type if isinstance(content_type, str) else None)},
+                latency, "HTTP error")
     except (OSError, urllib.error.URLError):
         return None, None, (time.monotonic() - started) * 1000.0, "transport error"
     latency = (time.monotonic() - started) * 1000.0

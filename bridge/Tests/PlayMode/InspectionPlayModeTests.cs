@@ -23,7 +23,7 @@ namespace Playtest.Bridge.Tests
             Scene loaded = default(Scene);
             try
             {
-                string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
+                string scenePath = BuildSceneSelection.Resolve();
                 Assert.That(scenePath, Is.Not.Null.And.Not.Empty, "an enabled build scene is required");
                 LogAssert.ignoreFailingMessages = true;
                 try
@@ -37,6 +37,8 @@ namespace Playtest.Bridge.Tests
                     loaded = SceneManager.GetSceneByPath(scenePath);
                     Assert.That(loaded.IsValid() && loaded.isLoaded, Is.True);
                     SceneManager.SetActiveScene(loaded);
+                    string sceneRecord = Environment.GetEnvironmentVariable("UPA_PREFLIGHT_DISCOVERY_OUTPUT");
+                    if (!string.IsNullOrEmpty(sceneRecord)) File.WriteAllText(sceneRecord + ".scene.txt", loaded.path);
                 }
                 finally { LogAssert.ignoreFailingMessages = false; }
 

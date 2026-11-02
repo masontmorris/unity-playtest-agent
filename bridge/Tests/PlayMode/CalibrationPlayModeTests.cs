@@ -76,6 +76,10 @@ namespace Playtest.Bridge.Tests
             public FieldSample[] after_reload_fields;
         }
 
+        // The calibration client's exit code for a pass its own session ended on a measured state change, with
+        // its record saved (playtest.preflight.calibrate.EXIT_PASS_ENDED_BY_STATE_CHANGE).
+        private const int PassEndedByStateChangeExit = 3;
+
         [UnityTest]
         public IEnumerator CalibrationEntryPointChecksBoundsOrRunsRequestedProbe()
         {
@@ -88,6 +92,7 @@ namespace Playtest.Bridge.Tests
             string python = Environment.GetEnvironmentVariable("UPA_CALIBRATION_PYTHON");
             string entityPath = Environment.GetEnvironmentVariable("UPA_CALIBRATION_ENTITY");
             string resetPath = Environment.GetEnvironmentVariable("UPA_CALIBRATION_RESET_OUTPUT");
+            string priorPath = Environment.GetEnvironmentVariable("UPA_CALIBRATION_PRIOR_STATE_CHANGES");
             string repo = Environment.GetEnvironmentVariable("UPA_REPO_ROOT");
             Assert.That(File.Exists(python), Is.True, "the calibration Python executable is missing");
             Assert.That(File.Exists(entityPath), Is.True, "a stage 2 entity record is required");
@@ -112,9 +117,10 @@ namespace Playtest.Bridge.Tests
             CalibrationLogTolerance tolerance = null;
             try
             {
-                string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
+                string scenePath = BuildSceneSelection.Resolve();
                 Assert.That(scenePath, Is.Not.Null.And.Not.Empty, "an enabled scene is required");
                 yield return Load(scenePath, scene => loaded = scene);
+                File.WriteAllText(output + ".scene.txt", loaded.path);
                 yield return new WaitForSecondsRealtime(1f);
                 var evidence = new ResetEvidence { scene_path = scenePath, entity_id = selected.entity_id };
                 var trials = new List<ResetTrial> { BeginTrial(selected.entity_id, sceneId) };
@@ -153,6 +159,8 @@ namespace Playtest.Bridge.Tests
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
+                if (!string.IsNullOrEmpty(priorPath))
+                    start.Arguments += " --prior-state-changes \"" + priorPath + "\"";
                 process = System.Diagnostics.Process.Start(start);
                 Assert.That(process, Is.Not.Null);
                 DateTime deadline = DateTime.UtcNow.AddSeconds(PlanWaitS);
@@ -178,8 +186,14 @@ namespace Playtest.Bridge.Tests
                 Assert.That(process.HasExited, Is.True, planned
                     ? "the calibration client outlived its declared budget of " + budgetS.ToString("0", CultureInfo.InvariantCulture) + " s"
                     : "the calibration client declared no plan within " + PlanWaitS.ToString("0", CultureInfo.InvariantCulture) + " s");
-                Assert.That(process.ExitCode, Is.EqualTo(0), "calibration failed; inspect its local output");
-                Assert.That(File.Exists(output), Is.True);
+                Assert.That(File.Exists(output), Is.True, "calibration failed without a record");
+                if (process.ExitCode != 0)
+                {
+                    // The client decides from its own record whether this session ended on a measured state
+                    // change and says so with its exit code; any other nonzero exit is a failure.
+                    Assert.That(process.ExitCode, Is.EqualTo(PassEndedByStateChangeExit), "calibration failed; inspect its local output");
+                    yield break; // A new PlayMode host must restore persistent game state before another pass.
+                }
                 BridgeEditorHost.Stop();
                 tolerance.Dispose();
                 SceneRuntimeErrors.Stop();
@@ -269,6 +283,12 @@ namespace Playtest.Bridge.Tests
                     Inputs = { new BridgeInputBinding(device, control, x, y) },
                     DefaultLeaseS = 0.4,
                 });
+                if (Environment.GetEnvironmentVariable("UPA_CALIBRATION_BOTH_SIGNS") == "1")
+                {
+                    var opposite = CalibrationInputProbes.Negated(
+                        "preflight_" + device.ToLowerInvariant() + "_" + control.ToLowerInvariant(), device, control, x, y);
+                    if (opposite != null) definitions.Add(opposite);
+                }
             }
         }
 

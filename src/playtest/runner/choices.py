@@ -7,7 +7,8 @@ becomes one choice, in the manifest's order (its actions, then its skills), name
 action is an `action` choice and a skill is a `skill` choice, and the request names the declaration. So a
 chord, a stick or mouse value, or an ordered skill reaches the bridge as declared or is rejected by it;
 nothing is reduced to its first input, ranked, reordered, rewritten or inferred (S1 ownership: S1 chooses
-among the declarations as declared). The four core choices (wait, escalate, delegate, finish) come after.
+among the declarations as declared). Core choices come after. A live caller supplies its configured
+help kinds: an unconfigured help operation is not executable and is recorded in `not_offered`.
 A declaration with `execution_supported` false is not offered and is listed with the reason. The wait
 choice names its duration (`duration_game_s`), which the turn loop honors in real time.
 
@@ -21,6 +22,8 @@ its label says so. The effect of a single control is never reported as the effec
 """
 
 from __future__ import annotations
+
+import re
 
 import json
 from dataclasses import dataclass, field
@@ -57,9 +60,19 @@ class ManifestChoices:
     leases: dict[str, float]
     not_offered: list[dict[str, str]] = field(default_factory=list)
     catalog: ActionCatalog = field(default_factory=ActionCatalog)
+    point_fov: float | None = None
 
 
-def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
+# How the finish choice is labelled. `plain` is today's; `conditional` states when to choose it, because a
+# decision model reads each option's text next to its code and "Finish" alone says nothing about when.
+FINISH_LABELS = {
+    "plain": "Finish",
+    "conditional": ("Finish: end the whole session now. Choose this only when the objective's completion "
+                    "conditions are met; otherwise the session ends by itself."),
+}
+
+
+def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"]) -> list[Choice]:
     """The choices every game has, plus an explicit host restart only when this host advertises it.
 
     Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
@@ -79,23 +92,102 @@ def core_choices(*, restart_play_mode: bool = False) -> list[Choice]:
             id=RESTART_ID, kind=ChoiceKind.restart_play_mode,
             label="Restart Play Mode: stop the play session and start it again from the beginning",
             source=ChoiceSource.core))
-    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.core))
+    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
     return choices
 
 
-def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False) -> ManifestChoices:
+def options_choices(choices: list[Choice], primitives: Any, memory: Any, observation: Any,
+                    *, placement: bool = False, regions: Any = ()) -> list[Choice]:
+    """Rebuild option labels against this observation; never select an option here."""
+    from .options.primitives import option_specs
+    from .options.model import OptionSpec
+
+    memory.observe(observation)
+    scene = observation.scene
+    controlled = observation.public.get("controlled") or {}
+    position = controlled.get("position") if isinstance(controlled, dict) else None
+    movement = {p.action for p in primitives.classified if p.kind in ("move", "rise")}
+    retained = [c for c in choices if not (c.kind is ChoiceKind.action and c.action in movement)]
+    specs = list(option_specs(primitives))
+    if placement:
+        points = list(memory.settled_points(scene))
+        for region in regions:
+            anchor = getattr(region, "anchor", None)
+            if getattr(region, "scene", None) == scene and anchor is not None:
+                points.append(anchor)
+        unique = []
+        for point in points:
+            if list(point) not in unique:
+                unique.append(list(point))
+        for index, point in enumerate(unique[:8]):
+            specs.append(OptionSpec(f"place:{index}", "place", {"position": point},
+                                    f"place at {point}"))
+    sweep = sweep_spec(retained, memory, scene, position)
+    if sweep is not None:
+        specs.append(sweep)
+    offered = [Choice(id=s.option_id, kind=ChoiceKind.option, option_id=s.option_id, template=s.template,
+                      params=s.params, label=f"{s.intent} — {memory.suffix(scene, position, s.option_id)}",
+                      source=ChoiceSource.manifest) for s in specs]
+    return [*retained, *offered]
+
+
+SWEEP_AFTER_TRIED = 3  # choices tried at a place before the controls never tried there are offered as one option
+_CALIBRATED = re.compile(r"calibrated net displacement\s+(-?\d+(?:\.\d+)?)")
+
+
+def sweep_spec(choices: list[Choice], memory: Any, scene: Any, position: Any) -> Any:
+    """One option that sends each plain control never tried at this place once, or `None`.
+
+    Offered only at a place where at least `SWEEP_AFTER_TRIED` choices were tried, and only with the controls the
+    place's measured history does not list. The order is by calibrated displacement, smallest first (unknown
+    last), so the controls that do not move the body run while it is still at the place. Nothing is chosen here.
+    """
+    from .options.model import OptionSpec
+
+    summary = memory.place_summary(scene, position) if hasattr(memory, "place_summary") else None
+    if not summary or len(summary) < SWEEP_AFTER_TRIED:
+        return None
+    def moved(choice: Choice) -> float:
+        match = _CALIBRATED.search(choice.label or "")
+        return abs(float(match.group(1))) if match else float("inf")
+    untried = [c for c in choices if c.kind is ChoiceKind.action and c.action and c.id not in summary
+               and not c.id.endswith(".held")]
+    if not untried:
+        return None
+    actions = [c.action for c in sorted(untried, key=moved)]
+    return OptionSpec("sweep", "sweep", {"actions": actions},
+                      f"resolve what blocks progress here by trying each untried control once: {len(actions)} untried")
+
+
+def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
+                  finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
+                  point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),
+                  calibration: dict | None = None, help_kinds: frozenset[str] | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
     default leaves every choice, its order and its wording exactly as before.
+    `help_kinds` names the configured help handlers, independently of gameplay and remaining budget.
+    None preserves the full menu for callers that provide their own helper or resolve help externally.
     """
-    core = core_choices(restart_play_mode=restart_play_mode)
-    reserved = {choice.id for choice in core} | {RESTART_ID}
-    catalog = export(manifest)
+    all_core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
+    reserved = {choice.id for choice in all_core} | {RESTART_ID}
+    if help_kinds is not None and help_kinds - {"escalate", "delegate"}:
+        raise ValueError("help_kinds must contain only configured escalate or delegate handlers")
+    unavailable = [c for c in all_core if c.kind in (ChoiceKind.escalate, ChoiceKind.delegate)
+                   and help_kinds is not None and c.kind.value not in help_kinds]
+    core = [c for c in all_core if c not in unavailable]
+    if sum((turn_sizes, point_turns, point_moves)) > 1:
+        raise ValueError("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
+    catalog = (export(manifest, point_turns=point_turns, point_moves=point_moves, calibration=calibration, capture_size=capture_size)
+               if point_turns or point_moves else export(manifest))
     choices: list[Choice] = []
     expected: dict[str, dict[str, Any] | None] = {}
     leases: dict[str, float] = {}
-    not_offered: list[dict[str, str]] = []
+    not_offered: list[dict[str, str]] = [
+        {"kind": c.kind.value, "name": c.id, "reason": f"No configured handler supports {c.kind.value}."}
+        for c in unavailable
+    ]
 
     for action in manifest.actions:
         if not action.execution_supported:
@@ -134,8 +226,31 @@ def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = Fals
         ))
         expected[skill.name] = None  # calibration measured no ordered sequence; nothing stands in for one
         # No lease: the declaration's own steps and max_s bound a skill.
+    if turn_sizes:
+        from .turn_sizes import measured_turns
+        declarations = dict(catalog.actions)
+        for choice, definition in measured_turns(manifest, calibration):
+            if choice.action in declarations or choice.id in reserved:
+                raise ValueError(f"turn choice id collision: {choice.id}")
+            declarations[choice.action] = definition
+            choices.append(choice)
+            leases[choice.id] = definition.default_lease_s
+            expected[choice.id] = None
+        catalog = ActionCatalog(actions=declarations)
+    point_fov = None
+    if point_turns or point_moves:
+        from .point_turns import measured_fov, pointing_turns
+        from .point_moves import pointing_moves
+        derive = pointing_moves if point_moves else pointing_turns
+        point_fov = measured_fov(calibration)
+        occupied = {c.id for c in choices} | reserved
+        for row in derive(manifest, calibration, capture_size):
+            if row.choice.id in occupied:
+                raise ValueError(f"point choice id collision: {row.choice.id}")
+            choices.append(row.choice)
+            expected[row.choice.id] = None
     return ManifestChoices(choices=[*choices, *core], expected=expected, leases=leases,
-                           not_offered=not_offered, catalog=catalog)
+                           not_offered=not_offered, catalog=catalog, point_fov=point_fov)
 
 
 def _reserve(name: str, reserved: set[str]) -> None:
@@ -274,3 +389,46 @@ def _precondition(check: ManifestCheck) -> str:
     if check.op in (Comparator.changed, Comparator.unchanged):
         return f"{check.field} {check.op.value}"
     return f"{check.field} {check.op.value} {json.dumps(check.value)}"
+
+
+def with_held_choices(built: ManifestChoices, eligible: list[str]) -> ManifestChoices:
+    """Append explicit held variants; originals and their bounded leases remain unchanged.
+
+    Choice ids are opaque unique strings (contracts.loop); reject suffix collisions rather than
+    renaming a manifest choice. The bridge still receives exactly the original action and params.
+    """
+    occupied = {c.id for c in built.choices}
+    variants = []
+    leases = dict(built.leases)
+    for choice in built.choices:
+        if choice.id not in eligible:
+            continue
+        held_id = f"{choice.id}.held"
+        if held_id in occupied:
+            raise ValueError(f"held choice id collision: {held_id}")
+        occupied.add(held_id)
+        variants.append(choice.model_copy(update={"id": held_id}))
+        leases[held_id] = built.leases[choice.id]
+    return ManifestChoices(choices=[*built.choices, *variants], expected=built.expected,
+                           leases=leases, not_offered=built.not_offered, catalog=built.catalog, point_fov=built.point_fov)
+
+
+def held_choice_labels(built: ManifestChoices, held_ids: list[str], interval_s: float | None,
+                       lease_s: float | None) -> list[Choice]:
+    """Runner-side calibration arithmetic, never a measured prediction of future movement."""
+    offered = []
+    for choice in built.choices:
+        if choice.id not in held_ids:
+            offered.append(choice)
+            continue
+        expected = built.expected[choice.action]
+        rate = expected["net_displacement"] / expected["requested_hold_s"]
+        unit = expected.get("unit", UNIT)
+        timing = ("decision interval unknown; expected distance/decision unknown" if interval_s is None else
+                  f"decision interval {interval_s:.2f} s; expected distance/decision "
+                  f"{rate:.2f} {unit}/s * {interval_s:.2f} s = {rate * interval_s:.2f} {unit}")
+        bound = lease_s if lease_s is not None else built.leases[choice.id]
+        label = (f"{choice.action}: keeps input held until next decision or lease ends "
+                 f"(lease {bound:.2f} s); calibrated rate {rate:.2f} {unit}/s; {timing}")
+        offered.append(choice.model_copy(update={"label": label}))
+    return offered

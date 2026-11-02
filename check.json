@@ -1,0 +1,135 @@
+{
+  "cell": 1.0,
+  "felt": [
+    {
+      "cell": [
+        -3,
+        0
+      ],
+      "floor": false,
+      "height": null,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    },
+    {
+      "cell": [
+        -2,
+        0
+      ],
+      "floor": false,
+      "height": null,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    },
+    {
+      "cell": [
+        -1,
+        -1
+      ],
+      "floor": true,
+      "height": -1.0,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    },
+    {
+      "cell": [
+        0,
+        -1
+      ],
+      "floor": true,
+      "height": -1.0,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    },
+    {
+      "cell": [
+        1,
+        -1
+      ],
+      "floor": true,
+      "height": -1.0,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    },
+    {
+      "cell": [
+        2,
+        -1
+      ],
+      "floor": true,
+      "height": -1.0,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    },
+    {
+      "cell": [
+        2,
+        0
+      ],
+      "floor": null,
+      "height": null,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 2,
+      "scene": "scene-a",
+      "wall": 0.9
+    },
+    {
+      "cell": [
+        3,
+        -1
+      ],
+      "floor": true,
+      "height": -1.0,
+      "last_seen": "2026-11-01T00:00:00+00:00",
+      "samples": 1,
+      "scene": "scene-a",
+      "wall": null
+    }
+  ],
+  "history": [
+    {
+      "best_advance": 1.0,
+      "cell": [
+        0,
+        0,
+        0
+      ],
+      "last_end": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "option_id": "hop+x",
+      "scene": "scene-a",
+      "terminations": {
+        "blocked": 1
+      },
+      "tries": 1
+    }
+  ],
+  "planes": [
+    {
+      "axis": 0,
+      "plane": "2d",
+      "scene": "scene-a"
+    }
+  ],
+  "runs": [
+    "run-1"
+  ],
+  "settled": [],
+  "unplaced": [],
+  "version": 1
+}

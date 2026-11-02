@@ -296,6 +296,20 @@ class SuspicionBasis(str, Enum):
     effect_mismatch = "effect_mismatch"  # an action's measured effect differs from its calibrated one beyond the recorded spread
     range_exit = "range_exit"  # a reader left the range its earlier readings in the session showed
     drift = "drift"  # a reader set a new low (or high) at each of many consecutive readings
+    # The generic runtime detectors (playtest.runner.detectors): engine-level facts, no game knowledge.
+    non_finite_pose = "non_finite_pose"  # a pose or velocity component is NaN or infinite
+    fell_out = "fell_out"  # the body is below the lowest floor it stood on, by more than twice the measured rise peak
+    hitch = "hitch"  # an observation interval spiked while the game clock lost the time
+    runtime_exception = "runtime_exception"  # a new runtime error entry naming an error or an exception
+    reader_over_max = "reader_over_max"  # a declared reader's value is above a maximum declared for it
+
+
+# The bases the generic runtime detectors raise (playtest.runner.detectors): each one is measured from the
+# observations themselves, so a record of one cites them.
+DETECTOR_BASES = frozenset({
+    SuspicionBasis.non_finite_pose, SuspicionBasis.fell_out, SuspicionBasis.hitch,
+    SuspicionBasis.runtime_exception, SuspicionBasis.reader_over_max,
+})
 
 
 class Suspicion(Strict):
@@ -305,6 +319,10 @@ class Suspicion(Strict):
     it is not a finding, it never escalates, and nothing acts on it by itself. `statement` carries measured
     values only. `detail` holds the same numbers as data; its keys depend on `basis` (see
     `docs/design/suspicions.md`).
+
+    A detector basis (`playtest.runner.detectors`) is a fact about the run's own measurements, so it always
+    cites the observations it was measured from: a record that cannot say which observation it rests on
+    cannot be reproduced.
     """
 
     suspicion_id: str = Field(min_length=1, description="Unique within the run, in the order raised")
@@ -325,6 +343,8 @@ class Suspicion(Strict):
             raise ValueError("evidence_seq must be non-negative trace sequence numbers")
         if len(set(self.evidence_seq)) != len(self.evidence_seq):
             raise ValueError("evidence_seq cites the same entry twice")
+        if self.basis in DETECTOR_BASES and not self.evidence_seq:
+            raise ValueError("a detector suspicion cites the observations it measured")
         return self
 
 

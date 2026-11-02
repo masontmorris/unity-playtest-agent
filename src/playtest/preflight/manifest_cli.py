@@ -80,6 +80,16 @@ def main(argv: list[str] | None = None) -> int:
         built = packet.build(inventory, discovery, calibration, image=image)
         # Render before creating a ledger or making any paid request.
         preflight.schema(built.discovery)
+        if built.sidecar is not None:
+            # Every field row the packet does not carry in full, beside the manifest and outside the
+            # inspected project. It is written before any request so the record never depends on one.
+            sidecar = output.with_suffix(".sidecar.json")
+            if sidecar == project or sidecar.is_relative_to(project) or sidecar.exists():
+                raise ValueError(f"the sidecar path {sidecar} must be a new file outside the Unity project")
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            with sidecar.open("x", encoding="utf-8", newline="\n") as stream:
+                stream.write(built.sidecar)
+            print(f"unoffered field and object rows saved to {sidecar}")
         if cache_dir is not None:
             cached = detail = None
             try:

@@ -60,10 +60,33 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
     turn_records: list[TurnRecord] = []
     if sorted(groups) != list(range(len(groups))):
         issue("turn numbers are not contiguous from 0")
+    # Continuous input overlaps turns in time: a held lease dispatched in turn N keeps running while turn N+1
+    # observes and decides, and its execution receipt is written when the lease closes (superseded, released
+    # or expired). That receipt keeps turn N's number and refs N's decision, and is written after N's turn
+    # record. It is the only entry allowed outside its turn's span, and only if the bridge recorded it as a
+    # running lease and it closes before turn N+2 begins.
+    turn_record_seq = {row.turn: row.trace_seq for row in rows
+                       if row.kind is TraceKind.turn and row.turn is not None}
+    first_seq: dict[int, int] = {}
+    for row in rows:
+        if row.turn is not None:
+            first_seq.setdefault(row.turn, row.trace_seq)
+    deferred: set[int] = set()
+    for row in rows:
+        records = row.body.get("records") if row.kind is TraceKind.execution else None
+        if (row.turn is None or row.turn not in turn_record_seq or row.trace_seq < turn_record_seq[row.turn]
+                or not isinstance(records, list) or not records or not isinstance(records[0], dict)
+                or records[0].get("status") != "running"):
+            continue
+        superseding_end = first_seq.get(row.turn + 2)
+        if superseding_end is not None and row.trace_seq > superseding_end:
+            issue("a held execution closed after the turn that superseded it", row, row.turn)
+        else:
+            deferred.add(row.trace_seq)
     seen_turns: set[int] = set()
     last_turn: int | None = None
     for row in rows:
-        if row.turn is None:
+        if row.turn is None or row.trace_seq in deferred:
             continue
         if last_turn is not None and row.turn < last_turn:
             issue("turn entries are out of trace order", row, row.turn)
@@ -113,6 +136,7 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             if row.turn not in observed_at:
                 issue("a suspicion precedes the observation of its turn", row, row.turn)
 
+    contingent_turns: set[int] = set()
     for turn_no in sorted(groups):
         group = groups[turn_no]
         kinds = [x.kind for x in group]
@@ -130,8 +154,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                     issue("help adoption must follow the epoch check and precede choice assembly", entry, turn_no)
         rank = {TraceKind.observation: 0, TraceKind.choice_set: 1, TraceKind.context: 2,
                 TraceKind.s1_call: 3, TraceKind.decision: 4, TraceKind.restart: 5,
-                TraceKind.execution: 6, TraceKind.effect: 7, TraceKind.turn: 8}
-        ordered = [rank[x.kind] for x in group if x.kind in rank]
+                TraceKind.execution: 6, TraceKind.option: 6, TraceKind.effect: 7, TraceKind.turn: 8}
+        ordered = [rank[x.kind] for x in group if x.kind in rank and x.trace_seq not in deferred]
         if ordered != sorted(ordered):
             issue("turn entries are out of documented order", group[-1], turn_no)
         for required in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.turn):
@@ -151,8 +175,33 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             issue("turn is missing observation, choice_set, context, or decision", record_row, turn_no)
             continue
         calls = [x for x in group if x.kind is TraceKind.s1_call]
-        if not 1 <= len(calls) <= 2:
+        source = decrow.body.get("source") if decrow is not None else None
+        contingent_turn = source == "contingent"
+        if contingent_turn:
+            if calls:
+                issue("a contingent turn spends no provider call", record_row, turn_no)
+            if turn_no - 1 in contingent_turns:
+                issue("a contingent turn follows another without a fresh S1 call", record_row, turn_no)
+            contingent_turns.add(turn_no)
+        elif source == "only_choice":
+            # Nothing was chosen: the recorded set held exactly one choice. A call here would have asked a
+            # question with one answer, and a set with more than one choice was somebody's to choose.
+            if calls:
+                issue("an only-choice turn spends no provider call", record_row, turn_no)
+            offered_choices = setrow.body.get("choices") if setrow is not None else None
+            if not isinstance(offered_choices, list) or len(offered_choices) != 1:
+                issue("an only-choice decision was recorded for a set of more than one choice", decrow, turn_no)
+        elif not 1 <= len(calls) <= 2:
             issue("turn must have one or two s1_call entries", record_row, turn_no)
+        skipped = decrow.body.get("contingent_skipped") if decrow is not None else None
+        if isinstance(skipped, str) and skipped.startswith(_PLACE_SKIPS):
+            # A place check is a measurement: the cells it names must be the ones it read.
+            here, there = decrow.body.get("cell"), decrow.body.get("from_cell")
+            if here is None or there is None:
+                if not skipped.startswith("place_unknown"):
+                    issue("a place_changed skip needs both measured cells", decrow, turn_no)
+            elif here == there:
+                issue("a place skip records the same cell at both ends", decrow, turn_no)
         if len([x for x in group if x.kind is TraceKind.execution]) > 2:
             issue("turn has more than two executions", record_row, turn_no)
         def refs(row: TraceEntry, expected: set[int], label: str) -> None:
@@ -167,8 +216,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             refs(decrow, {setrow.trace_seq, *(x.trace_seq for x in calls)}, "decision")
         if decrow:
             for x in group:
-                if x.kind is TraceKind.execution:
-                    refs(x, {decrow.trace_seq}, "execution")
+                if x.kind in (TraceKind.execution, TraceKind.option):
+                    refs(x, {decrow.trace_seq}, x.kind.value)
                 if x.kind is TraceKind.help and x.body.get("event") in ("opened", "repeat"):
                     refs(x, {decrow.trace_seq}, "help")
                 if x.kind is TraceKind.restart and x.body.get("event") == "request":
@@ -193,7 +242,8 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
             elif any(effect.body.get("choice_id") != x.body.get("request", {}).get("choice_id") or
                      effect.body.get("action") != x.body.get("request", {}).get("action") for x in executions):
                 issue("effect differs from execution request", effect, turn_no)
-        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.restart)}, "turn")
+        refs(record_row, {x.trace_seq for x in group if x.kind in (TraceKind.observation, TraceKind.choice_set, TraceKind.context, TraceKind.decision, TraceKind.execution, TraceKind.option, TraceKind.restart)
+                          and x.trace_seq not in deferred}, "turn")
         try:
             obs = Observation.model_validate(obsrow.body)
             choices = ChoiceSet.model_validate(setrow.body)
@@ -246,10 +296,24 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                     pass
             if got != expected:
                 issue(f"decision {field} differs from parse_decision", decrow, turn_no)
+        if decision_body.get("contingent_problems", []) != list(parsed.contingent_problems):
+            issue("decision contingent_problems differs from parse_decision", decrow, turn_no)
         answer = decision_body.get("answer")
         raw = answer.get("choice_id") if isinstance(answer, dict) and isinstance(answer.get("choice_id"), str) else None
         selected = choices.get(expected_decision.choice_id) if expected_decision else None
         exec_rows = [x for x in group if x.kind is TraceKind.execution]
+        option_rows = [x for x in group if x.kind is TraceKind.option]
+        if selected and selected.kind is ChoiceKind.option:
+            if len(option_rows) != 1 or exec_rows:
+                issue("option turn must have exactly one option and no executions", record_row, turn_no)
+            for row in option_rows:
+                if (row.body.get("option_id"), row.body.get("template"), row.body.get("params")) != (selected.option_id, selected.template, selected.params):
+                    issue("option differs from S1 choice", row, turn_no)
+                outcome_body = row.body.get("outcome", {})
+                if any(outcome_body.get(k) != row.body.get(k) for k in ("option_id", "template", "params")):
+                    issue("option outcome differs from option", row, turn_no)
+        elif option_rows:
+            issue("unexpected option entry", option_rows[0], turn_no)
         action_exec: str | None = None
         terminal: ExecutionRecord | None = None
         for exrow in exec_rows:
@@ -268,7 +332,11 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
                         action_exec = req.choice_id
             except (ValidationError, KeyError, TypeError, ValueError) as exc:
                 issue(f"invalid execution evidence: {exc}", exrow, turn_no)
-        if selected and selected.kind in (ChoiceKind.action, ChoiceKind.skill):
+        if option_rows and selected and selected.kind is ChoiceKind.option:
+            action_exec = option_rows[0].body.get("option_id")
+        if selected and selected.kind is ChoiceKind.option:
+            outcome = TurnOutcome.executed
+        elif selected and selected.kind in (ChoiceKind.action, ChoiceKind.skill):
             outcome = TurnOutcome.rejected_stale if terminal and terminal.status.value == "rejected" else TurnOutcome.executed
         elif selected and selected.kind is ChoiceKind.escalate:
             outcome = TurnOutcome.escalated
@@ -281,6 +349,10 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
         else:
             outcome = TurnOutcome.rejected_invalid
         expected_effective = selected.id if selected else None
+        if contingent_turn:
+            _check_contingent_source(decision_body, expected_effective, turn_no, groups, decrow, issue)
+        elif "from_turn" in decision_body or "condition" in decision_body:
+            issue("a turn that called S1 carries no contingent source", decrow, turn_no)
         decision = expected_decision
         pending = decision.while_pending if decision else None
         actual_pending = record.while_pending
@@ -338,3 +410,46 @@ def replay(entries: Iterable[TraceEntry]) -> list[Problem]:
     for violation in check_adherence(turn_records):
         issue(f"adherence: {violation.problem}", turn=violation.turn)
     return problems
+
+
+_CONDITIONS = ("blocked", "succeeded")
+# The skip reasons that are a place check on reuse: both cells are recorded with them.
+_PLACE_SKIPS = ("place_changed", "place_unknown")
+
+
+def _check_contingent_source(body: dict[str, Any], expected_effective: str | None, turn_no: int,
+                             groups: dict[int, list[TraceEntry]], row: TraceEntry, issue: Any) -> None:
+    """A turn with no provider call must be S1's own earlier conditional answer, for the condition that happened.
+
+    The earlier decision must hold that id for exactly this condition, and that turn's option must have
+    measurably ended in it. Anything else is code choosing an action.
+    """
+    condition, from_turn = body.get("condition"), body.get("from_turn")
+    if condition not in _CONDITIONS:
+        issue("a contingent decision names no measured condition", row, turn_no)
+        return
+    if not isinstance(from_turn, int) or isinstance(from_turn, bool) or from_turn >= turn_no:
+        issue("a contingent decision does not name an earlier turn", row, turn_no)
+        return
+    source = groups.get(from_turn, [])
+    source_decision = next((x for x in source if x.kind is TraceKind.decision), None)
+    source_option = next((x for x in source if x.kind is TraceKind.option), None)
+    answered = (((source_decision.body.get("decision") if source_decision is not None else None) or {})
+                .get("contingent") or {})
+    named = answered.get(f"if_{condition}")
+    if named is None:
+        issue(f"turn {from_turn} holds no contingent answer for {condition}", row, turn_no)
+    elif named != expected_effective:
+        issue(f"the executed choice differs from S1's {condition} answer", row, turn_no)
+    cell, source_cell = body.get("cell"), (source_decision.body.get("cell") if source_decision is not None else None)
+    if not isinstance(source_cell, list) or not source_cell:
+        issue(f"turn {from_turn} records no cell for the place it answered in", row, turn_no)
+    elif not isinstance(cell, list) or not cell:
+        issue("a contingent decision carries no cell for the place its answer was made in", row, turn_no)
+    elif cell != source_cell:
+        issue(f"the place changed from cell {source_cell} to {cell} after the contingent answer was made",
+              row, turn_no)
+    ended = (((source_option.body.get("outcome") if source_option is not None else None) or {})
+             .get("terminated_by"))
+    if ended != condition:
+        issue(f"turn {from_turn} did not end {condition}: its option ended {ended!r}", row, turn_no)

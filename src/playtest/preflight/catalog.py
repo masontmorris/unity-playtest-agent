@@ -40,8 +40,10 @@ def _skill(skill: ManifestSkill) -> ActionDefinition:
     return ActionDefinition(backend="input_system", steps=steps, max_s=skill.max_s)
 
 
-def export(value: PreflightManifest) -> ActionCatalog:
+def export(value: PreflightManifest, *, turn_sizes: bool = False, point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480), calibration: dict | None = None) -> ActionCatalog:
     """Build the catalog from supported declarations only; no order or content is invented."""
+    if sum((turn_sizes, point_turns, point_moves)) > 1:
+        raise ValueError("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
     actions: dict[str, ActionDefinition] = {}
     for action in value.actions:
         if action.execution_supported:
@@ -49,6 +51,20 @@ def export(value: PreflightManifest) -> ActionCatalog:
     for skill in value.skills:
         if skill.execution_supported:
             actions[skill.name] = _skill(skill)
+    if turn_sizes:
+        from playtest.runner.turn_sizes import measured_turns
+        for choice, definition in measured_turns(value, calibration):
+            if choice.action in actions:
+                raise ValueError(f"turn choice id collision: {choice.id}")
+            actions[choice.action] = definition
+    if point_turns or point_moves:
+        from playtest.runner.point_turns import pointing_turns
+        from playtest.runner.point_moves import pointing_moves
+        derive = pointing_moves if point_moves else pointing_turns
+        for row in derive(value, calibration, capture_size):
+            if row.choice.skill in actions:
+                raise ValueError(f"point choice id collision: {row.choice.id}")
+            actions[row.choice.skill] = row.definition
     return ActionCatalog(actions=actions)
 
 
@@ -71,7 +87,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="new catalog JSON file")
+    parser.add_argument("--turn-sizes", action="store_true")
+    parser.add_argument("--point-turns", action="store_true")
+    parser.add_argument("--point-moves", action="store_true")
+    parser.add_argument("--capture-width", type=int, default=640)
+    parser.add_argument("--capture-height", type=int, default=480)
+    parser.add_argument("--calibration", type=Path)
     args = parser.parse_args(argv)
+    if sum((args.turn_sizes, args.point_turns, args.point_moves)) > 1:
+        print("catalog export failed: --point-moves, --point-turns and --turn-sizes are mutually exclusive", file=sys.stderr)
+        return 1
     output = args.output.resolve()
     if output.exists():
         parser.error("--output already exists")
@@ -80,7 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         problems = manifest_module.validate(value)
         if problems:
             raise ValueError("the manifest is invalid: " + "; ".join(problems))
-        catalog = export(value)
+        calibration = json.loads(args.calibration.read_text(encoding="utf-8")) if args.calibration else None
+        catalog = export(value, turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
+                         capture_size=(args.capture_width, args.capture_height), calibration=calibration)
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(serialize(catalog), stream, indent=2, allow_nan=False, sort_keys=True)

@@ -7,14 +7,19 @@ what to do with it. The core stays name-blind: readers, rules and metrics come f
 ## Readers in the observation
 
 The manifest's stage 4 readers are installed when a session starts (`playtest.runner.readers.FieldReaders`).
-Before each turn's observation the runner reads them all with one Editor `inspect("fields")`, and the loop
-installs the values in that observation's `public.<alias>` (`playtest.core.readers.install`). The reading is
-taken before the observation, never between it and the act, so it adds nothing to the age an action is bound to.
+Identity is static and values change, so install verifies each reader's full descriptor once, with one Editor
+`inspect("discovery")` (the stage whose field rows still carry it), before any paid call. Before each turn's
+observation the runner then reads their values with one `inspect("fields")`, and the loop installs them in that
+observation's `public.<alias>` (`playtest.core.readers.install`). The reading is taken before the observation,
+never between it and the act, so it adds nothing to the age an action is bound to.
 It costs one inspection a turn (the FPSKit scene's 312 field rows are about 390 kB of JSON); a bridge-side producer would be
 atomic with the observation and is the long-term home. This is the stopgap.
 
-- A reader is matched by its field id, and the live row must still carry the manifest's descriptor (scene,
-  object, component, declaring type, field type). Otherwise it is unknown with the reason.
+- A reader is matched by its field id. Install compares every identity key the manifest recorded (scene, object,
+  component, declaring type and assembly, field name, field type and assembly) against the live full descriptor,
+  and a reader that fails there is never read later. A per-turn values-only row carries only `id`, `object_id` and
+  `scene_id`, so a turn compares just those keys; a static key the row omits is unmeasured for that turn, never a
+  difference and never a match. Either way the reader is unknown with the reason.
 - A reader that cannot be read is `null` in `public` and has a `reader_errors` entry saying why: not in the
   live scene, descriptor differs, value null, destroyed, unsupported, not finite, truncated, or a different
   kind than the manifest declares. It is never zero, false or an earlier value. A name the bridge already
@@ -51,6 +56,54 @@ Statements carry measured values only. A test scans every line the watch writes 
 | `drift` | a number reader sets a new low, or a new high, at each of `DRIFT_MIN_READINGS = 20` consecutive known readings: it keeps moving one way and no reading comes back. | the observation that began the run and the current one |
 | `effect_mismatch` | an action's measured effect differs from its calibrated one by more than the calibration's recorded spread allows. | the execution and effect entries |
 
+## Generic runtime detectors
+
+Five engine-level facts are watched from the generic observation fields, beside the readers' watch
+(`playtest.runner.detectors`). They are **opt in**: `--detectors` (or `UPA_RUN_DETECTORS=1`) wraps the
+readers' watch in a `DetectorWatch`; without it the runner builds the readers' watch alone and a trace is
+byte for byte what it was before. When on, `plan.json` records `detectors` with every detector on and the
+bound or constant each measures against.
+
+| basis | measure | bound, and where this run measured it | evidence it cites |
+|---|---|---|---|
+| `non_finite_pose` | a component of `public.controlled.position` or `.velocity` that is NaN or infinite | a finite number; the statement gives the range of that same component's finite readings this run | the observation it was measured in |
+| `fell_out` | `public.controlled.position` y | the lowest body y this run measured it **standing** on (velocity zero on every axis and the probe's down-ray hit a surface), minus `FALL_PEAK_FACTOR = 2` times the calibration's measured rise peak, taken through the options primitives (`primitives_from_calibration`). No measured rise peak means no bound: the plan says so and the detector states nothing | the observation that measured the floor and the one below it |
+| `hitch` | the wall interval between two observations | `HITCH_K = 5` times the median of the previous `HITCH_WINDOW = 40` intervals, once `HITCH_MIN_INTERVALS = 8` of them exist, **and** the game clock lost the interval: it advanced less than a `HITCH_K`th of the game time the wall interval corresponds to at the observation's declared time scale (a stall included). A slow turn in which the game clock kept pace is not a hitch; a clock that went backwards is a reset (a load), not an interval this measure can read | the observation before and the one after the interval |
+| `runtime_exception` | a new entry in the runtime error monitor, `public.runtime_errors` | the monitor's own `first_sequence`: an entry past the highest already stated. The same entry folded again is not new; a new entry with a later sequence is | the observation it appeared in |
+| `reader_over_max` | a declared reader's reading | a maximum declared for it by `--detector-max ALIAS=VALUE` (`UPA_RUN_DETECTOR_MAX` as a comma list), checked against the aliases the manifest declares and recorded in the plan | the observation it was measured in |
+
+**Raised once per episode.** Like the readers' suspicions, a detector states a fact when a state begins and
+is silent while it lasts; it is raised again only after the measurement returned inside its bound and
+crossed again. An unmeasured observation — no pose, no floor, no peak, no monitor, an unreadable reader value —
+neither raises nor ends an episode. A restart (`DetectorWatch.rebind`) drops every baseline, because they
+measured the previous generation.
+
+**Why some are silent today.** `Observation` carries no runtime monitor yet: the bridge's bounded error
+monitor is captured in preflight inspections, so `runtime_exception` reads `public.runtime_errors` when a
+bridge publishes it with the observation and states nothing until then. And no manifest reader declares a
+maximum: `ManifestReader` carries a kind, a declared type and a descriptor, no range or limit
+(`ManifestInvariant` has one, a reader does not). So `reader_over_max` compares against the operator's
+declared maximum and the **manifest needs a declared reader maximum** before this detector measures the
+manifest itself rather than a configuration.
+
+**Numbering.** A detector's suspicion is numbered after the readers' suspicions raised in the same
+observation (`ReaderWatch.reserve`), so ids are unique in the run and in the order raised. Detectors add no
+fact lines of their own: the loop already states every new suspicion (`What S1 reads`, item 4).
+
+**Constants** (fixed ahead of any run; they gate a fact only and change nothing S1 may choose):
+`HITCH_K = 5`, `HITCH_WINDOW = 40`, `HITCH_MIN_INTERVALS = 8`, `FALL_PEAK_FACTOR = 2.0`,
+`MESSAGE_HEAD_CHARS = 160` (how much of an error message a statement quotes; the full text rides on
+`detail`), and `ERROR_TYPES = {Exception, Error, Assert}`.
+
+`detail` keys: `non_finite_pose` → `field`, `value`, `components`, `measured` (per bad component: `value`,
+`finite_min`, `finite_max`, `readings`). `fell_out` → `field`, `y`, `floor_y`, `floor_turn`, `floor_seq`,
+`depth`, `rise_peak`, `peak_source`, `factor`, `bound_y`, `surface_y`. `hitch` → `field`, `wall_s`, `game_s`,
+`median_wall_s`, `intervals`, `time_scale`, `game_due_s`, `min_game_s`, `k`, `window`, `min_intervals`,
+`bound_s`, `stalled`, `from_seq`, `to_seq`, `from_frame`, `to_frame`, `from_game_s`, `to_game_s`.
+`runtime_exception` →
+`type`, `message_head`, `message`, `first_sequence`, `last_sequence`, `count`, `observed`, `truncated`,
+`event`. `reader_over_max` → `field`, `value`, `declared_max`, `source`.
+
 **When one is raised.** An event is raised when a state begins, not on every turn it lasts. A range exit is raised
 once and again only after a reading came back inside the (extended) range; a violated invariant is raised once
 and restated as "still" while it lasts, and so is a drift while its run lasts; an unknown reading neither raises
@@ -81,11 +134,12 @@ effect that was not measured, has no comparison: unknown, not a mismatch. The pr
 
 ```
 suspicion_id   "s1", "s2", … unique in the run, in the order raised
-basis          invariant | effect_mismatch | range_exit | drift
+basis          invariant | effect_mismatch | range_exit | drift | non_finite_pose | fell_out | hitch |
+               runtime_exception | reader_over_max
 turn           the turn it was raised in (equals the trace entry's turn)
 based_on_seq   bridge seq of that turn's observation
 game_s         game clock of that observation, or null
-subject        the invariant's name | the choice id | "public.<alias>"
+subject        the invariant's name | the choice id | "public.<alias>" | the measured field or interval
 statement      the fact S1 reads (measured values only)
 detail         the same numbers as data; keys by basis (below)
 evidence_seq   trace_seq of the entries it rests on (equals the entry's refs)

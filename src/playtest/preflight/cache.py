@@ -23,7 +23,8 @@ from playtest.contracts import action_catalog as action_catalog_contract
 from playtest.contracts.bridge import InspectResult
 from playtest.contracts.calibration import CalibrationRecord
 from playtest.contracts.manifest import PreflightManifest
-from playtest.preflight import calibrate, calibration_record, entity, freshness, manifest, packet, provider, stages
+from playtest.preflight import bindings as binding_policy, calibrate, calibration_record, entity, freshness, manifest, packet, provider, stages
+from playtest.preflight.bindings import binding_set, by_id, measured_text
 from playtest.roles import checks, preflight, strict
 
 
@@ -225,7 +226,9 @@ def fingerprint(authored: AuthoredSnapshot, inventory: InspectResult, discovery:
             raise ValueError(f"discovery has invalid {section}")
         if len(rows) != discovery.caps[section].returned:
             raise ValueError(f"discovery {section} does not match its coverage")
-        bindings.extend({"section": section, **{key: row.get(key) for key in _BINDING_KEYS}} for row in rows)
+    # One binding set, so a binding reached both ways is identified once with its preferred row.
+    bindings = [{"section": record["origin_section"], **{key: record.get(key) for key in _BINDING_KEYS}}
+                for record in binding_set(discovery.data)]
     bindings.sort(key=_canonical)
     # The IL evidence is derived from the compiled code, which the authored files do not
     # fully determine (the active build target's defines are not authored, for example).
@@ -237,7 +240,7 @@ def fingerprint(authored: AuthoredSnapshot, inventory: InspectResult, discovery:
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             raise ValueError(f"discovery has invalid {section}")
         il[section] = sorted(rows, key=_canonical)
-    policy_modules = (preflight, checks, strict, packet, stages, provider, manifest, calibrate,
+    policy_modules = (preflight, checks, strict, packet, stages, provider, manifest, calibrate, binding_policy,
                       calibration_record, entity, freshness, bridge_contract, calibration_contract,
                       action_catalog_contract)
     policy = {module.__name__: hashlib.sha256(_read_file(Path(module.__file__))).hexdigest()
@@ -376,8 +379,8 @@ def _binding_identity(binding: dict[str, Any], fields: dict[str, dict[str, Any]]
         if not isinstance(binding.get("asset_path"), str) or not binding["asset_path"]:
             raise ValueError("a selected binding has no stable source")
     for name in ("binding_id", "action_id", "binding_effective_path"):
-        if not isinstance(binding.get(name), str) or not binding[name]:
-            raise ValueError(f"a selected binding has no {name}")
+        if measured_text(binding, name) is None:
+            raise ValueError(f"a selected binding has no measured {name}")
     return _canonical({**{key: binding.get(key) for key in _BINDING_KEYS}, "owner": owner,
                        "binding_id": binding["binding_id"], "action_id": binding["action_id"],
                        "binding_effective_path": binding["binding_effective_path"]})
@@ -394,27 +397,29 @@ def resolve_controls(manifest_value: PreflightManifest, original: InspectResult,
     all_sources = []
     for snapshot in (original, current):
         objects, components, fields = (_rows(snapshot.data, key) for key in ("game_objects", "components", "fields"))
-        bindings = _rows(snapshot.data, "bindings")
-        assets = _rows(snapshot.data, "input_asset_bindings")
-        if set(bindings) & set(assets):
+        scene_rows = _rows(snapshot.data, "bindings")
+        asset_rows = _rows(snapshot.data, "input_asset_bindings")
+        if set(scene_rows) & set(asset_rows):
             raise ValueError("discovery has duplicate binding ids across sections")
-        bindings.update(assets)
+        # A descriptor may name either id of a binding that was reached both ways, so the index
+        # resolves every reach to the preferred row rather than to whichever section won.
+        rows_by_id = by_id(binding_set(snapshot.data))
         choices, _ = calibrate.discover_actions(snapshot.data)
         by_control = {item["control"]: item for item in choices}
         if len(by_control) != len(choices):
             raise ValueError("discovery has ambiguous controls")
-        all_sources.append((objects, components, fields, bindings, by_control))
+        all_sources.append((objects, components, fields, rows_by_id, by_control))
     for control in selected:
         if control not in current_packet.discovery.control_types:
             raise ValueError(f"control {control} is not offered by the current calibration")
         signatures = []
-        for objects, components, fields, bindings, choices in all_sources:
+        for objects, components, fields, rows_by_id, choices in all_sources:
             choice = choices.get(control)
             if choice is None:
                 raise ValueError(f"control {control} no longer resolves")
             identities = []
             for reference in choice["bindings"]:
-                row = bindings.get(reference.get("binding_id"))
+                row = rows_by_id.get(reference.get("binding_id"))
                 if row is None:
                     raise ValueError(f"control {control} has an unresolved binding")
                 identities.append(_binding_identity(row, fields, objects, components))

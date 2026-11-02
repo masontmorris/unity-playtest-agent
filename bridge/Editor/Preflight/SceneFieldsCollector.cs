@@ -9,8 +9,7 @@ namespace Playtest.Bridge.Editor.Preflight
     /// measurement. It reuses <see cref="SceneDiscoveryCollector"/> with the caller's limits, so
     /// object and field ids join a discovery snapshot exactly and every row keeps the same
     /// coverage rules. Only <c>game_objects</c> and <c>fields</c> are carried, plus the instant
-    /// they were sampled. The reused collector still reads its ordinary scene and binding data;
-    /// source excerpts, IL and binding rows are not included in this response.
+    /// they were sampled. Only live field values are read; static declarations and bindings remain in discovery.
     ///
     /// It does not enter Play mode, load a scene, write to the project or generate input. Stage
     /// checks belong to the caller.
@@ -34,7 +33,7 @@ namespace Playtest.Bridge.Editor.Preflight
             SampleInstant(document);
 
             SceneDiscoveryResult discovery =
-                SceneDiscoveryCollector.Collect(maxComponents, maxFields, maxBindings);
+                SceneDiscoveryCollector.CollectValues(maxComponents, maxFields, maxBindings);
 
             document.Data["game_objects"] = discovery.Data["game_objects"];
             document.Data["fields"] = discovery.Data["fields"];

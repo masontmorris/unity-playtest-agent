@@ -319,17 +319,21 @@ of two readings with yaw wrapped to [-180, 180).
 
 ## Probe
 
-`public.probe` is a measured geometry sample in the anchor's own frame: what is directly under and
-in front of the anchor. It carries raw facts only. Nothing is labelled passable, climbable or
-blocking, and a reading that could not be taken is `null`, never `0`.
+`public.probe` is a measured geometry sample in the anchor's own frame: what is directly under,
+in front of and behind the anchor. It carries raw facts only. Nothing is labelled passable,
+climbable or blocking, and a reading that could not be taken is `null`, never `0`.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "anchor": {"kind": "path", "name": "Entity", "position": [0.0, 0.0, 0.0]},
+  "basis": {"plane": "3d", "forward": [0.0, 0.0, 1.0], "forward_source": "transform_forward", "lateral": "grid"},
   "under": {"forward": 0.0, "lateral": 0.0, "hit": true, "point": [0.0, 0.0, 0.0], "delta_y": -0.02, "normal": [0.0, 1.0, 0.0], "inside": false},
   "samples": [
     {"forward": 0.6, "lateral": -0.35, "hit": true, "point": [0.1, 0.25, 0.6], "delta_y": 0.25, "normal": [0.0, 1.0, 0.0], "inside": false}
+  ],
+  "backward": [
+    {"forward": -0.6, "lateral": -0.35, "hit": true, "point": [0.1, 0.25, -0.6], "delta_y": 0.25, "normal": [0.0, 1.0, 0.0], "inside": false}
   ],
   "blockers": [
     {"height": 0.15, "max_distance": 1.8, "hit": true, "distance": 0.38, "point": [0.0, 0.15, 0.38], "normal": [0.0, 0.0, 1.0]}
@@ -339,16 +343,41 @@ blocking, and a reading that could not be taken is `null`, never `0`.
 
 Every field is present on every entry. The anchor is resolved once, cached, and re-resolved when
 the cached reference is destroyed: `UPA_PROBE_ANCHOR` as a hierarchy path for `GameObject.Find`
-(`kind: "path"`), otherwise the first enabled `CharacterController`
-(`kind: "character_controller"`), otherwise the first enabled `Rigidbody` (`kind: "rigidbody"`).
+(else the configured `UPA_CONTROLLED_ENTITY`, also `kind: "path"`), otherwise the first enabled
+`CharacterController` (`kind: "character_controller"`), otherwise the first enabled `Rigidbody`
+(`kind: "rigidbody"`), otherwise the first `Rigidbody2D` (`kind: "rigidbody2d"`).
 With none of them, `probe` is absent and `reader_errors` carries `no anchor: set
-UPA_PROBE_ANCHOR or have an enabled CharacterController or Rigidbody in the scene`.
+UPA_PROBE_ANCHOR or have an enabled CharacterController, Rigidbody or Rigidbody2D in the scene`.
 
-The nine `samples` are downward casts on a 3x3 grid: `forward` along the anchor's forward
-direction and `lateral` along its right, both with the vertical part removed (a direction with no
-horizontal part falls back to the world axis). They are ordered forward `0.6`, `1.2`, `1.8`, and
-within each forward lateral `-0.35`, `0.0`, `0.35`. A cast starts 6 m above the sample point and
-runs 12 m down. Triggers and the anchor's own colliders are ignored.
+`basis` names the frame the readings were taken in, so no field has to be guessed at: the plane
+(`2d` or `3d`), the world direction the samples call ahead, where that heading came from
+(`transform_forward` or `facing_scale`), and whether the lateral axis was sampled (`grid`) or
+collapsed into the plane (`collapsed`). `forward` is a unit world direction: a reader that wants
+to know which way "ahead" points compares against it instead of assuming the transform's facing.
+
+In 3D the nine `samples` are downward casts on a 3x3 grid: `forward` along the direction
+`basis.forward` names and `lateral` along the anchor's right, both with the vertical part removed
+(a direction with no horizontal part falls back to the world axis). They are ordered forward
+`0.6`, `1.2`, `1.8`, and within each forward lateral `-0.35`, `0.0`, `0.35`. A cast starts 6 m
+above the sample point and runs 12 m down. Triggers and the anchor's own colliders are ignored.
+
+`backward` is the same grid behind the anchor, so a run-up can see where the floor it starts on
+ends: the same lateral offsets and the same cast shape, with `forward` `-0.6`, `-1.2`, `-1.8`.
+The distances mirror the forward grid on purpose, so one step back is the same distance as one
+step ahead, and a reading past the end of a platform is a `hit: false` entry exactly as it is
+ahead.
+
+When the anchor is planar the readings come from `Physics2D`: the anchor has a `Rigidbody2D`, or
+a child does, or the configured controlled entity does. A `Rigidbody` on the anchor always keeps
+it in 3D, because that body's own physics is what the readings must come from. `basis.plane` is
+then `2d`, `forward` is the anchor's own right axis with the plane's third axis removed flipped by
+the sign of `localScale.x` (which is how a planar body publishes the way it faces,
+`facing_scale`), and the cast keeps the plane's own coordinate in every `point` rather than a
+made-up `0`. A plane has no lateral axis, so the lateral offsets collapse into it: each row
+publishes one entry per offset instead of three, with `lateral` `0.0` and `basis.lateral`
+`collapsed`, so a missing reading is never filled in with a fabricated one. The shape, units,
+ordering and null rules are otherwise identical, and `under` and `blockers` are the same readings
+from the same seam.
 
 `under` is the same kind of reading taken straight down from the anchor, so it says what the anchor
 stands on and how far the anchor is above it (`under.delta_y`, measured against the anchor's own

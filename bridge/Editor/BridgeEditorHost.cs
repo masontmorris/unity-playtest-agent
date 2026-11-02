@@ -31,6 +31,7 @@ namespace Playtest.Bridge.Editor
         private static UnityClockController _clock;
         private static UnityCapture _capture;
         private static EditorInspectionSource _inspection;
+        private static UnityPlacementSource _placement;
         private static BridgeLockFile _lock;
         private static string _lastError;
         private static string _generation;
@@ -178,6 +179,7 @@ namespace Playtest.Bridge.Editor
             UnityClockController clock = null;
             UnityCapture capture = null;
             EditorInspectionSource inspection = null;
+            UnityPlacementSource placement = null;
             BridgeLockFile acquired = null;
             int ownerPid = 0;
             try
@@ -199,6 +201,7 @@ namespace Playtest.Bridge.Editor
                 observations.Start();
                 capture.Start();
                 inspection = new EditorInspectionSource();
+                placement = new UnityPlacementSource();
 
                 string actionsPath = Path.Combine(projectRoot, "Temp", "playtest-bridge-actions.json");
                 BridgeActionCatalog actions = preflightActions;
@@ -232,6 +235,7 @@ namespace Playtest.Bridge.Editor
                     input,
                     clock,
                     inspection,
+                    placement,
                     token);
                 server.Log = message => Debug.Log(LogPrefix + " " + Redact(message, token));
 
@@ -252,6 +256,7 @@ namespace Playtest.Bridge.Editor
                 int busyOwnerPid = DescribeBusyOwner(busy, out owner);
                 StopInspection(inspection);
                 StopServer(server);
+                StopPlacement(placement);
                 StopObservations(observations);
                 StopInput(input);
                 StopClock(clock);
@@ -265,6 +270,7 @@ namespace Playtest.Bridge.Editor
             {
                 StopInspection(inspection);
                 StopServer(server);
+                StopPlacement(placement);
                 StopObservations(observations);
                 StopInput(input);
                 StopClock(clock);
@@ -280,6 +286,7 @@ namespace Playtest.Bridge.Editor
             _clock = clock;
             _capture = capture;
             _inspection = inspection;
+            _placement = placement;
             _lock = acquired;
             _lockOwnerPid = ownerPid;
             _generation = generation;
@@ -296,6 +303,7 @@ namespace Playtest.Bridge.Editor
             UnityClockController clock = _clock;
             UnityCapture capture = _capture;
             EditorInspectionSource inspection = _inspection;
+            UnityPlacementSource placement = _placement;
             BridgeLockFile held = _lock;
             bool wasActive = server != null || held != null;
 
@@ -305,6 +313,7 @@ namespace Playtest.Bridge.Editor
             _clock = null;
             _capture = null;
             _inspection = null;
+            _placement = null;
             _lock = null;
             _lockOwnerPid = 0;
             _generation = null;
@@ -312,6 +321,7 @@ namespace Playtest.Bridge.Editor
 
             StopInspection(inspection);
             StopServer(server);
+            StopPlacement(placement);
             StopObservations(observations);
             StopInput(input);
             StopClock(clock);
@@ -372,6 +382,16 @@ namespace Playtest.Bridge.Editor
             catch (Exception ex)
             {
                 Debug.LogWarning(LogPrefix + " stopping inspection failed: " + ex.GetType().Name);
+            }
+        }
+
+        private static void StopPlacement(UnityPlacementSource placement)
+        {
+            if (placement == null) return;
+            try { placement.Dispose(); }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(LogPrefix + " stopping placement failed: " + ex.GetType().Name);
             }
         }
 

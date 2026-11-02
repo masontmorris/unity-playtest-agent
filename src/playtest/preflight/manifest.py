@@ -14,7 +14,7 @@ from playtest.contracts.action_catalog import (
     evidence_receipt_problems,
 )
 from playtest.contracts.manifest import PreflightManifest
-from playtest.preflight.packet import Packet, field_kind, field_offered
+from playtest.preflight.packet import OFFER_BUDGET_REASON, Packet, field_kind, field_offered
 from playtest.preflight import stages
 from playtest.preflight.stages import RunResult
 from playtest.roles import preflight
@@ -153,8 +153,11 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
         coverage.append("some discovered controls lack a valid calibration trial")
     if data["calibration"].get("field_sampling_gap"):
         coverage.append(data["calibration"]["field_sampling_gap"])
-    if data["unoffered_fields"]:
+    if any(row.get("reason") != OFFER_BUDGET_REASON for row in data["unoffered_fields"]):
         coverage.append("some discovered fields could not be read and were not offered as readers")
+    if (data.get("offer_budget") or {}).get("applied"):
+        coverage.append("some readable fields were not offered as readers because the provider's field id "
+                        "enum limit was reached")
     if not data["offered_fields"]:
         coverage.append("no discovered field was offered as a reader")
     if not data["offered_controls"]:
@@ -181,6 +184,16 @@ def _coverage(data: dict, readers: list[dict], actions: list[dict], skills: list
     result = {"gaps": {"coverage": coverage}, "actions": actions, "skills": skills}
     refresh_execution_coverage(result)
     return result["gaps"]["coverage"]
+
+
+def calibration_for(rows: list[dict], control: str, x, y) -> dict:
+    candidates = [row for row in rows if row["control"] == control]
+    matched = [row for row in candidates if (row.get("declared_x"), row.get("declared_y")) == (x, y)]
+    if len(matched) > 1:
+        raise ValueError("duplicate calibration value")
+    if not candidates:
+        raise ValueError(f"no calibration for {control}")
+    return matched[0] if matched else candidates[0]
 
 
 def _summaries_for(packet: Packet) -> dict[str, dict]:
@@ -297,7 +310,8 @@ def assemble(packet: Packet, result: RunResult) -> PreflightManifest:
     evidence_records = tuple(packet.execution_evidence)
     for action in a5.actions:
         ids = [item.control_id for item in action.inputs]
-        measured = [summaries[control] for control in ids]
+        measured = [calibration_for(data["calibration"]["control_summaries"], item.control_id, item.x, item.y)
+                    for item in action.inputs]
         tap = measured[0]["lowest_tested_effective_requested_hold_s"] if action.hold_s is None and len(ids) == 1 else None
         if tap is not None and tap <= 0:
             tap = None
@@ -445,11 +459,11 @@ def validate_evidence(manifest: PreflightManifest, packet: Packet) -> list[str]:
             problems.append(f"readers[{index}]: freshness evidence differs from the packet")
     for index, action in enumerate(manifest.actions):
         for calibration in action.calibrations:
-            if summaries.get(calibration.control) != calibration.model_dump(mode="json"):
+            if calibration.model_dump(mode="json") not in data["calibration"]["control_summaries"]:
                 problems.append(f"actions[{index}]: calibration differs from the packet")
     for index, skill in enumerate(manifest.skills):
         for calibration in skill.calibrations:
-            if summaries.get(calibration.control) != calibration.model_dump(mode="json"):
+            if calibration.model_dump(mode="json") not in data["calibration"]["control_summaries"]:
                 problems.append(f"skills[{index}]: calibration differs from the packet")
     if manifest.entity_id != data["calibration"]["entity_id"] or manifest.entity != data["calibration"]["entity"]:
         problems.append("the calibrated entity differs from the packet")

@@ -83,6 +83,7 @@ class FakeGame:
         reject_acts: RejectReason | None = None,
         action_run_s: float | None = None,
         action_stall: bool = False,
+        lease_terminals: bool = False,
         aliases: dict[str, str] | None = None,
     ) -> None:
         env_token = os.environ.get("UPA_BRIDGE_TOKEN")
@@ -102,6 +103,7 @@ class FakeGame:
             raise ValueError("action_run_s must be a non-negative number or None")
         self._action_run_s = action_run_s
         self._action_stall = action_stall
+        self._lease_terminals = lease_terminals
         # Declared action names that run one of this fake's own behaviors (`shift`, `increment`, `hold`): a
         # manifest names its declarations, and this world implements each name as one of its three. The
         # input log records the behavior that ran.
@@ -360,6 +362,8 @@ class FakeGame:
                 except asyncio.CancelledError:
                     pass
 
+        running_requests = {}
+
         async def finish_action(
             request: ActRequest, record: ExecutionRecord, delay: float
         ) -> None:
@@ -367,6 +371,9 @@ class FakeGame:
             try:
                 await asyncio.sleep(delay)
                 assert session is not None
+                if self._lease_terminals:
+                    self._release_all("expired")
+                    running_requests.pop(request.action_id, None)
                 terminal = self._execution(
                     next_seq(),
                     session,
@@ -456,6 +463,13 @@ class FakeGame:
                         return
                     if request.action in self._aliases:
                         request = request.model_copy(update={"action": self._aliases[request.action]})
+                    if self._lease_terminals and running_requests:
+                        for action_id in list(running_requests):
+                            for task in list(pending):
+                                task.cancel()
+                            await self._send(writer, self._execution(next_seq(), session,
+                                action_id=action_id, status=ExecStatus.cancelled))
+                        running_requests.clear()
                     async with self._lock:
                         record = self._apply(request, next_seq(), session)
                     if self._action_run_s is not None and record.status is ExecStatus.completed:
@@ -468,9 +482,12 @@ class FakeGame:
                                 validated_against_seq=record.validated_against_seq,
                             ),
                         )
+                        running_requests[request.action_id] = request
                         if not self._action_stall:
                             task = asyncio.create_task(
-                                finish_action(request, record, self._action_run_s),
+                                finish_action(request, record,
+                                              request.lease_s if self._lease_terminals and request.lease_s
+                                              else self._action_run_s),
                                 name="fake-action",
                             )
                             pending.add(task)
@@ -484,6 +501,17 @@ class FakeGame:
                     except ValidationError:
                         await fail("invalid", "bad stop", req_seq, session)
                         return
+                    if request.reason == "release":
+                        async with self._lock:
+                            released = self._release_all("stop")
+                            for action_id, action_request in running_requests.items():
+                                for task in list(pending):
+                                    task.cancel()
+                                await self._send(writer, self._execution(next_seq(), session,
+                                    action_id=action_id, status=ExecStatus.cancelled))
+                            running_requests.clear()
+                        await self._send(writer, self._stopped(next_seq(), session, released))
+                        continue
                     stop_stream()
                     async with self._lock:
                         released = self._release_all("stop")

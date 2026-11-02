@@ -16,7 +16,7 @@ namespace Playtest.Bridge.Tests
 {
     /// <summary>
     /// Hosts the bridge for the offline named-declaration input probe. It is a generic harness: it
-    /// loads the first enabled scene, starts the bridge with the supplied action catalog (capture
+    /// loads the configured enabled scene, starts the bridge with the supplied action catalog (capture
     /// included), runs the Python probe against it and cleans up. It forwards the plan path and
     /// never reads the plan; the plan format belongs to the Python module.
     ///
@@ -71,7 +71,7 @@ namespace Playtest.Bridge.Tests
             bool monitoring = false;
             try
             {
-                string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
+                string scenePath = BuildSceneSelection.Resolve();
                 Assert.That(scenePath, Is.Not.Null.And.Not.Empty, "an enabled scene is required");
                 yield return Load(scenePath, scene => loaded = scene);
                 yield return new WaitForSecondsRealtime(1f);

@@ -1,0 +1,108 @@
+{
+  "$id": "upa/place_result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What the bridge measured after a place request.\n\nA placement the entity kept moving after (falling, pushed out of geometry) is reported as\nplaced with the measured `moved_during_settle`; the caller decides what that means. A placement\nthat could not run is `placed` false with a reason and no invented measurement: an unmeasured\nposition stays null, never zero.",
+  "properties": {
+    "game_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Game clock; null when no game is running",
+      "title": "Game S"
+    },
+    "moved_during_settle": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Distance from the requested position after settle; null when it was not measured",
+      "title": "Moved During Settle"
+    },
+    "placed": {
+      "title": "Placed",
+      "type": "boolean"
+    },
+    "position_after_settle": {
+      "anyOf": [
+        {
+          "description": "World position [x, y, z]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Measured position after the settle wait; null when the place did not run",
+      "title": "Position After Settle"
+    },
+    "protocol": {
+      "default": "upa/1",
+      "pattern": "^upa/\\d+$",
+      "title": "Protocol",
+      "type": "string"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Why the place did not run; null when placed",
+      "title": "Reason"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session": {
+      "minLength": 1,
+      "title": "Session",
+      "type": "string"
+    },
+    "type": {
+      "const": "placed",
+      "default": "placed",
+      "title": "Type",
+      "type": "string"
+    },
+    "wall_utc": {
+      "format": "date-time",
+      "title": "Wall Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "seq",
+    "wall_utc",
+    "placed"
+  ],
+  "title": "PlaceResult",
+  "type": "object"
+}

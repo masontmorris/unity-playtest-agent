@@ -24,6 +24,11 @@ from .execution import Execution
 
 # --- S1 -------------------------------------------------------------------------------------
 
+class OptionPort(Protocol):
+    """Execute the chosen routine. Stop must release inputs and prevent further input from this run."""
+
+    async def run(self, choice: Choice) -> dict[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class S1Call:
@@ -208,6 +213,14 @@ class TurnReport:
     help_event: str | None
     executed: tuple[Executed, ...] = ()
     halt: str | None = None
+    # What an option turn measurably did: its `OptionOutcome.to_json()` without the receipts. `None` for
+    # every other kind of turn, including an invalid one. It is the same body the option trace entry holds.
+    option_outcome: Mapping[str, Any] | None = None
+    # With `decide_during_options`: a background option collected on this turn (its choice and measured outcome,
+    # without receipts), and whether this turn started or kept going a background option.
+    finished_option: tuple[Choice, Mapping[str, Any]] | None = None
+    finished_move: tuple[Choice, "Executed"] | None = None  # a background action or skill, and what it did
+    option_running: bool = False
 
     @property
     def provider_failed(self) -> bool:

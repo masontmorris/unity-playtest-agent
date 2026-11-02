@@ -126,6 +126,16 @@ namespace Playtest.Bridge.Protocol
             return TryRead(json, "clock", out request, out error);
         }
 
+        public static bool TryReadPlaceRequest(string json, out PlaceRequestMessage request, out ProtocolError error)
+        {
+            return TryRead(json, "place", out request, out error);
+        }
+
+        public static bool TryReadPlaceResult(string json, out PlaceResultMessage result, out ProtocolError error)
+        {
+            return TryRead(json, "placed", out result, out error);
+        }
+
         public static bool TryReadInspectRequest(string json, out InspectRequestMessage request, out ProtocolError error)
         {
             return TryRead(json, "inspect", out request, out error);
@@ -631,7 +641,7 @@ namespace Playtest.Bridge.Protocol
             {
                 if (!HasString(obj, "reason") || !Contains(BridgeStopReason.All, stop.Reason))
                 {
-                    error = Invalid("reason must be user, reset, scene_change, disconnect, error or finish");
+                    error = Invalid("reason must be user, reset, scene_change, disconnect, error, finish or release");
                     return false;
                 }
             }
@@ -697,6 +707,83 @@ namespace Playtest.Bridge.Protocol
                 {
                     error = Invalid("time_scale is required exactly when op is 'set_scale'");
                     return false;
+                }
+            }
+            else if (message is PlaceRequestMessage place)
+            {
+                if (!IsFiniteTriple(obj["position"]))
+                {
+                    error = Invalid("position is required and must be three finite numbers");
+                    return false;
+                }
+
+                if (!HasNumber(obj, "settle_s") || !IsPositiveFinite(place.SettleS))
+                {
+                    error = Invalid("settle_s is required and must be a positive number");
+                    return false;
+                }
+            }
+            else if (message is PlaceResultMessage placed)
+            {
+                if (obj["placed"]?.Type != JTokenType.Boolean)
+                {
+                    error = Invalid("placed is required and must be a boolean");
+                    return false;
+                }
+
+                JToken after = obj["position_after_settle"];
+                bool hasAfter = after != null && after.Type != JTokenType.Null;
+                if (hasAfter && !IsFiniteTriple(after))
+                {
+                    error = Invalid("position_after_settle must be null or three finite numbers");
+                    return false;
+                }
+
+                JToken moved = obj["moved_during_settle"];
+                bool hasMoved = moved != null && moved.Type != JTokenType.Null;
+                if (hasMoved && (!IsFiniteNumber(moved) || (double)moved < 0))
+                {
+                    error = Invalid("moved_during_settle must be null or a non-negative number");
+                    return false;
+                }
+
+                JToken reason = obj["reason"];
+                bool hasReason = reason != null && reason.Type != JTokenType.Null;
+                if (hasReason && (reason.Type != JTokenType.String || ((string)reason).Length == 0))
+                {
+                    error = Invalid("reason must be null or a non-empty string");
+                    return false;
+                }
+
+                // The exported schema cannot express these cross-field rules, so the DTO checks
+                // them too: an unmeasured position is never invented for a placed result.
+                if (placed.Placed)
+                {
+                    if (!hasAfter || !hasMoved)
+                    {
+                        error = Invalid("a placed result carries position_after_settle and moved_during_settle");
+                        return false;
+                    }
+
+                    if (hasReason)
+                    {
+                        error = Invalid("a placed result has no reason");
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (hasAfter || hasMoved)
+                    {
+                        error = Invalid("an unplaced result carries no measurement");
+                        return false;
+                    }
+
+                    if (!hasReason)
+                    {
+                        error = Invalid("an unplaced result needs a reason");
+                        return false;
+                    }
                 }
             }
             else if (message is InspectRequestMessage inspect)
@@ -1124,6 +1211,31 @@ namespace Playtest.Bridge.Protocol
         private static bool IsFiniteNumberWithin(JToken token, double limit)
         {
             return IsFiniteNumber(token) && Math.Abs((double)token) <= limit;
+        }
+
+        /// <summary>Exactly three finite numbers: a world position, never a partial or padded one.</summary>
+        private static bool IsFiniteTriple(JToken token)
+        {
+            if (token == null || token.Type != JTokenType.Array)
+            {
+                return false;
+            }
+
+            JArray array = (JArray)token;
+            if (array.Count != 3)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < array.Count; i++)
+            {
+                if (!IsFiniteNumber(array[i]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static bool IsPositiveFinite(double value)

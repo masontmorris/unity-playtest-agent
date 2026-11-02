@@ -1,0 +1,16 @@
+{
+  "protocol": "upa/1",
+  "session": "s-1",
+  "seq": 1843,
+  "game_s": 61.5,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "placed",
+  "placed": false,
+  "position_after_settle": [
+    1.0,
+    2.0,
+    3.0
+  ],
+  "moved_during_settle": null,
+  "reason": "the project is not playing"
+}

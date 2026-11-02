@@ -758,8 +758,10 @@ def test_the_cli_runs_a_manifest_session_end_to_end_and_leaves_a_clean_record(tm
     summary = json.loads(files.summary.read_text(encoding="utf-8"))
     assert (summary["status"], summary["ending"], summary["turns"]) == ("complete", "finish", 3)
     assert summary["adherence"] == {"rate": 1.0, "violations": []} and summary["stop"]["release_verified"] is True
-    assert summary["s1"]["calls"] == 3 and summary["s1"]["call_cap"] == 6 and summary["manifest"]["not_offered"] == []
-    assert summary["manifest"]["offered"] == ["move", "look", "wait", "escalate", "delegate", "finish"]
+    assert summary["s1"]["calls"] == 3 and summary["s1"]["call_cap"] == 6
+    assert [row["name"] for row in summary["manifest"]["not_offered"]] == ["escalate", "delegate"]
+    assert not {"escalate", "delegate"}.intersection(summary["manifest"]["offered"])
+    assert summary["manifest"]["offered"] == ["move", "look", "wait", "finish"]
     assert summary["manifest"]["catalog_sha256"] == files.catalog_sha     # the run says which catalog the host served
     assert summary["game_worktree_changed"] is False and summary["provider_failures"] == 0
     # The trace is the file writer's: read back strictly and replayed, it has nothing to report.
@@ -1087,6 +1089,7 @@ def test_a_frontier_session_builds_its_helper_with_the_calibration_record(tmp_pa
         built.update(kwargs)
         return real(**kwargs)
 
+    capture.supported_kinds = real.supported_kinds
     monkeypatch.setattr(cli, "FrontierHelp", capture)
     with GameThread(CatalogGame, catalog=export(two_actions()), effects={"move": (6.0, 0.0, 0.0)}) as thread:
         files = Project(tmp_path, thread.port, git=True)
@@ -1203,3 +1206,55 @@ def test_a_discovery_file_records_its_hash_and_declared_count_in_the_plan(tmp_pa
     plan = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
     assert plan["discovery_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert plan["declared_configuration_count"] == 1
+
+
+def test_the_detectors_are_opt_in_and_the_plan_records_the_bounds_they_measure_against(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BASETEN_API_KEY", "sk-test-cli-key-0014")
+    real, current = cli.SystemOneS1, {}
+    monkeypatch.setattr(cli, "SystemOneS1", lambda ledger, **kwargs: real(ledger, send=current["send"], **kwargs))
+    with GameThread(CatalogGame, catalog=export(two_actions())) as thread:
+        plans: dict[str, dict[str, Any]] = {}
+        for name, flags in (("off", []), ("on", ["--detectors"])):
+            files = Project(tmp_path / name, thread.port)
+            current["send"] = Send(files.out, reply("next_action", "finish"))
+            assert cli.main([*files.args(tokens_per_minute=600_000_000), *flags]) == 0
+            plans[name] = json.loads((files.out / "plan.json").read_text(encoding="utf-8"))
+    assert "detectors" not in plans["off"]                     # off by default: the plan is what it was
+    recorded = plans["on"]["detectors"]
+    assert recorded["enabled"] is True
+    assert recorded["names"] == ["non_finite_pose", "fell_out", "hitch", "runtime_exception", "reader_over_max"]
+    assert (recorded["hitch"]["k"], recorded["hitch"]["window"]) == (5, 40)
+    assert recorded["fell_out"]["rise_peak"] == "unknown"      # this calibration measured no rise
+    assert "no measured rise peak" in recorded["fell_out"]["silent"]
+    assert recorded["reader_over_max"]["silent"].endswith("the manifest needs a declared maximum")
+
+
+def test_scene_after_close_reads_the_running_scene_or_records_why_it_could_not():
+    import asyncio
+    from types import SimpleNamespace
+    from playtest.runner.cli import scene_after_close
+
+    class Client:
+        def __init__(self, scene=None, fail=False):
+            self.scene, self.fail, self.closed = scene, fail, False
+        async def observe_once(self):
+            if self.fail:
+                raise RuntimeError("no session")
+            return SimpleNamespace(scene=self.scene, seq=4, wall_utc=None)
+        async def stop(self, reason):
+            return None
+        async def aclose(self):
+            self.closed = True
+
+    client = Client("Level2")
+    async def connect():
+        return client
+    assert asyncio.run(scene_after_close(connect)) == {"scene": "Level2", "seq": 4, "wall_utc": None}
+    assert client.closed
+    async def refused():
+        raise OSError("refused")
+    assert asyncio.run(scene_after_close(refused))["scene"] is None
+    failing = Client(fail=True)
+    async def connect_failing():
+        return failing
+    assert asyncio.run(scene_after_close(connect_failing))["error"].startswith("RuntimeError")

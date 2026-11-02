@@ -12,6 +12,7 @@ from .common import Strict
 
 class ChoiceKind(str, Enum):
     action = "action"
+    option = "option"
     skill = "skill"
     delegate = "delegate"
     escalate = "escalate"
@@ -32,6 +33,8 @@ class Choice(Strict):
     label: str = Field(min_length=1)
     action: str | None = None
     skill: str | None = None
+    option_id: str | None = Field(None, min_length=1, exclude_if=lambda v: v is None)
+    template: Literal["traverse", "retreat", "hop", "wait", "place", "sweep"] | None = Field(None, exclude_if=lambda v: v is None)
     role: Literal["frontier", "helper"] | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     preconditions: list[str] = Field(default_factory=list)
@@ -43,13 +46,16 @@ class Choice(Strict):
         need = {
             ChoiceKind.action: ("action",),
             ChoiceKind.skill: ("skill",),
+            ChoiceKind.option: ("option_id", "template"),
             ChoiceKind.escalate: ("role",),
             ChoiceKind.delegate: ("role",),
         }.get(self.kind, ())
-        for name in ("action", "skill", "role"):
+        for name in ("action", "skill", "role", "option_id", "template"):
             present = getattr(self, name) is not None
             if present != (name in need):
                 raise ValueError(f"'{name}' is {'required' if name in need else 'not allowed'} for kind '{self.kind.value}'")
+        if self.kind is ChoiceKind.option and self.id != self.option_id:
+            raise ValueError("option choice id must equal option_id")
         if self.source is ChoiceSource.frontier and self.kind not in (ChoiceKind.action, ChoiceKind.skill):
             raise ValueError("the frontier may only add choices that instantiate a manifest action or skill")
         if self.kind is ChoiceKind.restart_play_mode and self.source is not ChoiceSource.core:
@@ -84,6 +90,28 @@ class WhilePending(Strict):
         return self
 
 
+class Contingent(Strict):
+    """S1's own answers to the batched conditional questions, made in the same request as its primary choice.
+
+    Each field is a choice id from the same `set_version`, or null when S1 gave no answer for that branch.
+    A branch is what S1 selected for that outcome when it answered, so executing it once its condition has
+    measurably occurred is adherence, not substitution; a null branch is never filled in by code.
+    """
+
+    if_blocked: str | None = Field(None, min_length=1)
+    if_succeeded: str | None = Field(None, min_length=1)
+
+    @model_validator(mode="after")
+    def _one_branch(self) -> "Contingent":
+        if self.if_blocked is None and self.if_succeeded is None:
+            raise ValueError("a contingent answer names at least one branch")
+        return self
+
+    def for_condition(self, condition: str) -> str | None:
+        """The choice id S1 gave for `condition`, or `None` when it answered no such branch."""
+        return self.if_blocked if condition == "blocked" else self.if_succeeded if condition == "succeeded" else None
+
+
 class Decision(Strict):
     """S1's answer. `distribution` is recorded for analysis and never used to select."""
 
@@ -91,7 +119,19 @@ class Decision(Strict):
     set_version: int = Field(ge=0)
     reason: str | None = None
     while_pending: WhilePending | None = None
+    contingent: Contingent | None = None
     distribution: dict[str, float] | None = None
+
+    def trace_body(self) -> dict[str, Any]:
+        """This decision as a trace records it: no `contingent` key when S1 named no branch.
+
+        A turn's decision keeps the bytes it had before branch answers existed, so a trace written
+        without one stays identical; a decision S1 gave a branch for carries it.
+        """
+        body = self.model_dump(mode="json")
+        if self.contingent is None:
+            body.pop("contingent", None)
+        return body
 
 
 class TurnOutcome(str, Enum):

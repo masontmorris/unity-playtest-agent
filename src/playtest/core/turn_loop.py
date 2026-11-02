@@ -22,6 +22,17 @@ Law 1 branches:
 - escalate / delegate: at most one helper request is open. A repeat while one is open is recorded
   and starts nothing. `while_pending` runs exactly the choice S1 named; a missing or invalid one
   defaults to `wait` and records `policy_default`, while the valid primary survives.
+- option: when its measured outcome ends `blocked` or `succeeded` and the decision that chose it
+  carries S1's own answer for that branch, the next turn executes that answer with no provider call:
+  the context it would have been sent is still built and recorded, the decision names
+  `source: "contingent"`, `from_turn` and `condition`, and there is no `s1_call`. The answer is used
+  only while the condition still holds — the scene did not change, no help is pending, and the id is
+  still offered — and never twice in a row: it carries no branches of its own, so the turn after
+  asks S1 afresh. Any other ending, a boundary, pending help or a withdrawn id also asks afresh and
+  records why.
+- one choice: a choice set of exactly one choice is executed as it stands, with no provider call and
+  no `s1_call`, and the decision names `source: "only_choice"`. There is nothing to select, so no
+  code selects anything; a set of two or more choices is always S1's to answer.
 
 A finished helper's result is adopted once, after a later turn's observation passes the epoch check
 and before facts and context are built, and shown to S1 with its source and age. A boundary discards
@@ -53,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from playtest.contracts.bridge import Observation, StopResult
+from playtest.contracts.bridge import TERMINAL_STATUSES, Observation, StopResult
 from playtest.contracts.common import ClockMode
 from playtest.contracts.investigation import Suspicion
 from playtest.contracts.loop import (
@@ -70,10 +81,10 @@ from playtest.contracts.loop import (
 from playtest.contracts.trace import TraceAuthor, TraceKind
 
 from .bridge_client import BridgeClient
-from .context import build_context, canonical
+from .context import INSTRUCTIONS, build_context, canonical
 from .decision_memory import DecisionMemory, json_ready as _json_ready
 from .decisions import parse_decision
-from .execution import ExecutionController
+from .execution import Execution, ExecutionController
 from .facts import RecordFacts
 from .findings import RaisedSuspicion
 from .observations import ObservationStore
@@ -131,6 +142,35 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# The measured option endings S1 answered a conditional question for. Any other ending asks S1 afresh.
+_CONTINGENT_CONDITIONS = ("blocked", "succeeded")
+
+# The skip reasons that are a place check on reuse; each records both cells beside it.
+_PLACE_SKIPS = ("place_changed", "place_unknown")
+
+
+def _cell_text(cell: Sequence[int]) -> str:
+    return "[" + ", ".join(str(value) for value in cell) + "]"
+
+
+def _contingent_answer(decision: Decision, terminated_by: Any, turn: int, decided: int | None,
+                       cell: list[int] | None) -> dict[str, Any] | None:
+    """The id S1 already selected for the branch this option measurably ended in, or `None`.
+
+    Nothing is inferred: both the measured termination and S1's own non-null answer for exactly that
+    branch are required. The returned record names the deciding turn so a replay can check the link, and
+    the cell the body stood in when the answer was made: the next turn reuses it only in that same place.
+    """
+    contingent = decision.contingent
+    if contingent is None or terminated_by not in _CONTINGENT_CONDITIONS:
+        return None
+    choice_id = contingent.for_condition(terminated_by)
+    if choice_id is None:
+        return None
+    return {"from_turn": turn, "condition": terminated_by, "choice_id": choice_id, "decided": decided,
+            "cell": list(cell) if cell is not None else None}
+
+
 @dataclass
 class _Pending:
     """The one open help request."""
@@ -148,6 +188,29 @@ class _Pending:
     task: "asyncio.Task[HelpResult] | None" = None
     resolved: HelpResult | None = None
     finished_wall: datetime | None = None
+
+
+@dataclass
+class _RunningOption:
+    """The one option running in the background (`decide_during_options`), and the decision that started it."""
+
+    choice: Choice
+    task: "asyncio.Task[Any]"
+    turn: int
+    decided: int | None
+    decision: Any
+    cell: Any
+    started: float
+
+
+@dataclass
+class _RunningMove:
+    """The one plain action or skill running in the background (`decide_during_options`)."""
+
+    choice: Choice
+    task: "asyncio.Task[Any]"
+    turn: int
+    started: float
 
 
 @dataclass(frozen=True)
@@ -189,13 +252,49 @@ class TurnLoop:
         restart: RestartPort | None = None,
         generation: str | None = None,
         time_left: Callable[[], float | None] | None = None,
+        continuous_input: bool = False,
+        continuous_choices: Sequence[str] = (),
+        continuous_labels: Callable[[float | None, float | None], Sequence[Choice]] | None = None,
+        choice_filter: Callable[[Sequence[Choice], Observation], Sequence[Choice]] | None = None,
+        option_port: Any = None,
+        contingent_cell: float | None = None,
+        instructions: str = INSTRUCTIONS,
+        keep_help_across_restart: bool = False,
+        decide_during_options: bool = False,
     ) -> None:
+        if continuous_input and clock_mode is not ClockMode.realtime:
+            raise ValueError("continuous input requires a realtime clock")
         if s1 is not None and not (objective and objective.strip()):
             raise ValueError("a loop with an S1 port needs an objective")
         if restart is not None and not any(choice.kind is ChoiceKind.restart_play_mode for choice in choices):
             raise ValueError("a loop with a restart port must offer the restart choice")
+        self._continuous = continuous_input
+        # Opt in: a restart returns the same scene to its start, so an open help request still describes the
+        # level S1 is playing. It is then kept through the restart's reset boundary instead of cancelled.
+        self._keep_help_across_restart = keep_help_across_restart
+        self._help_kept_for_reset = False
+        # Opt in: an option runs in the background and the turn ends at once, so S1 decides again at its own
+        # speed. Choosing the running option again keeps it going; choosing any other non-help choice
+        # interrupts it first. Its measured outcome is filed on the turn that collects it.
+        self._decide_during_options = decide_during_options
+        self._running_option: _RunningOption | None = None
+        # The same for a plain action or skill: it runs in the background, re-picking it keeps it going, and any
+        # other non-help choice stops it (the bridge cancels the run and reports it) before that choice runs.
+        self._running_move: _RunningMove | None = None
+        self._continuous_choices = frozenset(continuous_choices)
+        self._continuous_labels = continuous_labels
+        self._active = None
+        self._continuous_lease = None
+        self._last_started = None
+        self._intervals: list[float] = []
         self._client = client
         self._original_client = client  # the caller owns this one; adopted clients are closed here
+        self._choice_filter = choice_filter
+        self._option_port = option_port
+        # The measured step a place is filed by, the same one the runner's option memory uses: with it, a
+        # reused conditional answer is bound to the cell of the body it was given for. No step, no binding.
+        self._contingent_cell = contingent_cell
+        self._option_task: asyncio.Task | None = None
         self._choices = list(choices)
         ChoiceSet(set_version=0, built_from_seq=0, choices=self._choices)  # fail now on duplicate ids
         self._clock_mode = clock_mode
@@ -205,6 +304,7 @@ class TurnLoop:
         self._executor = ExecutionController(client, **self._executor_options)
         self._objective = objective
         self._s1 = s1
+        self._instructions = instructions
         self._view = view
         self._help = help
         self._facts: FactsSource = facts if facts is not None else RecordFacts()
@@ -231,6 +331,7 @@ class TurnLoop:
         self._retired_helpers: set[asyncio.Task[HelpResult]] = set()
         self._adoptions: list[Any] = []
         self._guidance: list[_Guidance] = []
+        self._contingent: dict[str, Any] | None = None  # S1's own answer for the branch the last option ended in
         self._cancelled_helpers = 0
         self._halt: str | None = None
         self._stopped = False
@@ -314,6 +415,20 @@ class TurnLoop:
         scripted = decide is not _NO_SOURCE
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
+        if self._running_option is not None and not self._running_option.task.done():
+            # A hop is committed from run-up to landing, so the next reading and question wait for it to land.
+            landed = getattr(self._option_port, "until_landed", None)
+            if landed is not None:
+                await landed()
+        if self._continuous:
+            now = time.perf_counter()
+            if self._last_started is not None:
+                # The previous complete start-to-start interval includes pacing and readings.
+                # Twice the slowest of the last three intervals: long enough to reach the next selection, and
+                # it shrinks again after one slow turn (a help wait), so a stalled loop never holds for long.
+                self._intervals = (self._intervals + [now - self._last_started])[-3:]
+                self._continuous_lease = min(10.0, 2 * max(self._intervals))
+            self._last_started = now
         turn = len(self._turns)
         pending = self._pending
         ready: HelpResult | asyncio.Task[HelpResult] | None = None
@@ -322,7 +437,7 @@ class TurnLoop:
                 ready = pending.resolved
             elif pending.task is not None and pending.task.done():
                 ready = pending.task
-        if self._effects is not None:
+        if self._effects is not None and self._running_move is None:  # a running move keeps its own baseline
             await self._effects.before_turn(turn)
         sample = await self._readers.read() if self._readers is not None else None  # before the observation, never between it and the act
         started = time.perf_counter()
@@ -339,22 +454,61 @@ class TurnLoop:
             self._cancel_pending(self._pending, "observation_boundary", turn=turn)
         elif ready is not None and pending is self._pending:
             self._adopt_finished_help(pending, ready, turn)
+        if self._continuous and boundary:
+            await self._release_active("scene_change")
+        if self._continuous and self._active is not None:
+            records = self._client.action_records(self._active[0]["action_id"])
+            if records[-1].status in TERMINAL_STATUSES:
+                await self._collect_active()
+        offered_choices = self._choices
+        if self._continuous and self._continuous_labels is not None:
+            offered_choices = list(self._continuous_labels(
+                self._intervals[-1] if self._intervals else None, self._continuous_lease))
+        if self._choice_filter is not None:
+            offered_choices = list(self._choice_filter(offered_choices, observation))
         choice_set = ChoiceSet(
             set_version=self._set_version,
             built_from_seq=observation.seq,
-            choices=self._choices,
+            choices=offered_choices,
         )
         self._set_version += 1
         offered = self._emit(TraceKind.choice_set, choice_set.model_dump(mode="json"), TraceAuthor.core, turn, [observed])
         noticed = self._notice(observation, sample, turn, observed, stated=not scripted)
+        # S1's conditional answer from the turn that ended an option is good for the very next turn only, in
+        # the place it was given, and only if this observation still offers it; otherwise it is spent and S1
+        # is asked afresh.
+        cell = self._cell_of(observation)
+        candidate, self._contingent = self._contingent, None
+        contingent_turn, contingent_skipped = (
+            (None, None) if candidate is None or scripted
+            else self._contingent_for(candidate, choice_set, boundary, cell))
 
         payload: dict[str, Any] | None = None
         context: int | None = None
         calls: list[int | None] = []
+        # Nothing to choose: a set of exactly one choice is executed as it stands, with no provider call.
+        # The choice is still S1's to make wherever there is more than one; with one there is no selection.
+        only_choice = offered_choices[0] if len(offered_choices) == 1 and not scripted else None
         if scripted:
             answer = S1Answer(answer=decide(choice_set, observation) if callable(decide) else decide)
         else:
             facts = [*await self._facts.facts(self._reports, observation), *noticed]
+            if self._continuous:
+                facts.append("Continuous input mode: wait, finish, invalid/stale answers and pending-help "
+                             "wait release input. Only the selected action (or while_pending action) starts input. "
+                             "Held-choice effects against short-hold calibration are unknown; bounded choices retain effect measurement.")
+                if self._active is not None:
+                    request = self._active[0]
+                    receipt = self._client.action_records(request["action_id"])[-1]
+                    start_age = (_elapsed_s(datetime.fromtimestamp(receipt.input_start_wall_s, timezone.utc),
+                                            self._clock())
+                                 if receipt.input_start_wall_s is not None else None)
+                    facts.append(f"Input receipt: action={request['action']}, choice={request['choice_id']}, "
+                                 f"status={receipt.status.value}, input_start_wall_s={receipt.input_start_wall_s}, "
+                                 f"age_since_input_start_s={start_age}, "
+                                 f"age_since_ack_s={_elapsed_s(receipt.wall_utc, self._clock())}, "
+                                 f"lease_s={request['lease_s']}. Current physical held state is unknown "
+                                 "until another bridge receipt; age is since receipt, not measured hold duration.")
             directives = self._directive_view(observation)  # right after the facts that evaluated this observation
             view = self._view.sample(observation) if self._view is not None else None
             now = self._clock()
@@ -374,30 +528,73 @@ class TurnLoop:
                 game_view=view.statement if view is not None else None,
                 recent_history=self._memory.snapshot() if self._memory.has_records else None,
                 reset_summary=reset_summary,
+                instructions=self._instructions,
             )
             if view is not None:
                 payload["game_view_sha256"] = view.sha256
                 payload["game_view_status"] = view.status
+            running = self._running_option or self._running_move
+            if running is not None:  # only a run with a running option or move grows the context
+                payload["running_option"] = {
+                    "choice_id": running.choice.id,
+                    "started_turn": running.turn,
+                    "running_s": round(time.perf_counter() - running.started, 3),
+                }
             context = self._emit(
                 TraceKind.context,
                 {"sha256": _sha256(canonical(payload)), "payload": payload},
                 TraceAuthor.core, turn, [observed, offered],
             )
-            answer = await self._ask(payload, view.image if view is not None else None, view is not None)
-            calls = [self._emit(TraceKind.s1_call, call.body(), TraceAuthor.s1, turn, [context])
-                     for call in answer.calls]
+            if contingent_turn is not None:
+                # S1 already said what to do in this branch: the context above is the one it would have
+                # been sent and is recorded as such, but the turn spends no provider call.
+                answer = S1Answer(answer={"choice_id": contingent_turn["choice_id"],
+                                          "set_version": choice_set.set_version})
+            elif only_choice is not None:
+                # The one choice offered is the only legal answer: the context is still built and recorded,
+                # and the turn spends no provider call because there was nothing to decide.
+                answer = S1Answer(answer={"choice_id": only_choice.id,
+                                          "set_version": choice_set.set_version})
+            else:
+                answer = await self._ask(payload, view.image if view is not None else None, view is not None)
+                calls = [self._emit(TraceKind.s1_call, call.body(), TraceAuthor.s1, turn, [context])
+                         for call in answer.calls]
 
         parsed = parse_decision(answer.answer, choice_set, self._clock_mode)
+        decision_body: dict[str, Any] = {
+            "answer": _json_ready(answer.answer),
+            "clock_mode": self._clock_mode.value,
+            "valid": parsed.valid,
+            "error": parsed.error,
+            "policy_default": parsed.policy_default,
+            "decision": parsed.decision.trace_body() if parsed.decision is not None else None,
+        }
+        if parsed.contingent_problems:
+            # Only a dropped branch writes this key, so a turn S1 answered cleanly keeps the same bytes.
+            decision_body["contingent_problems"] = list(parsed.contingent_problems)
+        if contingent_turn is not None:
+            decision_body.update(source="contingent", from_turn=contingent_turn["from_turn"],
+                                 condition=contingent_turn["condition"])
+            if contingent_turn.get("cell") is not None:
+                decision_body["cell"] = list(contingent_turn["cell"])
+        elif only_choice is not None:
+            # The set held one choice, so nothing was chosen: the turn names why it spent no call.
+            decision_body["source"] = "only_choice"
+        elif contingent_skipped is not None:
+            decision_body["contingent_skipped"] = contingent_skipped
+            if candidate is not None and contingent_skipped.startswith(_PLACE_SKIPS):
+                # Both cells, so a reader can see the place the answer was made in and the one it found.
+                decision_body["cell"] = list(cell) if cell is not None else None
+                decision_body["from_cell"] = (list(candidate["cell"])
+                                              if candidate.get("cell") is not None else None)
+        else:
+            # An answer that names a branch for later is bound to the place it was given in.
+            branches = parsed.decision.contingent if parsed.decision is not None else None
+            if branches is not None and cell is not None and (branches.if_blocked or branches.if_succeeded):
+                decision_body["cell"] = list(cell)
         decided = self._emit(
             TraceKind.decision,
-            {
-                "answer": _json_ready(answer.answer),
-                "clock_mode": self._clock_mode.value,
-                "valid": parsed.valid,
-                "error": parsed.error,
-                "policy_default": parsed.policy_default,
-                "decision": parsed.decision.model_dump(mode="json") if parsed.decision is not None else None,
-            },
+            decision_body,
             TraceAuthor.core, turn, [offered, *calls],
         )
         raw_choice = answer.answer.get("choice_id") if isinstance(answer.answer, dict) else None
@@ -414,17 +611,83 @@ class TurnLoop:
         help_event: str | None = None
         operation: OperationOutcome | None = None
         restart_refs: list[int | None] = []
+        option_refs: list[int | None] = []
+        measured_option: dict[str, Any] | None = None  # an option turn's measured outcome, for the report
+        finished_option: tuple[Choice, dict[str, Any], int | None] | None = None  # a background option collected
+        finished_move: tuple[Choice, Executed] | None = None  # a background action or skill collected
+        option_running = False  # this turn started, or kept going, a background option
 
         if not parsed.valid or parsed.decision is None:
+            if self._continuous:
+                await self._release_active("error")
             outcome = TurnOutcome.rejected_invalid
         else:
             decision = parsed.decision
             selected = choice_set.get(decision.choice_id)
             assert selected is not None
+            if (self._running_option is not None and selected.kind is not ChoiceKind.option
+                    and selected.kind not in _HELP_KINDS):
+                # S1 chose something else while an option runs: that option is interrupted, measured, first.
+                finished_option = await self._settle_option(turn, f"S1 chose {selected.id}")
+            if (self._running_move is not None and selected.id != self._running_move.choice.id
+                    and selected.kind not in _HELP_KINDS):
+                finished_move = await self._settle_move(stop=True)
             if selected.kind is ChoiceKind.restart_play_mode:
                 operation, restart_entries = await self._restart_turn(selected, decided, turn)
                 restart_refs = restart_entries
                 outcome = TurnOutcome.restarted
+            elif selected.kind is ChoiceKind.option and self._decide_during_options:
+                if self._option_port is None:
+                    raise RuntimeError("an option was selected without an option port")
+                running = self._running_option
+                if running is not None and not running.task.done() and running.choice.id == selected.id:
+                    outcome, executed_id = TurnOutcome.executed, selected.option_id  # kept going
+                    option_running = True
+                else:
+                    finished_option = await self._settle_option(turn, "another option was chosen")
+                    if self._continuous:
+                        await self._release_active("user")
+                    task = asyncio.create_task(self._option_port.run(selected))
+                    self._option_task = task
+                    self._running_option = _RunningOption(choice=selected, task=task, turn=turn, decided=decided,
+                                                          decision=decision, cell=cell,
+                                                          started=time.perf_counter())
+                    outcome, executed_id = TurnOutcome.executed, selected.option_id
+                    option_running = True
+            elif selected.kind is ChoiceKind.option:
+                if self._option_port is None:
+                    raise RuntimeError("an option was selected without an option port")
+                if self._continuous:
+                    await self._release_active("user")
+                self._option_task = asyncio.create_task(self._option_port.run(selected))
+                try:
+                    result = await self._option_task
+                finally:
+                    self._option_task = None
+                body = dict(result)
+                receipts = body.pop("receipts")
+                if (body.get("option_id"), body.get("template"), body.get("params")) != (selected.option_id, selected.template, selected.params):
+                    raise ValueError("option outcome differs from selected choice")
+                entry = self._emit(TraceKind.option, {"option_id": selected.option_id, "template": selected.template,
+                                   "params": selected.params, "outcome": body, "receipts": receipts},
+                                   TraceAuthor.core, turn, [decided])
+                option_refs.append(entry)
+                outcome, executed_id = TurnOutcome.executed, selected.option_id
+                measured_option = body  # what this option measurably did, for the turn report
+                self._contingent = _contingent_answer(decision, body.get("terminated_by"), turn, decided, cell)
+            elif (selected.kind in _EXECUTABLE_KINDS and self._decide_during_options
+                    and not (self._continuous and selected.id in self._continuous_choices)):
+                running = self._running_move
+                if running is None or running.task.done() or running.choice.id != selected.id:
+                    if running is not None:
+                        finished_move = await self._settle_move(stop=False)
+                    task = asyncio.create_task(self._send_background(
+                        selected, observation, decided, turn, observed, raw_choice, help_event))
+                    self._running_move = _RunningMove(choice=selected, task=task, turn=turn,
+                                                      started=time.perf_counter())
+                # Started or kept going: whether the bridge accepted it is read when it is collected.
+                outcome, executed_id = TurnOutcome.executed, selected.id
+                option_running = True
             elif selected.kind in _EXECUTABLE_KINDS:
                 executed, entry, effect_entry = await self._send(
                     selected, observation, "choice", decided, turn, observed, raw_choice, selected.id, help_event)
@@ -442,9 +705,16 @@ class TurnLoop:
                 if while_pending is None:
                     # Stepped clocks carry no pending input; the help is recorded as waited so the trace stays adherence-clean.
                     while_pending, policy_default = WhilePending(mode="wait"), True
+                if self._continuous and while_pending.mode != "continue":
+                    await self._release_active("user")
                 if while_pending.mode == "continue":
                     target = choice_set.get(while_pending.choice_id or "")
                     if target is not None and target.kind in _EXECUTABLE_KINDS:
+                        # The input S1 named while help is pending replaces whatever runs in the background.
+                        if self._running_move is not None and self._running_move.choice.id != target.id:
+                            finished_move = await self._settle_move(stop=True)
+                        if self._running_option is not None:
+                            finished_option = await self._settle_option(turn, f"S1 chose {target.id}")
                         executed, entry, effect_entry = await self._send(
                             target, observation, "while_pending", decided, turn, observed, raw_choice,
                             selected.id, help_event)
@@ -453,12 +723,22 @@ class TurnLoop:
                         effect_entries.append(effect_entry)
                         if not executed.execution.rejected:
                             executed_id = target.id
+                    elif self._continuous:
+                        await self._release_active("user")
                 outcome = TurnOutcome.escalated if selected.kind is ChoiceKind.escalate else TurnOutcome.delegated
             else:
+                if self._continuous:
+                    await self._release_active("finish" if selected.kind is ChoiceKind.finish else "user")
                 outcome = TurnOutcome.finished
                 if selected.kind is ChoiceKind.wait:
                     await self._wait_out(selected, observation)
 
+        if finished_option is None and self._running_option is not None and self._running_option.task.done():
+            finished_option = await self._settle_option(turn, "")  # it ended by itself: nothing is interrupted
+        if finished_option is not None and finished_option[2] is not None:
+            option_refs.append(finished_option[2])
+        if finished_move is None and self._running_move is not None and self._running_move.task.done():
+            finished_move = await self._settle_move(stop=False)
         record = TurnRecord(
             turn=turn,
             set_version=choice_set.set_version,
@@ -475,7 +755,7 @@ class TurnLoop:
         self._turns.append(record)
         turn_entry = self._emit(
             TraceKind.turn, record.model_dump(mode="json"), TraceAuthor.core, turn,
-            [observed, offered, context, decided, *entries, *restart_refs],
+            [observed, offered, context, decided, *entries, *restart_refs, *option_refs],
         )
         report = TurnReport(
             record=record,
@@ -486,6 +766,10 @@ class TurnLoop:
             help_event=help_event,
             executed=tuple(sent),
             halt=answer.halt,
+            option_outcome=measured_option,
+            finished_option=(finished_option[0], finished_option[1]) if finished_option is not None else None,
+            finished_move=finished_move,
+            option_running=option_running,
         )
         self._reports.append(report)
         if operation is not None and operation.status is OperationStatus.ready:
@@ -514,6 +798,75 @@ class TurnLoop:
         else:
             raise RuntimeError(f"script did not finish within {max_turns} turns")
         return self.turns
+
+    async def _settle_option(self, turn: int, reason: str) -> tuple[Choice, dict[str, Any], int | None] | None:
+        """Collect the background option: interrupt it if it still runs, then file its measured outcome.
+
+        The option trace entry is written on this turn and refs the decision that started it. An option port
+        with no `interrupt` is cancelled instead, and then nothing measured is filed.
+        """
+        running = self._running_option
+        if running is None:
+            return None
+        if not running.task.done():
+            interrupt = getattr(self._option_port, "interrupt", None)
+            if interrupt is not None:
+                interrupt(reason)
+            else:
+                running.task.cancel()
+        try:
+            await asyncio.gather(running.task, return_exceptions=True)
+        finally:
+            self._running_option = None
+            self._option_task = None
+        if running.task.cancelled() or running.task.exception() is not None:
+            if not running.task.cancelled():
+                raise running.task.exception()
+            return None
+        body = dict(running.task.result())
+        receipts = body.pop("receipts")
+        selected = running.choice
+        if (body.get("option_id"), body.get("template"), body.get("params")) != (selected.option_id, selected.template, selected.params):
+            raise ValueError("option outcome differs from selected choice")
+        entry = self._emit(TraceKind.option, {"option_id": selected.option_id, "template": selected.template,
+                           "params": selected.params, "outcome": body, "receipts": receipts},
+                           TraceAuthor.core, turn, [running.decided])
+        self._contingent = _contingent_answer(running.decision, body.get("terminated_by"), running.turn,
+                                              running.decided, running.cell)
+        return selected, body, entry
+
+    async def _send_background(self, choice: Choice, observation: Observation, decided: int | None, turn: int,
+                               observed: int | None, raw_choice: str | None,
+                               help_event: str | None) -> tuple[Executed, int | None, int | None]:
+        """Send a background move bound to the observation S1 chose it from; a stale rejection stands, as in `_send`."""
+        return await self._send(choice, observation, "choice", decided, turn, observed, raw_choice, choice.id,
+                                help_event)
+
+    async def _settle_move(self, *, stop: bool) -> tuple[Choice, Executed] | None:
+        """Collect the background action or skill; with `stop`, release it first, verified, if it still runs.
+
+        Its execution and effect entries were written by `_send` on the turn that started it.
+        """
+        running = self._running_move
+        if running is None:
+            return None
+        if stop and not running.task.done():
+            result = await self._client.stop("release")  # the bridge cancels the run and reports it cancelled
+            self._emit(TraceKind.stop, {"reason": "release",
+                                        "result": result.model_dump(mode="json") if result is not None else None,
+                                        "error": None}, TraceAuthor.core, None)
+            if result is None or not result.release_verified:
+                raise RuntimeError("input release was not verified")
+        try:
+            await asyncio.gather(running.task, return_exceptions=True)
+        finally:
+            self._running_move = None
+        if running.task.cancelled():
+            return None
+        if running.task.exception() is not None:
+            raise running.task.exception()
+        executed, _entry, _effect = running.task.result()
+        return running.choice, executed
 
     # --- the S1 port ------------------------------------------------------------------------
 
@@ -559,6 +912,51 @@ class TurnLoop:
 
     # --- waiting ----------------------------------------------------------------------------
 
+    def _cell_of(self, observation: Observation) -> list[int] | None:
+        """The cell the body's measured position falls in, at the step the runner's memory files places by.
+
+        `floor(position / cell)` per axis is exactly what `OutcomeMemory.cell_of` does, so a place named here
+        is the place that memory would name. No step, no position, or an unmeasured one gives `None`: the
+        place is unknown, never guessed at the origin.
+        """
+        if self._contingent_cell is None or observation is None:
+            return None
+        public = getattr(observation, "public", None)
+        controlled = public.get("controlled") if isinstance(public, Mapping) else None
+        position = controlled.get("position") if isinstance(controlled, Mapping) else None
+        if not isinstance(position, (list, tuple)) or not position:
+            return None
+        cells: list[int] = []
+        for value in position:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return None
+            cells.append(math.floor(float(value) / self._contingent_cell))
+        return cells
+
+    def _contingent_for(self, candidate: dict[str, Any], choice_set: ChoiceSet,
+                        boundary: bool, cell: list[int] | None) -> tuple[dict[str, Any] | None, str | None]:
+        """Use S1's conditional answer for this turn, or say why S1 is asked afresh instead.
+
+        Executing it is adherence only while the condition that selected it still holds: an unchanged
+        scene, no pending help, the very id S1 named still offered by this observation's own set, and the
+        body still in the cell the answer was made in. The cell is a measured check on reuse, not a
+        choice: a different or unmeasured place spends the answer and asks S1, and nothing picks another.
+        """
+        if boundary:
+            return None, ("the observation crossed a scene boundary after the option ended; asked S1 afresh")
+        if self._pending is not None:
+            return None, "help is pending after the option ended; asked S1 afresh"
+        if choice_set.get(candidate["choice_id"]) is None:
+            return None, (f"S1's {candidate['condition']} answer {candidate['choice_id']!r} is no longer "
+                          f"offered; asked S1 afresh")
+        armed, here = candidate.get("cell"), cell
+        if armed is None or here is None:
+            unknown = "the cell the answer was made in" if armed is None else "this observation"
+            return None, f"place_unknown: {unknown} has no measured cell; asked S1 afresh"
+        if list(armed) != list(here):
+            return None, (f"place_changed: cell {_cell_text(armed)} -> {_cell_text(here)}; asked S1 afresh")
+        return candidate, None
+
     async def _wait_out(self, choice: Choice, observation: Observation) -> None:
         """Sleep a wait choice's `duration_game_s` of game time. No input is sent; only the next observation waits."""
         seconds = self._wait_s(choice, observation)
@@ -589,11 +987,19 @@ class TurnLoop:
         return limit
 
     async def _release_for_restart(self, turn: int) -> bool:
-        """Invalidate pending help, then release every held input; only a verified release permits dispatch."""
+        """Invalidate pending help (or keep it, when opted in), then release every held input.
+
+        Only a verified release permits dispatch.
+        """
         pending = self._pending
         if pending is not None:
-            self._cancel_pending(pending, "restart", turn=turn)
+            if self._keep_help_across_restart:
+                self._help_kept_for_reset = True
+            else:
+                self._cancel_pending(pending, "restart", turn=turn)
         self._memory.mark_boundary("reset")
+        if self._continuous:
+            await self._release_active("reset")
         result = await self._client.stop("reset")
         self._stop_result = result
         return result is not None and result.release_verified is True
@@ -681,6 +1087,10 @@ class TurnLoop:
         """
         assert outcome.client is not None and outcome.observation is not None
         assert outcome.to_generation is not None
+        previous_scene = getattr(self._store.latest(), "scene", None)
+        self._continuous_lease = None
+        self._last_started = None
+        self._intervals = []
         previous_client = self._client
         self._client = outcome.client
         self._executor = ExecutionController(outcome.client, **self._executor_options)
@@ -692,7 +1102,16 @@ class TurnLoop:
         self._previous = None
         self._guidance.clear()
         self._unshown.clear()
-        self._pending = None
+        pending = self._pending
+        if pending is not None and not (self._help_kept_for_reset and outcome.observation.scene == previous_scene):
+            # Kept help is only the request this loop's own restart kept, into the scene it left.
+            self._cancel_pending(pending, "restart", turn=turn)
+        elif pending is not None:
+            keep = getattr(self._help, "keep_request", None)
+            if keep is not None:  # before the ports rebind below, so the helper keeps this request's answer
+                keep(pending.turn)
+        self._help_kept_for_reset = False
+        self._contingent = None
         self._generation = outcome.to_generation
         for port in (self._view, self._readers, self._watch, self._effects, self._help, self._facts):
             rebind = getattr(port, "rebind", None)
@@ -723,7 +1142,32 @@ class TurnLoop:
         observed: int | None, raw_choice: str | None, effective_choice: str, help_event: str | None,
     ) -> tuple[Executed, int | None, int | None]:
         """Send one chosen input, bound to the observation its set was built from, and measure its effect."""
-        request = self._executor.request_for(choice, based_on_seq=observation.seq)
+        lease = (self._continuous_lease if self._continuous and choice.id in self._continuous_choices else None)
+        request = self._executor.request_for(choice, based_on_seq=observation.seq, lease_s=lease)
+        if self._continuous and choice.id in self._continuous_choices:
+            try:
+                records = await self._client.start_act(**request)
+            except BaseException:
+                self._emit(TraceKind.execution,
+                           {"purpose": purpose, "request": request, "records": []},
+                           TraceAuthor.bridge, turn, [decided])
+                raise
+            # Supersession releases the prior selection; rejection leaves it intact at the bridge.
+            if records[-1].status in TERMINAL_STATUSES and records[-1].status.value == "rejected":
+                await self._release_active("error")
+            else:
+                await self._collect_active()
+            self._active = (request, purpose, turn, decided)
+            execution = Execution(request=request, records=tuple(records))
+            # A dispatch that closed at once (rejected, or already terminal) is collected inside this turn, so
+            # the turn record refs its receipt; a running lease's receipt is written when it later closes.
+            entry = await self._collect_active() if records[-1].status in TERMINAL_STATUSES else None
+            return Executed(purpose=purpose, choice=choice, execution=execution, effect=None), entry, None
+        if self._continuous:
+            await self._release_active("user")
+            # Exclude movement during the decision and verified release from the bounded effect.
+            if self._effects is not None:
+                await self._effects.before_turn(turn)
         try:
             execution = await self._executor.send(request)
         except BaseException:
@@ -765,6 +1209,27 @@ class TurnLoop:
                 trace_seq=entry, effect_trace_seq=measured)
             raise
         return Executed(purpose=purpose, choice=choice, execution=execution, effect=effect), entry, measured
+
+    async def _collect_active(self) -> int | None:
+        if self._active is None:
+            return None
+        request, purpose, turn, decided = self._active
+        records = await self._client.collect_act(request["action_id"])
+        self._active = None
+        return self._emit(TraceKind.execution,
+                   {"purpose": purpose, "request": request,
+                    "records": [r.model_dump(mode="json") for r in records]},
+                   TraceAuthor.bridge, turn, [decided])
+
+    async def _release_active(self, reason: str) -> None:
+        if self._active is None:
+            return
+        result = await self._client.stop("release")
+        self._emit(TraceKind.stop, {"reason": "release", "result": result.model_dump(mode="json") if result is not None else None,
+                                   "error": None}, TraceAuthor.core, None)
+        if result is None or not result.release_verified:
+            raise RuntimeError("input release was not verified")
+        await self._collect_active()
 
     # --- suspicions -------------------------------------------------------------------------
 
@@ -1019,6 +1484,16 @@ class TurnLoop:
             raise ValueError(f"stop reason must be one of {', '.join(_STOP_REASONS)}, not {reason!r}")
         if self._stopped:
             return self._stop_result
+        if self._option_task is not None:
+            task = self._option_task
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self._running_move is not None:
+            move, self._running_move = self._running_move.task, None
+            move.cancel()
+            await asyncio.gather(move, return_exceptions=True)
+        if self._continuous:
+            await self._release_active(reason)
         self._stopped = True
         if reason in ("reset", "scene_change"):
             self._memory.mark_boundary(reason)
@@ -1040,6 +1515,8 @@ class TurnLoop:
             )
             raise
         self._stop_result = result
+        if self._continuous:
+            await self._collect_active()
         self._emit(
             TraceKind.stop,
             {"reason": reason, "result": result.model_dump(mode="json") if result is not None else None,

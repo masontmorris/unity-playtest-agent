@@ -1,6 +1,8 @@
 """Requests are stable and transport errors never become model answers."""
 
 import base64
+import json
+
 import pytest
 
 from playtest.preflight.packet import Packet, Screenshot
@@ -86,3 +88,31 @@ def test_contributor_is_explicit_and_priced_as_contributor():
     assert requests[0]["model"] == CONTRIBUTOR_MODEL
     assert result.metadata["model"] == CONTRIBUTOR_MODEL
     assert result.metadata["estimated_cost_usd"] == pytest.approx(0.000071)
+
+
+def test_an_http_error_records_only_the_providers_structured_error():
+    p = packet()
+    detail = {"body_bytes": 120, "content_type": "application/json", "type": "invalid_request",
+              "code": "context_length_exceeded", "param": "messages", "message": "too many tokens",
+              "message_truncated": False}
+    provider = Muse(p, send=lambda _: (400, {"error_detail": detail}, 12.0, "HTTP error"))
+    result = provider(messages(p), preflight.schema(p.discovery))
+    assert result.content is None and result.error == "HTTP error"
+    assert result.metadata["status"] == 400
+    assert result.metadata["error_detail"] == detail
+    # The problem text stays generic, and the request is never part of what a failure records.
+    assert "too many tokens" not in (result.error or "")
+    assert "packet" not in json.dumps(result.metadata, sort_keys=True)
+
+
+def test_success_and_a_body_that_reports_an_error_are_kept_apart():
+    p = packet()
+    schema = preflight.schema(p.discovery)
+    answered = {"model": "muse-spark-1.3", "usage": {"prompt_tokens": 10},
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
+    assert Muse(p, send=lambda _: (200, answered, 1.0, None))(messages(p), schema).metadata["error_detail"] is None
+    reported = {"error": {"type": "server_error", "code": None, "param": None, "message": "later",
+                          "message_truncated": False}}
+    result = Muse(p, send=lambda _: (200, reported, 1.0, None))(messages(p), schema)
+    assert result.content is None and result.error_kind == "provider"
+    assert result.metadata["error_detail"]["type"] == "server_error"

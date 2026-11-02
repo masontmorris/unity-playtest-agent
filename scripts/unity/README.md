@@ -591,3 +591,13 @@ through the mailbox; the script never invents a request, retries an operation or
 output directory must be new and outside the game, and the catalog, control records and the client's
 `restart.json` stay there. Exit codes are the supervisor's: `0` clean, `1` failed or had to be killed, `2`
 setup failed before Unity started.
+
+## Scene measurement
+
+`uv run python scripts/unity/select-scenes.py --project <project> --output <new-directory>`
+runs discovery and entity measurement serially for enabled build scenes. Add
+`--stop-on-identified` to leave later scenes recorded as not measured. Each scene has
+its own outputs and logs. The PlayMode hosts accept `UPA_SCENE_PATH` as an enabled
+build-scene path; when unset they use build scene 0. The live session accepts
+`-ScenePath` and otherwise uses the entity record's measured scene; the setting is
+recorded in `starting-scene.json` and the host records the loaded scene in its state.

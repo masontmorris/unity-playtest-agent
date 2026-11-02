@@ -64,6 +64,7 @@ class Muse:
         metadata = {"endpoint": meta.URL, "model": self.model, "resolved_model": model,
                     "status": status, "latency_ms": latency, "usage": usage,
                     "estimated_cost_usd": _cost(usage, self.model), "reported_cost_usd": None,
+                    "error_detail": meta.reported_error(data),
                     "image": self.packet.image.descriptor() if self.packet.image is not None else None}
         if error is not None or status != 200:
             return CallResult(None, error or f"HTTP status {status}", metadata,

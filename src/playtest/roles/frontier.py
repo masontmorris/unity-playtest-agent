@@ -305,6 +305,21 @@ PROGRESS_SYSTEM = (
     "region the manifest does not declare has no field at all."
 )
 
+# Opt in (`--frontier-advice`): S1 escalates with no question attached, so this says what it is asking for when the
+# objective is to get through the game. It changes what the answer emphasises, never who decides: S1 still chooses.
+ADVICE_SYSTEM = (
+    "\n- gameplay advice: S1 has asked for help because it is not getting further toward the packet's objective. "
+    "The directive is the help it asked for. Unless the packet leaves you no approach you can name, write one: in "
+    "one or two sentences, name choices from the packet's choices by id and say how S1 can get past what stops it "
+    "now. First read the clip and the recent rows for what ended the earlier attempts (a fall, damage, a blocker, a "
+    "wall, a gap) and where; say it in the text. Set expected to a field the progress itself would change, or null "
+    "if no field shows it, and give deadline_s enough game seconds for several attempts. The repeated-attempts rule "
+    "still applies. Suspicions and hypotheses still need accounting, but keep each brief; they never replace the "
+    "directive. A null directive leaves S1 with no advice at all. When every way of moving on that the recent rows "
+    "show has already been tried here and none got further, the movement is not what is missing: propose one of "
+    "the packet's choices that has not been tried here yet, by id, and say what trying it would show."
+)
+
 
 # --- run and packet context ----------------------------------------------------------------------
 

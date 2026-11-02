@@ -192,6 +192,18 @@ def choice_set_of(entry: dict[str, Any]) -> ChoiceSet:
     return ChoiceSet.model_validate(entry["body"])
 
 
+class PositionedGame(FakeGame):
+    """A fake game that publishes the controlled entity's measured pose, so a turn's place has a cell.
+
+    The pose is this fake's own `pos`: a test moves it between turns to change the place the body is in.
+    """
+
+    def _public(self) -> dict:
+        return {**super()._public(),
+                "controlled": {"object_id": "entity", "path": "entity", "position": list(self._pos),
+                               "velocity": list(self._vel), "source": "rigidbody3d"}}
+
+
 class TransformsGame(FakeGame):
     """A fake game that also answers `inspect("transforms")` with the entity's position.
 
@@ -199,18 +211,33 @@ class TransformsGame(FakeGame):
     measures a displacement the way the live smoke did.
     """
 
+    # The static descriptor the shared manifest fixture records for its one reader (`field`).
+    field_static = {"id": "field", "component_id": "component", "object_id": "object", "scene_id": "scene",
+                    "name": "speed", "declaring_type": "Game.Body", "declaration_id": "mscorlib:Game.Body:speed",
+                    "field_type": "System.Single", "field_type_assembly": "mscorlib"}
+
+    def field_value(self) -> dict[str, Any]:
+        """The one field's value keys at the instant this stage is asked, valued at the entity's x so it changes
+        when the entity moves. Tests replace this to script another value or value state."""
+        return {"value_state": "present", "value_kind": "number", "value": self._pos[0], "is_null": False,
+                "value_truncated": None, "read_error": None}
+
     def field_rows(self) -> list[dict[str, Any]]:
-        """The field rows `inspect("fields")` answers with: the one reader the shared manifest fixture declares,
-        valued at the entity's x so it changes when the entity moves. Tests replace this to script other values."""
-        return [{"id": "field", "scene_id": "scene", "field_type": "System.Single", "value_kind": "number",
-                 "value_state": "present", "value": self._pos[0], "is_null": False, "value_truncated": None,
-                 "read_error": None}]
+        """The values-only rows `inspect("fields")` answers with, shaped as the bridge now sends them: the id,
+        the scene and object, and the value, with no static descriptor keys."""
+        return [{"id": "field", "scene_id": "scene", "object_id": "object", **self.field_value()}]
+
+    def field_descriptors(self) -> list[dict[str, Any]]:
+        """The full-descriptor rows `inspect("discovery")` answers with: the same field, its static descriptor
+        included. Tests replace this to script an identity that does not match the manifest's."""
+        return [{**self.field_static, **self.field_value()}]
 
     def _inspection(self, request, seq, session):
-        if request.stage == "fields":
-            rows = self.field_rows()
+        build = {"fields": self.field_rows, "discovery": self.field_descriptors}.get(request.stage)
+        if build is not None:
+            rows = build()
             return InspectResult(
-                **self._envelope(seq, session), type="inspection", stage="fields", in_reply_to=request.seq,
+                **self._envelope(seq, session), type="inspection", stage=request.stage, in_reply_to=request.seq,
                 data={"time_unit": "seconds", "frame": self._frame, "real_time_s": time.monotonic(),
                       "game_time_s": self._game_s(), "fields": rows},
                 caps={"fields": InspectionCap(limit=64, observed=len(rows), returned=len(rows), truncated=False),

@@ -28,6 +28,19 @@
           "title": "Label",
           "type": "string"
         },
+        "option_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Option Id"
+        },
         "params": {
           "additionalProperties": true,
           "title": "Params",
@@ -71,6 +84,26 @@
         "source": {
           "$ref": "#/$defs/ChoiceSource"
         },
+        "template": {
+          "anyOf": [
+            {
+              "enum": [
+                "traverse",
+                "retreat",
+                "hop",
+                "wait",
+                "place",
+                "sweep"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template"
+        },
         "ttl_game_s": {
           "anyOf": [
             {
@@ -97,6 +130,7 @@
     "ChoiceKind": {
       "enum": [
         "action",
+        "option",
         "skill",
         "delegate",
         "escalate",

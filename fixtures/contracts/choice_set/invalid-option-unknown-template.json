@@ -1,0 +1,20 @@
+{
+  "set_version": 1,
+  "built_from_seq": 2,
+  "choices": [
+    {
+      "id": "teleport",
+      "kind": "option",
+      "label": "Try each untried control here once",
+      "option_id": "teleport",
+      "template": "teleport",
+      "params": {
+        "actions": [
+          "interact",
+          "attack"
+        ]
+      },
+      "source": "manifest"
+    }
+  ]
+}
