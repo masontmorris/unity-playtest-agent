@@ -476,3 +476,11 @@ def test_untried_labels_say_when_nothing_tried_here_got_on():
     assert hop(compact_menu(**built)).endswith("3 others tried here, none got on")
     memory.record(outcome("traverse+x", "succeeded"))                                  # onward: not a dead end
     assert "none got on" not in hop(compact_menu(**built))
+
+
+def test_a_body_relative_traverse_is_named_by_its_body_axis():
+    forward = option("traverse:forward", "traverse",
+                     {"direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward", "speed": 5.0, "step": 0.4},
+                     "traverse forward: 5.00 u/s, step 0.40")
+    label = option_label(forward, OutcomeMemory(cell=CELL), "scene-a", (0.0, 0.0, 0.0))
+    assert label.startswith("traverse forward") and "+z" not in label

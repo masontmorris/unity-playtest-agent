@@ -115,6 +115,7 @@ from .trace_sink import TraceSink
 DecisionSource = Callable[[ChoiceSet, Observation | None], Any]
 
 _HELP_KINDS = (ChoiceKind.escalate, ChoiceKind.delegate)
+_COMMITTED_TEMPLATES = ("hop", "sweep")  # options that run to their end once started
 _EXECUTABLE_KINDS = (ChoiceKind.action, ChoiceKind.skill)
 _NO_SOURCE: Any = object()
 _STOP_REASONS = ("user", "reset", "scene_change", "disconnect", "error", "finish")
@@ -415,11 +416,11 @@ class TurnLoop:
         scripted = decide is not _NO_SOURCE
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
-        if self._running_option is not None and not self._running_option.task.done():
-            # A hop is committed from run-up to landing, so the next reading and question wait for it to land.
-            landed = getattr(self._option_port, "until_landed", None)
-            if landed is not None:
-                await landed()
+        running = self._running_option
+        if running is not None and not running.task.done() and running.choice.template in _COMMITTED_TEMPLATES:
+            # A committed option (a hop, run-up to landing; a sweep) runs to its own end before the next reading
+            # and question, so S1 is never asked mid-way and its next choice binds to a fresh observation.
+            await asyncio.wait({running.task})
         if self._continuous:
             now = time.perf_counter()
             if self._last_started is not None:
@@ -534,7 +535,7 @@ class TurnLoop:
                 payload["game_view_sha256"] = view.sha256
                 payload["game_view_status"] = view.status
             running = self._running_option or self._running_move
-            if running is not None:  # only a run with a running option or move grows the context
+            if running is not None and not running.task.done():  # only work still running grows the context
                 payload["running_option"] = {
                     "choice_id": running.choice.id,
                     "started_turn": running.turn,

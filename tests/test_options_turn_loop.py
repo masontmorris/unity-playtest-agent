@@ -217,3 +217,27 @@ def test_a_move_no_option_replaces_stays_offered(monkeypatch):
                Choice(id='forward', kind='action', action='forward', label='Forward', source='manifest')]
     seen = SimpleNamespace(scene='scene', public={'controlled': {'position': [0, 0, 0]}})
     assert [c.id for c in options_choices(choices, p, Memory(), seen)] == ['forward']
+
+
+def hop():
+    return Choice(id='hop+x', kind='option', label='Hop', option_id='hop+x', template='hop',
+                  params={'direction': [1, 0, 0]}, source='manifest')
+
+
+def test_a_committed_hop_runs_to_its_end_before_the_next_question():
+    """The next turn waits for a running hop to finish, so S1 is not asked mid-hop and nothing interrupts it."""
+    async def main():
+        port = InterruptiblePort()
+        r = await rig('hop+x', 'c1', 'f', choices=[*base_choices(), hop()], option_port=port,
+                      decide_during_options=True)
+        try:
+            await r.loop.run_turn()                       # the hop starts in the background
+            asyncio.get_running_loop().call_later(0.05, port.release.set)
+            await r.loop.run_turn()                       # waits for the hop, then S1 chooses c1
+            assert port.interrupted == []                 # it ended by itself
+            assert r.loop.reports[-1].finished_option[1]['terminated_by'] == 'succeeded'
+            assert len(r.s1.contexts) == 2 and 'running_option' not in r.s1.contexts[1]
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)
