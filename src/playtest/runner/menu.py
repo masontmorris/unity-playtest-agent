@@ -273,8 +273,9 @@ def _onward_failures(summary: Mapping[str, int] | None, offered, positions, posi
     back = None
     if now is not None and first is not None:
         back = [a - b for a, b in zip(first, now)]
-    directions = {getattr(choice, "option_id", None) or choice.id: _vector((getattr(choice, "params", None) or {})
-                                                                            .get("direction"))
+    directions = {getattr(choice, "option_id", None) or choice.id:
+                  None if (getattr(choice, "params", None) or {}).get("basis") == "body"
+                  else _vector((getattr(choice, "params", None) or {}).get("direction"))
                   for choice in offered}
     for option_id, succeeded in summary.items():
         if not succeeded:
@@ -389,7 +390,7 @@ def _option_intent(choice) -> str:
         return "place"
     if template == "sweep":
         return "resolve what blocks progress here by trying each untried control once"
-    label = _direction(params.get("direction"))
+    label = params.get("label") if params.get("basis") == "body" else _direction(params.get("direction"))
     if template in ("hop", "traverse"):
         # A hop that presses the rise again in the air (`options.air_rise`) is named apart from the one that does not.
         name = "hop ×2" if template == "hop" and params.get("air_press_s") else template

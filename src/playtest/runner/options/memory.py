@@ -272,7 +272,8 @@ class OutcomeMemory:
             history = self._history[key] = OptionHistory(option_id=outcome.option_id)
         history.tries += 1
         history.count(outcome.terminated_by)
-        direction = _vector(outcome.params.get("direction"))
+        # A body-relative option measured its world direction when it started; its params stay the spec's.
+        direction = _vector((outcome.measured or {}).get("world_direction") or outcome.params.get("direction"))
         displacement = _vector(outcome.displacement)
         # A fall's ground covered is not an advance the body holds: it ended below the route it was on, so a fall
         # never sets `best` (a hop that always falls would otherwise read as the biggest gain).
