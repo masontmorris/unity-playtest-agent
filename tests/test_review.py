@@ -60,3 +60,28 @@ def test_cli_one_reservation(tmp_path, monkeypatch):
     review.main()
     assert calls == ['reserve','finish']
     assert (tmp_path/'out/finding-r-1.json').exists()
+
+
+def test_packet_carries_an_options_outcome_on_the_turn_that_started_it_and_the_start_height(monkeypatch):
+    monkeypatch.setattr(review, 'declared_configuration', lambda *args: [])
+    anchor = lambda y: {'anchor': {'position': [0.0, y, 0.0]}}
+    trace = [
+        {'kind': 'observation', 'turn': 1, 'trace_seq': 10, 'body': {'public': {'x': 0, 'probe': anchor(-6.0)}}},
+        {'kind': 'decision', 'turn': 1, 'trace_seq': 12, 'body': {}},
+        {'kind': 'turn', 'turn': 1, 'trace_seq': 13, 'body': {'turn': 1, 'outcome': 'executed',
+                                                              'executed_action': 'hop+x', 'effective_choice': 'hop+x'}},
+        {'kind': 'observation', 'turn': 2, 'trace_seq': 20, 'body': {'public': {'x': 1, 'probe': anchor(-6.0)}}},
+        {'kind': 'option', 'turn': 2, 'trace_seq': 22, 'refs': [12],
+         'body': {'option_id': 'hop+x', 'outcome': {'terminated_by': 'fell', 'displacement': [3.0, -2.0, 0.0],
+                                                    'duration_s': 1.25}}},
+        {'kind': 'turn', 'turn': 2, 'trace_seq': 23, 'body': {'turn': 2, 'outcome': 'executed',
+                                                              'executed_action': 'go', 'effective_choice': 'go'}},
+        {'kind': 'observation', 'turn': 3, 'trace_seq': 30, 'body': {'public': {'x': 2}}},
+    ]
+    packet = review.build_review_packet(trace, {'actions': [], 'skills': [], 'entity_id': 'e'}, {})
+    rows_by_turn = {row['turn']: row for row in packet['actions']}
+    assert packet['start_height'] == -6.0
+    assert rows_by_turn[1]['option_outcome'] == {'terminated_by': 'fell', 'displacement': [3.0, -2.0, 0.0],
+                                                 'duration_s': 1.25}
+    assert 'option_outcome' not in rows_by_turn[2]
+    assert '0.08' not in review.SYSTEM

@@ -655,3 +655,50 @@ def test_the_plan_command_writes_the_effect_plan_and_says_what_it_scores(tmp_pat
     assert reproduce.main(["plan", "--trace", str(trace), "--manifest", str(manifest), "--repro-check", str(check),
                            "--output", str(refused)]) == 1
     assert "no calibrated expected displacement" in capsys.readouterr().err and not refused.exists()
+
+
+def _option(seq: int, turn: int, holds: list[tuple], *, recorded: bool = True) -> dict[str, Any]:
+    """An option entry: each hold is (n, action, start, final status, applied); superseded holds stay running."""
+    receipts: list[dict[str, Any]] = []
+    for n, action, start, status, applied in holds:
+        action_id = f"hop+x.{n}"
+        if recorded:
+            receipts.append({"type": "request", "action_id": action_id, "action": action, "lease_s": 3.0})
+        receipts.append({"type": "execution", "action_id": action_id, "status": "running",
+                         "input_start_wall_s": start, "applied_duration_s": None, "release_verified": None})
+        if status != "running":
+            receipts.append({"type": "execution", "action_id": action_id, "status": status,
+                             "input_start_wall_s": start, "applied_duration_s": applied,
+                             "release_verified": True if status == "cancelled" else None})
+    receipts.append({"type": "stopped", "released": [], "release_verified": True})
+    return {"trace_seq": seq, "kind": "option", "turn": turn,
+            "body": {"option_id": "hop+x", "template": "hop", "params": {}, "outcome": {}, "receipts": receipts}}
+
+
+def test_an_options_inputs_replay_in_start_order_each_held_as_long_as_it_measurably_was():
+    from playtest.runner.reproduce import recorded_inputs
+    entries = [
+        _execution(3, 0, "walk", "completed", 100.0),
+        _option(5, 1, [(1, "move_left", 101.0, "running", None), (2, "jump_right", 101.6, "cancelled", 0.9)]),
+        _execution(7, 2, "walk", "completed", 103.0),
+    ]
+    inputs, skipped = recorded_inputs(entries, 99)
+    assert [(i["action"], i["purpose"], i["offset_s"], i["lease_s"]) for i in inputs] == [
+        ("walk", "choice", 0.0, 0.4), ("move_left", "option", 1.0, 0.6), ("jump_right", "option", 1.6, 0.9),
+        ("walk", "choice", 3.0, 0.4)]
+    assert skipped == {}
+
+    # A trace written before options recorded their requests: its inputs are named as skipped, never guessed.
+    inputs, skipped = recorded_inputs([_option(5, 1, [(1, "move_left", 101.0, "cancelled", 0.5)], recorded=False)], 99)
+    assert inputs == [] and skipped == {"option_unrecorded": 1}
+
+
+def test_a_stopped_action_replays_for_the_time_it_held_and_a_stopped_sequence_is_skipped():
+    from playtest.runner.reproduce import recorded_inputs
+    stopped = _execution(3, 0, "walk", "cancelled", 100.0)
+    stopped["body"]["records"][0].update(applied_duration_s=0.25, release_verified=True)
+    sequence = _execution(5, 1, "move.strip5", "cancelled", 101.0)
+    sequence["body"]["records"][0].update(applied_duration_s=0.3, release_verified=True)
+    inputs, skipped = recorded_inputs([stopped, sequence], 99, frozenset({"walk"}))
+    assert [(i["action"], i["lease_s"]) for i in inputs] == [("walk", 0.25)]
+    assert skipped == {"cancelled_skill": 1}

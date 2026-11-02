@@ -810,6 +810,8 @@ class OptionExecutor:
         for attempt in (0, 1):
             run.acts += 1
             action_id = f"{run.spec.option_id}.{run.acts}"
+            # What was asked for, beside what the bridge answered: a replay needs the action, not only its receipts.
+            run.receipts.append({"type": "request", "action_id": action_id, "action": action, "lease_s": lease_s})
             try:
                 records = await self._client.start_act(
                     action_id=action_id,
