@@ -98,7 +98,7 @@ def test_negated_probe_plan_is_data_driven():
 def test_offline_refresh_exact_sign_and_determinism(tmp_path):
     from pathlib import Path
     fixtures = Path(__file__).resolve().parents[1] / "fixtures/contracts/calibration_record"
-    source = next(fixtures.glob("valid-*.json"))
+    source = fixtures / "valid-execution-evidence.json"  # a completed record; glob order differs by filesystem
     raw = json.loads(source.read_text())
     m = sample()
     raw.update(entity_id=m.entity_id, entity=m.entity, action_summaries=record(m)["action_summaries"])
