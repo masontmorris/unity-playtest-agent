@@ -322,3 +322,13 @@ def test_an_asymmetry_the_direction_causes_or_a_limit_explains_is_not_the_verbs(
     manifest = {"entity_id": "e", "readers": [{"alias": "crouch_blend", "descriptor": {"object_id": "e.0"}},
                                               {"alias": "pickup_timer", "descriptor": {"object_id": "p"}}]}
     assert "crouch_blend" in guards.own_keys(manifest) and "pickup_timer" not in guards.own_keys(manifest)
+
+
+def test_each_trial_says_which_of_its_changes_outlasted_the_press():
+    game = Game()
+    game.catalog = dict(CATALOG)
+    table = asyncio.run(guards.measure_guards(game, game, game.catalog, PRIMITIVES, clock=game.clock, sleep=game.sleep))
+    aim, attack = table["verbs"]["aim"]["rest"], table["verbs"]["attack"]["rest"]
+    assert all("camera.field_of_view" in keys for keys in aim["trial_changed"])
+    assert not any("camera.field_of_view" in keys for keys in aim["trial_persisted"])   # zoom only while held
+    assert all("shots" in keys for keys in attack["trial_persisted"])                    # a shot stays fired

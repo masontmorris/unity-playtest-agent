@@ -183,6 +183,7 @@ class _Window:
     status: str | None
     pressed_at: float | None = None   # how far the body was from its start when the second press was sent
     before: dict[str, Any] | None = None  # every key as read right before the press
+    persisted: frozenset = frozenset()    # keys still changed at the reading just after the press ended
     peak: float | None = None             # the furthest the body got from its start, at any reading (a jump lands)
     left_at: float | None = None          # seconds after the press at which the body was first read off its start
     path: list | None = None              # (seconds after the press, distance from the start) at each reading
@@ -296,8 +297,9 @@ class _Meter:
         reach(end)
         displacement = (math.dist(start, end) if start is not None and end is not None and len(start) == len(end)
                         else None)
+        persisted = frozenset(k for k, v in after.items() if k in before and not _same(v, before[k]))
         return _Window(changed=changed, displacement=displacement, status=status, pressed_at=pressed_at,
-                       before=before, peak=peak, left_at=left_at, path=path)
+                       before=before, peak=peak, left_at=left_at, path=path, persisted=persisted)
 
 
 def _trend(values: Sequence[Any]) -> int:
@@ -353,6 +355,9 @@ def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Wind
             "held_s": _round(held_s),  # how long the press, and its baseline's, was held: displacement over it is a speed
             # What each trial changed on its own: an effect seen in some trials is intermittent, not missing.
             "trial_changed": [sorted(added) for added, _ in trials],
+            # Of those, the keys still changed just after the press ended: an effect that is gone by then lasts only
+            # while the input is held, and a reading taken after a press cannot show it.
+            "trial_persisted": [sorted(set(added) & window.persisted) for added, window in trials],
             # What a scorer needs to tell a missing effect from one the state hides: the keys the state changes by
             # itself, each trial's readings before its press (a reader already at its limit cannot move further),
             # and the furthest the body got, against the state's own furthest.

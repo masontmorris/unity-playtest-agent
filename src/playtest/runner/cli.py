@@ -215,6 +215,11 @@ def _parser() -> argparse.ArgumentParser:
                         help="before play, measure each verb at rest, while moving and in the air against a baseline "
                              "of each, and save the table as guards.json (the host must serve the guard chords: "
                              "playtest-export-catalog --guard-chords; also UPA_RUN_MEASURE_GUARDS)")
+    parser.add_argument("--press-readings", action="store_true",
+                        default=_env("UPA_RUN_PRESS_READINGS", switch, False),
+                        help="read every reader just before and just after each input too, into its effect record: "
+                             "what a press leaves behind, read at the press rather than at S1's pace (also "
+                             "UPA_RUN_PRESS_READINGS)")
     parser.add_argument("--guards-only", action="store_true",
                         default=_env("UPA_RUN_GUARDS_ONLY", switch, False),
                         help="with --measure-guards: measure the guard table (and score --expectations against it), "
@@ -526,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["measure_guards"] = True
         if args.guards_only:
             plan["guards_only"] = True
+        if args.press_readings:
+            plan["press_readings"] = True
         if args.contingent:
             plan["contingent"] = True
         if args.placement:
@@ -812,7 +819,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             result = await run_session(
                 client, built, s1=s1, objective=objective, view=view,
                 probe=DisplacementProbe(snapshot, built.expected,
-                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id)),
+                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id),
+                                        readers=readers if args.press_readings else None),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
                 facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,

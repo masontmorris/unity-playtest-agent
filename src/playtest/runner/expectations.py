@@ -89,6 +89,16 @@ SYSTEM = (
     "state, never a rule the game might break on purpose (a cheat, a pickup that overfills, a mode), and never a "
     "timer or a cooldown as a bound. Cover every declared value that bounds, times or follows from something a "
     "reader shows, at most ten of each.\n"
+    "Write action rules too: when the player presses an input (a verb, a move or the rise) and, if the rule needs "
+    "one, a reader satisfies a condition just before the press, another reader must follow within within_s "
+    "seconds (attack, with its cooldown run out, spawns a projectile; dash sets the dash flag and clears it after "
+    "the declared duration). These are scored at every press in recorded play, so a condition matters: give it as "
+    "a reader compared with a value (condition_observable, condition_op, condition_value), or, when no reader can "
+    "express it (an NPC in range, an enemy near, standing on a pickup), describe it in situation, in a few words a "
+    "player could bring about, with the reader condition null: such a rule is tested in a directed session. "
+    "situation is null when the press alone must do it. Do not repeat what the guard predictions already say; at "
+    "most ten. An effect that lasts only while the input is held (an input value, a stance, a zoom) is the guard "
+    "predictions' to state; an action rule is for what a press leaves behind for at least a moment after it ends.\n"
     "Last, write magnitudes: a declared size the guard measurements can check, in world units and seconds. "
     "move_speed is a move's average speed over its press (state null); rise_height is how high the rise alone "
     "lifts the body (state null); verb_speed is the body's average speed over a verb's press while a move is held "
@@ -123,6 +133,18 @@ DURATION = {"type": "object", "additionalProperties": False,
                            "seconds": {"type": "number"},
                            "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
 QUANTITIES = ("move_speed", "rise_height", "verb_speed")
+CONDITION_OPS = ["==", "!=", "<", "<=", ">", ">="]
+ACTION_RULE = {"type": "object", "additionalProperties": False,
+               "required": ["action", "condition_observable", "condition_op", "condition_value", "situation", "then",
+                            "then_expect", "then_value", "within_s", "basis", "because"],
+               "properties": {"action": {"type": "string"},
+                              "condition_observable": {"type": ["string", "null"]},
+                              "condition_op": {"type": ["string", "null"], "enum": [*CONDITION_OPS, None]},
+                              "condition_value": {"type": ["number", "boolean", "string", "null"]},
+                              "situation": {"type": ["string", "null"]}, "then": {"type": "string"},
+                              "then_expect": {"type": "string", "enum": ["changes", "increases", "decreases", "reaches"]},
+                              "then_value": VALUE, "within_s": {"type": "number"},
+                              "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
 
 
 def schema(moves: Sequence[str]) -> dict[str, Any]:
@@ -134,8 +156,9 @@ def schema(moves: Sequence[str]) -> dict[str, Any]:
                                 "value": {"type": "number"},
                                 "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
     return {"type": "object", "additionalProperties": False,
-            "required": ["predictions", "ranges", "transitions", "durations", "magnitudes"],
+            "required": ["predictions", "ranges", "transitions", "durations", "magnitudes", "action_rules"],
             "properties": {
+        "action_rules": {"type": "array", "maxItems": 10, "items": ACTION_RULE},
         "ranges": {"type": "array", "maxItems": 10, "items": RANGE},
         "transitions": {"type": "array", "maxItems": 10, "items": TRANSITION},
         "durations": {"type": "array", "maxItems": 10, "items": DURATION},
@@ -310,6 +333,34 @@ MAGNITUDE_SYSTEM = (
 )
 
 
+ACTION_SYSTEM = (
+    "You write down, before anything is measured, what pressing each input of a game you have not seen must make "
+    "happen in play, so code can check it at every press in a recorded session and in a session that tries each one "
+    "on purpose. An action rule: when the player presses an input (a verb, a move or the rise) and, if the rule "
+    "needs one, a reader satisfies a condition just before the press, another reader must follow within within_s "
+    "seconds: then_expect changes, increases, decreases, or reaches then_value. Readings come about every 0.3 to "
+    "0.8 s, so within_s is at least 1. Cover every verb whose effect a reader can show, and the rise: what each "
+    "press starts (a projectile spawned, a flag set, a dialogue begun, a count raised) and, as a separate rule, "
+    "what it ends when a declared duration says it ends. Readings are taken just before and just after each press "
+    "and about every 0.8 s, so state only what a press leaves behind for at least a moment after it ends, never an "
+    "effect that lasts only while the input is held (an input value, a stance, a zoom): the guard predictions "
+    "measure those. Give a condition as a reader compared with a value "
+    "(condition_observable, condition_op, condition_value) when the effect needs one a reader shows (a cooldown "
+    "run out, standing on the ground, not dead). When no reader can express the condition (an NPC in range, an "
+    "enemy near, standing on a pickup), describe it in situation, in a few words a player could bring about, and "
+    "leave the reader condition null. situation is null when the press alone must do it. Use only what the "
+    "declarations say: an intent, a declared value (cite it in because), or the names of the action, the fields and "
+    "the methods that write them. A timer or a cooldown counts through values and may count either way: never "
+    "predict its direction, only that it changes. At most ten."
+)
+
+
+def actions_schema() -> dict[str, Any]:
+    full = schema([])
+    return {"type": "object", "additionalProperties": False, "required": ["action_rules"],
+            "properties": {"action_rules": full["properties"]["action_rules"]}}
+
+
 def magnitude_schema(moves: Sequence[str]) -> dict[str, Any]:
     full = schema(moves)
     return {"type": "object", "additionalProperties": False, "required": ["magnitudes"],
@@ -318,6 +369,12 @@ def magnitude_schema(moves: Sequence[str]) -> dict[str, Any]:
 
 def request_body(packet: Mapping[str, Any], part: str = "all") -> dict[str, Any]:
     moves = [m["name"] for m in packet.get("moves") or () if m]
+    if part == "actions":
+        return {"model": MODEL, "reasoning_effort": "low", "max_tokens": 8000,
+                "messages": [{"role": "system", "content": ACTION_SYSTEM},
+                             {"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "action_rules", "strict": True, "schema": actions_schema()}}}
     if part == "magnitudes":
         return {"model": MODEL, "reasoning_effort": "low", "max_tokens": 4000,
                 "messages": [{"role": "system", "content": MAGNITUDE_SYSTEM},
@@ -364,7 +421,8 @@ def screened(predictions: Sequence[Mapping[str, Any]], packet: Mapping[str, Any]
 def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple[dict, list[dict]]:
     """Ranges and transitions code can score over play, and the rest with the reason each cannot be."""
     kinds = {r["alias"]: r.get("kind") for r in packet.get("readers") or ()}
-    kept: dict[str, list] = {"ranges": [], "transitions": [], "durations": [], "magnitudes": []}
+    kept: dict[str, list] = {"ranges": [], "transitions": [], "durations": [], "magnitudes": [],
+                             "action_rules": [], "situations": []}
     set_aside = []
     for item in answer.get("ranges") or ():
         reason = ("not a reader" if item.get("observable") not in kinds
@@ -402,6 +460,27 @@ def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple
         elif quantity == "verb_speed" and (action not in verbs or state not in moves):
             reason = "verb_speed names a measured verb and a measured move"
         (set_aside if reason else kept["magnitudes"]).append({**item, **({"set_aside": reason} if reason else {})})
+    actions = verbs | moves | ({rise} if rise else set())
+    for item in answer.get("action_rules") or ():
+        condition = [item.get(k) for k in ("condition_observable", "condition_op", "condition_value")]
+        reason = None
+        if item.get("action") not in actions:
+            reason = "not a measured input"
+        elif item.get("then") not in kinds:
+            reason = "not a reader"
+        elif any(v is not None for v in condition) and (condition[0] not in kinds or condition[1] is None
+                                                         or condition[2] is None):
+            reason = "a condition is a reader, a comparator and a value"
+        elif (item.get("then_expect") == "reaches") != (item.get("then_value") is not None):
+            reason = "a then_value goes with reaches only"
+        elif not isinstance(item.get("within_s"), (int, float)) or not 0 < item["within_s"] <= 30:
+            reason = "within_s must be a positive number of seconds, at most 30"
+        if reason:
+            set_aside.append({**item, "set_aside": reason})
+        elif item.get("situation"):
+            kept["situations"].append(item)   # a condition no reader shows: tested in a directed session
+        else:
+            kept["action_rules"].append(item)
     return kept, set_aside
 
 
@@ -411,12 +490,18 @@ def play_readings(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, 
 
     out = []
     for row in trace_rows:
-        if row.get("kind") != "observation":
-            continue
         body = row.get("body") or {}
-        at = _epoch(body.get("wall_utc"))
-        if at is not None:
-            out.append((at, row.get("trace_seq"), dict(body.get("public") or {})))
+        if row.get("kind") == "observation":
+            at = _epoch(body.get("wall_utc"))
+            if at is not None:
+                out.append((at, row.get("trace_seq"), dict(body.get("public") or {})))
+        elif row.get("kind") == "effect":
+            # A press-anchored reading (`--press-readings`): every reader just before and just after one input.
+            observed = body.get("observed") or {}
+            for key in ("readers_before", "readers_after"):
+                reading = observed.get(key)
+                if isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float)):
+                    out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading.get("values") or {})))
     out.sort(key=lambda item: item[0])
     return out
 
@@ -568,6 +653,169 @@ def score_durations(durations: Sequence[Mapping[str, Any]],
                             f"episodes seen whole in play"
                             + ("" if not examples else " (lasted between " + "; ".join(
                                 f"{lo:g} and {hi:g} s at trace seq {seq}" for seq, lo, hi in examples[:3]) + ")")})
+    return out
+
+
+def play_presses(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, float, str]]:
+    """Every action the game received, plain or inside an option, by start: (start, end, action).
+
+    An option's receipts name each action it sent and when it started; a rejected one never reached the game.
+    """
+    from playtest.runner.review import _epoch
+
+    out = []
+    for row in trace_rows:
+        body = row.get("body") or {}
+        if row.get("kind") == "execution":
+            records = body.get("records") or []
+            terminal = records[-1] if records else {}
+            start = _epoch(terminal.get("input_start_wall_s"))
+            held = terminal.get("applied_duration_s")
+            action = (body.get("request") or {}).get("action")
+            if terminal.get("status") in ("completed", "cancelled") and start is not None and action:
+                out.append((start, start + (held if isinstance(held, (int, float)) else 0.0), action))
+        elif row.get("kind") == "option":
+            names = {r.get("action_id"): r.get("action") for r in body.get("receipts") or ()
+                     if isinstance(r, Mapping) and r.get("type") == "request"}
+            for r in body.get("receipts") or ():
+                if not isinstance(r, Mapping) or r.get("type") != "execution" or r.get("status") == "rejected":
+                    continue
+                start = _epoch(r.get("input_start_wall_s"))
+                held = r.get("applied_duration_s")
+                action = names.get(r.get("action_id"))
+                if start is not None and action and r.get("status") != "running":
+                    out.append((start, start + (held if isinstance(held, (int, float)) else 0.0), action))
+    return sorted(set(out))
+
+
+def catalog_controls(catalog: Mapping[str, Any]) -> dict[str, frozenset]:
+    """Each served action's controls: an action presses a verb when its controls include all of the verb's."""
+    return {name: frozenset((i.get("device"), i.get("control")) for i in (d.get("inputs") or ()))
+            for name, d in (catalog.get("actions") or {}).items()}
+
+
+def _condition_holds(item: Mapping[str, Any], values: Mapping[str, Any]) -> bool | None:
+    name = item.get("condition_observable")
+    if name is None:
+        return True
+    if name not in values:
+        return None
+    return _holds({"before": values}, {"observable": name, "at": "before", "op": item["condition_op"],
+                                       "value": item["condition_value"]})
+
+
+def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[float, int, dict]]],
+                  presses: Sequence[Sequence[tuple[float, float, str]]], controls: Sequence[Mapping[str, frozenset]],
+                  skipped: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    """Every press of the rule's input (alone or inside a chord or option that includes its controls) whose
+    consequence could be read, with whether it followed in time.
+
+    The consequence counts from the reading just before the press up to the first reading at or after within_s past
+    the press's end, so a reading's lag cannot fail it. A press is not counted when its condition did not hold or
+    could not be read just before it, when the next press of the same input lands inside its window, when the session ended
+    inside its window, or when an unread stretch lies inside it.
+    """
+    skipped = skipped if skipped is not None else {}
+    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap"):
+        skipped.setdefault(key, 0)
+    events = []
+    for index, (readings, pressed, served) in enumerate(zip(sessions, presses, controls)):
+        own = served.get(item["action"])
+        if not own:
+            continue
+        usual = _usual_gap(readings)
+        times = [r[0] for r in readings]
+        mine = [(start, end, action) for start, end, action in pressed if own <= served.get(action, frozenset())]
+        for number, (start, end, action) in enumerate(mine):
+            if number + 1 < len(mine) and mine[number + 1][0] <= end + item["within_s"]:
+                # The next press of the same input lands inside this one's window: what follows is not this one's.
+                skipped["overlapped"] += 1
+                continue
+            before_index = max((i for i, t in enumerate(times) if t <= start), default=None)
+            if before_index is None:
+                skipped["window_cut"] += 1
+                continue
+            before = readings[before_index][2]
+            condition = _condition_holds(item, before)
+            if not condition:
+                skipped["condition_not_met"] += 1
+                continue
+            window, stamps = [], [readings[before_index][0]]
+            for at, _, values in readings[before_index + 1:]:
+                window.append(values.get(item["then"]))
+                stamps.append(at)
+                if at >= end + item["within_s"]:
+                    break
+            else:
+                skipped["window_cut"] += 1
+                continue
+            if usual and any(b - a > UNOBSERVED * usual for a, b in zip(stamps, stamps[1:])):
+                skipped["unobserved_gap"] += 1
+                continue
+            events.append({"session": index, "seq": readings[before_index][1], "at": start, "action": action,
+                           "before": before, "trigger": readings[before_index + 1][2] if window else before,
+                           "followed": _followed(item, before.get(item["then"]), window)})
+    return events
+
+
+def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> str | None:
+    """What the guard tables measured of `verb` changing `key`: "lasts" (still changed just after a press ended, in
+    some cell), "while_held" (changed only while held), "never" (in no cell of any table), or None (no table measured
+    the verb). The tables say what a reading can show, never whether a rule held."""
+    rows = [(t.get("verbs") or {}).get(verb) for t in tables]
+    rows = [r for r in rows if r]
+    if not rows:
+        return None
+    changed = persisted = False
+    for row in rows:
+        for cell in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air")):
+            if not cell:
+                continue
+            if key in (cell.get("changed") or {}) or any(key in keys for keys in cell.get("trial_changed") or ()):
+                changed = True
+            if any(key in keys for keys in cell.get("trial_persisted") or ()):
+                persisted = True
+    if not changed:
+        return "never"
+    if not persisted and any("trial_persisted" in (c or {}) for row in rows
+                             for c in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air"))):
+        return "while_held"
+    return "lasts"
+
+
+def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Sequence[tuple[float, int, dict]]],
+                       presses: Sequence[Sequence[tuple[float, float, str]]],
+                       controls: Sequence[Mapping[str, frozenset]],
+                       guards: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
+    """Each action rule at every counted press (`action_events`): k of n not followed in time.
+
+    With guard tables of the same build, a rule that failed is read against what they measured of its input
+    changing its reader: changed only while held, a press-anchored reading cannot show it (while_held); changed in
+    some measured state but not in these presses, it is a guard (guarded); never changed anywhere, it stays a
+    mismatch, the strongest evidence.
+    """
+    out = []
+    for item in rules:
+        skipped: dict[str, int] = {}
+        events = action_events(item, sessions, presses, controls, skipped)
+        failed = [e for e in events if not e["followed"]]
+        verdict = ("unmeasured" if len(events) < 2 else "mismatch" if 2 * len(failed) > len(events)
+                   else "held" if not failed else "mixed")
+        evidence = guard_evidence(item["action"], item["then"], guards) if guards else None
+        if verdict in ("mismatch", "mixed") and evidence == "while_held":
+            verdict = "while_held"
+        elif verdict == "mismatch" and evidence == "lasts":
+            verdict = "guarded"
+        condition = ("" if item.get("condition_observable") is None else
+                     f" with {item['condition_observable']} {item['condition_op']} {json.dumps(item['condition_value'])}")
+        then = (f"{item['then']} reaches {json.dumps(item['then_value'])}" if item["then_expect"] == "reaches"
+                else f"{item['then']} {item['then_expect']}")
+        examples = [e["seq"] for e in failed]
+        out.append({**item, "k": len(failed), "n": len(events), "verdict": verdict, "examples": examples[:5],
+                    "not_counted": skipped, "guard_evidence": evidence,
+                    "line": f"pressing {item['action']}{condition}: {then} within {item['within_s']:g} s "
+                            f"({item['basis']}: {item['because']}); not in {len(failed)} of {len(events)} presses "
+                            f"in play" + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")})
     return out
 
 
@@ -1023,7 +1271,7 @@ TIERS = (("mismatch", "Not met", "the expectation failed in most of the sessions
          ("mixed", "Sporadic", "it failed in some sessions or events and held in others: a candidate for a "
                                "controlled test, not a finding"),
          ("held", "Held", "it was met every time it could be shown"))
-UNSHOWN = ("ambient", "masked", "at_limit", "not_airborne", "unmeasured")
+UNSHOWN = ("ambient", "masked", "at_limit", "not_airborne", "while_held", "unmeasured")
 
 
 def report(guard_rows: Sequence[Mapping[str, Any]], play_rows: Sequence[Mapping[str, Any]],
@@ -1065,8 +1313,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "can be read")
     predict.add_argument("--ref", help="the build under test's commit or branch in --project (default: its working "
                          "tree)")
-    predict.add_argument("--part", choices=("all", "magnitudes"), default="all",
-                         help="magnitudes: one focused call for the declared sizes only")
+    predict.add_argument("--part", choices=("all", "magnitudes", "actions"), default="all",
+                         help="magnitudes or actions: one focused call for the declared sizes, or for what each "
+                              "press must make happen in play, only")
     scorer = sub.add_parser("score")
     scorer.add_argument("--expectations", type=Path, required=True)
     scorer.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with guards.json")
@@ -1081,10 +1330,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     investigator.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with trace.jsonl")
     investigator.add_argument("--approval", type=Path, required=True)
     investigator.add_argument("--output", type=Path, required=True, help="a new folder")
+    planner = sub.add_parser("test-plan")
+    planner.add_argument("--expectations", type=Path, nargs="+", required=True,
+                         help="expectations.json files whose action rules and situations to try")
+    planner.add_argument("--output", type=Path, required=True, help="a new objective text file")
     player = sub.add_parser("score-play")
     player.add_argument("--expectations", type=Path, required=True)
     player.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with trace.jsonl")
     player.add_argument("--output", type=Path, required=True)
+    player.add_argument("--guards", type=Path, nargs="*", help="more run folders of the same build whose guards.json "
+                        "says what a press-anchored reading can show")
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("the output must be new")
@@ -1095,15 +1350,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output.write_text(text, encoding="utf-8", newline="\n")
         print(text)
         return 0
+    if args.command == "test-plan":
+        merged: dict[str, list] = {"action_rules": [], "situations": []}
+        for path in args.expectations:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            for key in merged:
+                merged[key] += loaded.get(key) or []
+        text = test_plan(merged)
+        if not text:
+            parser.error("no action rule or situation to try")
+        args.output.write_text(text + "\n", encoding="utf-8", newline="\n")
+        print(text)
+        return 0
     if args.command == "investigate":
         return investigate(args)
     if args.command == "score-play":
         expectations = json.loads(args.expectations.read_text(encoding="utf-8"))
-        sessions = [play_readings([json.loads(line) for line in (run / "trace.jsonl").read_text(encoding="utf-8")
-                                   .splitlines() if line.strip()]) for run in args.runs]
+        traces = [[json.loads(line) for line in (run / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+                   if line.strip()] for run in args.runs]
+        sessions = [play_readings(rows) for rows in traces]
+        presses = [play_presses(rows) for rows in traces]
+        controls = [catalog_controls(json.loads((run / "catalog.json").read_text(encoding="utf-8")))
+                    if (run / "catalog.json").is_file() else {} for run in args.runs]
         rows = (score_ranges(expectations.get("ranges") or (), sessions)
                 + score_transitions(expectations.get("transitions") or (), sessions)
-                + score_durations(expectations.get("durations") or (), sessions))
+                + score_durations(expectations.get("durations") or (), sessions)
+                + score_action_rules(expectations.get("action_rules") or (), sessions, presses, controls,
+                                     [json.loads((run / "guards.json").read_text(encoding="utf-8"))
+                                      for run in [*args.runs, *(args.guards or ())]
+                                      if (run / "guards.json").is_file()]))
         mismatches = [r for r in rows if r["verdict"] == "mismatch"]
         result = {"runs": [str(r) for r in args.runs], "mismatches": mismatches, "scored": rows}
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -1159,8 +1434,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     (args.output / "expectations.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"status {status}, cost {cost}, {len(kept)} predictions, {len(play['ranges'])} ranges, "
           f"{len(play['transitions'])} transitions, {len(play['durations'])} durations, "
-          f"{len(play['magnitudes'])} magnitudes kept; {len(set_aside) + len(play_aside)} set aside")
+          f"{len(play['magnitudes'])} magnitudes, {len(play['action_rules'])} action rules, "
+          f"{len(play['situations'])} situations kept; {len(set_aside) + len(play_aside)} set aside")
     return 0 if status == 200 else 1
+
+
+def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
+    """A session objective that asks for each action rule's press to be made on purpose, in plain words.
+
+    Written by code from the pre-registered rules, never by a model, so it says nothing the rules do not: the input
+    to press, the situation to bring about first when a rule needs one, and, for a reader condition, only that the
+    effect needs it (S1 sees the readers). Each press is to be repeated, apart, so the scorer has several to count.
+    """
+    lines = []
+    rules = [*(expectations.get("action_rules") or ()), *(expectations.get("situations") or ())]
+    for rule in rules:
+        step = f"press {rule['action']}"
+        if rule.get("situation"):
+            step = f"{rule['situation'].rstrip('.')}, then {step}"
+        if rule.get("condition_observable"):
+            step += (f" when {rule['condition_observable']} {rule['condition_op']} "
+                     f"{json.dumps(rule['condition_value'])}")
+        lines.append(step)
+    steps = list(dict.fromkeys(lines))
+    if not steps:
+        return ""
+    numbered = "; ".join(f"({n}) {step}" for n, step in enumerate(steps, 1))
+    return (f"Try each of these on purpose, {presses} times or more, a few seconds apart, so each one can be seen on "
+            f"its own: {numbered}. Then keep exploring.")
 
 
 def _send(body: Mapping[str, Any], approval: Mapping[str, Any], folder: Path, name: str) -> tuple[Any, Any]:

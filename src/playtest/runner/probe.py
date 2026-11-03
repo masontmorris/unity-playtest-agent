@@ -105,10 +105,15 @@ async def read_snapshot(snapshot: Snapshot) -> tuple[dict[str, Any] | None, str 
 
 class DisplacementProbe:
     def __init__(self, snapshot: Snapshot, expected: Mapping[str, Mapping[str, Any] | None],
-                 *, snapshot_for: Callable[[BridgeClient], Snapshot] | None = None) -> None:
+                 *, snapshot_for: Callable[[BridgeClient], Snapshot] | None = None, readers: Any = None) -> None:
         self._snapshot = snapshot
         self._expected = expected
         self._snapshot_for = snapshot_for
+        # With readers, every reader is read just before and just after each input too, with the wall time of each
+        # reading: a press-anchored reading for what an input leaves behind, which the loop's own observations,
+        # paced by S1's turns, can fall either side of. Nothing S1 reads changes.
+        self._readers = readers
+        self._readers_before: dict[str, Any] | None = None
         self._before: dict[str, Any] | None = None
         self._before_problem: str | None = None
         self._bound_observation: Callable[[], Any] | None = None
@@ -126,6 +131,8 @@ class DisplacementProbe:
 
     async def before_turn(self, turn: int) -> None:
         self._before, self._before_problem = await self._read()
+        if self._readers is not None:
+            self._readers_before = await self._read_readers()
 
     async def measure(self, choice: Choice, execution: Execution) -> EffectReport:
         before, before_problem = self._before, self._before_problem
@@ -137,6 +144,9 @@ class DisplacementProbe:
         if observed is not None:
             problem = problem or (None if observed["net_displacement"] is not None else "a position was unknown")
             observed["applied_duration_s"] = execution.terminal.applied_duration_s
+            if self._readers is not None:
+                observed["readers_before"] = self._readers_before
+                observed["readers_after"] = await self._read_readers()
         return EffectReport(
             expected=dict(expected) if expected is not None else None,
             observed=observed,
@@ -146,6 +156,17 @@ class DisplacementProbe:
 
     async def _read(self) -> tuple[dict[str, Any] | None, str | None]:
         return await read_snapshot(self._snapshot)
+
+    async def _read_readers(self) -> dict[str, Any] | None:
+        """Every reader now, with the wall time it was read; None when the read failed."""
+        import time as _time
+
+        try:
+            sample = await self._readers.read()
+        except Exception:  # noqa: BLE001 - a reading that could not be taken is unmeasured, never a failure of the act
+            return None
+        values = getattr(sample, "values", None)
+        return {"wall_s": _time.time(), "values": dict(values)} if isinstance(values, Mapping) else None
 
     def _surroundings(self) -> str | None:
         if self._bound_observation is None:

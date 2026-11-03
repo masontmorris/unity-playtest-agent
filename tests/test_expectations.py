@@ -463,3 +463,98 @@ def test_an_effect_missing_here_that_the_input_shows_in_another_state_is_a_guard
     assert expectations.unmet_in_session({"predictions": [prediction(verb="dash", observable="dashing",
                                                                      expect="changes")]},
                                          tables[0]) == []   # a guard is not stated to S1 as an unmet expectation
+
+
+def test_presses_come_from_plain_executions_and_from_inside_options():
+    rows = [{"kind": "execution", "body": {"request": {"action": "attack"}, "records": [
+                {"status": "completed", "input_start_wall_s": 10.0, "applied_duration_s": 0.2}]}},
+            {"kind": "execution", "body": {"request": {"action": "dash"}, "records": [{"status": "rejected"}]}},
+            {"kind": "option", "body": {"receipts": [
+                {"type": "request", "action_id": "o.1", "action": "attack_air"},
+                {"type": "execution", "action_id": "o.1", "status": "running", "input_start_wall_s": 12.0},
+                {"type": "execution", "action_id": "o.1", "status": "completed", "input_start_wall_s": 12.0,
+                 "applied_duration_s": 0.3}]}}]
+    assert expectations.play_presses(rows) == [(10.0, 10.2, "attack"), (12.0, 12.3, "attack_air")]
+    catalog = {"actions": {"attack": {"inputs": [{"device": "Mouse", "control": "leftButton"}]},
+                           "attack_air": {"inputs": [{"device": "Keyboard", "control": "space"},
+                                                     {"device": "Mouse", "control": "leftButton"}]}}}
+    controls = expectations.catalog_controls(catalog)
+    assert controls["attack"] <= controls["attack_air"]           # the chord presses attack too
+
+
+def attack_rule(**updates):
+    base = {"action": "attack", "condition_observable": "cooldown", "condition_op": "<=", "condition_value": 0,
+            "situation": None, "then": "shots", "then_expect": "increases", "then_value": None, "within_s": 1.0,
+            "basis": "declared_value", "because": "attackCooldown 0.5"}
+    return base | updates
+
+
+def test_an_action_rule_is_checked_at_every_press_whose_condition_held_just_before_it():
+    def values(t):
+        return {"cooldown": 0.4 if 2.0 <= t < 2.5 else 0.0, "shots": 0 if t < 0.5 else 1 if t < 6.5 else 2}
+    readings = [(i * 0.5, 100 + i, values(i * 0.5)) for i in range(21)]
+    presses = [(0.2, 0.3, "attack"), (2.2, 2.3, "attack_air"), (4.2, 4.3, "attack"), (6.2, 6.3, "attack"),
+               (8.0, 8.1, "jump")]
+    controls = {"attack": frozenset({("Mouse", "left")}), "attack_air": frozenset({("Mouse", "left"), ("K", "space")}),
+                "jump": frozenset({("K", "space")})}
+    (row,) = expectations.score_action_rules([attack_rule()], [readings], [presses], [controls])
+    # 0.2: ready, a shot follows. 2.2 (the chord presses attack): cooldown 0.4 just before, so not counted.
+    # 4.2: ready, no shot by 5.3. 6.2: ready, a shot at 6.5. The jump does not press attack.
+    assert (row["n"], row["k"], row["verdict"]) == (3, 1, "mixed")
+    assert row["not_counted"]["condition_not_met"] == 1 and row["examples"] == [108]
+    assert row["line"].startswith("pressing attack with cooldown <= 0: shots increases within 1 s")
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls])
+    assert (row["n"], row["k"]) == (4, 2)                          # every press counts, the chord's too
+    crowded = [(0.2, 0.3, "attack"), (0.8, 0.9, "attack"), (4.2, 4.3, "attack")]
+    (row,) = expectations.score_action_rules([no_condition], [readings], [crowded], [controls])
+    assert row["not_counted"]["overlapped"] == 1 and row["n"] == 2   # 0.2's window holds the next press
+
+
+def test_a_rule_whose_condition_no_reader_shows_is_kept_as_a_situation_for_a_directed_test():
+    packet = {"verbs": [{"name": "attack"}, {"name": "interact"}], "moves": [], "rise": None,
+              "readers": [{"alias": "shots", "kind": "number"}, {"alias": "cooldown", "kind": "number"},
+                          {"alias": "talking", "kind": "bool"}]}
+    answer = {"action_rules": [
+        attack_rule(),
+        attack_rule(action="interact", condition_observable=None, condition_op=None, condition_value=None,
+                    situation="standing next to the NPC", then="talking", then_expect="reaches", then_value=True),
+        attack_rule(condition_observable="cooldown", condition_op=None),
+        attack_rule(action="reload")]}
+    kept, aside = expectations.screened_play(answer, packet)
+    assert len(kept["action_rules"]) == 1 and kept["situations"][0]["situation"] == "standing next to the NPC"
+    assert [a["set_aside"] for a in aside] == ["a condition is a reader, a comparator and a value",
+                                               "not a measured input"]
+
+
+def test_the_test_plan_asks_for_each_rules_press_in_plain_words_and_nothing_more():
+    plan = expectations.test_plan({"action_rules": [attack_rule(), attack_rule(then="cooldown", then_expect="changes")],
+                                   "situations": [attack_rule(action="interact", situation="stand next to the NPC.",
+                                                              condition_observable=None, condition_op=None,
+                                                              condition_value=None)]})
+    assert plan == ("Try each of these on purpose, 4 times or more, a few seconds apart, so each one can be seen on "
+                    "its own: (1) press attack when cooldown <= 0; (2) stand next to the NPC, then press interact. "
+                    "Then keep exploring.")
+    assert expectations.test_plan({}) == ""
+    body = expectations.request_body({"moves": []}, "actions")
+    assert body["response_format"]["json_schema"]["schema"]["required"] == ["action_rules"]
+
+
+def test_a_failed_action_rule_is_read_against_what_the_guard_tables_measured_of_its_input():
+    def values(t):
+        return {"horiz": 0.0, "dashing": False}
+    readings = [(i * 0.5, 100 + i, values(i * 0.5)) for i in range(21)]
+    presses = [(0.2, 0.3, "stick"), (3.2, 3.3, "stick"), (6.2, 6.3, "stick")]
+    controls = {"stick": frozenset({("Pad", "stick")})}
+    rule = attack_rule(action="stick", condition_observable=None, condition_op=None, condition_value=None,
+                       then="horiz", then_expect="changes")
+    cell = lambda changed, persisted: {"changed": {k: [0, 1] for k in changed}, "trial_changed": [changed, changed],
+                                       "trial_persisted": [persisted, persisted]}
+    held_only = {"verbs": {"stick": {"rest": cell(["horiz"], []), "moving": {}, "air": None}}}
+    lasting = {"verbs": {"stick": {"rest": cell([], []), "moving": {"right": cell(["horiz"], ["horiz"])}, "air": None}}}
+    dead = {"verbs": {"stick": {"rest": cell([], []), "moving": {}, "air": None}}}
+    verdicts = [expectations.score_action_rules([rule], [readings], [presses], [controls], guards)[0]["verdict"]
+                for guards in ([held_only], [lasting], [dead], [])]
+    assert verdicts == ["while_held", "guarded", "mismatch", "mismatch"]
+    assert expectations.guard_evidence("stick", "horiz", [held_only]) == "while_held"
+    assert expectations.guard_evidence("other", "horiz", [held_only]) is None
