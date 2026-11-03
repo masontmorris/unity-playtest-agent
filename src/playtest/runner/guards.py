@@ -40,6 +40,7 @@ SETTLED_READINGS = 3
 DISPLACEMENT_RATIO = 0.25  # a chord moves differently from its direction alone past this share
 EPS = 1e-3
 DEFAULT_HOLD_S = 0.3
+IDLE_PREPASS_S = 3.0       # one idle window before any press, so readers that change on their own clock are ambient
 _NAME = re.compile(NAME)
 
 
@@ -232,9 +233,13 @@ class _Meter:
 
 
 def _added(window: _Window, baseline: _Window, ambient: set[str]) -> dict[str, list[Any]]:
+    """Keys the press changed that neither its state's baseline nor the idle windows changed at all.
+
+    A key that also changes in the baseline (a position while moving) is the state's, not the verb's, however its
+    values differ: how far the body went is compared separately, by displacement.
+    """
     return {key: values for key, values in window.changed.items()
-            if key not in ambient and (key not in baseline.changed
-                                       or not _same(values[1:], baseline.changed[key][1:]))}
+            if key not in ambient and key not in baseline.changed}
 
 
 def _moved_differently(window: _Window, baseline: _Window) -> bool | None:
@@ -274,11 +279,13 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
     for chord in plan["chords"]:
         by_verb.setdefault(chord.verb, []).append(chord)
     served = set(catalog)
+    await meter.settle()
+    prepass = await meter.window(None, IDLE_PREPASS_S)
     for verb in plan["verbs"]:
         hold = catalog[verb].default_lease_s or DEFAULT_HOLD_S
         await meter.settle()
         idle = await meter.window(None, hold)
-        ambient = set(idle.changed)
+        ambient = set(idle.changed) | set(prepass.changed)
         await meter.settle()
         alone = await meter.window(verb, hold)
         row: dict[str, Any] = {"hold_s": _round(hold), "ambient": sorted(ambient),
