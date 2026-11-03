@@ -432,14 +432,17 @@ def tally(tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def compare_tallies(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Each asymmetry the seeded build showed, against the control.
 
-    Specific: in more than half the seeded sessions and never on the control, for a key the control never shows
-    asymmetric. Sporadic: never on the control but in half the seeded sessions or fewer. Noisy key: the control shows
-    the key asymmetric for another verb. Not specific: the control shows this asymmetry too.
+    Specific: in more than half the seeded sessions and never on the control, for a key the control shows
+    asymmetric for no other verb. Sporadic: never on the control but in half the seeded sessions or fewer. Noisy key:
+    the control shows the key asymmetric for another verb. Not specific: the control shows this asymmetry too.
     """
     control_k = {(a["verb"], a["key"], a["present_while"], a["absent_while"]): a["k"]
                  for a in control.get("asymmetries") or ()}
-    # A key the control build shows asymmetric for any verb flips on its own: no asymmetry of it is specific.
-    noisy = {a["key"] for a in control.get("asymmetries") or ()}
+    # A key the control build shows asymmetric for another verb flips on its own: no asymmetry of it is specific.
+    # The same verb's asymmetry on the control is not noise: mirrored, it is the contrast a reversed guard shows.
+    noisy: dict[str, set[str]] = {}
+    for a in control.get("asymmetries") or ():
+        noisy.setdefault(a["key"], set()).add(a["verb"])
     out = []
     for item in seeded.get("asymmetries") or ():
         ident = (item["verb"], item["key"], item["present_while"], item["absent_while"])
@@ -448,7 +451,7 @@ def compare_tallies(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> li
             verdict = "inconclusive"
         elif k_control >= 1:
             verdict = "not_specific"
-        elif item["key"] in noisy:
+        elif noisy.get(item["key"], set()) - {item["verb"]}:
             verdict = "noisy_key"  # never this asymmetry on the control, but the key is asymmetric there for others
         elif 2 * item["k"] > seeded["n"]:
             verdict = "specific"

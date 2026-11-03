@@ -153,6 +153,9 @@ def test_an_effect_seen_while_one_direction_is_held_and_not_its_opposite_is_an_a
     flaky = {"n": 3, "asymmetries": [{"verb": "aim", "key": "blend", "present_while": "back", "absent_while": "forward",
                                       "k": 1}]}
     assert {r["verdict"] for r in guards.compare_tallies(seeded, flaky)} == {"noisy_key", "specific"}
+    mirrored = {"n": 3, "asymmetries": [{"verb": "dash", "key": "blend", "present_while": "forward",
+                                         "absent_while": "back", "k": 3}]}
+    assert {r["key"]: r["verdict"] for r in guards.compare_tallies(seeded, mirrored)}["blend"] == "specific"
 
 
 def test_only_a_chord_that_does_what_its_verb_alone_does_not_is_offered_to_play():
