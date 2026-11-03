@@ -276,3 +276,18 @@ def test_a_reader_replay_beside_an_effect_replay_keeps_its_baseline_table_and_it
     assert "| Attempt | Result | Baseline | Reason |" in md and "| Attempt | Result | Measured | Reason |" in md
     assert "| 3 | invalid | 1.0 | the replay diverged at turn 0 |" in md
     assert "`public.speed` = 9.5" in md
+
+
+def test_a_control_comparison_decides_whether_a_replay_moves_the_finding():
+    from playtest.runner import report as report_module
+    seeded = {"summary": {"k": 5, "n": 5, "unknown": 0}, "status": "measured",
+              "finding_update": {"finding_id": "f-1", "state": "reproduced"}}
+    plan = {"repro_check_source": "finding", "inputs": []}
+    rule = report_module.replay({"path": "x", "report": seeded, "plan": plan, "comparison": {
+        "verdict": "not_specific", "reason": "the control build reproduces it too", "control": {"k": 5, "n": 5}}})
+    assert rule["changes_state"] is False and "not_specific" in rule["finding_update_reason"]
+    assert rule["control"] == {"k": 5, "n": 5} and rule["verdict"] == "not_specific"
+    bug = report_module.replay({"path": "x", "report": seeded, "plan": plan, "comparison": {
+        "verdict": "specific", "reason": "r", "control": {"k": 0, "n": 5},
+        "finding_update": {"finding_id": "f-1", "state": "reproduced"}}})
+    assert bug["changes_state"] is True and bug["state_after"] == "reproduced"

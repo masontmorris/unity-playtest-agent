@@ -236,9 +236,14 @@ def evidence(entries_by_seq: Mapping[int, Mapping[str, Any]], finding: Mapping[s
 def load_reproductions(directories: Sequence[Path]) -> list[dict[str, Any]]:
     out = []
     for directory in directories:
-        report, plan = _read_json(directory / "reproduce.json"), _read_json(directory / "plan.json")
+        comparison = _read_json(directory / "comparison.json") if (directory / "comparison.json").is_file() else None
+        # A replay made with a control (`reproduce-with-control.ps1`): the seeded replay is the record, and the
+        # comparison with the control decides whether it moves the finding.
+        source = directory / "seeded" if comparison is not None else directory
+        report, plan = _read_json(source / "reproduce.json"), _read_json(source / "plan.json")
         problem = None if isinstance(report, dict) and isinstance(plan, dict) else "reproduce.json or plan.json is missing"
-        out.append({"path": _display(directory), "report": report or {}, "plan": plan or {}, "problem": problem})
+        out.append({"path": _display(directory), "report": report or {}, "plan": plan or {}, "problem": problem,
+                    "comparison": comparison if isinstance(comparison, dict) else None})
     return out
 
 
@@ -254,6 +259,16 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
     update = None if overridden else report.get("finding_update")
     update_reason = (None if update is not None else OVERRIDE_REASON if overridden
                      else report.get("finding_update_reason") or UNSCORED_REASON)
+    comparison = record.get("comparison")
+    if comparison is not None and not overridden:
+        if comparison.get("verdict") == "specific":
+            update = comparison.get("finding_update") or update
+        else:
+            update = None
+            control = comparison.get("control") or {}
+            update_reason = (f"the control replay gave {comparison.get('verdict')} "
+                             f"({control.get('k')} of {control.get('n')} on the control build): "
+                             f"{comparison.get('reason')}")
     attempts = []
     for attempt in report.get("attempts") or []:
         deviations = [abs(row["deviation_s"]) for row in attempt.get("inputs") or [] if row.get("deviation_s") is not None]
@@ -278,6 +293,7 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
             "basis": summary.get("basis"), "attempts": attempts,
             "changes_state": update is not None, "state_after": (update or {}).get("state"),
             "finding_update_reason": update_reason,
+            "control": (comparison or {}).get("control"), "verdict": (comparison or {}).get("verdict"),
             "model_calls": report.get("model_calls")}
 
 
@@ -475,6 +491,10 @@ def _finding_markdown(f: Mapping[str, Any]) -> list[str]:
         lines += [f"Replay `{r['path']}`, {source} {_check(r['check'])}: {r['status']}, {r['k']} of {r['n']} "
                   f"reproduced, {r['unknown']} unknown, {len(r['invalid'] or [])} invalid; reset {r['reset']}, "
                   f"{r['inputs']} inputs. {effect}", ""]
+        if r.get("verdict") is not None:
+            control = r.get("control") or {}
+            lines += [f"Control replay of the same plan on the unseeded build: {control.get('k')} of "
+                      f"{control.get('n')} reproduced. Verdict: **{r['verdict']}**.", ""]
         if calibrated:
             lines += [f"The check is the net displacement of one execution of `{calibrated.get('action')}`. "
                       f"Calibration measured {_displacement(calibrated.get('expected_displacement'), calibrated)} "
