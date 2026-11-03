@@ -48,6 +48,7 @@ class Game:
 
     def __init__(self) -> None:
         self.now, self.x, self.air_until, self.held, self.shots = 0.0, 0.0, -1.0, None, 0
+        self.last_shot = 0.0
         self.seq = 0
 
     def clock(self) -> float:
@@ -76,6 +77,7 @@ class Game:
             self.air_until = self.now + 0.6
         if "j" in controls and self.now >= self.air_until:
             self.shots += 1
+            self.last_shot = self.now
         return [SimpleNamespace(status=SimpleNamespace(value="running"))]
 
     async def stop(self, reason):
@@ -92,6 +94,7 @@ class Game:
 
     async def read(self):
         return SimpleNamespace(values={"timer": round(self.now, 2), "shots": self.shots,
+                                       "since_shot": round(self.now - self.last_shot, 2),
                                        "airborne": self.now < self.air_until})
 
 
@@ -112,6 +115,8 @@ def test_each_verb_is_measured_against_the_baseline_of_its_state():
 
     attack = verbs["attack"]
     assert attack["rest"]["effect"] is True and "shots" in attack["rest"]["changed"]
+    assert "since_shot" in attack["ambient"] and "since_shot" in attack["rest"]["changed"]   # counts up, reset by it
+    assert "since_shot" not in dash["rest"]["changed"]                                          # its own clock only
     assert attack["air"]["effect"] is False                       # pressed in the air: no shot
 
     lines = guards.summary_lines(table)

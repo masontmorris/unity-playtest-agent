@@ -40,6 +40,7 @@ SETTLED_READINGS = 3
 DISPLACEMENT_RATIO = 0.25  # a chord moves differently from its direction alone past this share
 EPS = 1e-3
 DEFAULT_HOLD_S = 0.3
+TRIALS = 2                 # presses per state: only what changed every time counts, so a rare flip does not
 IDLE_PREPASS_S = 3.0       # one idle window before any press, so readers that change on their own clock are ambient
 _NAME = re.compile(NAME)
 
@@ -232,14 +233,36 @@ class _Meter:
         return _Window(changed=changed, displacement=displacement, status=status)
 
 
-def _added(window: _Window, baseline: _Window, ambient: set[str]) -> dict[str, list[Any]]:
+def _trend(values: Sequence[Any]) -> int:
+    """+1 or -1 when a numeric key only moved one way in a window (a timer counting), else 0."""
+    numbers = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if len(numbers) < 2 or len(numbers) != len(values):
+        return 0
+    steps = [b - a for a, b in zip(numbers, numbers[1:])]
+    if all(step > EPS for step in steps):
+        return 1
+    if all(step < -EPS for step in steps):
+        return -1
+    return 0
+
+
+def _against(values: Sequence[Any], trend: int) -> bool:
+    """Whether a key moved against `trend` at any step (a counting timer reset)."""
+    numbers = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return trend != 0 and any((b - a) * trend < -EPS for a, b in zip(numbers, numbers[1:]))
+
+
+def _added(window: _Window, baseline: _Window, ambient: set[str],
+           trends: Mapping[str, int] | None = None) -> dict[str, list[Any]]:
     """Keys the press changed that neither its state's baseline nor the idle windows changed at all.
 
     A key that also changes in the baseline (a position while moving) is the state's, not the verb's, however its
-    values differ: how far the body went is compared separately, by displacement.
+    values differ: how far the body went is compared separately, by displacement. An ambient key that only counts
+    one way while idle (a timer) still counts when the press moves it the other way: that is a reset, not its clock.
     """
+    trends = trends or {}
     return {key: values for key, values in window.changed.items()
-            if key not in ambient and key not in baseline.changed}
+            if (key not in ambient and key not in baseline.changed) or _against(values, trends.get(key, 0))}
 
 
 def _moved_differently(window: _Window, baseline: _Window) -> bool | None:
@@ -250,11 +273,16 @@ def _moved_differently(window: _Window, baseline: _Window) -> bool | None:
     return abs(window.displacement - baseline.displacement) > DISPLACEMENT_RATIO * baseline.displacement
 
 
-def _row(added: dict[str, list[Any]], window: _Window, baseline: _Window) -> dict[str, Any]:
-    moved = _moved_differently(window, baseline)
-    return {"effect": bool(added) or bool(moved), "changed": {k: _round(v) for k, v in sorted(added.items())},
+def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Window) -> dict[str, Any]:
+    """What every trial measured: the keys all of them changed, and a different motion only when each moved so."""
+    keys = set.intersection(*(set(added) for added, _ in trials)) if trials else set()
+    first, window = trials[0]
+    moves = [_moved_differently(w, baseline) for _, w in trials]
+    moved = None if any(m is None for m in moves) else all(moves)
+    return {"effect": bool(keys) or bool(moved), "changed": {k: _round(first[k]) for k in sorted(keys)},
             "displacement": _round(window.displacement), "baseline_displacement": _round(baseline.displacement),
-            "moved_differently": moved, "status": window.status}
+            "moved_differently": moved, "trials": len(trials),
+            "status": ",".join(sorted({str(w.status) for _, w in trials}))}
 
 
 def _round(value: Any) -> Any:
@@ -281,15 +309,23 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
     served = set(catalog)
     await meter.settle()
     prepass = await meter.window(None, IDLE_PREPASS_S)
+    trends = {key: _trend(values) for key, values in prepass.changed.items()}
+
+    async def trials(action: str, hold_s: float, baseline: _Window, ambient: set[str], **press: Any) -> dict[str, Any]:
+        measured = []
+        for _ in range(TRIALS):
+            await meter.settle()
+            window = await meter.window(action, hold_s, **press)
+            measured.append((_added(window, baseline, ambient, trends), window))
+        return _row(measured, baseline)
+
     for verb in plan["verbs"]:
         hold = catalog[verb].default_lease_s or DEFAULT_HOLD_S
         await meter.settle()
         idle = await meter.window(None, hold)
         ambient = set(idle.changed) | set(prepass.changed)
-        await meter.settle()
-        alone = await meter.window(verb, hold)
         row: dict[str, Any] = {"hold_s": _round(hold), "ambient": sorted(ambient),
-                               "rest": _row(_added(alone, idle, ambient), alone, idle), "moving": {}, "air": None}
+                               "rest": await trials(verb, hold, idle, ambient), "moving": {}, "air": None}
         for chord in by_verb.get(verb, []):
             if chord.name not in served:
                 notes.append(f"chord {chord.name} is not in the served catalog; {verb} was not measured moving")
@@ -297,15 +333,11 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
             chord_hold = chord.definition.default_lease_s or hold
             await meter.settle()
             baseline = await meter.window(chord.move, chord_hold)
-            await meter.settle()
-            together = await meter.window(chord.name, chord_hold)
-            row["moving"][chord.move] = _row(_added(together, baseline, ambient), together, baseline)
+            row["moving"][chord.move] = await trials(chord.name, chord_hold, baseline, ambient)
         if rise is not None:
             await meter.settle()
             jump = await meter.window(rise, rise_hold)
-            await meter.settle()
-            airborne = await meter.window(rise, rise_hold, then=verb, then_after_s=apex_s)
-            row["air"] = _row(_added(airborne, jump, ambient), airborne, jump)
+            row["air"] = await trials(rise, rise_hold, jump, ambient, then=verb, then_after_s=apex_s)
         table[verb] = row
     return {"verbs": table, "moves": plan["moves"], "rise": rise, "notes": notes}
 
