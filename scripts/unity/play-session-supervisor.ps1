@@ -56,6 +56,9 @@ $ShutdownName = 'shutdown'
 $ClientStdoutName = 'client.stdout.log'
 $ClientStderrName = 'client.stderr.log'
 $PollMilliseconds = 250
+# After the host reports a failed operation, how long the client may take to end the run and write its record
+# before it is stopped. A restart the run's own wall time cut short fails on the host; the client records that.
+$HostFailureGraceSeconds = 20
 $ExitClean = 0
 $ExitFailed = 1
 $ExitSetup = 2
@@ -476,7 +479,15 @@ try {
 
         $state = Read-HostState $hostStatePath
         if ($null -ne $state -and [string]$state.run_id -eq $runId -and [string]$state.phase -eq 'failed') {
-            $clientFailure = "The session host reported failure while the client was running: $($state.error)"
+            # The client owns the run's outcome: it ends the run on a failed operation and writes its record.
+            # It gets a bounded grace to do that; only a client still running after it is stopped as failed.
+            $graceUntil = [DateTime]::UtcNow.AddSeconds($HostFailureGraceSeconds)
+            while (-not $clientProcess.HasExited -and -not $unityProcess.HasExited -and [DateTime]::UtcNow -lt $graceUntil) {
+                Start-Sleep -Milliseconds $PollMilliseconds
+            }
+            if (-not $clientProcess.HasExited) {
+                $clientFailure = "The session host reported failure while the client was running: $($state.error)"
+            }
             break
         }
 
