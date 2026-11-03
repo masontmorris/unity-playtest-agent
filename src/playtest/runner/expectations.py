@@ -36,7 +36,7 @@ EXPECT = ("changes", "increases", "decreases", "reaches", "moves_body")
 TOLERANCE = 0.05   # a reaches prediction holds within this share of its value (or of 1, for a value near 0)
 DISPLACEMENT_RATIO = 0.25
 BASIS = ("declared_value", "intent", "names")
-MODEL = "muse-spark-1.3"
+MODEL = "muse-spark-1.3"  # the default; `--model` on predict and investigate chooses another priced one
 TIMEOUT_S = 180.0
 MAX_WRITERS = 6
 UNOBSERVED = 4.0   # a reading gap this many usual intervals long is a stretch nothing was read in, not a slow turn
@@ -137,12 +137,22 @@ CONDITION_OPS = ["==", "!=", "<", "<=", ">", ">="]
 ACTION_RULE = {"type": "object", "additionalProperties": False,
                "required": ["action", "condition_observable", "condition_op", "condition_value", "situation", "then",
                             "then_expect", "then_value", "within_s", "basis", "because"],
-               "properties": {"action": {"type": "string"},
-                              "condition_observable": {"type": ["string", "null"]},
+               "properties": {"action": {"type": "string", "description": "the input pressed: a listed verb, move or rise"},
+                              "condition_observable": {"type": ["string", "null"],
+                                                       "description": "a listed reader's alias, or null"},
                               "condition_op": {"type": ["string", "null"], "enum": [*CONDITION_OPS, None]},
                               "condition_value": {"type": ["number", "boolean", "string", "null"]},
-                              "situation": {"type": ["string", "null"]}, "then": {"type": "string"},
-                              "then_expect": {"type": "string", "enum": ["changes", "increases", "decreases", "reaches"]},
+                              "situation": {"type": ["string", "null"]},
+                              "target_object": {"type": ["string", "null"],
+                                                "description": "for a situation near a scene object: its id from "
+                                                               "objects; otherwise null"},
+                              "within": {"type": ["number", "null"],
+                                         "description": "with target_object: how near it, in world units, the body "
+                                                        "must be for the situation to hold"},
+                              "then": {"type": "string", "description": "the alias of the listed reader that must "
+                                                                        "follow the press"},
+                              "then_expect": {"type": "string", "enum": ["changes", "increases", "decreases", "reaches"],
+                                              "description": "how that reader must follow"},
                               "then_value": VALUE, "within_s": {"type": "number"},
                               "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
 
@@ -277,6 +287,25 @@ def referenced_assets(discovery: Mapping[str, Any], entity_object_id: str,
     return out
 
 
+BUILT_IN = ("UnityEngine", "TMPro", "Unity.", "Cinemachine", "mscorlib", "System")
+MAX_OBJECTS = 60
+
+
+def authored_objects(discovery: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The scene objects that carry the game's own scripts, with their path and those scripts' names: what a
+    situation can be near. An engine or package component alone does not make an object the game's."""
+    data = discovery.get("data") or {}
+    paths = {o["id"]: o.get("path") or o.get("name") for o in data.get("game_objects") or ()}
+    scripts: dict[str, list[str]] = {}
+    for component in data.get("components") or ():
+        kind, assembly = component.get("type") or "", component.get("assembly") or ""
+        if not kind or any(kind.startswith(b) or assembly.startswith(b) for b in BUILT_IN):
+            continue
+        scripts.setdefault(component.get("object_id"), []).append(kind.split(".")[-1])
+    return [{"id": oid, "path": paths.get(oid), "scripts": sorted(set(names))}
+            for oid, names in list(scripts.items())[:MAX_OBJECTS] if oid in paths]
+
+
 def build_packet(manifest: Mapping[str, Any], discovery: Mapping[str, Any],
                  guards: Mapping[str, Any], read: Callable[[str], str | None] | None = None) -> dict[str, Any]:
     """What the game declares before play, for the verbs a guard table measures; no measurement is included."""
@@ -308,7 +337,8 @@ def build_packet(manifest: Mapping[str, Any], discovery: Mapping[str, Any],
         held = [c.get("held_s") for c in (row.get("moving") or {}).values() if c and c.get("held_s")]
         return {"pressed_s": row.get("hold_s"), "pressed_with_move_s": held[0] if held else None}
 
-    packet = {"verbs": [{**described(v), **pressed(v)} for v in (guards.get("verbs") or {})],
+    packet = {"objects": authored_objects(discovery),
+              "verbs": [{**described(v), **pressed(v)} for v in (guards.get("verbs") or {})],
               "moves": [described(m) for m in guards.get("moves") or ()], "rise": described(guards.get("rise")),
               "readers": readers, "camera": list(CAMERA),
               "declared_configuration": declared_configuration(discovery, manifest["entity_id"])}
@@ -338,7 +368,8 @@ ACTION_SYSTEM = (
     "happen in play, so code can check it at every press in a recorded session and in a session that tries each one "
     "on purpose. An action rule: when the player presses an input (a verb, a move or the rise) and, if the rule "
     "needs one, a reader satisfies a condition just before the press, another reader must follow within within_s "
-    "seconds: then_expect changes, increases, decreases, or reaches then_value. Readings come about every 0.3 to "
+    "seconds: then names that reader by its alias, and then_expect says how it follows: changes, increases, "
+    "decreases, or reaches then_value. Readings come about every 0.3 to "
     "0.8 s, so within_s is at least 1. Cover every verb whose effect a reader can show, and the rise: what each "
     "press starts (a projectile spawned, a flag set, a dialogue begun, a count raised) and, as a separate rule, "
     "what it ends when a declared duration says it ends. Readings are taken just before and just after each press "
@@ -348,7 +379,11 @@ ACTION_SYSTEM = (
     "(condition_observable, condition_op, condition_value) when the effect needs one a reader shows (a cooldown "
     "run out, standing on the ground, not dead). When no reader can express the condition (an NPC in range, an "
     "enemy near, standing on a pickup), describe it in situation, in a few words a player could bring about, and "
-    "leave the reader condition null. situation is null when the press alone must do it. Use only what the "
+    "leave the reader condition null. When the situation is being near or at a scene object (an NPC to talk to, a "
+    "pickup, a hazard, an enemy), name it: target_object is its id from objects (each listed with its path and the "
+    "game's own scripts on it), and within is how near it the body must be, in world units, for the press to count. "
+    "The session measures that distance at every press and leads the player there. situation is null when the "
+    "press alone must do it. Use only what the "
     "declarations say: an intent, a declared value (cite it in because), or the names of the action, the fields and "
     "the methods that write them. A timer or a cooldown counts through values and may count either way: never "
     "predict its direction, only that it changes. At most ten."
@@ -475,9 +510,21 @@ def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple
             reason = "a then_value goes with reaches only"
         elif not isinstance(item.get("within_s"), (int, float)) or not 0 < item["within_s"] <= 30:
             reason = "within_s must be a positive number of seconds, at most 30"
+        objects = {o["id"] for o in packet.get("objects") or ()}
+        if reason is None and item.get("target_object") is not None:
+            if not item.get("situation"):
+                reason = "a target_object goes with a situation"
+            elif item["target_object"] not in objects:
+                reason = "not a listed scene object"
+            elif not isinstance(item.get("within"), (int, float)) or not 0 < item["within"] <= 20:
+                reason = "within must be a positive distance, at most 20"
         if reason:
             set_aside.append({**item, "set_aside": reason})
         elif item.get("situation"):
+            if item.get("target_object") is not None:
+                path = next((o.get("path") for o in packet.get("objects") or () if o["id"] == item["target_object"]), None)
+                item = {**item, "target_path": path,
+                        "region_id": f"situation_{sum(1 for k in kept['situations'] if k.get('target_object')) + 1}"}
             kept["situations"].append(item)   # a condition no reader shows: tested in a directed session
         else:
             kept["action_rules"].append(item)
@@ -1352,6 +1399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "can be read")
     predict.add_argument("--ref", help="the build under test's commit or branch in --project (default: its working "
                          "tree)")
+    predict.add_argument("--model", default=MODEL, help="the frontier model that writes the expectations")
     predict.add_argument("--part", choices=("all", "magnitudes", "actions"), default="all",
                          help="magnitudes or actions: one focused call for the declared sizes, or for what each "
                               "press must make happen in play, only")
@@ -1368,6 +1416,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     investigator.add_argument("--expectations", type=Path, required=True)
     investigator.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with trace.jsonl")
     investigator.add_argument("--approval", type=Path, required=True)
+    investigator.add_argument("--model", default=MODEL, help="the frontier model that proposes the conditions")
     investigator.add_argument("--output", type=Path, required=True, help="a new folder")
     planner = sub.add_parser("test-plan")
     planner.add_argument("--expectations", type=Path, nargs="+", required=True,
@@ -1382,6 +1431,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("the output must be new")
+    if getattr(args, "model", None) is not None:
+        from playtest.frontier import provider as _provider
+
+        _provider.use_model(args.model)   # its price; requests and ledgers below name it
+        globals()["MODEL"] = args.model
     if args.command == "report":
         guard = json.loads(args.guards_score.read_text(encoding="utf-8"))
         play = json.loads(args.play_score.read_text(encoding="utf-8")) if args.play_score else {"scored": []}
@@ -1411,13 +1465,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         presses = [play_presses(rows) for rows in traces]
         controls = [catalog_controls(json.loads((run / "catalog.json").read_text(encoding="utf-8")))
                     if (run / "catalog.json").is_file() else {} for run in args.runs]
+        guard_tables = [json.loads((run / "guards.json").read_text(encoding="utf-8"))
+                        for run in [*args.runs, *(args.guards or ())] if (run / "guards.json").is_file()]
         rows = (score_ranges(expectations.get("ranges") or (), sessions)
                 + score_transitions(expectations.get("transitions") or (), sessions)
                 + score_durations(expectations.get("durations") or (), sessions)
                 + score_action_rules(expectations.get("action_rules") or (), sessions, presses, controls,
-                                     [json.loads((run / "guards.json").read_text(encoding="utf-8"))
-                                      for run in [*args.runs, *(args.guards or ())]
-                                      if (run / "guards.json").is_file()]))
+                                     guard_tables)
+                + score_situations(expectations.get("situations") or (), sessions, presses, controls,
+                                   [situation_presses(rows) for rows in traces], guard_tables))
         mismatches = [r for r in rows if r["verdict"] == "mismatch"]
         result = {"runs": [str(r) for r in args.runs], "mismatches": mismatches, "scored": rows}
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -1478,6 +1534,95 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if status == 200 else 1
 
 
+def situation_regions(situations: Sequence[Mapping[str, Any]], positions: Mapping[str, Any], *, scene: str,
+                      paths: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    """A reach region around each situation's object, where one transforms reading at the session's start put it.
+
+    The agent declares these itself, from its own pre-registered situations: author, source and verification say
+    so, and none is an operator's assertion or a verified target. S1 reads each region's measured distance as a fact
+    and the frontier may set one as a directive's setpoint; whether a press was made in the situation is measured
+    again at the press (`targets_before`), since an object can move.
+    """
+    regions = []
+    for number, item in enumerate(situations, 1):
+        target = item.get("target_object")
+        region_id = item.get("region_id") or f"situation_{number}"
+        placed = positions.get(target) if target else None
+        position = (placed or {}).get("position") if isinstance(placed, Mapping) else None
+        if not isinstance(position, (list, tuple)) or len(position) != 3:
+            continue
+        r = float(item["within"])
+        regions.append({
+            "region_id": region_id, "label": item.get("target_path") or (paths or {}).get(target) or target,
+            "purpose": f"{item['situation']}, then press {item['action']}", "frame": "world", "scene": scene,
+            "bounds": {"min": [float(v) - r for v in position], "max": [float(v) + r for v in position]},
+            "pose": "probe_anchor", "author": "the agent's pre-registered expectations (a situation)",
+            "source": "the situation's object position from the transforms reading at this session's start",
+            "verification": "unverified"})
+    return regions
+
+
+def _in_situation(item: Mapping[str, Any], observed: Mapping[str, Any]) -> bool | None:
+    """Whether the body was within the situation's distance of its object at the press, or None when unread."""
+    target = item.get("target_object")
+    if target is None:
+        return None
+    placed = (observed.get("targets_before") or {}).get(target)
+    body = observed.get("from_position")
+    if not isinstance(placed, Mapping) or not isinstance(placed.get("position"), (list, tuple)) or \
+            not isinstance(body, (list, tuple)) or len(body) != len(placed["position"]):
+        return None
+    if placed.get("active") is False:
+        return False   # a collected pickup or a despawned enemy is no longer there to be near
+    import math as _math
+    return _math.dist(body, placed["position"]) <= float(item["within"])
+
+
+def situation_presses(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, Mapping[str, Any]]]:
+    """Each press's effect record (`observed`) by its start, for the situation check at that press."""
+    from playtest.runner.review import _epoch
+
+    out = []
+    for row in trace_rows:
+        if row.get("kind") == "effect":
+            observed = (row.get("body") or {}).get("observed") or {}
+            before = (observed.get("readers_before") or {}).get("wall_s")
+            if isinstance(before, (int, float)):
+                out.append((float(before), observed))
+    return sorted(out, key=lambda item: item[0])
+
+
+def score_situations(situations: Sequence[Mapping[str, Any]], sessions: Sequence[Sequence[tuple[float, int, dict]]],
+                     presses: Sequence[Sequence[tuple[float, float, str]]], controls: Sequence[Mapping[str, frozenset]],
+                     effects: Sequence[Sequence[tuple[float, Mapping[str, Any]]]],
+                     guards: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
+    """A situation's rule at the presses made in the situation, measured at each press: the body within its
+    distance of the situation's object (an object no longer active is not there). A press outside it, or one whose
+    situation could not be read, is not counted."""
+    out = []
+    for item in situations:
+        if item.get("target_object") is None:
+            continue
+        kept_presses, skipped_out, unread = [], 0, 0
+        for pressed, recorded in zip(presses, effects):
+            mine = []
+            for start, end, action in pressed:
+                observed = next((o for t, o in recorded if abs(t - start) <= 1.5 and t <= start + 0.05), None)
+                where = _in_situation(item, observed) if observed is not None else None
+                if where is None:
+                    unread += 1
+                elif where:
+                    mine.append((start, end, action))
+                else:
+                    skipped_out += 1
+            kept_presses.append(mine)
+        (row,) = score_action_rules([item], sessions, kept_presses, controls, guards)
+        row["situation_not_met"], row["situation_unread"] = skipped_out, unread
+        row["line"] += f"; {skipped_out} presses outside the situation and {unread} unread were not counted"
+        out.append(row)
+    return out
+
+
 def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
     """A session objective that asks for each action rule's press to be made on purpose, in plain words.
 
@@ -1490,7 +1635,9 @@ def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
     for rule in rules:
         step = f"press {rule['action']}"
         if rule.get("situation"):
-            step = f"{rule['situation'].rstrip('.')}, then {step}"
+            where = (f" (go to the place the progress fact {rule['region_id']} measures, within "
+                     f"{rule['within']:g})" if rule.get("region_id") else "")
+            step = f"{rule['situation'].rstrip('.')}{where}, then {step}"
         if rule.get("condition_observable"):
             step += (f" when {rule['condition_observable']} {rule['condition_op']} "
                      f"{json.dumps(rule['condition_value'])}")

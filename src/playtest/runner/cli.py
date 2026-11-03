@@ -215,6 +215,14 @@ def _parser() -> argparse.ArgumentParser:
                         help="before play, measure each verb at rest, while moving and in the air against a baseline "
                              "of each, and save the table as guards.json (the host must serve the guard chords: "
                              "playtest-export-catalog --guard-chords; also UPA_RUN_MEASURE_GUARDS)")
+    parser.add_argument("--frontier-model", choices=tuple(frontier_provider.PRICES),
+                        default=_env("UPA_RUN_FRONTIER_MODEL", str, frontier_provider.DEFAULT_MODEL),
+                        help="the frontier model: its requests, approval arm, ledger, cost and run record (also "
+                             "UPA_RUN_FRONTIER_MODEL)")
+    parser.add_argument("--situations", type=Path, default=_env("UPA_RUN_SITUATIONS", Path, None),
+                        help="an expectations.json whose situations name a scene object: at the start each object is "
+                             "placed from one transforms reading and becomes a reach region S1 sees the distance to, "
+                             "and every press records where each object was (also UPA_RUN_SITUATIONS)")
     parser.add_argument("--press-readings", action="store_true",
                         default=_env("UPA_RUN_PRESS_READINGS", switch, False),
                         help="read every reader just before and just after each input too, into its effect record: "
@@ -376,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     project, output = args.project.resolve(), args.output.resolve()
     if args.approval is None:
         parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
+    frontier_provider.use_model(args.frontier_model)  # before any approval, ledger or call reads the model
     if args.guards_only and not args.measure_guards:
         parser.error("--guards-only measures the guard table: it needs --measure-guards")
     if args.max_calls is None or args.max_calls < 1:
@@ -533,6 +542,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["guards_only"] = True
         if args.press_readings:
             plan["press_readings"] = True
+        if args.situations is not None:
+            plan["situations"] = str(args.situations)
         if args.contingent:
             plan["contingent"] = True
         if args.placement:
@@ -667,9 +678,25 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             if not steps:
                 raise ValueError("options require a measured short movement step for outcome memory")
             memory = OutcomeMemory(cell=min(steps))
-        snapshot = make_snapshot(client, manifest.entity_id)
-        await snapshot()  # before any paid call: the manifest's entity must be in the running game
+        situations: list[dict[str, Any]] = []
+        if args.situations is not None:
+            situations = [s for s in (json.loads(args.situations.read_text(encoding="utf-8")).get("situations") or ())
+                          if s.get("target_object")]
+        targets = list(dict.fromkeys(s["target_object"] for s in situations))
+        snapshot = make_snapshot(client, manifest.entity_id, targets)
+        first = await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
+        if situations:
+            from playtest.contracts.manifest import ReachRegion
+            from .expectations import situation_regions
+
+            # Each situation's object, where the session starts, as a region of the agent's own declaring: S1 reads
+            # the distance to it as a fact and the frontier may set it as a directive's setpoint.
+            regions = situation_regions(situations, first.get("targets") or {}, scene=scene)
+            replay._save(run_dir / "situation-regions.json", {"situations": situations, "regions": regions,
+                                                              "positions": first.get("targets")})
+            manifest = manifest.model_copy(update={"reach_regions": [
+                *manifest.reach_regions, *(ReachRegion.model_validate(r) for r in regions)]})
         if primitives is not None and args.measure_air_rise:
             from .options.air_rise import measure_air_rise, with_air_rise
 
@@ -819,7 +846,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             result = await run_session(
                 client, built, s1=s1, objective=objective, view=view,
                 probe=DisplacementProbe(snapshot, built.expected,
-                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id),
+                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id, targets),
                                         readers=readers if args.press_readings else None),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,

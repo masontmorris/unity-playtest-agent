@@ -113,6 +113,49 @@ def declared_progress(regions: Any) -> dict[str, frontier.ProgressRegion]:
     return out
 
 
+PRESS_READINGS_SHOWN = 12   # the most recent presses whose press-anchored readings the frontier is shown
+
+
+def _changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, list[Any]]:
+    out = {}
+    for key, value in after.items():
+        old = before.get(key)
+        same = (old == value or (isinstance(old, (int, float)) and isinstance(value, (int, float))
+                                 and not isinstance(old, bool) and abs(old - value) <= 1e-3))
+        if key in before and not same and not isinstance(value, (dict, list)):
+            out[key] = [old, value]
+    return out
+
+
+def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN) -> list[str]:
+    """For the latest presses, what every reader read just before and just after each (`--press-readings`).
+
+    The loop's observations come at S1's pace, so a reader a press resets and that then counts back up (a cooldown
+    timer) can read higher at every observation: without these, a reset reads as never happening. Only changes are
+    stated, each as before -> after; a press with none says so. Nothing with no press readings is shown.
+    """
+    of_kind = getattr(sink, "of_kind", None)
+    if of_kind is not None:
+        entries = of_kind("effect")
+    else:
+        entries = [e for e in read_trace(sink.path)
+                   if (e.get("kind") if isinstance(e, Mapping) else getattr(e, "kind", None)) == "effect"]
+    lines = []
+    for entry in entries:
+        body = entry.get("body") if isinstance(entry, Mapping) else getattr(entry, "body", None)
+        if hasattr(body, "model_dump"):
+            body = body.model_dump(mode="json")
+        body = body if isinstance(body, Mapping) else {}
+        observed = body.get("observed") or {}
+        before, after = observed.get("readers_before"), observed.get("readers_after")
+        if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+            continue
+        changes = _changed(before.get("values") or {}, after.get("values") or {})
+        what = ", ".join(f"{k} {v[0]} -> {v[1]}" for k, v in sorted(changes.items())) or "no reader changed"
+        lines.append(f"{body.get('choice_id') or body.get('action')}: {what}")
+    return lines[-limit:]
+
+
 def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
     """Every suspicion the trace holds so far, oldest first, as rows for the packet.
 
@@ -492,6 +535,12 @@ class FrontierHelp:
                                        since_utc=self.started_utc, until_utc=now, output_dir=folder,
                                        generation=self.generation, window_s=self.clip_window_s)
         fact_rows = [{"text": text, "seqs": [seq]} for text in context.get("facts", []) if isinstance(text, str)]
+        pressed = press_reading_lines(self.sink)
+        if pressed:
+            fact_rows.append({"text": "Read just before and just after each of the latest presses, oldest first (the "
+                                      "observations come at S1's pace and can miss a change a press makes and the game "
+                                      "then undoes, such as a cooldown reset that counts back up): " + "; ".join(pressed),
+                              "seqs": [seq]})
         fact_rows += [{"text": "Measured before play on this build, not in this trace (each verb pressed at rest, "
                                "while a direction was held and in the air, against each state without it): " + line,
                        "seqs": [seq]} for line in self.guards]

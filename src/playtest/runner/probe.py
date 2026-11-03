@@ -11,7 +11,7 @@ A reading that cannot be taken leaves the observed value `None`, never zero.
 from __future__ import annotations
 
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Sequence, Awaitable, Callable, Mapping
 from typing import Any
 
 from playtest.contracts.loop import Choice
@@ -80,19 +80,40 @@ def describe_surroundings(probe: Any) -> str | None:
 Snapshot = Callable[[], Awaitable[dict[str, Any]]]
 
 
-def make_snapshot(client: BridgeClient, entity_id: str) -> Snapshot:
+def make_snapshot(client: BridgeClient, entity_id: str, targets: Sequence[str] = ()) -> Snapshot:
     """One `inspect("transforms")` reading of the entity, stamped with the inspection's `seq`.
 
-    Raises `ValueError` when the reading is incomplete or the entity is not in it; a closed bridge raises `BridgeError`.
+    With `targets` (scene object ids), the same reading also carries each target's position and whether it is
+    active, or None for one the reading does not hold: where a situation's object was at that moment, at no extra
+    bridge call. Raises `ValueError` when the reading is incomplete or the entity is not in it; a closed bridge raises
+    `BridgeError`.
     """
 
     async def snapshot() -> dict[str, Any]:
         response = await client.inspect("transforms")
         reading = _entity_snapshot(response, entity_id)
         reading["inspection_seq"] = response.seq
+        if targets:
+            reading["targets"] = target_positions(response, targets)
         return reading
 
     return snapshot
+
+
+def target_positions(response: Any, targets: Sequence[str]) -> dict[str, Any]:
+    """Each target's position and activity in one transforms reading; None for one it does not hold."""
+    from playtest.contracts.scene_ids import unique_by_scene_free_id
+    from playtest.preflight.calibrate import _complete
+    from playtest.preflight.entity import _objects
+
+    rows = _objects(_complete(response, "transforms"))
+    out: dict[str, Any] = {}
+    for target in targets:
+        row = rows.get(target) or unique_by_scene_free_id(rows, target)
+        out[target] = None if row is None else {
+            "position": row.get("position"),
+            "active": row.get("active_in_hierarchy", row.get("active"))}
+    return out
 
 
 async def read_snapshot(snapshot: Snapshot) -> tuple[dict[str, Any] | None, str | None]:
@@ -144,6 +165,8 @@ class DisplacementProbe:
         if observed is not None:
             problem = problem or (None if observed["net_displacement"] is not None else "a position was unknown")
             observed["applied_duration_s"] = execution.terminal.applied_duration_s
+            if isinstance(before, Mapping) and before.get("targets") is not None:
+                observed["targets_before"] = before["targets"]   # where each situation's object was at the press
             if self._readers is not None:
                 observed["readers_before"] = self._readers_before
                 observed["readers_after"] = await self._read_readers()

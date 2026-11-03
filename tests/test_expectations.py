@@ -599,5 +599,43 @@ def test_a_reading_one_frame_past_a_declared_bound_is_still_at_it():
                              direction=None, when=None, then=None, unless=None)
     kinds = {"life": "number"}
     assert evaluate_invariant(rule, {"life": 5.0005}, None, kinds).holds is True     # a frame's overshoot
+    assert evaluate_invariant(rule, {"life": 5.0635}, None, kinds).holds is True     # a slow frame's
     assert evaluate_invariant(rule, {"life": 5.2}, None, kinds).holds is False
-    assert bound_slack(30.0) == 0.3 and bound_slack(0.0) == 0.01
+    assert bound_slack(30.0) == 0.6 and bound_slack(0.0) == 0.02
+
+
+def test_a_situation_names_its_object_and_is_counted_only_at_presses_made_there():
+    discovery = {"data": {"game_objects": [{"id": "npc", "path": "Wraith"}, {"id": "p", "path": "Player"}],
+                          "components": [{"object_id": "npc", "type": "Game.TalkableNPC", "assembly": "Game"},
+                                         {"object_id": "npc", "type": "UnityEngine.Transform",
+                                          "assembly": "UnityEngine.CoreModule"},
+                                         {"object_id": "p", "type": "UnityEngine.Rigidbody2D",
+                                          "assembly": "UnityEngine.Physics2DModule"}]}}
+    assert expectations.authored_objects(discovery) == [{"id": "npc", "path": "Wraith", "scripts": ["TalkableNPC"]}]
+    packet = {"verbs": [{"name": "interact"}], "moves": [], "rise": None, "objects": [{"id": "npc", "path": "Wraith"}],
+              "readers": [{"alias": "talking", "kind": "bool"}]}
+    talk = attack_rule(action="interact", condition_observable=None, condition_op=None, condition_value=None,
+                       situation="next to the NPC", target_object="npc", within=2.0, then="talking",
+                       then_expect="reaches", then_value=True)
+    kept, aside = expectations.screened_play({"action_rules": [talk, {**talk, "target_object": "nobody"}]}, packet)
+    (situation,) = kept["situations"]
+    assert (situation["target_path"], situation["region_id"]) == ("Wraith", "situation_1")
+    assert aside[0]["set_aside"] == "not a listed scene object"
+    (region,) = expectations.situation_regions([situation], {"npc": {"position": [10.0, 0.0, 0.0]}}, scene="L1")
+    assert region["bounds"] == {"min": [8.0, -2.0, -2.0], "max": [12.0, 2.0, 2.0]} and region["label"] == "Wraith"
+    assert region["verification"] == "unverified" and "pre-registered" in region["author"]
+    assert "(go to the place the progress fact situation_1 measures, within 2)" in expectations.test_plan(
+        {"situations": [situation]})
+    # Presses: one far from the NPC, one next to it that starts dialogue, one next to it that does not.
+    def at(t, x, talking):
+        return (t, 100, {"talking": talking})
+    readings = [at(0, 0, False), at(1, 0, False), at(2, 0, False), at(3, 0, True), at(4, 0, False), at(5, 0, False),
+                at(6, 0, False), at(7, 0, False), at(8, 0, False)]
+    presses = [(0.5, 0.6, "interact"), (2.5, 2.6, "interact"), (5.5, 5.6, "interact")]
+    controls = {"interact": frozenset({("K", "e", None, None)})}
+    effects = [(0.5, {"from_position": [0.0, 0, 0], "targets_before": {"npc": {"position": [10.0, 0, 0]}}}),
+               (2.5, {"from_position": [9.0, 0, 0], "targets_before": {"npc": {"position": [10.0, 0, 0]}}}),
+               (5.5, {"from_position": [9.5, 0, 0], "targets_before": {"npc": {"position": [10.0, 0, 0],
+                                                                                   "active": True}}})]
+    (row,) = expectations.score_situations([situation], [readings], [presses], [controls], [effects])
+    assert (row["n"], row["k"], row["situation_not_met"]) == (2, 1, 1)   # the far press is not counted

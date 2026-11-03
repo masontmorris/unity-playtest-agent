@@ -21,7 +21,10 @@ from typing import Any
 from playtest.contracts.manifest import ManifestCheck, ManifestInvariant
 from playtest.roles.checks import CHANGE, ValueKind, evaluate
 
-BOUND_SLACK = 0.01  # a reading is outside a declared bound only by more than this share of it (at least this much)
+# A reading is outside a declared bound only by more than this share of it (at least this much): a value stepped once
+# a frame stops up to one step past its limit, and a slow frame makes that step large (a lifetime bounded at 5 was
+# read stopped at 5.0635, 1.3% over).
+BOUND_SLACK = 0.02
 
 
 def bound_slack(bound: float) -> float:
