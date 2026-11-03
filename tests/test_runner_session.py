@@ -316,6 +316,30 @@ def test_the_wall_clock_limit_ends_a_run_normally():
     asyncio.run(main())
 
 
+def test_a_run_whose_menu_has_no_finish_choice_ends_at_its_wall_limit():
+    async def main():
+        clock = FakeTime()
+
+        def choose_wait(context):
+            clock.now += 2.0
+            return pick("wait")
+
+        game, client = await connected()
+        sink = harness_trace()
+        try:
+            result = await session(client, build_choices(two_actions(), offer_finish=False),
+                                   s1=FakeS1(*[choose_wait] * 50), objective=OBJECTIVE, wall_limit_s=3.0,
+                                   clock=clock.clock, sink=sink)
+            assert (result.status, result.ending) == ("complete", "wall_limit") and result.turns == 2
+            offered = [[c["id"] for c in row["body"]["choices"]] for row in sink.of_kind("choice_set")]
+            assert offered and all("finish" not in ids for ids in offered)
+            assert result.stop.release_verified is True
+        finally:
+            await closed(game, client)
+
+    asyncio.run(main())
+
+
 def test_consecutive_provider_failures_stop_the_run_and_a_good_turn_resets_the_count():
     async def main():
         game, client = await connected()

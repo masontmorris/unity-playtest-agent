@@ -265,11 +265,18 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
                          "readings": len(attempt.get("readings") or []),
                          "inputs_replayed": len(attempt.get("inputs") or []),
                          "max_abs_deviation_s": round(max(deviations), 3) if deviations else None})
+    checks = [a["reset_check"] for a in report.get("attempts") or [] if a.get("reset_check") is not None]
     return {"path": record["path"], "finished_at_utc": report.get("finished_at_utc"), "status": report.get("status"),
             "check": report.get("repro_check", plan.get("repro_check")),
             "check_source": report.get("repro_check_source", plan.get("repro_check_source")),
             "check_kind": plan.get("repro_check_kind"), "effect": report.get("effect", plan.get("effect")),
             "reset": report.get("reset"),
+            # What the reset did not restore, unioned over the attempts that compared any reader; None when no
+            # attempt measured it, as a plan made before the session's start readers were kept does not.
+            "reset_check": (None if not checks else
+                            {"compared": max(int(check.get("compared") or 0) for check in checks),
+                             "differs": sorted({alias for check in checks
+                                                for alias in (check.get("differs") or {})})}),
             "clock_mode": report.get("clock_mode"), "inputs": len(plan.get("inputs") or []),
             "skipped_inputs": plan.get("skipped_inputs"), "evidence_turn": plan.get("evidence_turn"),
             "planned": summary.get("planned"), "attempted": summary.get("attempted"), "valid": summary.get("valid"),
@@ -449,6 +456,17 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _reset_markdown(reset: Mapping[str, Any] | None) -> list[str]:
+    """What a replay's reset did not restore, measured; nothing when no attempt compared a reader."""
+    if not reset or not reset["compared"]:
+        return []
+    if reset["differs"]:
+        restored = max(0, reset["compared"] - len(reset["differs"]))
+        return [f"Reset restored {restored} of {reset['compared']} compared readers; not restored: "
+                f"{', '.join(reset['differs'])}"]
+    return [f"Reset restored all {reset['compared']} compared readers"]
+
+
 def _finding_markdown(f: Mapping[str, Any]) -> list[str]:
     state = f["state"]
     if f["reproduced"] is not None:
@@ -474,7 +492,8 @@ def _finding_markdown(f: Mapping[str, Any]) -> list[str]:
         calibrated = r.get("effect")
         lines += [f"Replay `{r['path']}`, {source} {_check(r['check'])}: {r['status']}, {r['k']} of {r['n']} "
                   f"reproduced, {r['unknown']} unknown, {len(r['invalid'] or [])} invalid; reset {r['reset']}, "
-                  f"{r['inputs']} inputs. {effect}", ""]
+                  f"{r['inputs']} inputs. {effect}"]
+        lines += _reset_markdown(r.get("reset_check")) + [""]
         if calibrated:
             lines += [f"The check is the net displacement of one execution of `{calibrated.get('action')}`. "
                       f"Calibration measured {_displacement(calibrated.get('expected_displacement'), calibrated)} "

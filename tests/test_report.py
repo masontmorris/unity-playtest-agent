@@ -82,7 +82,8 @@ def _run_folder(tmp_path: Path, *, title: str = "Speed jumps after a short hold"
 
 
 def _replay(tmp_path: Path, name: str, trace: Path, *, source: str = "finding", update: bool = True,
-            k: int = 1, n: int = 1) -> Path:
+            k: int = 1, n: int = 1, reset: list[dict[str, Any] | None] | None = None) -> Path:
+    """A `reproduce` folder; `reset` gives the reset measurement of each attempt in turn, and no others."""
     folder = tmp_path / name
     check = ({"field": "public.speed", "op": ">=", "value": 9, "tolerance": None} if source == "finding"
              else {"field": "public.speed", "op": "changed", "value": None, "tolerance": None})
@@ -98,6 +99,9 @@ def _replay(tmp_path: Path, name: str, trace: Path, *, source: str = "finding", 
         {"number": 3, "valid": False, "result": None, "reason": "the replay diverged at turn 0",
          "baseline": 1.0, "baseline_satisfied": False, "readings": [], "inputs": [{"deviation_s": 0.0}]},
     ]
+    for attempt, measured in zip(attempts, reset or ()):
+        if measured is not None:
+            attempt["reset_check"] = measured
     _write(folder / "reproduce.json", {
         "finding_id": "f-1", "model_calls": 0, "status": "measured_with_gaps", "repro_check": check,
         "repro_check_source": source, "reset": "scene_reload", "clock_mode": "realtime", "attempts": attempts,
@@ -276,3 +280,28 @@ def test_a_reader_replay_beside_an_effect_replay_keeps_its_baseline_table_and_it
     assert "| Attempt | Result | Baseline | Reason |" in md and "| Attempt | Result | Measured | Reason |" in md
     assert "| 3 | invalid | 1.0 | the replay diverged at turn 0 |" in md
     assert "`public.speed` = 9.5" in md
+
+
+def test_the_markdown_states_which_readers_the_reset_did_not_restore(tmp_path):
+    run = _run_folder(tmp_path)
+    trace = run / "trace.jsonl"
+    kept = _replay(tmp_path, "kept", trace, reset=[{"compared": 2, "differs": {}}])
+    drifted = _replay(tmp_path, "drifted", trace, reset=[
+        {"compared": 3, "differs": {"speed": {"session_start": 1.0, "after_reset": 2.5}}},
+        {"compared": 3, "differs": {"health": {"session_start": 100, "after_reset": 90}}},
+        None])
+    built = report.build_report(run, reproduce_dirs=[kept, drifted])
+    own = built["findings"][0]["replays"]
+    assert own[0]["reset_check"] == {"compared": 2, "differs": []}
+    # What any attempt did not restore, once each, whatever the attempt that measured it.
+    assert own[1]["reset_check"] == {"compared": 3, "differs": ["health", "speed"]}
+    md = report.render_markdown(built)
+    assert "Reset restored all 2 compared readers" in md
+    assert "Reset restored 1 of 3 compared readers; not restored: health, speed" in md
+
+
+def test_a_replay_whose_plan_kept_no_session_start_readers_says_nothing_about_the_reset(tmp_path):
+    run = _run_folder(tmp_path)
+    built = report.build_report(run, reproduce_dirs=[_replay(tmp_path, "plain", run / "trace.jsonl")])
+    assert built["findings"][0]["replays"][0]["reset_check"] is None
+    assert "Reset restored" not in report.render_markdown(built)
