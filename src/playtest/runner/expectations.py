@@ -73,7 +73,9 @@ SYSTEM = (
     "that state. In a move's state, a reader the move itself changes (its own input, the body's speed) cannot "
     "show the verb. Every prediction is scored by code against the measurement, and one that is wrong becomes a "
     "false report, so write only the ones you would stake on, with the one observable that most directly shows "
-    "the effect, and at most four per verb.\n"
+    "the effect, and at most four per verb. The rise itself may be predicted in the air state only: pressed again "
+    "at the top of its own jump (a double or air jump), with observable body_motion and expect moves_body, when "
+    "the declarations say a second jump exists.\n"
     "Then write what must hold in play, which is scored over the readings of whole play sessions (one reading "
     "about every 0.8 s): ranges, a reader that must stay within a declared bound at every reading (a health never "
     "above its declared maximum, a count never above a declared limit), with min or max and the declared value it "
@@ -337,11 +339,15 @@ def _full_request(packet: Mapping[str, Any]) -> dict[str, Any]:
 def screened(predictions: Sequence[Mapping[str, Any]], packet: Mapping[str, Any]) -> tuple[list[dict], list[dict]]:
     """Predictions code can score, and the rest with the reason each cannot be."""
     verbs = {v["name"] for v in packet.get("verbs") or ()}
+    rise = (packet.get("rise") or {}).get("name")
     observables = {r["alias"] for r in packet.get("readers") or ()} | set(CAMERA) | {BODY}
     kept, set_aside = [], []
     for item in predictions:
         reason = None
-        if item.get("verb") not in verbs:
+        if rise is not None and item.get("verb") == rise:
+            if (item.get("state"), item.get("observable"), item.get("expect")) != ("air", BODY, "moves_body"):
+                reason = "the rise is measured only pressed again in the air, by how high the body goes"
+        elif item.get("verb") not in verbs:
             reason = "not a measured verb"
         elif item.get("observable") not in observables:
             reason = "not a measured observable"
@@ -914,6 +920,9 @@ def score(predictions: Sequence[Mapping[str, Any]], tables: Sequence[Mapping[str
     """
     out = []
     for prediction in predictions:
+        if any(prediction["verb"] == table.get("rise") for table in tables):
+            out.append(_score_rise_air(prediction, tables))
+            continue
         labels = list(dict.fromkeys(label for table in tables
                                     for label, _ in _cells(table, prediction["verb"], prediction["state"])))
         for label in labels:
@@ -928,11 +937,70 @@ def score(predictions: Sequence[Mapping[str, Any]], tables: Sequence[Mapping[str
             if not measured:
                 # Why nothing could show the press: the most common reason across the sessions.
                 verdict = max(("ambient", "masked", "at_limit", "not_airborne", "unmeasured"), key=outcomes.count)
+            elsewhere = None
+            if verdict == "mismatch" and all(o == "missing" for o in failed):
+                elsewhere = _works_elsewhere(prediction, label, tables)
+                if elsewhere:
+                    verdict = "guarded"
+            text = line(prediction, label, failed, measured)
+            if elsewhere:
+                text += (f", though in most of them it did {elsewhere}: a guard, which is a rule of the game or a bug "
+                         "the declarations must decide")
             out.append({**{k: prediction.get(k) for k in ("verb", "state", "observable", "expect", "value", "basis",
                                                            "because")},
                         "cell": label, "outcomes": outcomes, "k": len(failed), "n": len(measured),
-                        "verdict": verdict, "line": line(prediction, label, failed, measured)})
+                        "verdict": verdict, "line": text, **({"works": elsewhere} if elsewhere else {})})
     return out
+
+
+def _state_of(label: str) -> str:
+    return "rest" if label == "at rest" else "air" if label == "in the air" else "moving"
+
+
+def _works_elsewhere(prediction: Mapping[str, Any], label: str, tables: Sequence[Mapping[str, Any]]) -> str | None:
+    """Where, in another state, the verb changed the predicted observable in more than half the tables, or None.
+
+    A missing effect the same verb shows in another state (at rest, while moving, in the air) is a guard: the input
+    works, only not here. Another move of the same state does not count: an effect present while one direction is
+    held and missing while another is, is a symmetry the game is evidently built to keep, and stays a mismatch, as
+    an input with no effect anywhere does.
+    """
+    here = _state_of(label)
+    probe = prediction if prediction["expect"] == "moves_body" else {**prediction, "expect": "changes"}
+    counts: dict[str, int] = {}
+    for table in tables:
+        row = (table.get("verbs") or {}).get(prediction["verb"]) or {}
+        seen = set()
+        for state in ("rest", "moving", "air"):
+            if state == here:
+                continue
+            for other_label, cell in _cells(table, prediction["verb"], state):
+                if cell and outcome(probe, row, cell) == "held":
+                    seen.add(other_label)
+        for other_label in seen:
+            counts[other_label] = counts.get(other_label, 0) + 1
+    where = [other for other, k in counts.items() if 2 * k > len(tables)]
+    return " and ".join(sorted(where)) if where else None
+
+
+def _score_rise_air(prediction: Mapping[str, Any], tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The rise pressed again at its own apex (`rise_air`, the options layer's air-rise probe) against a rise alone:
+    held when the second press lifted the body higher by more than the probe's share of a rise."""
+    outcomes = []
+    for table in tables:
+        air = table.get("rise_air")
+        if not air or air.get("pressed_peak") is None or air.get("rest_peak") is None:
+            outcomes.append("unmeasured")
+        else:
+            outcomes.append("held" if air.get("gained") else "missing")
+    measured = [o for o in outcomes if o != "unmeasured"]
+    failed = [o for o in measured if o != "held"]
+    verdict = ("unmeasured" if not measured else "mismatch" if 2 * len(failed) > len(measured)
+               else "held" if not failed else "mixed")
+    label = "pressed again in the air"
+    return {**{k: prediction.get(k) for k in ("verb", "state", "observable", "expect", "value", "basis", "because")},
+            "cell": label, "outcomes": outcomes, "k": len(failed), "n": len(measured), "verdict": verdict,
+            "line": line(prediction, label, failed, measured)}
 
 
 def line(prediction: Mapping[str, Any], label: str, failed: Sequence[str], measured: Sequence[str]) -> str:
@@ -950,6 +1018,8 @@ def line(prediction: Mapping[str, Any], label: str, failed: Sequence[str], measu
 
 
 TIERS = (("mismatch", "Not met", "the expectation failed in most of the sessions that could show it"),
+         ("guarded", "Works elsewhere, not here", "the effect was missing here in most sessions but the same input "
+                                                   "showed it in another state: a guard, a rule of the game or a bug"),
          ("mixed", "Sporadic", "it failed in some sessions or events and held in others: a candidate for a "
                                "controlled test, not a finding"),
          ("held", "Held", "it was met every time it could be shown"))

@@ -145,6 +145,27 @@ presses in different situations. The run filed candidate findings f-41, f-51 and
 as the expected source. Their replays need a repro check the frontier did not give; the clean-reset reproduction is the
 guard measurement itself, 7 of 7 fresh sessions.
 
+## The rise in the air, and guards (2026-11-03)
+
+The rise is no verb (its controls are the rise's), so the guard table never pressed it in the air. With
+`--measure-guards` a session now also runs the options layer's air-rise probe, a rise and then the rise pressed again
+at its measured apex, and keeps it in the table as `rise_air`. The rise may then be predicted in the air only, by
+body_motion: held when the second press lifted the body higher by more than a quarter of a rise. On both clean
+builds the second jump doubled the height (FPSKit 2.0 to 4.0, DragonBlaze 2.7 to 5.4), 3 of 3 sessions each, and
+FPSKit's clean predictions included it from its declared `maxJumps 2`.
+
+A missing effect that the same input shows in another state (at rest, while moving, in the air) is now **guarded**,
+not a mismatch: the input works, only not here, which is a rule of the game or a bug the declarations must decide.
+It stays in the report, beside the line saying where the input did work, and is not stated to S1 as unmet. Another
+move of the same state does not count: an effect present while one direction is held and missing while its mirror
+is, stays a mismatch, as an input with no effect anywhere does (b05 stays a mismatch on the held-out build, 7 of 7).
+Clean DragonBlaze's predictions said its dash works at rest; it works only while a direction is held, 3 of 3, and
+is now guarded rather than a false mismatch.
+
+Nine of FPSKit's clean cells cannot be shown at all: look_up and look_down while moving or in the air begin with the
+view already pitched to its clamp by the presses before them. They are reported at_limit, never missing. Measuring
+them would need the view brought back between cells, which a name-blind table has no input known to do.
+
 ## Live on the clean build (`runs/fpskit/live-clean-01`)
 
 The same hunt on clean FPSKit, with expectations pre-registered from the clean build's own declarations (0

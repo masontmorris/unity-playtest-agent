@@ -703,6 +703,13 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 calibration or {}, [n for n, d in served.items() if d.inputs and not n.startswith(PREFIX)],
                 catalog={n: d for n, d in served.items() if not n.startswith(PREFIX)})
             guards = await measure_guards(client, readers, served, guard_primitives)
+            if getattr(guard_primitives, "rise", None) is not None:
+                from .options.air_rise import measure_air_rise
+
+                # The rise is no verb (its controls are the rise's), so the table never presses it in the air: the
+                # same probe the options layer uses does, a rise and then the rise pressed again at its apex.
+                air = await measure_air_rise(client, guard_primitives)
+                guards["rise_air"] = air.to_json() if air is not None else None
             replay._save(run_dir / "guards.json", guards)
         guard_lines: list[str] = []
         expectation_lines: list[str] = []

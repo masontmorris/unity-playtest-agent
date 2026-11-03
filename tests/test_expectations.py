@@ -126,7 +126,7 @@ def test_an_effect_the_state_hides_or_a_reader_at_its_limit_is_not_missing():
                                prediction(verb="stick", state="right", observable="horiz", expect="decreases")], tables)
     assert [(r["cell"], r["verdict"]) for r in rows] == [
         ("while right held", "at_limit"),       # the second trial began at -80, as far as the verb ever moved it
-        ("while left held", "mismatch"),        # began mid-range and still did not move: missing
+        ("while left held", "guarded"),         # began mid-range and did not move, but it moves at rest: a guard
         ("while right held", "masked")]         # the move alone changes the stick's reader: it cannot show it
 
 
@@ -423,3 +423,43 @@ def test_a_turn_across_zero_keeps_its_sign_for_an_angle_and_only_for_an_angle():
     assert [r["verdict"] for r in rows] == ["held", "held"]       # +47 degrees; a drop of 250 is a drop
     assert expectations.is_angle("camera.rotation") and expectations.is_angle("player_yaw")
     assert not expectations.is_angle("health")
+
+
+def test_the_rise_pressed_again_in_the_air_is_scored_from_the_air_rise_probe():
+    def table(gained, rest=2.0, pressed=4.0):
+        return {"moves": [], "rise": "jump", "verbs": {},
+                "rise_air": {"rest_peak": rest, "pressed_peak": pressed, "gained": gained}}
+    again = prediction(verb="jump", state="air", observable="body_motion", expect="moves_body",
+                       because="maxJumps 2")
+    (row,) = expectations.score([again], [table(True), table(True), table(False, pressed=2.1)])
+    assert (row["verdict"], row["outcomes"]) == ("mixed", ["held", "held", "missing"])
+    (row,) = expectations.score([again], [table(False, pressed=2.1)] * 2)
+    assert row["verdict"] == "mismatch" and row["line"].startswith("jump pressed again in the air")
+    (row,) = expectations.score([again], [{"moves": [], "rise": "jump", "verbs": {}, "rise_air": None}])
+    assert row["verdict"] == "unmeasured"
+    packet = {"verbs": [{"name": "dash"}], "rise": {"name": "jump"}, "readers": []}
+    kept, aside = expectations.screened([again, prediction(verb="jump", state="rest", observable="body_motion",
+                                                           expect="moves_body")], packet)
+    assert len(kept) == 1 and aside[0]["set_aside"].startswith("the rise is measured only pressed again")
+
+
+def test_an_effect_missing_here_that_the_input_shows_in_another_state_is_a_guard_not_a_mismatch():
+    dash = {"ambient": [], "rest": {"changed": {}}, "air": None,
+            "moving": {"right": {"changed": {"dashing": [False, True]}}, "left": {"changed": {"dashing": [False, True]}}}}
+    one_way = {"ambient": [], "rest": {"changed": {}}, "air": None,
+               "moving": {"right": {"changed": {"dashing": [False, True]}}, "left": {"changed": {}}}}
+    dead = {"ambient": [], "rest": {"changed": {}}, "air": None,
+            "moving": {"right": {"changed": {}}, "left": {"changed": {}}}}
+    tables = [{"moves": ["right", "left"], "verbs": {"dash": dash, "aim": dead, "sprint": one_way}}] * 3
+    rows = expectations.score([prediction(verb="dash", observable="dashing", expect="changes"),
+                               prediction(verb="aim", observable="dashing", expect="changes"),
+                               prediction(verb="sprint", state="moving", observable="dashing", expect="changes")],
+                              tables)
+    guard, missing, right, left = rows
+    assert (right["verdict"], left["cell"], left["verdict"]) == ("held", "while left held", "mismatch")  # its mirror works
+    assert (guard["verdict"], guard["works"]) == ("guarded", "while left held and while right held")
+    assert "a guard, which is a rule of the game or a bug" in guard["line"]
+    assert missing["verdict"] == "mismatch"            # no effect anywhere: the stronger evidence
+    assert expectations.unmet_in_session({"predictions": [prediction(verb="dash", observable="dashing",
+                                                                     expect="changes")]},
+                                         tables[0]) == []   # a guard is not stated to S1 as an unmet expectation
