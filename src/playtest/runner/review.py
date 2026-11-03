@@ -198,10 +198,14 @@ SYSTEM = (
     "under the feet. Inputs the game never received (rejected, failed) are not rows; inputs_not_run counts them, so "
     "a missing effect is never a rejected input. You also get each action's stated intent and the values the game's "
     "authors set (declared_configuration), read before play. "
-    "Find behaviour that is wrong: an input that has none of its effect in a situation where someone playing would "
-    "expect it to work; the same input or a like one producing an effect in one situation and not in another (on "
-    "the ground and in the air, standing and moving, forward and backward); or a measurement outside what a "
-    "declared value says should happen, with the arithmetic. Before calling a motion missing, read the surroundings: "
+    "Find behaviour that is wrong, and name the oracle each claim rests on (oracle): "
+    "declared_value, a measurement outside what a declared value says should happen, with the arithmetic; "
+    "symmetry, the same input or a like one having its effect in one situation and not in another (on the ground "
+    "and in the air, standing and moving, forward and backward, left and right), in play or in measured_guards; "
+    "ui_vs_state, a displayed value (a bar, a counter, a text) that disagrees with the state it shows; "
+    "across_reset, state that should survive or be restored across a respawn, reload or level change and is not; "
+    "intent_vs_effect, an input whose stated intent its measured effect contradicts everywhere it was pressed. A "
+    "claim with none of these is not a finding. Before calling a motion missing, read the surroundings: "
     "a surface close ahead or behind, or ground that rises or ends, stops a body. Readers change for other reasons "
     "too (an input stopped early, gravity, a timer), so compare rows that differ in one situation and cite every row "
     "you rely on; a single row is weak evidence. Report only behaviour the rows show, not an intent you cannot "
@@ -221,11 +225,15 @@ SYSTEM = (
     "a like input that works there). A row that differs from measured_guards in the same state is a contrast. "
     "Observations are measured; null means unknown, not zero."
 )
+# The invariant kinds a review claim may rest on, and the finding's expected source for each: a declared value is
+# the authors' own assertion, every other kind is the reviewer's reading of how the game is evidently built to behave.
+ORACLES = {"declared_value": "developer_assertion", "symmetry": "interpretation", "ui_vs_state": "interpretation",
+           "across_reset": "interpretation", "intent_vs_effect": "interpretation"}
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["findings"], "properties": {"findings": {
     "type": "array", "maxItems": 5, "items": {"type": "object", "additionalProperties": False,
-    "required": ["title", "expected", "expected_source", "actual", "evidence_rows", "contrast_rows", "uncertainty", "repro_check"],
+    "required": ["title", "expected", "oracle", "actual", "evidence_rows", "contrast_rows", "uncertainty", "repro_check"],
     "properties": {"title": {"type": "string"}, "expected": {"type": "string"},
-                   "expected_source": {"type": "string", "enum": ["declared_value", "contrast", "interpretation"]},
+                   "oracle": {"type": "string", "enum": list(ORACLES)},
                    "actual": {"type": "string"}, "evidence_rows": {"type": "array", "items": {"type": "integer"}},
                    "contrast_rows": {"type": "array", "items": {"type": "integer"}}, "uncertainty": {"type": "string"},
                    "repro_check": {"anyOf": [{"type": "null"}, {"type": "object", "additionalProperties": False,
@@ -297,10 +305,10 @@ def findings_from_answer(answer, windows, manifest):
                                     'is invalid.')
             findings.append(Finding.model_validate({'finding_id': f'r-{n}', 'state': 'candidate',
                 'title': item['title'], 'expected': item['expected'],
-                'expected_source': {'declared_value': 'developer_assertion', 'contrast': 'interpretation',
-                                    'interpretation': 'interpretation'}[item['expected_source']],
+                'expected_source': ORACLES[item['oracle']],
                 'actual': item['actual'],
-                'conditions': ('Contrast rows: ' + ', '.join(map(str, item['contrast_rows']))) if item['contrast_rows'] else None,
+                'conditions': f"Oracle: {item['oracle']}." + (
+                    (' Contrast rows: ' + ', '.join(map(str, item['contrast_rows']))) if item['contrast_rows'] else ''),
                 'steps': steps, 'evidence_seq': seq, 'uncertainty': uncertainty,
                 'repro_check': check, 'severity': 'unknown'}))
         except (KeyError, TypeError, ValueError) as exc:

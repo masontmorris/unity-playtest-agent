@@ -10,7 +10,7 @@ T0 = 1_000_000.0  # bridge wall clock, epoch seconds
 
 
 def item(**updates):
-    base = dict(title='test', expected='expected', expected_source='contrast', actual='actual', evidence_rows=[0],
+    base = dict(title='test', expected='expected', oracle='symmetry', actual='actual', evidence_rows=[0],
                 contrast_rows=[1], uncertainty='', repro_check={'reader': 'x', 'op': '>', 'value': 1, 'after_action': None})
     return base | updates
 
@@ -88,7 +88,7 @@ def test_conversion_cites_each_rows_two_observations_and_checks_the_input_condit
         item(evidence_rows=[8]),
     ]}, windows, manifest)
     assert findings[0].evidence_seq == [10, 20] and findings[0].repro_check.field == 'public.x'
-    assert findings[0].steps == ['"go"'] and findings[0].conditions == 'Contrast rows: 1'
+    assert findings[0].steps == ['"go"'] and findings[0].conditions == 'Oracle: symmetry. Contrast rows: 1'
     assert (findings[1].repro_check.op.value, findings[1].repro_check.after_action) == ('unchanged', 'aim')
     for finding in findings[2:]:
         assert finding.repro_check is None and 'rejected' in finding.uncertainty
