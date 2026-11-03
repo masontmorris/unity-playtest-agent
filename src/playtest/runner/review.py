@@ -206,7 +206,10 @@ SYSTEM = (
     "its effect, after_action set to that row's action with the reader it should change and op unchanged, so a "
     "replay checks the readings while and right after each execution of it. Give after_action only when a contrast "
     "row, cited in contrast_rows, shows that same reader changing after this or a like input in another situation: "
-    "without one a replay cannot tell a missing effect from a rule of the game that withholds it here. "
+    "without one a replay cannot tell a missing effect from a rule of the game that withholds it here. Use op "
+    "unchanged only for a reader with a few distinct values (a flag, a count); for one that moves continuously (a "
+    "blend, a timer, a position), give the bound the input's effect crosses in the contrast row instead, such as < "
+    "half of the value it reached there, since a small drift is not the effect. "
     "Observations are measured; null means unknown, not zero."
 )
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["findings"], "properties": {"findings": {
