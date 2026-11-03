@@ -323,7 +323,7 @@ def test_wait_for_ready_accepts_405_as_route_registration(monkeypatch: pytest.Mo
             raise urllib.error.HTTPError(url, 404, "not found", None, None)
         raise urllib.error.HTTPError(url, 405, "method not allowed", None, None)
 
-    assert module.wait_for_ready(_Proc(), timeout_s=1, urlopen=open_url) == 0.0
+    assert module.wait_for_ready(_Proc(), timeout_s=1, urlopen=open_url, monotonic=lambda: 0.0) == 0.0
 
 
 def test_loading_health_is_not_overridden_by_route_checks(monkeypatch: pytest.MonkeyPatch) -> None:
