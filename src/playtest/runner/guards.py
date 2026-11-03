@@ -150,6 +150,7 @@ class _Window:
     changed: dict[str, list[Any]]
     displacement: float | None
     status: str | None
+    pressed_at: float | None = None   # how far the body was from its start when the second press was sent
 
 
 class _Meter:
@@ -205,16 +206,19 @@ class _Meter:
             await self.client.start_act(action_id=action_id, choice_id=PROBE_ID, action=name, params={},
                                         based_on_seq=seq, max_age_s=MAX_AGE_S, lease_s=lease)
 
+        pressed_at = None
         try:
             if action is not None:
                 await press(action, observation.seq, hold_s)
             began, pressed_then = self.clock(), False
             while self.clock() - began < hold_s:
-                values, _, observation = await self.snapshot()
+                values, now, observation = await self.snapshot()
                 note(values)
                 if then is not None and not pressed_then and self.clock() - began >= (then_after_s or 0.0):
                     await press(then, observation.seq, max(hold_s - (self.clock() - began), SAMPLE_S))
                     pressed_then = True
+                    if start is not None and now is not None and len(start) == len(now):
+                        pressed_at = math.dist(start, now)
                 await self.sleep(SAMPLE_S)
         finally:
             if started:
@@ -230,7 +234,7 @@ class _Meter:
         note(after)
         displacement = (math.dist(start, end) if start is not None and end is not None and len(start) == len(end)
                         else None)
-        return _Window(changed=changed, displacement=displacement, status=status)
+        return _Window(changed=changed, displacement=displacement, status=status, pressed_at=pressed_at)
 
 
 def _trend(values: Sequence[Any]) -> int:
@@ -282,6 +286,8 @@ def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Wind
     return {"effect": bool(keys) or bool(moved), "changed": {k: _round(first[k]) for k in sorted(keys)},
             "displacement": _round(window.displacement), "baseline_displacement": _round(baseline.displacement),
             "moved_differently": moved, "trials": len(trials),
+            "pressed_at": [_round(w.pressed_at) for _, w in trials] if any(w.pressed_at is not None for _, w in trials)
+            else None,
             "status": ",".join(sorted({str(w.status) for _, w in trials}))}
 
 
