@@ -397,7 +397,8 @@ def _check(check: Mapping[str, Any] | None) -> str:
         return "none"
     value = "" if check.get("value") is None else " " + json.dumps(check["value"])
     tolerance = f" (tolerance {check['tolerance']})" if check.get("tolerance") is not None else ""
-    return f"`{check.get('field')} {check.get('op')}{value}`{tolerance}".replace("|", "\\|")
+    after = f", right after each `{check['after_action']}`" if check.get("after_action") is not None else ""
+    return f"`{check.get('field')} {check.get('op')}{value}`{after}{tolerance}".replace("|", "\\|")
 
 
 def _displacement(value: Any, effect: Mapping[str, Any]) -> str:

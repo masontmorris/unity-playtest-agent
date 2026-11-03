@@ -98,6 +98,13 @@ namespace FakeSessionProcess
                 return 0;
             }
 
+            if (mode == "fail-after-ready")
+            {
+                // A host operation that failed mid-run (a restart cut short): the host keeps running for its client.
+                Sleep(Seconds("UPA_FAKE_UNITY_EXIT_SECONDS", 0));
+                WriteHostState(control, runId, "failed", generation, "Assets/Scenes/Fake.unity", 1, "operation_deadline");
+            }
+
             if (mode == "ignore-shutdown")
             {
                 Sleep(600);

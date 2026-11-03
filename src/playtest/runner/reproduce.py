@@ -33,6 +33,13 @@ baseline:
 - **not reproduced:** later readings were scored and none satisfied it;
 - **unknown:** no later reading could be scored.
 
+An input-conditioned check (a reader check with `after_action`) is scored on the reading taken right after each
+replayed execution of that action; `changed` and `unchanged` compare with the reading taken right before it. It
+shows an input that has none of its effect, which leaves the readers in a state the reset already puts them in:
+- **reproduced:** every scored execution's reading satisfied the check;
+- **not reproduced:** at least one did not;
+- **unknown:** no execution's reading could be scored.
+
 An effect check (`effect.<action>`, #154) is the net displacement of one execution of an action, in world units.
 It shows an action that stops having its effect, which leaves the readers at rest and so can never pass the
 baseline rule. The plan names the calibrated displacement (`build_choices(...).expected`) and marks the scored
@@ -325,6 +332,13 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
     if not inputs:
         raise ValueError("no input completed before the finding's evidence; there is nothing to replay")
     effect = effect_plan(manifest, action, inputs) if action is not None else None
+    if check.after_action is not None:
+        conditioned = [item for item in inputs if item["action"] == check.after_action]
+        if not conditioned:
+            raise ValueError(f"no input that completed before the finding's evidence is an execution of "
+                             f"{check.after_action!r}, so the input-conditioned check has nothing to score")
+        for item in conditioned:
+            item["scored"] = True
     for name, value in (("attempts", attempts), ("settle_s", settle_s), ("start_settle_s", start_settle_s),
                         ("sample_interval_s", sample_interval_s)):
         if _number(value) is None or value <= 0:
@@ -492,6 +506,8 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
             # so it adds nothing to that observation's age.
             measures = effect is not None and item["action"] == effect["action"]
             before = await read_snapshot(snapshot) if measures else None
+            conditioned = check.after_action is not None and item["action"] == check.after_action
+            prior = await readers.read() if conditioned and readers is not None else None
             observation = await client.observe_once()
             sent_s = loop.time() - started
             action_id = f"reproduce-{uuid.uuid4().hex}"
@@ -515,11 +531,21 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
                     _measurement(item, terminal, before, await read_snapshot(snapshot), check))
             if readers is not None:
                 sample = await readers.read()
-                attempt["readings"].append(_reading(sample, alias, check, kind, baseline, f"after turn {item['turn']}",
-                                                    loop.time() - started))
+                reference = ((getattr(prior, "values", {}) or {}).get(alias) if conditioned else baseline)
+                reading = _reading(sample, alias, check, kind, reference, f"after turn {item['turn']}",
+                                   loop.time() - started)
+                if conditioned:
+                    reading["after_action"] = item["action"]
+                    reading["before_value"] = reference
+                    if reference is None and check.op in (Comparator.changed, Comparator.unchanged):
+                        reading["satisfied"] = None  # nothing measured before it to compare with
+                attempt["readings"].append(reading)
         else:
             if effect is not None:
                 _score_effect(attempt)  # a displacement is measured at its input; there is no settle window to read
+                return attempt
+            if check.after_action is not None:
+                _score_conditioned(attempt)  # scored at each execution of the action; no settle window applies
                 return attempt
             settle_until = loop.time() + plan["settle_s"]
             seen_s = _number(plan.get("evidence_offset_s"))
@@ -562,6 +588,19 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
     return attempt
 
 
+def _score_conditioned(attempt: dict[str, Any]) -> None:
+    """Reproduced when every scored execution's reading satisfied the check; any that did not is a miss."""
+    outcomes = [reading["satisfied"] for reading in attempt["readings"] if "after_action" in reading]
+    if any(outcome is False for outcome in outcomes):
+        attempt.update(valid=True, result="not_reproduced",
+                       reason="a reading right after an execution of the action did not satisfy the repro_check")
+    elif outcomes and all(outcome is True for outcome in outcomes):
+        attempt.update(valid=True, result="reproduced",
+                       reason="every reading right after an execution of the action satisfied the repro_check")
+    else:
+        attempt.update(valid=True, result="unknown", reason="no reading right after an execution could be scored")
+
+
 READER_BASIS = ("k counts valid attempts where the repro_check did not hold after the reset and a later "
                 "reading satisfied it; n counts valid attempts that scored the baseline as not holding and "
                 "at least one later reading. Unknown attempts (including a check that already held after "
@@ -581,12 +620,18 @@ def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) ->
     deviations = [abs(row["deviation_s"]) for a in attempts for row in a["inputs"]]
     return {"planned": plan["attempts"], "attempted": len(attempts), "valid": len(valid), "k": k, "n": n,
             "unknown": unknown,
-            "basis": EFFECT_BASIS if plan.get("effect") is not None else READER_BASIS,
+            "basis": (EFFECT_BASIS if plan.get("effect") is not None
+                      else CONDITIONED_BASIS if (plan.get("repro_check") or {}).get("after_action") is not None
+                      else READER_BASIS),
             "invalid": [{"number": a["number"], "reason": a["reason"]} for a in attempts if not a["valid"]],
             "input_timing": {"max_abs_deviation_s": round(max(deviations), 3) if deviations else None,
                              "inputs_replayed": len(deviations)}}
 
 
+CONDITIONED_BASIS = ("k counts valid attempts where every reading right after an execution of the check's action "
+                     "satisfied it (changed and unchanged against the reading right before it); n counts valid "
+                     "attempts that scored at least one such reading. Unknown attempts (no such reading could be "
+                     "scored) and invalid (diverged or failed) attempts are in neither")
 OVERRIDE_REASON = "an operator check overrode the finding's own, so the finding's state is unchanged"
 UNSCORED_REASON = "no attempt was scored, so the finding's state is unchanged"
 
