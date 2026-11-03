@@ -424,7 +424,11 @@ def tally(tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def compare_tallies(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Each asymmetry the seeded build showed, against the control: specific only when the control never shows it."""
+    """Each asymmetry the seeded build showed, against the control.
+
+    Specific: in more than half the seeded sessions and never on the control. Sporadic: never on the control but in
+    half the seeded sessions or fewer. Not specific: the control shows it too.
+    """
     control_k = {(a["verb"], a["key"], a["present_while"], a["absent_while"]): a["k"]
                  for a in control.get("asymmetries") or ()}
     out = []
@@ -435,8 +439,10 @@ def compare_tallies(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> li
             verdict = "inconclusive"
         elif k_control >= 1:
             verdict = "not_specific"
-        else:
+        elif 2 * item["k"] > seeded["n"]:
             verdict = "specific"
+        else:
+            verdict = "sporadic"  # never on the control, but in no more than half the seeded sessions: noise-sized
         out.append({**item, "n": seeded["n"], "control_k": k_control, "control_n": control.get("n", 0),
                     "verdict": verdict, "line": asymmetry_line(item)})
     return out
