@@ -90,7 +90,7 @@
     },
     "ReproCheck": {
       "additionalProperties": false,
-      "description": "What a replay must show to reproduce a finding: one field, one comparator, one value.\n\nA reader field (`public.<reader>`) is scored with the shared check evaluator against the readers a replay\nreads. `changed` and `unchanged` take no value and compare with the reading when the replay starts.\n\n`effect.<action>` is the net displacement, in world units, of one execution of that action, measured between\ntwo position snapshots. It shows an action that stops having its effect, which leaves the readers as they are\nat rest. It takes `<`, `<=`, `>` or `>=` and a finite number, and no tolerance; the other comparators have\nnothing to compare a displacement with.\n\n`after_action`, on a reader field, conditions the check on one action: it is scored on the reading taken right\nafter each replayed execution of that action, and `changed` and `unchanged` compare with the reading taken right\nbefore it. It shows an input that has none of its effect, a state the reset already leaves the readers in,\nwhich the start-of-replay baseline can never show. An effect field already names its action and takes none.",
+      "description": "What a replay must show to reproduce a finding: one field, one comparator, one value.\n\nA reader field (`public.<reader>`) is scored with the shared check evaluator against the readers a replay\nreads. `changed` and `unchanged` take no value and compare with the reading when the replay starts.\n\n`effect.<action>` is the net displacement, in world units, of one execution of that action, measured between\ntwo position snapshots. It shows an action that stops having its effect, which leaves the readers as they are\nat rest. It takes `<`, `<=`, `>` or `>=` and a finite number, and no tolerance; the other comparators have\nnothing to compare a displacement with.\n\n`after_action`, on a reader field, conditions the check on one action: it is scored on the reading taken right\nafter each replayed execution of that action, and `changed` and `unchanged` compare with the reading taken right\nbefore it. It shows an input that has none of its effect, a state the reset already leaves the readers in,\nwhich the start-of-replay baseline can never show. An effect field already names its action and takes none.\n\n`within_region`, with `after_action`, scores only the executions made inside one reach region (the body's\nposition read right before each, against the region's bounds): a control that should work only in a situation,\nsuch as talking next to someone, is then not scored where it is meant to do nothing.",
       "properties": {
         "after_action": {
           "anyOf": [
@@ -132,6 +132,20 @@
         "value": {
           "default": null,
           "title": "Value"
+        },
+        "within_region": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With after_action: score only the executions made inside this reach region, by the body's position right before each",
+          "title": "Within Region"
         }
       },
       "required": [

@@ -842,7 +842,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   effects=action_effects(built.expected), generation=generation,
                                   session=getattr(client, "session", None), progress=progress_probe,
                                   clip_window_s=args.frontier_clip_s, declared=declared, guards=guard_lines,
-                                  advice=args.frontier_advice, places=places)
+                                  advice=args.frontier_advice, places=places,
+                                  max_calls=args.max_frontier_calls)  # the cap the record states, not the arm's
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:

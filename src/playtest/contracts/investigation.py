@@ -231,6 +231,10 @@ class ReproCheck(Strict):
     after each replayed execution of that action, and `changed` and `unchanged` compare with the reading taken right
     before it. It shows an input that has none of its effect, a state the reset already leaves the readers in,
     which the start-of-replay baseline can never show. An effect field already names its action and takes none.
+
+    `within_region`, with `after_action`, scores only the executions made inside one reach region (the body's
+    position read right before each, against the region's bounds): a control that should work only in a situation,
+    such as talking next to someone, is then not scored where it is meant to do nothing.
     """
 
     field: str = Field(min_length=1, description="Dotted path into the observation, e.g. public.<reader>; or "
@@ -242,6 +246,9 @@ class ReproCheck(Strict):
                                      description="Score the reading right after each replayed execution of this "
                                                  "action; changed and unchanged compare with the reading right "
                                                  "before it. Reader fields only.")
+    within_region: str | None = Field(None, min_length=1, exclude_if=lambda value: value is None,
+                                      description="With after_action: score only the executions made inside this "
+                                                  "reach region, by the body's position right before each")
 
     @model_validator(mode="after")
     def _value_needed(self) -> "ReproCheck":
@@ -250,6 +257,12 @@ class ReproCheck(Strict):
                 raise ValueError(f"'{self.op.value}' takes no value")
         elif self.value is None:
             raise ValueError(f"'{self.op.value}' needs a value")
+        return self
+
+    @model_validator(mode="after")
+    def _region_needs_action(self) -> "ReproCheck":
+        if self.within_region is not None and self.after_action is None:
+            raise ValueError("within_region conditions the executions of after_action; name the action")
         return self
 
     @model_validator(mode="after")

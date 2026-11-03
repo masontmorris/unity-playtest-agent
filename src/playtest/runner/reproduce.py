@@ -41,6 +41,13 @@ shows an input that has none of its effect, which leaves the readers in a state 
 - **reproduced:** every scored execution's reading satisfied the check;
 - **not reproduced:** at least one did not;
 - **unknown:** no execution's reading could be scored.
+With `within_region`, only the executions made inside that reach region are scored: the body's position is read
+right before each execution of the action and compared with the region's bounds, and one made outside it, or whose
+position could not be read, is counted but not scored. The region comes from the manifest, else from the
+`situation-regions.json` the session saved beside its trace.
+
+A session the loop restarted is replayed from its last restart before the evidence: each attempt starts from a
+reload, as that restart did, so the inputs of earlier lives are not run into this one.
 
 An effect check (`effect.<action>`, #154) is the net displacement of one execution of an action, in world units.
 It shows an action that stops having its effect, which leaves the readers at rest and so can never pass the
@@ -361,8 +368,20 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
     through = evidence_turn(entries, finding.evidence_seq)
     last_evidence = max(finding.evidence_seq)
     inputs, skipped = recorded_inputs(entries, last_evidence, frozenset(item.name for item in manifest.actions))
+    restarted = [e["trace_seq"] for e in entries if e.get("kind") == "restart" and e["trace_seq"] < last_evidence]
+    if restarted:
+        # Each attempt starts from a reload, as the restart did: earlier lives' inputs are not this life's.
+        dropped = [item for item in inputs if item["trace_seq"] < restarted[-1]]
+        inputs = [item for item in inputs if item["trace_seq"] > restarted[-1]]
+        if dropped:
+            skipped["before_last_restart"] = len(dropped)
+        if inputs:
+            first = inputs[0]["recorded_start_wall_s"]
+            for item in inputs:
+                item["offset_s"] = round(item["recorded_start_wall_s"] - first, 6)
     if not inputs:
         raise ValueError("no input completed before the finding's evidence; there is nothing to replay")
+    region = _region(manifest, trace_path, check.within_region) if check.within_region is not None else None
     effect = effect_plan(manifest, action, inputs) if action is not None else None
     if check.after_action is not None:
         conditioned = [item for item in inputs if item["action"] == check.after_action]
@@ -386,7 +405,7 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         "manifest_sha256": _sha(manifest_bytes),
         "finding_id": finding.finding_id, "finding_trace_seq": chosen["trace_seq"],
         "finding": finding.model_dump(mode="json"),
-        "repro_check": check.model_dump(mode="json"), "repro_check_source": check_source,
+        "repro_check": check.model_dump(mode="json"), "repro_check_source": check_source, "region": region,
         "repro_check_kind": "number" if effect is not None else kinds[alias], "effect": effect,
         "session_start_readers": session_start_readers(entries, manifest.readers),
         "evidence_seq": finding.evidence_seq, "evidence_turn": through, "evidence_offset_s": seen_s,
@@ -396,6 +415,29 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         "host_budget_s": round(attempts * (RELOAD_ALLOWANCE_S + CONNECT_ALLOWANCE_S + replay_s
                                            + PER_INPUT_ALLOWANCE_S * len(inputs)) + 60.0, 1),
     }
+
+
+def _region(manifest: PreflightManifest, trace_path: Path, region_id: str) -> dict[str, Any]:
+    """A reach region's bounds by id: the manifest's, else the situation regions the session saved by its trace."""
+    regions = [r.model_dump(mode="json") for r in manifest.reach_regions]
+    saved = trace_path.parent / "situation-regions.json"
+    source = "manifest"
+    if region_id not in {r["region_id"] for r in regions} and saved.is_file():
+        regions = json.loads(saved.read_text(encoding="utf-8")).get("regions") or []
+        source = "situation-regions.json"
+    found = next((r for r in regions if r.get("region_id") == region_id), None)
+    if found is None:
+        raise ValueError(f"within_region {region_id!r} is neither a manifest reach region nor a saved situation region")
+    bounds = found["bounds"]
+    return {"region_id": region_id, "min": [float(v) for v in bounds["min"]], "max": [float(v) for v in bounds["max"]],
+            "source": source}
+
+
+def inside_region(region: Mapping[str, Any], position: Any) -> bool | None:
+    """Whether a position lies within a region's bounds (inclusive), or None when it is unread."""
+    if not isinstance(position, (list, tuple)) or len(position) != len(region["min"]):
+        return None
+    return all(lo <= float(v) <= hi for v, lo, hi in zip(position, region["min"], region["max"]))
 
 
 # --- run -----------------------------------------------------------------------------------------
@@ -552,6 +594,10 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
                 "allowance": effect.get("allowance"), "unit": effect.get("unit") or UNIT,
                 "holds_for_expected": score(check, "number", effect["expected_displacement"], None),
                 "measured": None, "measurements": []}
+        region = plan.get("region")
+        region_snapshot = snapshot_for(client) if region is not None and snapshot_for is not None else None
+        if region is not None and region_snapshot is None:
+            raise ValueError("a within_region check needs a position snapshot source")
         await asyncio.sleep(plan["start_settle_s"])
         if readers is not None:
             first = await readers.read()
@@ -570,6 +616,13 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
             measures = effect is not None and item["action"] == effect["action"]
             before = await read_snapshot(snapshot) if measures else None
             conditioned = check.after_action is not None and item["action"] == check.after_action
+            where = None
+            if conditioned and region is not None:
+                position = (await read_snapshot(region_snapshot))[0] if region_snapshot is not None else None
+                where = inside_region(region, (position or {}).get("position") if isinstance(position, Mapping)
+                                      else None)
+                attempt.setdefault("region_presses", []).append({"turn": item["turn"], "inside": where})
+                conditioned = where is True   # one made outside the region, or unread, is not scored
             prior = await readers.read() if conditioned and readers is not None else None
             observation = await client.observe_once()
             sent_s = loop.time() - started
@@ -693,6 +746,10 @@ def _status(record: Any) -> Any:
 def _score_conditioned(attempt: dict[str, Any]) -> None:
     """Reproduced when every scored execution's reading satisfied the check; any that did not is a miss."""
     outcomes = [reading["satisfied"] for reading in attempt["readings"] if "after_action" in reading]
+    if not outcomes and attempt.get("region_presses") is not None:
+        attempt.update(valid=True, result="unknown",
+                       reason="no execution of the action was made inside the check's region")
+        return
     if any(outcome is False for outcome in outcomes):
         attempt.update(valid=True, result="not_reproduced",
                        reason="a reading during or right after an execution of the action did not satisfy the "

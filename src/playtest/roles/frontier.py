@@ -81,6 +81,10 @@ class ReproCheckOut(Setpoint):
         None, description="An action: score the reading right after each replayed execution of it, changed and "
                           "unchanged against the reading right before it; null to score from the reset. Reader "
                           "fields only")
+    within_region: str | None = Field(
+        None, description="With after_action, a progress region id from the packet: score only the executions made "
+                          "inside that region, for a control meant to work only there (talking next to someone); "
+                          "null to score every execution")
 
 
 class DirectiveOut(Strict):
@@ -269,7 +273,8 @@ SYSTEM = (
     "When a control has none of its effect on a reader, the check may instead name that reader with after_action "
     "set to the control's action: a replay then scores the reading right after each execution of it, and unchanged "
     "compares with the reading right before it, so a reader the reset already leaves where the control should have "
-    "moved it from can show the bug. "
+    "moved it from can show the bug. When the control should work only in a situation (next to someone to talk "
+    "to), set within_region to that situation's progress region so only executions made inside it are scored. "
     "The packet's findings are the candidate findings already recorded in this run; do not propose one of them "
     "again.\n"
     "- A field's calibration, in the manifest, says how it changed when preflight sampled it on this same build "
@@ -492,6 +497,12 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
                 return
             if after not in manifest.actions:
                 bad(item, f"after_action {after!r} is not a manifest action")
+        region = getattr(sp, "within_region", None)
+        if region is not None:
+            if after is None:
+                bad(item, "within_region conditions the executions of after_action; name the action")
+            if region not in manifest.progress:
+                bad(item, f"within_region {region!r} is not a progress region in the packet")
         if action is None:
             setpoint(item, sp)
             return
@@ -694,5 +705,6 @@ def to_finding(f: FindingOut, *, finding_id: str, evidence_seq: Sequence[int] | 
                    steps=list(f.steps), evidence_seq=list(f.evidence_seq if evidence_seq is None else evidence_seq),
                    uncertainty=f.uncertainty, severity=f.severity, severity_reason=f.severity_reason or None,
                    repro_check=(ReproCheck(field=check.field, op=check.op, value=check.value, tolerance=check.tolerance,
-                                           after_action=getattr(check, "after_action", None))
+                                           after_action=getattr(check, "after_action", None),
+                                           within_region=getattr(check, "within_region", None))
                                 if check is not None else None))
