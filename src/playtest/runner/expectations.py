@@ -689,8 +689,9 @@ def play_presses(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, f
 
 
 def catalog_controls(catalog: Mapping[str, Any]) -> dict[str, frozenset]:
-    """Each served action's controls: an action presses a verb when its controls include all of the verb's."""
-    return {name: frozenset((i.get("device"), i.get("control")) for i in (d.get("inputs") or ()))
+    """Each served action's controls, with the value each is driven to: an action presses a verb when its controls
+    include all of the verb's. One stick pushed up and the same stick pushed down are different inputs."""
+    return {name: frozenset((i.get("device"), i.get("control"), i.get("x"), i.get("y")) for i in (d.get("inputs") or ()))
             for name, d in (catalog.get("actions") or {}).items()}
 
 
@@ -716,7 +717,7 @@ def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[flo
     inside its window, or when an unread stretch lies inside it.
     """
     skipped = skipped if skipped is not None else {}
-    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap"):
+    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap", "at_limit"):
         skipped.setdefault(key, 0)
     events = []
     for index, (readings, pressed, served) in enumerate(zip(sessions, presses, controls)):
@@ -754,8 +755,42 @@ def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[flo
                 continue
             events.append({"session": index, "seq": readings[before_index][1], "at": start, "action": action,
                            "before": before, "trigger": readings[before_index + 1][2] if window else before,
-                           "followed": _followed(item, before.get(item["then"]), window)})
+                           "followed": _followed(item, before.get(item["then"]), window), "window": window})
+        _drop_at_limit(item, readings, events, index, skipped)
+    for event in events:
+        event.pop("window", None)
     return events
+
+
+def _drop_at_limit(item: Mapping[str, Any], readings: Sequence[tuple[float, int, dict]], events: list[dict[str, Any]],
+                   session: int, skipped: dict[str, int]) -> None:
+    """Leave out this session's failed presses that began with the reader already where the input drives it.
+
+    The input's direction is read from its own presses that were followed (a look down raised the pitch). A failed
+    press whose reader began at the furthest value the session ever read in that direction (a view already at its
+    clamp) cannot show the press. With no followed press there is no direction, and nothing is left out: an input
+    that never moves its reader stays failed.
+    """
+    mine = [e for e in events if e["session"] == session]
+    steps = []
+    for e in mine:
+        start = _number(e["before"].get(item["then"]))
+        values = [v for v in (_number(x) for x in e.get("window") or ()) if v is not None]
+        if e["followed"] and start is not None and values:
+            steps.append(max(values, key=lambda v: abs(v - start)) - start)
+    total = sum(steps)
+    direction = (total > 1e-3) - (total < -1e-3)
+    if not direction:
+        return
+    seen = [v for _, _, values in readings if (v := _number(values.get(item["then"]))) is not None]
+    if not seen:
+        return
+    end = max(seen) if direction > 0 else min(seen)
+    for e in mine:
+        start = _number(e["before"].get(item["then"]))
+        if not e["followed"] and start is not None and (start - end) * direction >= -1e-3:
+            events.remove(e)
+            skipped["at_limit"] = skipped.get("at_limit", 0) + 1
 
 
 def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> str | None:

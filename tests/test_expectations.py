@@ -558,3 +558,22 @@ def test_a_failed_action_rule_is_read_against_what_the_guard_tables_measured_of_
     assert verdicts == ["while_held", "guarded", "mismatch", "mismatch"]
     assert expectations.guard_evidence("stick", "horiz", [held_only]) == "while_held"
     assert expectations.guard_evidence("other", "horiz", [held_only]) is None
+
+
+def test_one_stick_pushed_two_ways_is_two_inputs_and_a_reader_at_its_clamp_cannot_show_a_press():
+    catalog = {"actions": {"look_up": {"inputs": [{"device": "Pad", "control": "stick", "x": 0.0, "y": 1.0}]},
+                           "look_down": {"inputs": [{"device": "Pad", "control": "stick", "x": 0.0, "y": -1.0}]}}}
+    controls = expectations.catalog_controls(catalog)
+    assert controls["look_up"] != controls["look_down"]
+    pitch = [10.0, 10.0, 40.0, 40.0, 70.0, 70.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0]
+    readings = [(i * 1.0, 100 + i, {"pitch": v}) for i, v in enumerate(pitch)]
+    presses = [(1.2, 1.3, "look_down"), (3.2, 3.3, "look_down"), (5.2, 5.3, "look_down"), (8.2, 8.3, "look_down"),
+               (10.2, 10.3, "look_up")]
+    rule = attack_rule(action="look_down", condition_observable=None, condition_op=None, condition_value=None,
+                       then="pitch", then_expect="changes", within_s=1.0)
+    (row,) = expectations.score_action_rules([rule], [readings], [presses], [controls])
+    # Three presses raised the pitch; the fourth began at 80, the furthest the session read: at its clamp.
+    assert (row["n"], row["k"], row["verdict"], row["not_counted"]["at_limit"]) == (3, 0, "held", 1)
+    dead = [(i * 1.0, 100 + i, {"pitch": 10.0}) for i in range(13)]
+    (row,) = expectations.score_action_rules([rule], [dead], [presses], [controls])
+    assert (row["k"], row["verdict"]) == (4, "mismatch")          # never moved: no direction, nothing left out
