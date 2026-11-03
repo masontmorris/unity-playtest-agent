@@ -238,7 +238,7 @@ def reported_error(data: Any) -> dict[str, Any] | None:
     return structured_error(data)
 
 
-def send_meta(body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
+def send_meta(body: dict[str, Any], *, timeout_s: float = _TIMEOUT_S) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
     """POST once to Muse. Returns status, decoded object, latency and a non-secret problem.
 
     The credential comes from `META_API_KEY` and is never returned, logged or included in a
@@ -258,7 +258,7 @@ def send_meta(body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, 
     )
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as exc:
         latency = (time.monotonic() - started) * 1000.0

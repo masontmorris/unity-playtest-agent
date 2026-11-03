@@ -211,7 +211,9 @@ if (-not $ScenePath) {
 $controlDirectory = Join-Path $output 'control'
 New-Item -ItemType Directory -Path $controlDirectory | Out-Null
 $runId = [guid]::NewGuid().ToString('D')
-$hostDeadlineUtc = [DateTime]::UtcNow.AddSeconds($WallLimitSeconds + 180)
+# Guards are measured before play, inside the host's lifetime: their time is added so the wall limit stays play time.
+$guardAllowanceS = if ($MeasureGuards) { 300 } else { 0 }
+$hostDeadlineUtc = [DateTime]::UtcNow.AddSeconds($WallLimitSeconds + 180 + $guardAllowanceS)
 $sessionConfig = [ordered]@{
     version        = 1
     run_id         = $runId

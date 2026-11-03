@@ -118,7 +118,7 @@ def test_cli_one_reservation(tmp_path, monkeypatch):
         def __init__(self, *a): pass
         def reserve(self, **kw): calls.append('reserve'); return Reservation()
     monkeypatch.setattr(review.call_budget, 'Ledger', Ledger)
-    monkeypatch.setattr(review.provider, 'send_meta', lambda body: (200, {'choices':[{'message':{'content':json.dumps({'findings':[item()]})}}]}, 1, None))
+    monkeypatch.setattr(review.provider, 'send_meta', lambda body, **kw: (200, {'choices':[{'message':{'content':json.dumps({'findings':[item()]})}}]}, 1, None))
     monkeypatch.setattr(sys, 'argv', ['playtest-review','--session',str(tmp_path),'--manifest',str(tmp_path/'m'),'--discovery',str(tmp_path/'d'),'--approval',str(tmp_path/'a'),'--output',str(tmp_path/'out')])
     review.main()
     assert calls == ['reserve','finish']

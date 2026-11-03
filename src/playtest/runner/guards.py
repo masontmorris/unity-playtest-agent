@@ -40,6 +40,7 @@ SETTLED_READINGS = 3
 DISPLACEMENT_RATIO = 0.25  # a chord moves differently from its direction alone past this share
 EPS = 1e-3
 DEFAULT_HOLD_S = 0.3
+MOVES_BODY = 0.05          # a verb that moves the body this far by itself is a movement, not chorded
 TRIALS = 2                 # presses per state: only what changed every time counts, so a rare flip does not
 IDLE_PREPASS_S = 3.0       # one idle window before any press, so readers that change on their own clock are ambient
 _NAME = re.compile(NAME)
@@ -348,6 +349,11 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
         ambient = set(idle.changed) | set(prepass.changed)
         row: dict[str, Any] = {"hold_s": _round(hold), "ambient": sorted(ambient),
                                "rest": await trials(verb, hold, idle, ambient), "moving": {}, "air": None}
+        if row["rest"].get("moved_differently") is True and (row["rest"].get("displacement") or 0) > MOVES_BODY:
+            # It moves the body by itself: a movement the calibration never measured, not a verb to chord.
+            row["moves_body"] = True
+            table[verb] = row
+            continue
         for chord in by_verb.get(verb, []):
             if chord.name not in served:
                 notes.append(f"chord {chord.name} is not in the served catalog; {verb} was not measured moving")

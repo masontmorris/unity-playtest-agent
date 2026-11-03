@@ -246,6 +246,8 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["finding
                         "value": {"type": ["number", "boolean", "null"]},
                         "after_action": {"type": ["string", "null"]}}}]}}}}}}
 
+REVIEW_TIMEOUT_S = 180.0
+
 import argparse
 import hashlib
 import json
@@ -343,7 +345,8 @@ def main():
     ledger = call_budget.Ledger(args.output, approval, 'muse-spark-1.3')
     reservation = ledger.reserve(episode=0, turn=0, based_on_seq=0, request_sha256=sha, requested_model='muse-spark-1.3')
     try:
-        status, data, latency, problem = provider.send_meta(body)
+        # One whole-session packet: a longer read than an in-session frontier call, which timed out at 60 s.
+        status, data, latency, problem = provider.send_meta(body, timeout_s=REVIEW_TIMEOUT_S)
         usage = (data or {}).get('usage') or None
         cost = provider._cost(usage)
         reservation.finish(http_status=status, latency_ms=latency, cost_usd=cost, usage=usage, problem=problem)
