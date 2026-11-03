@@ -134,6 +134,7 @@ def build_review_packet(trace_rows, manifest, discovery, guards=None):
     reference_names = {key for _, row in observations for key, value in public(row).items() if _reference(value)}
     inputs, not_run = _inputs(trace_rows)
     actions, windows = [], {}
+    previous = None
     for item in inputs:
         before = next((row for at, row in reversed(timed) if at <= item["start"]), None)
         after = next((row for at, row in timed if item["end"] is not None and at >= item["end"]), None)
@@ -168,6 +169,11 @@ def build_review_packet(trace_rows, manifest, discovery, guards=None):
                  "changed": changed}
         if during:
             entry["changed_while_held"] = during
+        if previous is not None:
+            # What ran just before, and how long ago it ended: a state it left (a stance, a dash) can still be on.
+            gap = None if previous["end"] is None else _round(item["start"] - previous["end"])
+            entry["after"] = {"choice": previous["choice"], "ended_s_before": gap}
+        previous = item
         if item["kind"] == "input":
             entry["action"] = item["action"]
         if item.get("option_ended") is not None:
@@ -194,7 +200,8 @@ SYSTEM = (
     "observation before the input started and the first one after it ended (measured_over_s is that span), and, in "
     "changed_while_held, what differed at observations taken while it was still held; the "
     "entity's height before it (start_height is where it stood "
-    "when the session began), which held references were set, the net displacement, and the measured surroundings "
+    "when the session began), the input just before it and how long before this one it ended (after: a state it "
+    "left, a stance, a dash or a toggle, can still be on), which held references were set, the net displacement, and the measured surroundings "
     "before it: casts ahead at two heights above the feet, the ground's height ahead and behind against the ground "
     "under the feet. Inputs the game never received (rejected, failed) are not rows; inputs_not_run counts them, so "
     "a missing effect is never a rejected input. You also get each action's stated intent and the values the game's "

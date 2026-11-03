@@ -48,6 +48,7 @@ def test_each_row_is_one_input_measured_over_its_own_window_and_unrun_inputs_are
     assert packet['actions'][0]['changed'] == {'x': [0, 2]}
     aim = packet['actions'][1]
     assert aim['changed'] == {} and aim['changed_while_held'] == {'zoom': [0, 1]}
+    assert aim['after'] == {'choice': 'go', 'ended_s_before': 0.6} and 'after' not in packet['actions'][0]
     assert windows[0][:2] == (10, 20) and windows[1][:2] == (20, 30)
     assert packet['actions'][0]['surroundings_before'] == review.describe_surroundings(None)
     assert review.request_body(packet)['response_format']['json_schema']['strict'] is True
