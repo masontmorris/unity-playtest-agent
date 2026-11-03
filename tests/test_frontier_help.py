@@ -1064,3 +1064,11 @@ def test_a_reused_bridge_sequence_resolves_to_the_current_sessions_observation()
 
     unique_old = _evidence_snapshot(sink, None, 9)
     assert _observation_ref(unique_old, 9, "after") == 2   # a seq only one session recorded stays citable
+
+
+def test_guard_lines_are_kept_for_the_packet_as_measured_before_play():
+    import inspect
+    from playtest.runner import frontier_help
+    assert "guards" in inspect.signature(frontier_help.FrontierHelp.__init__).parameters
+    source = inspect.getsource(frontier_help.FrontierHelp)
+    assert "Measured before play on this build, not in this trace" in source

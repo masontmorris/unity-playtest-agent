@@ -7,7 +7,7 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from playtest.bench import call_budget
 from playtest.bench.record import digest
@@ -366,12 +366,14 @@ class FrontierHelp:
                  generation: str | None = None, session: str | None = None,
                  clip_window_s: float = media.WINDOW_S,
                  progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None,
-                 advice: bool = False) -> None:
+                 advice: bool = False, guards: Sequence[str] = ()) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
                              "frontier can be shown the suspicions recorded so far")
         self.declared = declared
+        # One line per verb from the guard table measured before play (`playtest.runner.guards`), or none.
+        self.guards = tuple(guards)
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -488,6 +490,9 @@ class FrontierHelp:
                                        since_utc=self.started_utc, until_utc=now, output_dir=folder,
                                        generation=self.generation, window_s=self.clip_window_s)
         fact_rows = [{"text": text, "seqs": [seq]} for text in context.get("facts", []) if isinstance(text, str)]
+        fact_rows += [{"text": "Measured before play on this build, not in this trace (each verb pressed at rest, "
+                               "while a direction was held and in the air, against each state without it): " + line,
+                       "seqs": [seq]} for line in self.guards]
         ids = [f"hyp-{request.turn}-{i}" for i in range(frontier.MAX_HYPOTHESES)]
         old_hypotheses = [row for row in self.hypotheses.values() if row.get("status") == "open"]
         current = (Directive.model_validate(self.tracker.active["directive"])
