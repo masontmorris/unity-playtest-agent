@@ -838,15 +838,12 @@ def _furthest(values: Sequence[Any]) -> Any:
 
 
 def _at_limit(observable: str, row: Mapping[str, Any], cell: Mapping[str, Any]) -> bool:
-    """Whether a trial in this cell began with the reader at the furthest value the verb moved it to anywhere: a
-    reader at its limit (a view pitched all the way up) cannot show a press that would move it further."""
-    cells = [row.get("rest"), *(row.get("moving") or {}).values(), row.get("air")]
-    seen = [_number(v) for c in cells if c for v in ((c.get("changed") or {}).get(observable) or ())]
-    seen = [v for v in seen if v is not None]
-    if not seen or max(seen) - min(seen) <= 1e-3:
-        return False  # the verb never moved it anywhere: nothing marks a limit
-    starts = [_number((s or {}).get(observable)) for s in cell.get("starts") or ()]
-    return any(v is not None and (abs(v - max(seen)) <= 1e-3 or abs(v - min(seen)) <= 1e-3) for v in starts)
+    """Whether a trial in this cell began with the reader already at the end the verb drives it to: a reader at its
+    limit (a view pitched all the way up) cannot show a press that would move it further. The guard table's own
+    test (`guards._at_limit`): direction-aware, starts included, vectors per component, angles unwrapped."""
+    from playtest.runner.guards import _at_limit as at_limit
+
+    return at_limit(row, cell, observable)
 
 
 def _reached(value: Any, target: Any) -> bool:
