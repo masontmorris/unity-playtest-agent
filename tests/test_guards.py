@@ -148,3 +148,17 @@ def test_an_effect_seen_while_one_direction_is_held_and_not_its_opposite_is_an_a
     assert {r["verdict"] for r in rows} == {"specific"} and rows[0]["control_k"] == 0
     rule = guards.compare_tallies(seeded, seeded)
     assert {r["verdict"] for r in rule} == {"not_specific"}
+
+
+def test_only_a_chord_that_does_what_its_verb_alone_does_not_is_offered_to_play():
+    table = {"moves": ["right", "left"], "verbs": {
+        "dash": {"rest": {"changed": {}}, "moving": {"right": {"changed": {"dashing": [0, 1]}, "moved_differently": True},
+                                                      "left": {"changed": {}, "moved_differently": False}}},
+        "aim": {"rest": {"changed": {"zoom": [65, 50]}},
+                "moving": {"right": {"changed": {"zoom": [65, 50]}, "moved_differently": False}}}}}
+    chords = [guards.GuardChord("g_right_dash", "right", "dash", None), guards.GuardChord("g_left_dash", "left", "dash", None),
+              guards.GuardChord("g_right_aim", "right", "aim", None)]
+    offered = guards.unlocking_chords(table, chords, {"dash": "dash sprint: hold shift", "right": "move right: hold d"})
+    assert [(c.name, label) for c, label in offered] == [
+        ("g_right_dash", "dash sprint while move right: both held together; measured before play: dashing changed; "
+                         "the body moved differently from the direction alone")]

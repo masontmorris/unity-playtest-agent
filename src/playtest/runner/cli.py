@@ -693,6 +693,20 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             replay._save(run_dir / "guards.json", guards)
         guard_lines: list[str] = []
         if args.measure_guards:
+            from playtest.contracts.loop import Choice, ChoiceSource
+            from .guards import plan_guards, unlocking_chords
+
+            # The chords that measurably do what their verb alone does not join the menu, labelled with what they
+            # did: a dash that needs a direction is then a choice S1 can make. Nothing else is added or removed.
+            labels = {c.action: c.label for c in built.choices if c.kind is ChoiceKind.action and c.action}
+            taken = {c.id for c in built.choices}
+            for chord, label in unlocking_chords(guards, plan_guards(served, guard_primitives)["chords"], labels):
+                if chord.name in taken:
+                    continue
+                built.choices.append(Choice(id=chord.name, kind=ChoiceKind.action, action=chord.name, label=label,
+                                            params={}, source=ChoiceSource.manifest))
+                built.leases[chord.name] = chord.definition.default_lease_s
+                built.expected.setdefault(chord.name, None)
             from .guards import asymmetries, asymmetry_line, summary_lines
             guard_lines = summary_lines(guards) + [
                 "asymmetry (a symmetry candidate): " + asymmetry_line(item) for item in asymmetries(guards)]

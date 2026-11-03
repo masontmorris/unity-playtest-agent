@@ -143,6 +143,15 @@ def _same(a: Any, b: Any) -> bool:
     return a == b
 
 
+def _same_state(a: tuple[dict[str, Any], Any], b: tuple[dict[str, Any], Any]) -> bool:
+    (values_a, position_a), (values_b, position_b) = a, b
+    if (position_a is None) != (position_b is None):
+        return False
+    if position_a is not None and not all(abs(x - y) <= EPS for x, y in zip(position_a, position_b)):
+        return False
+    return values_a.keys() == values_b.keys() and all(_same(values_a[k], values_b[k]) for k in values_a)
+
+
 @dataclass
 class _Window:
     """What one press measured: every key that differed from the reading before it, and how far the body went."""
@@ -158,6 +167,7 @@ class _Meter:
                  sleep: Callable[[float], Awaitable[Any]]) -> None:
         self.client, self.readers, self.clock, self.sleep = client, readers, clock, sleep
         self.acts = 0
+        self.ambient: set[str] = set()   # keys that change on their own clock, which settling does not wait for
 
     async def snapshot(self) -> tuple[dict[str, Any], tuple[float, ...] | None, Any]:
         sample = await self.readers.read() if self.readers is not None else None
@@ -167,17 +177,22 @@ class _Meter:
         return _flat(values, public), _position(public), observation
 
     async def settle(self) -> None:
+        """Wait until the body and every reader that does not change on its own clock read still.
+
+        A previous press can keep changing a reader after the body stops (a counter reset on landing); that change
+        would otherwise land in the next press's window.
+        """
         started, last, still = self.clock(), None, 0
         while self.clock() - started < SETTLE_S:
-            observation = await self.client.observe_once()
-            position = _position(getattr(observation, "public", None) or {})
-            if position is not None and last is not None and all(abs(a - b) <= EPS for a, b in zip(position, last)):
+            values, position, _ = await self.snapshot()
+            current = ({k: v for k, v in values.items() if k not in self.ambient}, position)
+            if last is not None and _same_state(current, last):
                 still += 1
                 if still >= SETTLED_READINGS:
                     return
             else:
                 still = 0
-            last = position
+            last = current
             await self.sleep(0.05)
 
     async def window(self, action: str | None, hold_s: float, *, then: str | None = None,
@@ -315,6 +330,7 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
     served = set(catalog)
     await meter.settle()
     prepass = await meter.window(None, IDLE_PREPASS_S)
+    meter.ambient = set(prepass.changed)
     trends = {key: _trend(values) for key, values in prepass.changed.items()}
 
     async def trials(action: str, hold_s: float, baseline: _Window, ambient: set[str], **press: Any) -> dict[str, Any]:
@@ -457,3 +473,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def unlocking_chords(guards: Mapping[str, Any], chords: Sequence[GuardChord],
+                     labels: Mapping[str, str]) -> list[tuple[GuardChord, str]]:
+    """The chords that measurably do what their verb alone does not, each with a label stating what that was.
+
+    A chord is offered to play only when its measured cell changed a key the verb's rest cell did not, or moved
+    the body differently from the direction alone. Anything else adds nothing the verb and the direction do not
+    already offer. `labels` are the verb's and the direction's own labels; their first clause names each.
+    """
+    out = []
+    for chord in chords:
+        row = (guards.get("verbs") or {}).get(chord.verb) or {}
+        cell = (row.get("moving") or {}).get(chord.move)
+        if not cell:
+            continue
+        new = sorted(set(cell.get("changed") or {}) - set(((row.get("rest") or {}).get("changed") or {})))
+        if not new and cell.get("moved_differently") is not True:
+            continue
+        verb = (labels.get(chord.verb) or chord.verb).split(":")[0]
+        move = (labels.get(chord.move) or chord.move).split(":")[0]
+        measured = ", ".join(new) + (" changed" if new else "")
+        if cell.get("moved_differently") is True:
+            measured += ("; " if new else "") + "the body moved differently from the direction alone"
+        out.append((chord, f"{verb} while {move}: both held together; measured before play: {measured}"))
+    return out
