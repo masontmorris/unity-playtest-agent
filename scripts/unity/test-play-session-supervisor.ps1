@@ -333,6 +333,27 @@ try {
         Assert-Contains $result.Stderr 'host exited' 'the host exit is the reason, not the client code'
     }
 
+    Invoke-Scenario 'a client that records a failed host operation and exits in the grace is clean' {
+        $scenario = New-Scenario 'host-failed-client-exits' -DeadlineUtc (New-Deadline 60)
+        $result = Invoke-Supervisor -Scenario $scenario -UnityMode 'fail-after-ready' -ClientMode 'hang-then-exit0' `
+            -UnityExitSeconds '1' -ClientHangSeconds '3' -ReadyTimeoutSeconds 30 -ShutdownTimeoutSeconds 5
+
+        Assert-Equal 0 $result.ExitCode 'the client owns the outcome of a failed host operation'
+        Assert-True (-not (Test-OwnedFakeAlive (Get-FakePid $scenario 'fake-client'))) 'the client is gone'
+        Assert-True (-not (Test-OwnedFakeAlive (Get-FakePid $scenario 'fake-unity'))) 'the host is gone'
+    }
+
+    Invoke-Scenario 'a client still running after the host-failure grace is stopped' {
+        $scenario = New-Scenario 'host-failed-client-hangs' -DeadlineUtc (New-Deadline 90)
+        $result = Invoke-Supervisor -Scenario $scenario -UnityMode 'fail-after-ready' -ClientMode 'hang' `
+            -UnityExitSeconds '1' -ReadyTimeoutSeconds 30 -ShutdownTimeoutSeconds 5
+
+        Assert-Equal 1 $result.ExitCode 'a client that outlives the grace fails the run'
+        Assert-Contains $result.Stderr 'operation_deadline' 'the failure names the host error'
+        Assert-True (-not (Test-OwnedFakeAlive (Get-FakePid $scenario 'fake-client'))) 'the hung client was stopped'
+        Assert-True ($result.Seconds -lt 60) 'the grace is bounded, not the session deadline'
+    }
+
     Invoke-Scenario 'invalid or missing deadlines are setup errors' {
         $cases = @(
             @{ Name = 'deadline-missing'; Config = @{ Omit = $true }; Expect = 'deadline_utc' },
