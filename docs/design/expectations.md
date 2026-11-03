@@ -166,6 +166,43 @@ Nine of FPSKit's clean cells cannot be shown at all: look_up and look_down while
 view already pitched to its clamp by the presses before them. They are reported at_limit, never missing. Measuring
 them would need the view brought back between cells, which a name-blind table has no input known to do.
 
+## Directed tests: what a press must cause in play (2026-11-03)
+
+The guard table only creates rest, moving, air and a second jump, so game logic that needs a situation, or happens
+after a press, was out of its reach. Action rules (`predict --part actions`) say what pressing an input must make
+happen: "when this input is pressed and, if needed, a reader satisfies a condition just before, that reader must
+follow within within_s". A condition no reader can show (an NPC in range) is kept as a situation to bring about.
+`test-plan` turns the rules into a session objective, written by code and saying nothing the rules do not, and S1
+pursues it with the frontier. Hunts had pressed a verb about once a session; directed sessions got 62 to 91 presses
+the game received.
+
+How a press is counted:
+- every press the game received, alone or inside a chord or option whose controls include the input's, matched
+  with the value each control is driven to (one stick pushed up and down are two inputs);
+- not counted when its condition did not hold just before it, when the next press of the same input lands in its
+  window, when an unread stretch lies inside it, or when its reader began at the furthest value the session read in
+  the direction the input's own followed presses moved it (a view at its pitch clamp);
+- `--press-readings` reads every reader just before and just after each input, into its effect record: S1's own
+  readings come about every 0.8 s, and an effect a press leaves behind for a moment fell between them (jump, attack).
+
+A failed rule is read against the same build's guard tables, which say what a reading can show and never the
+verdict: changed only while held (gone by the reading just after release, `trial_persisted`), a reading after a press
+cannot show it (while_held); changed in another measured state, a guard (guarded); never changed anywhere, a
+mismatch. A mismatch whose only oracle is the names of the action, fields and methods is labelled the weakest.
+
+Two fixes outside the scorer came from the same sessions. A rise's net displacement depends on when it is read (six
+clean jumps measured 2.26 to 2.52 against a calibrated 2.47 with an allowance of 0.05, and the frontier filed it), so
+an action whose calibrated displacement falls at a longer hold is never compared with it. A value stepped once a
+frame is read up to a step past the bound it stops at (a lifetime declared 0 to 5 read 5.0005), so a declared bound
+is crossed only by more than 1% of it.
+
+| | Clean | Held-out |
+|---|---|---|
+| FPSKit (1 session each) | 0 mismatches; looks, crouch held | aim_toggle: aiming and aim blend never change (b05); the frontier filed it live with an `after_action` replay check |
+| DragonBlaze (3 clean, 1 held-out) | 0 mismatches; jump, attack, the dash ending held; stick and dash at rest while_held | one names-only mismatch, dash never makes the player invisible, which fails on the clean build too |
+
+Blind score with the directed sessions: FPSKit 1 of 3 (b05), DragonBlaze 0 of 2; the names-only lead matched nothing.
+
 ## Live on the clean build (`runs/fpskit/live-clean-01`)
 
 The same hunt on clean FPSKit, with expectations pre-registered from the clean build's own declarations (0
