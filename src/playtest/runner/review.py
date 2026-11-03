@@ -118,7 +118,7 @@ def _flat(values):
     return out
 
 
-def build_review_packet(trace_rows, manifest, discovery):
+def build_review_packet(trace_rows, manifest, discovery, guards=None):
     """One row per input the game received, measured over its own window.
 
     A row compares the last observation before the input started with the first one after it ended, so an input
@@ -179,6 +179,10 @@ def build_review_packet(trace_rows, manifest, discovery):
                   if public(row).get("probe")), None)
     packet = {"intents": intents, "declared_configuration": declared_configuration(discovery, manifest["entity_id"]),
               "start_height": _round(start[1]) if start else None, "inputs_not_run": not_run, "actions": actions}
+    if guards:
+        # What each verb did at rest, while a direction was held and in the air, measured before play.
+        from playtest.runner.guards import summary_lines
+        packet["measured_guards"] = summary_lines(guards)
     return packet, windows
 
 
@@ -210,6 +214,11 @@ SYSTEM = (
     "unchanged only for a reader with a few distinct values (a flag, a count); for one that moves continuously (a "
     "blend, a timer, a position), give the bound the input's effect crosses in the contrast row instead, such as < "
     "half of the value it reached there, since a small drift is not the effect. "
+    "measured_guards, when present, was measured before play: each verb pressed at rest, while a direction was "
+    "held, and in the air, each against that state without the verb, and what it changed there. A verb with no "
+    "effect in a state where it never had one is how this build measurably behaves, which by itself is neither a "
+    "rule nor a bug: a claim about it needs another oracle (a declared value, an intent the effect contradicts, or "
+    "a like input that works there). A row that differs from measured_guards in the same state is a contrast. "
     "Observations are measured; null means unknown, not zero."
 )
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["findings"], "properties": {"findings": {
@@ -313,7 +322,9 @@ def main():
     manifest, _ = replay._load(args.manifest)
     discovery, _ = replay._load(args.discovery)
     rows = [json.loads(line) for line in (args.session / 'trace.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
-    packet, windows = build_review_packet(rows, manifest, discovery)
+    guards_path = args.session / 'guards.json'
+    guards = json.loads(guards_path.read_text(encoding='utf-8')) if guards_path.is_file() else None
+    packet, windows = build_review_packet(rows, manifest, discovery, guards)
     body = request_body(packet)
     sha = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
     args.output.mkdir(parents=True, exist_ok=False)

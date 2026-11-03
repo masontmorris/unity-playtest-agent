@@ -140,3 +140,15 @@ def test_an_input_conditioned_check_needs_a_contrast_row_where_its_reader_change
     for finding in findings[1:]:
         assert finding.repro_check is None and 'no contrast row shows that reader changing' in finding.uncertainty
     assert 'contrast row' in review.SYSTEM
+
+
+def test_measured_guards_go_into_the_packet_as_one_line_per_verb(monkeypatch):
+    monkeypatch.setattr(review, 'declared_configuration', lambda *args: [])
+    table = {"verbs": {"dash": {"rest": {"effect": False, "changed": {}, "moved_differently": False},
+                                "moving": {"right": {"effect": True, "changed": {}, "moved_differently": True}},
+                                "air": None}}}
+    packet, _ = review.build_review_packet(rows(), {'actions': [], 'skills': [], 'entity_id': 'e'}, {}, table)
+    assert packet['measured_guards'] == ['dash: at rest: no effect; while right held: movement']
+    assert 'measured_guards' in review.SYSTEM
+    plain, _ = review.build_review_packet(rows(), {'actions': [], 'skills': [], 'entity_id': 'e'}, {})
+    assert 'measured_guards' not in plain

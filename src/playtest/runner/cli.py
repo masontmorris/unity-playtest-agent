@@ -210,6 +210,11 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_MEASURE_AIR_RISE", switch, False),
                         help="before play, measure the rise pressed again at its apex and offer a hop that does so "
                              "when it rose higher (needs --options; also UPA_RUN_MEASURE_AIR_RISE)")
+    parser.add_argument("--measure-guards", action="store_true",
+                        default=_env("UPA_RUN_MEASURE_GUARDS", switch, False),
+                        help="before play, measure each verb at rest, while moving and in the air against a baseline "
+                             "of each, and save the table as guards.json (the host must serve the guard chords: "
+                             "playtest-export-catalog --guard-chords; also UPA_RUN_MEASURE_GUARDS)")
     parser.add_argument("--decide-during-options", action="store_true",
                         default=_env("UPA_RUN_DECIDE_DURING_OPTIONS", switch, False),
                         help="run options, actions and skills in the background so S1 decides again at once: picking "
@@ -449,7 +454,9 @@ def main(argv: list[str] | None = None) -> int:
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256,
                                    turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
                                    capture_size=(args.capture_width, args.capture_height),
-                                   calibration=calibration if args.turn_sizes or args.point_turns or args.point_moves else None)  # before any call or contact with the bridge
+                                   calibration=calibration if (args.turn_sizes or args.point_turns or args.point_moves
+                                                               or args.measure_guards) else None,
+                                   guard_chords=args.measure_guards)  # before any call or contact with the bridge
         if session_host is not None:
             # The host must serve the very catalog this run verified, or its scene is a different session.
             if (Path(session_host.config.catalog_path).resolve() != args.catalog.resolve()
@@ -500,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["decide_during_options"] = True
         if args.measure_air_rise:
             plan["measure_air_rise"] = True
+        if args.measure_guards:
+            plan["measure_guards"] = True
         if args.contingent:
             plan["contingent"] = True
         if args.placement:
@@ -661,6 +670,21 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         readers = FieldReaders(client, manifest.readers) if manifest.readers else None
         if readers is not None:
             await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
+        if args.measure_guards:
+            from playtest.preflight.catalog import export
+            from .guards import PREFIX, measure_guards
+            from .options.primitives import primitives_from_calibration
+
+            # Each verb at rest, while moving and in the air, before any paid call, from the catalog this run verified
+            # the host serves. A measurement for the review and the frontier; it adds, removes or ranks no choice.
+            served = export(manifest, turn_sizes=args.turn_sizes, point_turns=args.point_turns,
+                            point_moves=args.point_moves, capture_size=(args.capture_width, args.capture_height),
+                            calibration=calibration, guard_chords=True).actions
+            guard_primitives = primitives_from_calibration(
+                calibration or {}, [n for n, d in served.items() if d.inputs and not n.startswith(PREFIX)],
+                catalog={n: d for n, d in served.items() if not n.startswith(PREFIX)})
+            guards = await measure_guards(client, readers, served, guard_primitives)
+            replay._save(run_dir / "guards.json", guards)
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         # Detectors are opt-in: without them the loop reports to the readers' watch itself, so a trace is
         # unchanged. With them, the same watch plus the detectors is one watch, numbered in one sequence.

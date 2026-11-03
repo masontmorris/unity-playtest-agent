@@ -40,7 +40,7 @@ def _skill(skill: ManifestSkill) -> ActionDefinition:
     return ActionDefinition(backend="input_system", steps=steps, max_s=skill.max_s)
 
 
-def export(value: PreflightManifest, *, turn_sizes: bool = False, point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480), calibration: dict | None = None) -> ActionCatalog:
+def export(value: PreflightManifest, *, turn_sizes: bool = False, point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480), calibration: dict | None = None, guard_chords: bool = False) -> ActionCatalog:
     """Build the catalog from supported declarations only; no order or content is invented."""
     if sum((turn_sizes, point_turns, point_moves)) > 1:
         raise ValueError("--point-moves, --point-turns and --turn-sizes are mutually exclusive")
@@ -65,6 +65,19 @@ def export(value: PreflightManifest, *, turn_sizes: bool = False, point_turns: b
             if row.choice.skill in actions:
                 raise ValueError(f"point choice id collision: {row.choice.id}")
             actions[row.choice.skill] = row.definition
+    if guard_chords:
+        # Each verb held together with a measured direction, so its effect can be measured while the body moves
+        # (`playtest.runner.guards`). Generated from the supported actions and the calibration only.
+        from playtest.runner.guards import plan_guards
+        from playtest.runner.options.primitives import primitives_from_calibration
+        if calibration is None:
+            raise ValueError("--guard-chords needs the calibration record")
+        primitives = primitives_from_calibration(calibration, [n for n, d in actions.items() if d.inputs],
+                                                 catalog=actions)
+        for chord in plan_guards(actions, primitives)["chords"]:
+            if chord.name in actions:
+                raise ValueError(f"guard chord name collision: {chord.name}")
+            actions[chord.name] = chord.definition
     return ActionCatalog(actions=actions)
 
 
@@ -90,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--turn-sizes", action="store_true")
     parser.add_argument("--point-turns", action="store_true")
     parser.add_argument("--point-moves", action="store_true")
+    parser.add_argument("--guard-chords", action="store_true",
+                        help="add each verb chorded with a measured direction (needs --calibration)")
     parser.add_argument("--capture-width", type=int, default=640)
     parser.add_argument("--capture-height", type=int, default=480)
     parser.add_argument("--calibration", type=Path)
@@ -107,7 +122,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("the manifest is invalid: " + "; ".join(problems))
         calibration = json.loads(args.calibration.read_text(encoding="utf-8")) if args.calibration else None
         catalog = export(value, turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
-                         capture_size=(args.capture_width, args.capture_height), calibration=calibration)
+                         capture_size=(args.capture_width, args.capture_height), calibration=calibration,
+                         guard_chords=args.guard_chords)
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(serialize(catalog), stream, indent=2, allow_nan=False, sort_keys=True)
