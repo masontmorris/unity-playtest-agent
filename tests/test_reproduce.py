@@ -54,11 +54,13 @@ def _finding(seq: int, evidence: list[int], check: dict[str, Any] | None, state:
     return {"trace_seq": seq, "kind": "finding", "turn": None, "body": body}
 
 
-def _trace(tmp_path: Path, *, check: dict[str, Any] | None = None, extra: list[dict[str, Any]] = ()) -> Path:
+def _trace(tmp_path: Path, *, check: dict[str, Any] | None = None, extra: list[dict[str, Any]] = (),
+           start: dict[str, Any] | None = None) -> Path:
+    """A session whose first observation carries `start` under `public`, when given."""
     check = check if check is not None else {"field": "public.speed", "op": ">=", "value": 9, "tolerance": None}
     entries = [
         {"trace_seq": 0, "kind": "run", "turn": None, "body": {"run_id": "r1", "game_commit": "abc"}},
-        {"trace_seq": 1, "kind": "observation", "turn": 0, "body": {}},
+        {"trace_seq": 1, "kind": "observation", "turn": 0, "body": {"public": dict(start)} if start else {}},
         _execution(2, 0, "move", "completed", 1000.0),
         {"trace_seq": 3, "kind": "observation", "turn": 1, "body": {}},
         _execution(4, 1, "move", "rejected", None),                 # sent nothing in the session: skipped
@@ -98,6 +100,40 @@ def test_the_plan_refuses_what_it_cannot_replay_or_score(tmp_path):
     override = {"field": "public.speed", "op": "changed", "value": None}
     plan = reproduce.build_plan(_no_check(tmp_path / "d"), manifest, repro_check=override)
     assert plan["repro_check"]["op"] == "changed" and plan["repro_check_source"] == "operator"
+
+
+def test_the_plan_keeps_the_reader_values_the_session_began_with(tmp_path):
+    plan = reproduce.build_plan(_trace(tmp_path / "start", start={"speed": 1.0, "not_a_reader": 4.0}),
+                                _manifest(tmp_path / "start"))
+    assert plan["session_start_readers"] == {"speed": 1.0}      # the manifest's reader aliases only
+    blind = reproduce.build_plan(_trace(tmp_path / "blind"), _manifest(tmp_path / "blind"))
+    assert blind["session_start_readers"] == {}                 # no observation carried a reader: nothing compared
+
+
+def test_an_attempt_states_the_readers_the_reset_did_not_restore_and_leaves_its_result_alone(tmp_path):
+    plan = _plan(tmp_path, start={"speed": 1.0})
+    restored = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([1.0, 2.0, 3.0]))
+    assert restored["reset_check"] == {"compared": 1, "differs": {}}
+    assert (restored["valid"], restored["result"]) == (True, "not_reproduced")
+    # 2.0004 and 1.0 are different float noise, not different readings: the comparison rounds to 3 decimals.
+    near = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([1.0004, 2.0, 3.0]))
+    assert near["reset_check"] == {"compared": 1, "differs": {}}
+    drifted = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([2.5, 2.0, 3.0]))
+    assert drifted["reset_check"] == {"compared": 1,
+                                      "differs": {"speed": {"session_start": 1.0, "after_reset": 2.5}}}
+    assert (drifted["valid"], drifted["result"]) == (True, "not_reproduced")   # a measurement only
+    assert reproduce.summarize(plan, [restored])["reset_differs"] == []
+    assert reproduce.summarize(plan, [restored, drifted])["reset_differs"] == ["speed"]
+
+
+def test_a_reader_missing_on_either_side_is_not_compared_and_an_old_plan_states_nothing(tmp_path):
+    plan = _plan(tmp_path, start={"speed": 1.0})
+    plan["session_start_readers"]["unread"] = 2.0     # the reading does not carry it
+    attempt = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([1.0, 2.0, 3.0]))
+    assert attempt["reset_check"] == {"compared": 1, "differs": {}}
+    plan.pop("session_start_readers")                 # a plan made before the session's start was kept
+    old = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([2.5, 2.0, 3.0]))
+    assert old["reset_check"] is None
 
 
 def _no_check(tmp_path: Path) -> Path:
@@ -156,8 +192,8 @@ class FakeReaders:
         return SimpleNamespace(values={"speed": value}, errors={}, game_s=1.0, problem=None)
 
 
-def _plan(tmp_path: Path, attempts: int = 1) -> dict[str, Any]:
-    plan = reproduce.build_plan(_trace(tmp_path), _manifest(tmp_path), attempts=attempts)
+def _plan(tmp_path: Path, attempts: int = 1, **kwargs: Any) -> dict[str, Any]:
+    plan = reproduce.build_plan(_trace(tmp_path, **kwargs), _manifest(tmp_path), attempts=attempts)
     plan.update(start_settle_s=0.0, settle_s=0.02, sample_interval_s=0.01)
     for item in plan["inputs"]:
         item["offset_s"] = item["offset_s"] / 100   # keep the test fast; offsets are still honoured in order

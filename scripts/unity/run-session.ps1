@@ -95,6 +95,7 @@ param(
     [ValidateSet('full', 'compact-menu')][string]$S1Context = 'full',
     [ValidateSet('policy/1', 'direct/1', 'policy/2', 'policy/3')][string]$S1Instructions = 'policy/1',
     [ValidateSet('plain', 'conditional')][string]$FinishLabel = 'plain',
+    [switch]$NoFinish,
     [switch]$S1ContinuousInput,
     [switch]$Options,
     [switch]$Placement,
@@ -227,7 +228,7 @@ $names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
            'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_MEASURE_GUARDS', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
            'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS', 'UPA_RUN_S1_CONTEXT',
-           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
+           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_NO_FINISH', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
            'UPA_RUN_OPTIONS', 'UPA_RUN_CONTINGENT', 'UPA_RUN_PLACEMENT', 'UPA_CONTROLLED_ENTITY')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
@@ -260,6 +261,7 @@ try {
     $env:UPA_RUN_S1_CONTEXT = $S1Context
     $env:UPA_RUN_S1_INSTRUCTIONS = $S1Instructions
     $env:UPA_RUN_FINISH_LABEL = $FinishLabel
+    $env:UPA_RUN_NO_FINISH = if ($NoFinish) { '1' } else { '' }
     $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
     $env:UPA_RUN_OPTIONS = if ($Options) { '1' } else { '' }
     $env:UPA_RUN_CONTINGENT = if ($Contingent) { '1' } else { '' }

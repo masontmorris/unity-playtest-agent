@@ -252,6 +252,9 @@ def _parser() -> argparse.ArgumentParser:
                         choices=sorted(FINISH_LABELS),
                         help="how the finish choice is labelled: plain ('Finish', default) or conditional (states "
                              "that it ends the session and when to choose it; also UPA_RUN_FINISH_LABEL)")
+    parser.add_argument("--no-finish", action="store_true", default=_env("UPA_RUN_NO_FINISH", switch, False),
+                        help="leave the finish choice off the menu, so the run ends at its wall limit or by the "
+                             "loop's own rules (also UPA_RUN_NO_FINISH)")
     parser.add_argument("--objective", default=None)
     parser.add_argument("--objective-file", type=Path, default=_env("UPA_RUN_OBJECTIVE_FILE", Path, None))
     return parser
@@ -447,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         built = build_choices(manifest, restart_play_mode=session_host is not None
                               and session_host.advertises_restart,
                               finish_label=FINISH_LABELS[args.finish_label],
+                              offer_finish=not args.no_finish,
                               turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
                               capture_size=(args.capture_width, args.capture_height),
                               help_kinds=FrontierHelp.supported_kinds if args.frontier else frozenset(),
@@ -519,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["pacing_anchor"] = "send"
         if args.finish_label != "plain":
             plan["finish_label"] = args.finish_label
+        if args.no_finish:
+            plan["no_finish"] = True
         plan["coverage_facts"] = args.coverage_facts
         if args.point_moves:
             plan["point_moves"] = True

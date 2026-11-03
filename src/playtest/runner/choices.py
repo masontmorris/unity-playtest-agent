@@ -72,12 +72,15 @@ FINISH_LABELS = {
 }
 
 
-def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"]) -> list[Choice]:
+def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"],
+                 offer_finish: bool = True) -> list[Choice]:
     """The choices every game has, plus an explicit host restart only when this host advertises it.
 
     Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
     The restart choice is a primary choice selected by S1 alone: it is never a `while_pending` input and
     no detector, score or timer selects it.
+    `offer_finish` False leaves the finish choice off the menu, for a run that ends at its wall limit or by the
+    loop's own rules; every other choice keeps its wording, its params and its order.
     """
     choices = [
         Choice(id="wait", kind=ChoiceKind.wait, label=f"Wait {WAIT_GAME_S:g} s with no input",
@@ -92,7 +95,8 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
             id=RESTART_ID, kind=ChoiceKind.restart_play_mode,
             label="Restart Play Mode: stop the play session and start it again from the beginning",
             source=ChoiceSource.core))
-    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
+    if offer_finish:
+        choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
     return choices
 
 
@@ -166,18 +170,21 @@ def sweep_spec(choices: list[Choice], memory: Any, scene: Any, position: Any) ->
 
 
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
-                  finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
+                  finish_label: str = FINISH_LABELS["plain"], offer_finish: bool = True, turn_sizes: bool = False,
                   point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),
                   calibration: dict | None = None, help_kinds: frozenset[str] | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
     default leaves every choice, its order and its wording exactly as before.
+    `offer_finish` False drops the finish choice from the menu and changes nothing else.
     `help_kinds` names the configured help handlers, independently of gameplay and remaining budget.
     None preserves the full menu for callers that provide their own helper or resolve help externally.
     """
-    all_core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
-    reserved = {choice.id for choice in all_core} | {RESTART_ID}
+    all_core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label,
+                            offer_finish=offer_finish)
+    # `finish` stays reserved when it is not offered: a declaration of that id is still the core choice's name.
+    reserved = {choice.id for choice in all_core} | {RESTART_ID, "finish"}
     if help_kinds is not None and help_kinds - {"escalate", "delegate"}:
         raise ValueError("help_kinds must contain only configured escalate or delegate handlers")
     unavailable = [c for c in all_core if c.kind in (ChoiceKind.escalate, ChoiceKind.delegate)

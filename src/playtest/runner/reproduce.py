@@ -21,7 +21,8 @@ was not recorded. When the evidence is an observation, the plan also keeps its t
 request. Each attempt:
 1. requests a numbered scene reload, the calibrated reset;
 2. reconnects and installs the manifest's readers, then waits briefly;
-3. reads the baseline;
+3. reads the baseline, and states which readers the reset did not restore to the values the recorded session
+   began with (a measurement only: it changes no attempt's result, validity or k of n);
 4. replays every input at its recorded offset, once, never retried or replaced;
 5. reads the readers after each input, then through a settle window that also covers the evidence's time.
 
@@ -301,6 +302,27 @@ def effect_plan(manifest: PreflightManifest, action: str, inputs: list[dict[str,
             "scored_turn": scored["turn"], "scored_trace_seq": scored["trace_seq"]}
 
 
+def session_start_readers(entries: Sequence[Mapping[str, Any]], readers: Sequence[Any]) -> dict[str, Any]:
+    """The reader values the recorded session began with: from the first observation that carries one of them.
+
+    A replay shows what its reset did not restore by comparing its first reading with these. Only the manifest's
+    reader aliases are kept, and an alias the observation does not carry is left out, never set to None: an
+    unread value is not a value, so nothing is compared against it.
+    """
+    aliases = [reader.alias for reader in readers]
+    for entry in entries:
+        body = entry.get("body")
+        if entry.get("kind") != "observation" or not isinstance(body, Mapping):
+            continue
+        public = body.get("public")
+        if not isinstance(public, Mapping):
+            continue
+        found = {alias: public[alias] for alias in aliases if public.get(alias) is not None}
+        if found:
+            return found
+    return {}
+
+
 def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None = None,
                finding_record: Mapping[str, Any] | None = None,
                repro_check: Mapping[str, Any] | None = None, attempts: int = ATTEMPTS, settle_s: float = SETTLE_S,
@@ -366,6 +388,7 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         "finding": finding.model_dump(mode="json"),
         "repro_check": check.model_dump(mode="json"), "repro_check_source": check_source,
         "repro_check_kind": "number" if effect is not None else kinds[alias], "effect": effect,
+        "session_start_readers": session_start_readers(entries, manifest.readers),
         "evidence_seq": finding.evidence_seq, "evidence_turn": through, "evidence_offset_s": seen_s,
         "inputs": inputs, "skipped_inputs": skipped,
         "attempts": attempts, "settle_s": settle_s, "start_settle_s": start_settle_s,
@@ -410,6 +433,34 @@ async def request_reload(directory: Path, number: int, timeout_s: float) -> dict
         raise ValueError(f"the host did not report scene reload {number} as completed")
     return {key: done.get(key) for key in ("number", "scene_path", "requested_at_utc", "completed_at_utc",
                                            "game_time_s", "real_time_s", "frame")}
+
+
+def _rounded(value: Any) -> Any:
+    """A reader value with its floats rounded to 3 decimals, through a mapping or a list as well as a scalar."""
+    number = _number(value)
+    if number is not None:
+        return round(number, 3)
+    if isinstance(value, Mapping):
+        return {key: _rounded(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_rounded(item) for item in value]
+    return value
+
+
+def reset_check(plan: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Which readers the reset did not put back to the values the recorded session started with.
+
+    A measurement only: it changes no attempt's result, its validity or its place in k of n. Only aliases present
+    on both sides are compared, and floats are compared rounded to 3 decimals. A plan made before the session's
+    start readers were kept has nothing to compare with, so it states nothing.
+    """
+    start = plan.get("session_start_readers")
+    if start is None:
+        return None
+    differs = {alias: {"session_start": value, "after_reset": values[alias]}
+               for alias, value in start.items()
+               if alias in values and _rounded(value) != _rounded(values[alias])}
+    return {"compared": sum(alias in values for alias in start), "differs": differs}
 
 
 def _reading(sample: Any, alias: str, check: ReproCheck, kind: Any, baseline: Any, label: str,
@@ -482,7 +533,7 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
     alias = check.field.removeprefix("public.")
     attempt: dict[str, Any] = {"number": number, "valid": False, "result": None, "reason": None, "reload": None,
                                "baseline": None, "baseline_satisfied": None, "inputs": [], "readings": [],
-                               "effect": None, "error": None, "stop": None}
+                               "effect": None, "error": None, "stop": None, "reset_check": None}
     client = None
     readers = snapshot = baseline = None
     loop = asyncio.get_running_loop()
@@ -504,8 +555,10 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
         await asyncio.sleep(plan["start_settle_s"])
         if readers is not None:
             first = await readers.read()
-            baseline = (getattr(first, "values", {}) or {}).get(alias)
+            values = getattr(first, "values", {}) or {}
+            baseline = values.get(alias)
             attempt["baseline"] = baseline
+            attempt["reset_check"] = reset_check(plan, values)
             attempt["baseline_satisfied"] = score(check, kind, baseline, baseline) if baseline is not None else None
         started = loop.time()
         for item in plan["inputs"]:
@@ -671,6 +724,8 @@ def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) ->
     deviations = [abs(row["deviation_s"]) for a in attempts for row in a["inputs"]]
     return {"planned": plan["attempts"], "attempted": len(attempts), "valid": len(valid), "k": k, "n": n,
             "unknown": unknown,
+            "reset_differs": sorted({alias for a in attempts
+                                     for alias in ((a.get("reset_check") or {}).get("differs") or {})}),
             "basis": (EFFECT_BASIS if plan.get("effect") is not None
                       else CONDITIONED_BASIS if (plan.get("repro_check") or {}).get("after_action") is not None
                       else READER_BASIS),

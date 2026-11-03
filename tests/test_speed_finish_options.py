@@ -170,6 +170,22 @@ def test_the_finish_label_changes_no_other_choice():
     assert plain.leases == conditional.leases
 
 
+def test_the_finish_choice_can_be_left_off_the_menu_alone():
+    assert [c.id for c in core_choices(offer_finish=False)] == ["wait", "escalate", "delegate"]
+    normal = build_choices(one_action())
+    dropped = build_choices(one_action(), offer_finish=False)
+    assert "finish" in [c.id for c in normal.choices]
+    assert "finish" not in [c.id for c in dropped.choices]
+    assert dropped.choices == [c for c in normal.choices if c.id != "finish"]
+    assert dropped.expected == normal.expected and dropped.leases == normal.leases
+    assert dropped.not_offered == normal.not_offered
+
+
+def test_a_declaration_named_finish_collides_even_when_the_choice_is_not_offered():
+    with pytest.raises(ValueError, match="collides with the core choice"):
+        build_choices(manifest(action("finish", "w", hold_s=0.2, holds=[hold(0.2)])), offer_finish=False)
+
+
 # --- the `policy/2` instruction text ------------------------------------------------------
 
 
@@ -247,6 +263,19 @@ def test_the_finish_label_defaults_to_plain_takes_conditional_and_refuses_the_re
             parsed("--finish-label", bad)
 
 
+def test_no_finish_is_off_by_default_takes_the_switch_and_reads_the_environment(monkeypatch):
+    monkeypatch.delenv("UPA_RUN_NO_FINISH", raising=False)
+    assert parsed().no_finish is False
+    assert parsed("--no-finish").no_finish is True
+    monkeypatch.setenv("UPA_RUN_NO_FINISH", "1")
+    assert parsed().no_finish is True
+    monkeypatch.setenv("UPA_RUN_NO_FINISH", "0")
+    assert parsed().no_finish is False
+    monkeypatch.setenv("UPA_RUN_NO_FINISH", "yes")
+    with pytest.raises(SystemExit):
+        parsed()
+
+
 def test_the_cli_accepts_the_policy_two_instructions():
     assert parsed("--s1-instructions", "policy/2").s1_instructions == "policy/2"
     assert INSTRUCTIONS_VARIANTS["policy/2"] == INSTRUCTIONS_FINISH_ONLY_WHEN_MET
@@ -289,7 +318,7 @@ def plan_run(tmp_path: Path, monkeypatch):
     """Run `main` to the plan file with the session itself stubbed out: no bridge, no provider."""
     monkeypatch.setenv("BASETEN_API_KEY", "sk-test-plan-key-0001")
     for name in ("UPA_SESSION_CONTROL_DIRECTORY", "UPA_SESSION_CATALOG", "UPA_SESSION_CATALOG_SHA256",
-                 "UPA_RUN_PACING_BURST", "UPA_RUN_PACING_ANCHOR", "UPA_RUN_FINISH_LABEL",
+                 "UPA_RUN_PACING_BURST", "UPA_RUN_PACING_ANCHOR", "UPA_RUN_FINISH_LABEL", "UPA_RUN_NO_FINISH",
                  "UPA_RUN_S1_INSTRUCTIONS", "UPA_RUN_TOKENS_PER_MINUTE"):
         monkeypatch.delenv(name, raising=False)
 
@@ -315,6 +344,20 @@ def test_the_plan_gains_pacing_burst_and_finish_label_only_when_non_default(plan
     chosen = plan_run("--pacing-burst", "0.5", "--finish-label", "conditional")
     assert chosen["pacing_burst"] == 0.5
     assert chosen["finish_label"] == "conditional"
+
+
+def test_the_plan_gains_no_finish_only_when_set_and_leaves_the_finish_choice_out(plan_run, monkeypatch):
+    default = plan_run()
+    assert "no_finish" not in default and "finish" in default["offered"]
+    chosen = plan_run("--no-finish")
+    assert chosen["no_finish"] is True and "finish" not in chosen["offered"]
+    # The switch changes no other offered choice, and no other plan field.
+    assert [c for c in chosen["offered"] if c != "finish"] == [c for c in default["offered"] if c != "finish"]
+    assert {k: v for k, v in chosen.items() if k not in ("offered", "no_finish")} == \
+           {k: v for k, v in default.items() if k != "offered"}
+    monkeypatch.setenv("UPA_RUN_NO_FINISH", "1")        # the wrapper's own route reaches the same plan
+    from_env = plan_run()
+    assert from_env["no_finish"] is True and "finish" not in from_env["offered"]
 
 
 def test_the_plan_gains_the_pacing_anchor_only_with_send(plan_run):
