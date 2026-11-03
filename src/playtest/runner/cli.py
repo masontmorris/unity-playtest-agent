@@ -836,6 +836,20 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         if expectation_lines:
             from .expectations import ExpectationFacts
             facts = ExpectationFacts(facts, expectation_lines)
+        live_rules = None
+        rules_path = args.situations or args.expectations
+        if args.frontier and rules_path is not None and args.catalog is not None:
+            from .expectations import catalog_controls, live_rule_lines
+
+            # The session's own pre-registered action rules and situations, scored on its trace at each request:
+            # what score-play would say so far, shown to the frontier as a measurement.
+            rules_doc = json.loads(rules_path.read_text(encoding="utf-8"))
+            if rules_doc.get("action_rules") or rules_doc.get("situations"):
+                served_controls = catalog_controls(json.loads(args.catalog.read_text(encoding="utf-8")))
+                live_guards = guards if args.measure_guards else None
+
+                def live_rules(rows: list[dict[str, Any]]) -> list[str]:
+                    return live_rule_lines(rules_doc, rows, served_controls, live_guards)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
@@ -843,7 +857,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   session=getattr(client, "session", None), progress=progress_probe,
                                   clip_window_s=args.frontier_clip_s, declared=declared, guards=guard_lines,
                                   advice=args.frontier_advice, places=places,
-                                  max_calls=args.max_frontier_calls)  # the cap the record states, not the arm's
+                                  max_calls=args.max_frontier_calls,  # the cap the record states, not the arm's
+                                  rules=live_rules)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:

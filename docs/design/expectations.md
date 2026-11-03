@@ -203,6 +203,32 @@ is crossed only by more than 1% of it.
 
 Blind score with the directed sessions: FPSKit 1 of 3 (b05), DragonBlaze 0 of 2; the names-only lead matched nothing.
 
+## Situations: a press that must work only near something (2026-11-03)
+
+A situation names a scene object (`target_object`) and how near the body must be (`within`). At the session's
+start each one becomes a reach region the agent declares itself (unverified), so S1 reads the distance as a fact and
+the frontier can set it as a setpoint. Each press records where every situation's object was (`targets_before`).
+The frontier is shown each press with its measured distance to each object, and earlier presses made inside a
+situation stay shown after newer ones push them out of the latest twelve. Without the distance, the frontier had
+called it "unknown whether interact was tried" next to the NPC after four presses at 2.07 from it.
+
+`within` comes from the values authored on the objects (`object_configuration` in the predict packet, an identical
+value shared by many objects said once). Without them Muse guessed 3 for the Wraith; with them it takes
+`TalkableNPC.interactDistance` = 5 and cites it.
+
+A finding about such a press is replayed with an `after_action` check that names `within_region`. The replay reads
+the body's position right before each execution of the action and scores only the executions made inside the
+region. A session the loop restarted is replayed from its last restart before the evidence.
+
+**Clean DragonBlaze has a real defect here.** `DialogueController` registers itself in `Awake`, and it sits on
+`Canvas/DialogueBoxIMG`, which the prefab and the scene save inactive. Nothing activates it, so interact next to an
+NPC never starts dialogue. The directed session `directed-clean-05` filed it (f-174). Its replay, with an operator
+check (`dialogue_typing` unchanged after each `interact` within `situation_1`), reproduced 5 of 5 from reloads.
+The control build had the box set active, scene override only, restored after. It could not score: there the first
+interact, 3.7 from the NPC (inside the game's range of 5, outside that session's region of 3), opened the dialogue
+and held the player in place. So no later press reached the region, and the comparison is inconclusive, not
+specific.
+
 ## Live on the clean build (`runs/fpskit/live-clean-01`)
 
 The same hunt on clean FPSKit, with expectations pre-registered from the clean build's own declarations (0
@@ -218,6 +244,7 @@ readings are taken as they are, so a health that drops from 300 to 50 still drop
 
 - A **supported** condition from the investigation does not yet become a directed session (S1 steered to bring the
   condition about, then the rule checked again). The live loop above directs tests from the frontier's own hypotheses.
-- The frontier's live findings have no replay `repro_check`.
+- The frontier's live findings often have no replay `repro_check` (f-174 had none; the check was the operator's).
+- A situation with no press (touching a hazard lowers health, reaching a pickup deactivates it) is not predicted.
 - Calibration's measured speeds are not compared with declared ones beyond the guard tables' own (opposite moves were
   within 1.5% on both builds).

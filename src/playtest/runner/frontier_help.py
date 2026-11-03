@@ -188,6 +188,18 @@ def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN,
     return earlier + [line for line, _ in latest]
 
 
+def trace_rows(sink: Any, kinds: Sequence[str] = ("observation", "effect", "execution", "option")) -> list[dict]:
+    """The sink's entries of these kinds as plain dicts, in trace order."""
+    of_kind = getattr(sink, "of_kind", None)
+    if of_kind is not None:
+        rows = [e for kind in kinds for e in of_kind(kind)]
+    else:
+        rows = [e for e in read_trace(sink.path)
+                if (e.get("kind") if isinstance(e, Mapping) else getattr(e, "kind", None)) in kinds]
+    rows = [e.model_dump(mode="json") if hasattr(e, "model_dump") else dict(e) for e in rows]
+    return sorted(rows, key=lambda e: e.get("trace_seq") or 0)
+
+
 def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
     """Every suspicion the trace holds so far, oldest first, as rows for the packet.
 
@@ -434,6 +446,15 @@ class FrontierHelp:
     # Delegation is a distinct bounded-task operation, not an alias for escalation.
     supported_kinds = frozenset({"escalate"})
 
+    def _live_rules(self) -> list[str]:
+        """The pre-registered rules scored on the trace so far; a scoring that fails says nothing, never stops a call."""
+        if self.rules is None:
+            return []
+        try:
+            return list(self.rules(trace_rows(self.sink)))
+        except Exception:  # noqa: BLE001 - a fact the run cannot compute is left out, not guessed
+            return []
+
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
@@ -444,7 +465,8 @@ class FrontierHelp:
                  clip_window_s: float = media.WINDOW_S,
                  progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None,
                  advice: bool = False, guards: Sequence[str] = (),
-                 places: Mapping[str, tuple[str, float]] | None = None) -> None:
+                 places: Mapping[str, tuple[str, float]] | None = None,
+                 rules: Callable[[list[dict[str, Any]]], list[str]] | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
@@ -454,6 +476,8 @@ class FrontierHelp:
         self.guards = tuple(guards)
         # Each situation's object id -> (its region id, its distance): every press shown says how far it was made.
         self.places = dict(places or {})
+        # The pre-registered rules scored on the trace so far (`expectations.live_rule_lines`), or none.
+        self.rules = rules
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -580,6 +604,12 @@ class FrontierHelp:
                                          "and earlier presses made inside a situation are kept" if self.places else "")
                                       + ": " + "; ".join(pressed),
                               "seqs": [seq]})
+        scored = self._live_rules()
+        if scored:
+            fact_rows.append({"text": "Written before play from the build's declarations, and scored by code on this "
+                                      "session's presses so far, as after the session (a measurement of each rule, "
+                                      "not a judgement of the game; held means it did what the rule says): "
+                                      + "; ".join(scored), "seqs": [seq]})
         fact_rows += [{"text": "Measured before play on this build, not in this trace (each verb pressed at rest, "
                                "while a direction was held and in the air, against each state without it): " + line,
                        "seqs": [seq]} for line in self.guards]

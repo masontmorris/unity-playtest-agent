@@ -58,3 +58,22 @@ def test_an_earlier_press_inside_a_situation_stays_shown():
     lines = press_reading_lines(sink, limit=3, places={"npc": ("situation_1", 3.0)})
     assert lines[0] == "interact [situation_1 distance 1.00 (inside 3)]: no reader changed"
     assert len(lines) == 4 and all(line.startswith("move") for line in lines[1:])
+
+
+def test_the_trace_is_read_in_order_and_a_rule_scoring_that_fails_says_nothing():
+    from playtest.runner.frontier_help import FrontierHelp, trace_rows
+
+    class Kinds:
+        def of_kind(self, kind):
+            return {"observation": [{"trace_seq": 5, "kind": "observation"}],
+                    "effect": [{"trace_seq": 2, "kind": "effect"}]}.get(kind, [])
+
+    assert [r["trace_seq"] for r in trace_rows(Kinds())] == [2, 5]
+
+    def broken(rows):
+        raise KeyError("then")
+
+    shown = SimpleNamespace(rules=lambda rows: [f"held: {len(rows)} rows"], sink=Kinds())
+    assert FrontierHelp._live_rules(shown) == ["held: 2 rows"]
+    assert FrontierHelp._live_rules(SimpleNamespace(rules=broken, sink=Kinds())) == []
+    assert FrontierHelp._live_rules(SimpleNamespace(rules=None, sink=Kinds())) == []

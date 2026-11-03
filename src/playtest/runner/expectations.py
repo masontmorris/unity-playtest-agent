@@ -1631,6 +1631,24 @@ def score_situations(situations: Sequence[Mapping[str, Any]], sessions: Sequence
     return out
 
 
+LIVE_RULES_SHOWN = 8
+
+
+def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mapping[str, Any]],
+                    controls: Mapping[str, frozenset], guards: Mapping[str, Any] | None = None,
+                    limit: int = LIVE_RULES_SHOWN) -> list[str]:
+    """Each pre-registered action rule and situation, scored by code on this session's presses so far, as one line
+    with its verdict: the same scoring `score-play` does after the session. A rule with fewer than two counted
+    presses is left out (nothing measured yet). A measurement for the frontier, never a decision: it judges them.
+    """
+    sessions, presses = [play_readings(trace_rows)], [play_presses(trace_rows)]
+    tables = [guards] if guards else []
+    rows = (score_action_rules(expectations.get("action_rules") or (), sessions, presses, [controls], tables)
+            + score_situations(expectations.get("situations") or (), sessions, presses, [controls],
+                               [situation_presses(trace_rows)], tables))
+    return [f"{row['verdict']}: {row['line']}" for row in rows if row.get("verdict") != "unmeasured"][:limit]
+
+
 def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
     """A session objective that asks for each action rule's press to be made on purpose, in plain words.
 
