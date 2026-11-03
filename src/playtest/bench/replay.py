@@ -26,21 +26,48 @@ from playtest.bench.record import _save, digest, recorded_payload
 from playtest.core.context import canonical
 
 # Arm: (model, key variable, endpoint variable). Liquid's endpoint is its general decisions endpoint and the
-# request's `model` picks the model, so both Liquid arms share LIQUID_D1.1_URL.
+# request's `model` picks the model, so both Liquid arms share LIQUID_D1.1_URL. `mammoth-1-modal` is our own
+# Flide server on Modal (scripts/modal/mammoth_flide.py): its endpoint variable holds the server's base URL,
+# and a Modal proxy token (ID and secret) authenticates it.
 ARMS = {
     "mammoth-1": ("decision-models/baseten-mammoth-27b-latest", "BASETEN_API_KEY", None),
     "elephant-1": ("decision-models/baseten-elephant-9b-latest", "BASETEN_API_KEY", None),
     "liquid-d1.1": ("d1.1", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
     "liquid-d1-ultra": ("d1-ultra", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
     "meta-muse-spark-s1": ("muse-spark-1.3", "META_API_KEY", None),
+    "mammoth-1-modal": ("mammoth-1", "MODAL_MAMMOTH_TOKEN_ID", "MODAL_MAMMOTH_URL"),
 }
 BASETEN_URL = "https://inference.baseten.co/v1/systemone"
+MODAL_ARMS = frozenset({"mammoth-1-modal"})
+MODAL_SECRET = "MODAL_MAMMOTH_TOKEN_SECRET"
+
+
+def credential_variables(arm: str) -> tuple[str, ...]:
+    """Every environment variable an arm needs, by name: its key, its endpoint, and a Modal token's secret."""
+    names = tuple(name for name in ARMS[arm][1:] if name)
+    return names + (MODAL_SECRET,) if arm in MODAL_ARMS else names
+
+
+def endpoint(arm: str) -> tuple[str | None, dict[str, str]]:
+    """The URL an arm posts to and its authentication headers, read from the environment (None if unset)."""
+    _, key_env, url_env = ARMS[arm]
+    key, url = os.environ.get(key_env), (os.environ.get(url_env) if url_env else BASETEN_URL)
+    if arm in MODAL_ARMS:
+        secret = os.environ.get(MODAL_SECRET)
+        if not key or not secret or not url:
+            return None, {}
+        return url.rstrip("/") + "/v1/systemone", {"Modal-Key": key, "Modal-Secret": secret}
+    if not key or not url:
+        return None, {}
+    return url, {"Authorization": f"Bearer {key}"}
 
 
 def provider_of(arm: str) -> str:
     """The provider an arm bills through: the key a balance check and an approval cap are counted against."""
     if arm in {"muse-spark-1.3", "meta-muse-spark-s1"}:
         return "meta"
+    if arm in MODAL_ARMS:
+        return "modal"
     return "liquid" if arm.startswith("liquid-") else "baseten"
 # A send takes the arm and either a body to serialize canonically or the exact request text to post
 # verbatim (the adapter renders that text when it sends a declared state order, so the text hashed into
@@ -196,21 +223,19 @@ def send_systemone(arm: str, body: dict[str, Any] | str) -> tuple[int | None, di
     if arm == "meta-muse-spark-s1":
         from playtest.frontier.provider import send_meta
         return send_meta(body)
-    _, key_env, url_env = ARMS[arm]
-    key, url = os.environ.get(key_env), (os.environ.get(url_env) if url_env else BASETEN_URL)
-    if not key or not url:
+    url, auth = endpoint(arm)
+    if url is None:
         raise ValueError(f"missing endpoint or credential for {arm}")
     text = body if isinstance(body, str) else canonical(body)  # a text body is sent exactly as given
-    request = urllib.request.Request(url, data=text.encode("utf-8"), method="POST",
-                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    headers = {"Content-Type": "application/json", **auth}
+    request = urllib.request.Request(url, data=text.encode("utf-8"), method="POST", headers=headers)
     started = time.monotonic()
     try:
         if os.environ.get("UPA_S1_KEEPALIVE") == "0":
             with urllib.request.urlopen(request, timeout=60) as response:
                 status, raw = response.status, response.read()
         else:
-            status, raw = _send_keepalive(url, text.encode("utf-8"),
-                                          {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+            status, raw = _send_keepalive(url, text.encode("utf-8"), headers)
     except urllib.error.HTTPError as exc:
         return exc.code, None, (time.monotonic() - started) * 1000, "HTTP error"
     except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError):

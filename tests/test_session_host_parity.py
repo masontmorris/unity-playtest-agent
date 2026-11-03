@@ -79,7 +79,7 @@ def test_the_scripts_s1_credentials_match_the_arm_table():
     table = SCRIPT[SCRIPT.index("$s1Credentials = @{"):SCRIPT.index("if (-not $s1Credentials.ContainsKey")]
     declared = {arm: re.findall(r"'([A-Z0-9_.]+)'", names)
                 for arm, names in re.findall(r"'([a-z0-9.-]+)' = @\(([^)]*)\)", table)}
-    assert declared == {arm: [v for v in (key, url) if v] for arm, (_, key, url) in replay.ARMS.items()}
+    assert declared == {arm: list(replay.credential_variables(arm)) for arm in replay.ARMS}
     assert "$env:UPA_RUN_S1_ARM = $S1Arm" in SCRIPT and "UPA_RUN_S1_ARM" in Path(cli.__file__).read_text(encoding="utf-8")
 
 

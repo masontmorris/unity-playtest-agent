@@ -62,6 +62,7 @@ from .declared import declared_configuration
 from .detectors import DetectorWatch, build_detectors, detectors_config
 from .game_view import BridgeView
 from .output import secret_values
+from . import modal_wake
 from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
 from .probe import DisplacementProbe, make_snapshot
 from .progress import ProgressFacts, ProgressProbe
@@ -401,8 +402,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.contingent:
         parser.error("--contingent requires --s1-context compact-menu: the branch answers it acts on are that "
                      "request's own if_blocked/if_succeeded questions")
-    for variable in replay.ARMS[args.s1_arm][1:]:
-        if variable and not os.environ.get(variable):
+    for variable in replay.credential_variables(args.s1_arm):
+        if not os.environ.get(variable):
             parser.error(f"{variable} is not set in the environment")
     if args.memory_dir is not None:
         if not args.options:
@@ -433,6 +434,10 @@ def main(argv: list[str] | None = None) -> int:
         arms = [args.s1_arm, frontier_provider.MODEL] if args.frontier else [args.s1_arm]
         replay.validate_approval(approval, arms)
         _fits(approval, args.max_calls, args.max_frontier_calls if args.frontier else 0, args.s1_arm)
+        if args.s1_arm in replay.MODAL_ARMS:
+            # A scaled-to-zero server takes minutes to start; wake it before the game is touched, so the
+            # first turn is not spent waiting on a cold GPU.
+            summary["s1_server_wake_s"] = modal_wake.wake(args.s1_arm)
         session_host = _host_session(project)
         built = build_choices(manifest, restart_play_mode=session_host is not None
                               and session_host.advertises_restart,
