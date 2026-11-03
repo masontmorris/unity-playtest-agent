@@ -126,6 +126,19 @@ class FakeClient:
                                 release_verified=True if status == "completed" else None,
                                 applied_duration_s=kwargs.get("lease_s") if status == "completed" else None)]
 
+    async def start_act(self, **kwargs):
+        """Like act, but an input held for `hold_s` comes back running and ends when collected."""
+        records = await self.act(**kwargs)
+        if getattr(self, "hold_s", 0) and records[-1].status.value == "completed":
+            self.pending = records
+            return [SimpleNamespace(status=SimpleNamespace(value="running"), reject_reason=None,
+                                    release_verified=None, applied_duration_s=None)]
+        return records
+
+    async def collect_act(self, action_id):
+        await asyncio.sleep(self.hold_s)
+        return self.pending
+
     async def aclose(self):
         self.closed = True
         return None
@@ -739,3 +752,42 @@ def test_an_input_conditioned_check_is_refused_when_its_action_never_ran_before_
 def test_an_unset_input_condition_is_left_out_of_the_check_as_written():
     from playtest.contracts.investigation import ReproCheck
     assert "after_action" not in ReproCheck(field="public.speed", op=">=", value=9).model_dump(mode="json")
+
+
+def test_an_input_conditioned_check_also_reads_while_the_input_is_held(tmp_path):
+    # A blend that rises only while the input is held and is back to rest after it: the reading after the input
+    # alone would call it unchanged. The reading taken during the hold shows the effect, so it is not reproduced.
+    check = {"field": "public.speed", "op": "unchanged", "value": None, "after_action": "move"}
+    plan = _conditioned_plan(tmp_path, check)
+    plan["sample_interval_s"] = 0.5
+    client = FakeClient(["completed", "completed"])
+    client.hold_s = 0.05
+    # baseline; move 1: before, while held, after; move 2: before, while held, after
+    attempt = _run(plan, client, FakeReaders([0.0, 0.0, 3.0, 0.0, 0.0, 3.0, 0.0]))
+    held = [r for r in attempt["readings"] if r.get("while_held")]
+    assert [r["value"] for r in held] == [3.0, 3.0] and attempt["result"] == "not_reproduced"
+    # The same input that changes nothing even while held reproduces.
+    client = FakeClient(["completed", "completed"])
+    client.hold_s = 0.05
+    attempt = _run(plan, client, FakeReaders([0.0] * 7))
+    assert attempt["result"] == "reproduced"
+
+
+def _report(k, n, plan="p1", update=None):
+    return {"plan_sha256": plan, "finding_id": "f-7", "status": "measured",
+            "summary": {"k": k, "n": n, "unknown": 0}, "finding_update": update}
+
+
+def test_a_control_replay_decides_whether_a_reproduction_is_specific_to_the_seeded_build():
+    finding = {"finding_id": "f-7", "state": "reproduced", "title": "t", "expected": "e",
+               "expected_source": "interpretation", "actual": "a", "evidence_seq": [3],
+               "repro": {"attempts": 5, "reproduced": 5, "clock_mode": "realtime", "reset": "scene_reload",
+                         "tolerance": "t"}}
+    specific = reproduce.compare_with_control(_report(5, 5, update=finding), _report(0, 5))
+    assert specific["verdict"] == "specific" and specific["finding_update"]["state"] == "reproduced"
+    rule = reproduce.compare_with_control(_report(5, 5, update=finding), _report(5, 5))
+    assert rule["verdict"] == "not_specific" and rule["finding_update"]["state"] == "repro_attempted"
+    assert reproduce.compare_with_control(_report(0, 5), _report(0, 5))["verdict"] == "not_reproduced"
+    assert reproduce.compare_with_control(_report(3, 5), _report(0, 0))["verdict"] == "inconclusive"
+    with pytest.raises(ValueError, match="different plans"):
+        reproduce.compare_with_control(_report(5, 5), _report(0, 5, plan="p2"))
