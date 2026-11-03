@@ -619,9 +619,10 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
             where = None
             if conditioned and region is not None:
                 position = (await read_snapshot(region_snapshot))[0] if region_snapshot is not None else None
-                where = inside_region(region, (position or {}).get("position") if isinstance(position, Mapping)
-                                      else None)
-                attempt.setdefault("region_presses", []).append({"turn": item["turn"], "inside": where})
+                at = position.get("position") if isinstance(position, Mapping) else None
+                where = inside_region(region, at)
+                attempt.setdefault("region_presses", []).append({"turn": item["turn"], "inside": where,
+                                                                 "position": at})
                 conditioned = where is True   # one made outside the region, or unread, is not scored
             prior = await readers.read() if conditioned and readers is not None else None
             observation = await client.observe_once()

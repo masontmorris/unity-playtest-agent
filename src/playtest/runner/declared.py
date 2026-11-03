@@ -12,6 +12,40 @@ def declared_configuration(discovery: Mapping, entity_object_id: str) -> dict | 
         if children <= included:
             break
         included |= children
+    return _selected(data, included, objects)
+
+
+def object_configuration(discovery: Mapping, object_ids, *, skip_types: tuple[str, ...] = (),
+                         limit: int = 96) -> dict | None:
+    """The authored values on other scene objects (each object itself, not its children), in the order given: what
+    a situation near one of them declares, such as an NPC's interaction range. `skip_types` leaves out the fields
+    declared by types with those prefixes (an engine's)."""
+    data = discovery.get("data", {})
+    objects = {o["id"]: o for o in data.get("game_objects", [])}
+    order = {oid: n for n, oid in enumerate(object_ids)}
+    rows = sorted((row for row in data.get("fields", []) if row.get("object_id") in order
+                   and not (row.get("declaring_type") or "").startswith(skip_types)),
+                  key=lambda row: order[row["object_id"]])
+    result = _selected({**data, "fields": rows}, set(order), objects, limit=len(rows) or 1, ids=True)
+    if result is None:
+        return None
+    # The same script with the same value on many objects (every coin's value) is said once, with how many carry it,
+    # so a value only one object declares is not crowded out.
+    grouped: dict[tuple, dict] = {}
+    for value in result["values"]:
+        key = (value["source"], repr(value["value"]), value["value_state"])
+        if key in grouped:
+            grouped[key]["also_on"] = grouped[key].get("also_on", 0) + 1
+        else:
+            grouped[key] = dict(value)
+    values = list(grouped.values())
+    out = {"read": result["read"], "values": values[:limit]}
+    if len(values) > limit:
+        out["omitted"] = len(values) - limit
+    return out
+
+
+def _selected(data: Mapping, included: set, objects: Mapping, *, limit: int = 96, ids: bool = False) -> dict | None:
     values = []
     kinds = {"number", "integer", "boolean", "string", "enum", "vector2", "vector3", "vector4"}
     for row in data.get("fields", []):
@@ -38,10 +72,12 @@ def declared_configuration(discovery: Mapping, entity_object_id: str) -> dict | 
             continue
         obj = objects.get(row["object_id"], {})
         values.append({"source": row.get("declaring_type", "").split(".")[-1] + "." + row.get("name", ""),
-                       "object": obj.get("path") or obj.get("name"), "value": value, "value_state": state})
+                       "object": obj.get("path") or obj.get("name"), "value": value, "value_state": state,
+                       **({"object_id": row["object_id"]} if ids else {})})
     if not values:
         return None
-    result = {"read": "authored values as preflight discovery read them, in play before any input", "values": values[:96]}
-    if len(values) > 96:
-        result["omitted"] = len(values) - 96
+    result = {"read": "authored values as preflight discovery read them, in play before any input",
+              "values": values[:limit]}
+    if len(values) > limit:
+        result["omitted"] = len(values) - limit
     return result

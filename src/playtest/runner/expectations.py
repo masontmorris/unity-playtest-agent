@@ -27,7 +27,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from playtest.runner.declared import declared_configuration
+from playtest.runner.declared import declared_configuration, object_configuration
 
 CAMERA = ("camera.position", "camera.rotation", "camera.field_of_view")
 BODY = "body_motion"  # the body moved measurably differently from the same state without the verb
@@ -338,11 +338,16 @@ def build_packet(manifest: Mapping[str, Any], discovery: Mapping[str, Any],
         held = [c.get("held_s") for c in (row.get("moving") or {}).values() if c and c.get("held_s")]
         return {"pressed_s": row.get("hold_s"), "pressed_with_move_s": held[0] if held else None}
 
-    packet = {"objects": authored_objects(discovery),
+    objects = authored_objects(discovery)
+    packet = {"objects": objects,
               "verbs": [{**described(v), **pressed(v)} for v in (guards.get("verbs") or {})],
               "moves": [described(m) for m in guards.get("moves") or ()], "rise": described(guards.get("rise")),
               "readers": readers, "camera": list(CAMERA),
               "declared_configuration": declared_configuration(discovery, manifest["entity_id"])}
+    others = object_configuration(discovery, [o["id"] for o in objects if o["id"] != manifest["entity_id"]],
+                                  skip_types=BUILT_IN)
+    if others is not None:
+        packet["object_configuration"] = others   # what the objects a situation can be near declare
     if read is not None and (assets := referenced_assets(discovery, manifest["entity_id"], read)):
         packet["referenced_assets"] = assets
     return packet
@@ -383,6 +388,8 @@ ACTION_SYSTEM = (
     "leave the reader condition null. When the situation is being near or at a scene object (an NPC to talk to, a "
     "pickup, a hazard, an enemy), name it: target_object is its id from objects (each listed with its path and the "
     "game's own scripts on it), and within is how near it the body must be, in world units, for the press to count. "
+    "object_configuration lists the values authored on those objects (each with its object_id): when one declares "
+    "how near the body must be (a range, a radius, a distance), within is that value, cited in because. "
     "The session measures that distance at every press and leads the player there. situation is null when the "
     "press alone must do it. Use only what the "
     "declarations say: an intent, a declared value (cite it in because), or the names of the action, the fields and "

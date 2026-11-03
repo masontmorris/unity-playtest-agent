@@ -62,7 +62,8 @@ def test_only_the_executions_made_inside_the_region_are_scored(tmp_path):
     # The first move is made far from the region, the second inside it. Reads: the baseline, the reading after the
     # first (not scored), then before and after the second.
     attempt = _run(plan, FakeClient([]), FakeReaders([0.0, 0.0, 0.0, 0.0]), FakeSnapshots(_at(0.0, 1), _at(5.0, 2)))
-    assert attempt["region_presses"] == [{"turn": 0, "inside": False}, {"turn": 2, "inside": True}]
+    assert attempt["region_presses"] == [{"turn": 0, "inside": False, "position": [0.0, 0.0, 0.0]},
+                                         {"turn": 2, "inside": True, "position": [5.0, 0.0, 0.0]}]
     assert [r.get("after_action") for r in attempt["readings"]] == [None, "move"]
     assert attempt["result"] == "reproduced"
     # The press inside it changed the reader, as on a working build: not reproduced, whatever the far one did.
