@@ -135,8 +135,9 @@ DURATION = {"type": "object", "additionalProperties": False,
 QUANTITIES = ("move_speed", "rise_height", "verb_speed")
 CONDITION_OPS = ["==", "!=", "<", "<=", ">", ">="]
 ACTION_RULE = {"type": "object", "additionalProperties": False,
-               "required": ["action", "condition_observable", "condition_op", "condition_value", "situation", "then",
-                            "then_expect", "then_value", "within_s", "basis", "because"],
+               "required": ["action", "condition_observable", "condition_op", "condition_value", "situation",
+                            "target_object", "within", "then", "then_expect", "then_value", "within_s", "basis",
+                            "because"],
                "properties": {"action": {"type": "string", "description": "the input pressed: a listed verb, move or rise"},
                               "condition_observable": {"type": ["string", "null"],
                                                        "description": "a listed reader's alias, or null"},

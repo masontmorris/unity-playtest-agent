@@ -127,12 +127,41 @@ def _changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, l
     return out
 
 
-def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN) -> list[str]:
+def _where(observed: Mapping[str, Any], places: Mapping[str, tuple[str, float]]) -> tuple[str, bool]:
+    """The body's distance at the press to each situation's object, read at that press (nothing when unread), and
+    whether it was inside any of them."""
+    import math
+
+    body, targets = observed.get("from_position"), observed.get("targets_before") or {}
+    parts, inside = [], False
+    for target, (region_id, within) in places.items():
+        placed = targets.get(target) if isinstance(targets, Mapping) else None
+        if not isinstance(placed, Mapping):
+            continue
+        if placed.get("active") is False:
+            parts.append(f"{region_id} object inactive")
+            continue
+        at = placed.get("position")
+        if isinstance(body, (list, tuple)) and isinstance(at, (list, tuple)) and len(body) == len(at):
+            distance = math.dist(body, at)
+            inside = inside or distance <= within
+            parts.append(f"{region_id} distance {distance:.2f} ({'inside' if distance <= within else 'outside'} "
+                         f"{within:g})")
+    return (f" [{'; '.join(parts)}]" if parts else ""), inside
+
+
+def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN,
+                        places: Mapping[str, tuple[str, float]] | None = None) -> list[str]:
     """For the latest presses, what every reader read just before and just after each (`--press-readings`).
 
     The loop's observations come at S1's pace, so a reader a press resets and that then counts back up (a cooldown
     timer) can read higher at every observation: without these, a reset reads as never happening. Only changes are
     stated, each as before -> after; a press with none says so. Nothing with no press readings is shown.
+
+    With `places` (each situation's object id -> its region id and distance), each press also says how far the body
+    was from each object at that press: whether a press was made in a situation is then a measured fact, not one
+    the frontier must infer from the progress facts S1's observations happened to fall on. A press made inside a
+    situation stays shown (up to `limit` of them) after it is older than the latest `limit` presses.
     """
     of_kind = getattr(sink, "of_kind", None)
     if of_kind is not None:
@@ -140,7 +169,7 @@ def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN) -> list[st
     else:
         entries = [e for e in read_trace(sink.path)
                    if (e.get("kind") if isinstance(e, Mapping) else getattr(e, "kind", None)) == "effect"]
-    lines = []
+    lines: list[tuple[str, bool]] = []
     for entry in entries:
         body = entry.get("body") if isinstance(entry, Mapping) else getattr(entry, "body", None)
         if hasattr(body, "model_dump"):
@@ -152,8 +181,11 @@ def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN) -> list[st
             continue
         changes = _changed(before.get("values") or {}, after.get("values") or {})
         what = ", ".join(f"{k} {v[0]} -> {v[1]}" for k, v in sorted(changes.items())) or "no reader changed"
-        lines.append(f"{body.get('choice_id') or body.get('action')}: {what}")
-    return lines[-limit:]
+        where, inside = _where(observed, places or {})
+        lines.append((f"{body.get('choice_id') or body.get('action')}{where}: {what}", inside))
+    latest = lines[-limit:]
+    earlier = [line for line, inside in lines[:-limit] if inside][-limit:] if len(lines) > limit else []
+    return earlier + [line for line, _ in latest]
 
 
 def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
@@ -411,7 +443,8 @@ class FrontierHelp:
                  generation: str | None = None, session: str | None = None,
                  clip_window_s: float = media.WINDOW_S,
                  progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None,
-                 advice: bool = False, guards: Sequence[str] = ()) -> None:
+                 advice: bool = False, guards: Sequence[str] = (),
+                 places: Mapping[str, tuple[str, float]] | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
@@ -419,6 +452,8 @@ class FrontierHelp:
         self.declared = declared
         # One line per verb from the guard table measured before play (`playtest.runner.guards`), or none.
         self.guards = tuple(guards)
+        # Each situation's object id -> (its region id, its distance): every press shown says how far it was made.
+        self.places = dict(places or {})
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -535,11 +570,15 @@ class FrontierHelp:
                                        since_utc=self.started_utc, until_utc=now, output_dir=folder,
                                        generation=self.generation, window_s=self.clip_window_s)
         fact_rows = [{"text": text, "seqs": [seq]} for text in context.get("facts", []) if isinstance(text, str)]
-        pressed = press_reading_lines(self.sink)
+        pressed = press_reading_lines(self.sink, places=self.places)
         if pressed:
             fact_rows.append({"text": "Read just before and just after each of the latest presses, oldest first (the "
                                       "observations come at S1's pace and can miss a change a press makes and the game "
-                                      "then undoes, such as a cooldown reset that counts back up): " + "; ".join(pressed),
+                                      "then undoes, such as a cooldown reset that counts back up); only the readers "
+                                      "that changed are named, so every other reader read the same before and after"
+                                      + ("; a press's brackets give its measured distance to each situation's object, "
+                                         "and earlier presses made inside a situation are kept" if self.places else "")
+                                      + ": " + "; ".join(pressed),
                               "seqs": [seq]})
         fact_rows += [{"text": "Measured before play on this build, not in this trace (each verb pressed at rest, "
                                "while a direction was held and in the air, against each state without it): " + line,

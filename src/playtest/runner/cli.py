@@ -683,6 +683,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             situations = [s for s in (json.loads(args.situations.read_text(encoding="utf-8")).get("situations") or ())
                           if s.get("target_object")]
         targets = list(dict.fromkeys(s["target_object"] for s in situations))
+        # The region id each situation's object is named by, numbered as `situation_regions` numbers them.
+        places = {s["target_object"]: (s.get("region_id") or f"situation_{n}", float(s["within"]))
+                  for n, s in enumerate(situations, 1)}
         snapshot = make_snapshot(client, manifest.entity_id, targets)
         first = await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
@@ -839,7 +842,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   effects=action_effects(built.expected), generation=generation,
                                   session=getattr(client, "session", None), progress=progress_probe,
                                   clip_window_s=args.frontier_clip_s, declared=declared, guards=guard_lines,
-                                  advice=args.frontier_advice)
+                                  advice=args.frontier_advice, places=places)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:

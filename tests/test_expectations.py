@@ -639,3 +639,18 @@ def test_a_situation_names_its_object_and_is_counted_only_at_presses_made_there(
                                                                                    "active": True}}})]
     (row,) = expectations.score_situations([situation], [readings], [presses], [controls], [effects])
     assert (row["n"], row["k"], row["situation_not_met"]) == (2, 1, 1)   # the far press is not counted
+
+
+def test_every_answer_schema_lists_every_property_as_required_as_strict_mode_demands():
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" and "properties" in node:
+                assert set(node["required"]) == set(node["properties"]), sorted(set(node["properties"]) - set(node["required"]))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    for part in ("all", "actions", "magnitudes"):
+        walk(expectations.request_body({"moves": [{"name": "right"}]}, part)["response_format"]["json_schema"]["schema"])
+    walk(expectations.HYPOTHESES)
