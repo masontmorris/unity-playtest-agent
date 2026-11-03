@@ -1318,8 +1318,12 @@ def report(guard_rows: Sequence[Mapping[str, Any]], play_rows: Sequence[Mapping[
              "Expectations were written from the game's declarations before any measurement (stated intents, "
              "authored values, field and method names), then scored by code against fresh sessions: guard tables "
              "measured from a clean start, and the readings of whole play sessions.", ""]
+    rows = [tiered(dict(r)) for r in rows]
     for verdict, heading, meaning in TIERS:
         chosen = [r for r in rows if r["verdict"] == verdict]
+        if verdict == "mismatch":
+            # The strongest first: a declared value or a stated intent, then what only the names suggested.
+            chosen.sort(key=lambda r: r.get("tier") == "names_only")
         lines += [f"## {heading} ({len(chosen)})", "", f"*{meaning}.*", ""]
         lines += [f"- {r['line']}" for r in chosen] or ["- none"]
         lines.append("")
@@ -1604,8 +1608,22 @@ class ExpectationFacts:
 
 
 def unmet_in_session(expectations: Mapping[str, Any], guards: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The predictions this one session's guard table did not meet (k of 1)."""
-    return [row for row in score(expectations.get("predictions") or (), [guards]) if row["verdict"] == "mismatch"]
+    """The predictions this one session's guard table did not meet (k of 1), each labelled by its oracle."""
+    return [tiered(row) for row in score(expectations.get("predictions") or (), [guards])
+            if row["verdict"] == "mismatch"]
+
+
+NAMES_ONLY = " [inferred from names only: no stated intent or declared value says so]"
+
+
+def tiered(row: dict[str, Any]) -> dict[str, Any]:
+    """A mismatch whose only oracle is the names of the action, fields and methods is the weakest evidence: the
+    names can suggest an effect the game never had (a dash that writes an invisibility flag elsewhere). It keeps
+    its verdict, and its line says so, so S1 and the report weigh it; a stated intent or a declared value says more.
+    """
+    if row.get("verdict") == "mismatch" and row.get("basis") == "names" and NAMES_ONLY not in row.get("line", ""):
+        return {**row, "tier": "names_only", "line": row["line"] + NAMES_ONLY}
+    return row
 
 
 if __name__ == "__main__":

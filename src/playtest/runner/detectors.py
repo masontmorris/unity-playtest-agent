@@ -35,6 +35,8 @@ generation.
 from __future__ import annotations
 
 import math
+
+from playtest.core.evaluate import bound_slack
 import re
 import statistics
 from collections import deque
@@ -538,7 +540,7 @@ class ReaderOverMax:
             value = _number(view.public.get(alias))
             if value is None or not math.isfinite(value):
                 continue  # unmeasured: it neither raises nor ends an episode
-            outside = value > maximum
+            outside = value > maximum + bound_slack(maximum)  # a frame's overshoot is still at the bound
             if outside and not self._open.get(alias, False):
                 found.append(self._detection(alias, value, maximum, view))
             self._open[alias] = outside

@@ -577,3 +577,27 @@ def test_one_stick_pushed_two_ways_is_two_inputs_and_a_reader_at_its_clamp_canno
     dead = [(i * 1.0, 100 + i, {"pitch": 10.0}) for i in range(13)]
     (row,) = expectations.score_action_rules([rule], [dead], [presses], [controls])
     assert (row["k"], row["verdict"]) == (4, "mismatch")          # never moved: no direction, nothing left out
+
+
+def test_a_mismatch_only_the_names_suggest_is_labelled_the_weakest_and_kept():
+    dead = table(cell(), cell())
+    unmet = expectations.unmet_in_session({"predictions": [prediction(basis="names"), prediction(basis="intent")]},
+                                          dead)
+    assert [u.get("tier") for u in unmet] == ["names_only", None]
+    assert unmet[0]["line"].endswith(expectations.NAMES_ONLY) and unmet[0]["verdict"] == "mismatch"
+    text = expectations.report([dict(r) for r in expectations.score([prediction(basis="names"),
+                                                                     prediction(basis="declared_value")], [dead])],
+                               [], [], title="T")
+    lines = [l for l in text.splitlines() if l.startswith("- aim at rest")]
+    assert "declared_value" in lines[0] and lines[1].endswith(expectations.NAMES_ONLY)
+
+
+def test_a_reading_one_frame_past_a_declared_bound_is_still_at_it():
+    from playtest.core.evaluate import bound_slack, evaluate_invariant
+    from playtest.contracts.manifest import ManifestInvariant
+    rule = ManifestInvariant(kind="range", name="life", source="x", catches="x", field="life", min=0.0, max=5.0,
+                             direction=None, when=None, then=None, unless=None)
+    kinds = {"life": "number"}
+    assert evaluate_invariant(rule, {"life": 5.0005}, None, kinds).holds is True     # a frame's overshoot
+    assert evaluate_invariant(rule, {"life": 5.2}, None, kinds).holds is False
+    assert bound_slack(30.0) == 0.3 and bound_slack(0.0) == 0.01
