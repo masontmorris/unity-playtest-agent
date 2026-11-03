@@ -80,9 +80,19 @@ SYSTEM = (
     "reader's change (when the health drops, the invulnerability flag becomes true; when dead becomes true, the "
     "health is restored by the declared amount within the respawn time). A transition's when_change is increases, "
     "decreases or becomes (with when_value); then_expect is changes, increases, decreases or reaches (with "
-    "then_value). Use only readers, only rules the declarations state, never a rule the game might break on "
-    "purpose (a cheat, a pickup that overfills, a mode), and never a timer or a cooldown as a bound. At most six "
-    "of each."
+    "then_value). Write durations too: a reader that, once it takes a value, keeps it for a declared number of "
+    "seconds and then leaves it (a dash flag on for the declared dash duration, invulnerability on for the "
+    "declared invulnerability time), with the value and the seconds. Use only readers, only rules the declarations "
+    "state, never a rule the game might break on purpose (a cheat, a pickup that overfills, a mode), and never a "
+    "timer or a cooldown as a bound. Cover every declared value that bounds, times or follows from something a "
+    "reader shows, at most ten of each.\n"
+    "Last, write magnitudes: a declared size the guard measurements can check, in world units and seconds. "
+    "move_speed is a move's average speed over its press (state null); rise_height is how high the rise alone "
+    "lifts the body (state null); verb_speed is the body's average speed over a verb's press while a move is held "
+    "(state: the move's name). Each verb's and move's press length is given (pressed_s, pressed_with_move_s). Give "
+    "one only when a declared value fixes it with arithmetic you can show in because (a declared speed applied for "
+    "the whole press; a jump height from a declared jump speed and gravity you can see declared), never when an "
+    "undeclared factor (acceleration, a gravity you cannot see, a curve) sets it. At most eight."
 )
 
 
@@ -104,12 +114,29 @@ TRANSITION = {"type": "object", "additionalProperties": False,
                              "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
 
 
+DURATION = {"type": "object", "additionalProperties": False,
+            "required": ["observable", "value", "seconds", "basis", "because"],
+            "properties": {"observable": {"type": "string"}, "value": {"type": ["number", "boolean"]},
+                           "seconds": {"type": "number"},
+                           "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
+QUANTITIES = ("move_speed", "rise_height", "verb_speed")
+
+
 def schema(moves: Sequence[str]) -> dict[str, Any]:
     """The answer's shape: a state is rest, air, moving (every move alike) or one move's name."""
-    return {"type": "object", "additionalProperties": False, "required": ["predictions", "ranges", "transitions"],
+    magnitude = {"type": "object", "additionalProperties": False,
+                 "required": ["quantity", "action", "state", "value", "basis", "because"],
+                 "properties": {"quantity": {"type": "string", "enum": list(QUANTITIES)}, "action": {"type": "string"},
+                                "state": {"type": ["string", "null"], "enum": [*moves, None]},
+                                "value": {"type": "number"},
+                                "basis": {"type": "string", "enum": list(PLAY_BASIS)}, "because": {"type": "string"}}}
+    return {"type": "object", "additionalProperties": False,
+            "required": ["predictions", "ranges", "transitions", "durations", "magnitudes"],
             "properties": {
-        "ranges": {"type": "array", "maxItems": 6, "items": RANGE},
-        "transitions": {"type": "array", "maxItems": 6, "items": TRANSITION},
+        "ranges": {"type": "array", "maxItems": 10, "items": RANGE},
+        "transitions": {"type": "array", "maxItems": 10, "items": TRANSITION},
+        "durations": {"type": "array", "maxItems": 10, "items": DURATION},
+        "magnitudes": {"type": "array", "maxItems": 8, "items": magnitude},
         "predictions": {"type": "array", "maxItems": 60, "items": {
             "type": "object", "additionalProperties": False,
             "required": ["verb", "state", "observable", "expect", "value", "basis", "because", "precondition"],
@@ -249,7 +276,13 @@ def build_packet(manifest: Mapping[str, Any], discovery: Mapping[str, Any],
         if writers.get(declaration):
             entry["written_by"] = writers[declaration][:MAX_WRITERS]
         readers.append(entry)
-    packet = {"verbs": [described(v) for v in (guards.get("verbs") or {})],
+    def pressed(verb: str) -> dict[str, Any]:
+        # How long the guard table presses it: a plan parameter, so a declared speed can be turned into a distance.
+        row = (guards.get("verbs") or {}).get(verb) or {}
+        held = [c.get("held_s") for c in (row.get("moving") or {}).values() if c and c.get("held_s")]
+        return {"pressed_s": row.get("hold_s"), "pressed_with_move_s": held[0] if held else None}
+
+    packet = {"verbs": [{**described(v), **pressed(v)} for v in (guards.get("verbs") or {})],
               "moves": [described(m) for m in guards.get("moves") or ()], "rise": described(guards.get("rise")),
               "readers": readers, "camera": list(CAMERA),
               "declared_configuration": declared_configuration(discovery, manifest["entity_id"])}
@@ -258,7 +291,40 @@ def build_packet(manifest: Mapping[str, Any], discovery: Mapping[str, Any],
     return packet
 
 
-def request_body(packet: Mapping[str, Any]) -> dict[str, Any]:
+MAGNITUDE_SYSTEM = (
+    "You write down, before anything is measured, the sizes a game you have not seen declares for its body's "
+    "motion, in world units and seconds, so code can check them against measurement. move_speed is a move's "
+    "average speed over its press (state null). rise_height is how high the rise alone lifts the body (state "
+    "null). verb_speed is the body's average speed over a verb's press while a move is held (state: the move's "
+    "name). Each verb's and move's press length is given (pressed_s, pressed_with_move_s). For every declared "
+    "value that sets one of these (a move speed, a sprint or dash speed, a jump speed or height with the gravity "
+    "that brings it down), write the magnitude it implies and show the arithmetic in because. A declared speed "
+    "applied for the whole press is its own magnitude; a burst shorter than the press averages with the move's "
+    "speed over the rest of it. Whether a verb works while moving one way or the other is often a deliberate rule "
+    "(a sprint only while moving forward): give verb_speed only for a move its declarations say it works with. "
+    "Leave out a magnitude only when a factor you cannot see in the declarations "
+    "sets it (an undeclared gravity or acceleration curve). basis is declared_value. At most eight."
+)
+
+
+def magnitude_schema(moves: Sequence[str]) -> dict[str, Any]:
+    full = schema(moves)
+    return {"type": "object", "additionalProperties": False, "required": ["magnitudes"],
+            "properties": {"magnitudes": full["properties"]["magnitudes"]}}
+
+
+def request_body(packet: Mapping[str, Any], part: str = "all") -> dict[str, Any]:
+    moves = [m["name"] for m in packet.get("moves") or () if m]
+    if part == "magnitudes":
+        return {"model": MODEL, "reasoning_effort": "low", "max_tokens": 4000,
+                "messages": [{"role": "system", "content": MAGNITUDE_SYSTEM},
+                             {"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "magnitudes", "strict": True, "schema": magnitude_schema(moves)}}}
+    return _full_request(packet)
+
+
+def _full_request(packet: Mapping[str, Any]) -> dict[str, Any]:
     return {"model": MODEL, "reasoning_effort": "low", "max_tokens": 8000,
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
@@ -291,7 +357,7 @@ def screened(predictions: Sequence[Mapping[str, Any]], packet: Mapping[str, Any]
 def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple[dict, list[dict]]:
     """Ranges and transitions code can score over play, and the rest with the reason each cannot be."""
     kinds = {r["alias"]: r.get("kind") for r in packet.get("readers") or ()}
-    kept: dict[str, list] = {"ranges": [], "transitions": []}
+    kept: dict[str, list] = {"ranges": [], "transitions": [], "durations": [], "magnitudes": []}
     set_aside = []
     for item in answer.get("ranges") or ():
         reason = ("not a reader" if item.get("observable") not in kinds
@@ -309,6 +375,26 @@ def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple
         elif not isinstance(item.get("within_s"), (int, float)) or not 0 < item["within_s"] <= 30:
             reason = "within_s must be a positive number of seconds, at most 30"
         (set_aside if reason else kept["transitions"]).append({**item, **({"set_aside": reason} if reason else {})})
+    for item in answer.get("durations") or ():
+        reason = ("not a reader" if item.get("observable") not in kinds
+                  else "seconds must be positive, at most 30"
+                  if not isinstance(item.get("seconds"), (int, float)) or not 0 < item["seconds"] <= 30 else None)
+        (set_aside if reason else kept["durations"]).append({**item, **({"set_aside": reason} if reason else {})})
+    verbs = {v["name"] for v in packet.get("verbs") or () if v}
+    moves = {m["name"] for m in packet.get("moves") or () if m}
+    rise = (packet.get("rise") or {}).get("name")
+    for item in answer.get("magnitudes") or ():
+        quantity, action, state = item.get("quantity"), item.get("action"), item.get("state")
+        reason = None
+        if not isinstance(item.get("value"), (int, float)) or item["value"] <= 0:
+            reason = "a magnitude must be positive"
+        elif quantity == "move_speed" and (action not in moves or state is not None):
+            reason = "move_speed names a measured move, with no state"
+        elif quantity == "rise_height" and (action != rise or state is not None):
+            reason = "rise_height names the measured rise, with no state"
+        elif quantity == "verb_speed" and (action not in verbs or state not in moves):
+            reason = "verb_speed names a measured verb and a measured move"
+        (set_aside if reason else kept["magnitudes"]).append({**item, **({"set_aside": reason} if reason else {})})
     return kept, set_aside
 
 
@@ -364,6 +450,120 @@ def score_ranges(ranges: Sequence[Mapping[str, Any]],
     return out
 
 
+# How far a measured magnitude may sit from its declared value: sampling only lowers a peak (a reading rarely lands
+# on the apex), and a press's average speed includes its start.
+BANDS = {"move_speed": (0.15, 0.15), "verb_speed": (0.2, 0.2), "rise_height": (0.25, 0.1)}
+
+
+def _median(values: Sequence[float]) -> float | None:
+    values = sorted(values)
+    if not values:
+        return None
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
+
+def measured_magnitude(item: Mapping[str, Any], table: Mapping[str, Any]) -> float | None:
+    """The quantity as one guard table measured it, or None when the table cannot show it."""
+    verbs = table.get("verbs") or {}
+    quantity, action = item["quantity"], item["action"]
+    if quantity == "move_speed":
+        speeds = [c["baseline_displacement"] / c["held_s"] for row in verbs.values()
+                  for move, c in (row.get("moving") or {}).items()
+                  if move == action and c and isinstance(c.get("held_s"), (int, float)) and c["held_s"] > 0
+                  and isinstance(c.get("baseline_displacement"), (int, float))]
+        return _median(speeds)
+    if quantity == "rise_height":
+        peaks = [row["air"]["baseline_peak_displacement"] for row in verbs.values()
+                 if row.get("air") and isinstance(row["air"].get("baseline_peak_displacement"), (int, float))]
+        return _median(peaks)
+    cell = ((verbs.get(action) or {}).get("moving") or {}).get(item.get("state"))
+    if cell and isinstance(cell.get("held_s"), (int, float)) and cell["held_s"] > 0 \
+            and isinstance(cell.get("displacement"), (int, float)):
+        return cell["displacement"] / cell["held_s"]
+    return None
+
+
+def score_magnitudes(magnitudes: Sequence[Mapping[str, Any]], tables: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """Each declared magnitude against every fresh session's guard table: k of n outside its band."""
+    out = []
+    for item in magnitudes:
+        low, high = BANDS[item["quantity"]]
+        measured = [m for m in (measured_magnitude(item, t) for t in tables) if m is not None]
+        off = [m for m in measured if not item["value"] * (1 - low) <= m <= item["value"] * (1 + high)]
+        verdict = ("unmeasured" if not measured else "mismatch" if 2 * len(off) > len(measured)
+                   else "held" if not off else "mixed")
+        what = item["quantity"].replace("_", " ") + f" of {item['action']}" + (
+            f" while {item['state']} held" if item.get("state") else "")
+        shown = ", ".join(f"{m:.2f}" for m in measured)
+        out.append({**item, "k": len(off), "n": len(measured), "measured": [round(m, 3) for m in measured],
+                    "verdict": verdict,
+                    "line": f"{what}: expected {item['value']:g} ({item['basis']}: {item['because']}); measured "
+                            f"{shown or 'nothing'}, outside -{low:.0%}/+{high:.0%} in {len(off)} of {len(measured)} "
+                            f"fresh sessions"})
+    return out
+
+
+def _usual_gap(readings: Sequence[tuple[float, int, dict]]) -> float:
+    gaps = sorted(b[0] - a[0] for a, b in zip(readings, readings[1:]))
+    return gaps[len(gaps) // 2] if gaps else 0.0
+
+
+def duration_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[float, int, dict]]]) -> list[dict]:
+    """Every episode of a duration's value seen whole in play, with whether its length fits the declared one.
+
+    Readings are about 0.8 s apart, so an episode's true length lies between its first and last reading with the
+    value (lower bound) and the readings just outside it (upper bound). A declared length outside that interval,
+    with a tenth of its own length as slack, does not fit. An episode at a session's edge, or with an unread
+    stretch beside it, is not counted.
+    """
+    events = []
+    name, value, seconds = item["observable"], item["value"], item["seconds"]
+    for index, readings in enumerate(sessions):
+        usual = _usual_gap(readings)
+        on = [name in values and _close(values[name], value) for _, _, values in readings]
+        i = 1
+        while i < len(readings) - 1:
+            if not on[i] or on[i - 1]:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(readings) and on[j + 1]:
+                j += 1
+            if j + 1 >= len(readings):
+                break  # still on when the session ended
+            times = [readings[k][0] for k in range(i - 1, j + 2)]
+            if not (usual and any(b - a > UNOBSERVED * usual for a, b in zip(times, times[1:]))):
+                lower, upper = readings[j][0] - readings[i][0], readings[j + 1][0] - readings[i - 1][0]
+                slack = 0.1 * seconds + 0.05
+                events.append({"session": index, "seq": readings[i][1], "at": readings[i][0],
+                               "window": (readings[i - 1][0], readings[j + 1][0]),
+                               "before": readings[i - 1][2], "trigger": readings[i][2],
+                               "lasted": (round(lower, 2), round(upper, 2)),
+                               "followed": lower - slack <= seconds <= upper + slack})
+            i = j + 1
+    return events
+
+
+def score_durations(durations: Sequence[Mapping[str, Any]],
+                    sessions: Sequence[Sequence[tuple[float, int, dict]]]) -> list[dict[str, Any]]:
+    """Each declared duration against every episode of its value seen whole in play (`duration_events`)."""
+    out = []
+    for item in durations:
+        events = duration_events(item, sessions)
+        failed = [e for e in events if not e["followed"]]
+        verdict = ("unmeasured" if len(events) < 2 else "mismatch" if 2 * len(failed) > len(events)
+                   else "held" if not failed else "mixed")
+        examples = [(e["seq"], *e["lasted"]) for e in failed]
+        out.append({**item, "k": len(failed), "n": len(events), "verdict": verdict, "examples": examples[:5],
+                    "line": f"{item['observable']} at {json.dumps(item['value'])} should last {item['seconds']:g} s "
+                            f"({item['basis']}: {item['because']}); it did not in {len(failed)} of {len(events)} "
+                            f"episodes seen whole in play"
+                            + ("" if not examples else " (lasted between " + "; ".join(
+                                f"{lo:g} and {hi:g} s at trace seq {seq}" for seq, lo, hi in examples[:3]) + ")")})
+    return out
+
+
 def _triggered(item: Mapping[str, Any], before: Any, after: Any) -> bool:
     change = item["when_change"]
     if change == "becomes":
@@ -390,62 +590,217 @@ def _followed(item: Mapping[str, Any], start: Any, later: Sequence[Any]) -> bool
     return False
 
 
-def score_transitions(transitions: Sequence[Mapping[str, Any]],
-                      sessions: Sequence[Sequence[tuple[float, int, dict]]]) -> list[dict[str, Any]]:
-    """Each transition at every reading pair where its trigger was seen: k of n not followed in time.
+def transition_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[float, int, dict]]],
+                      skipped: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    """Every trigger of a transition that could show its consequence, with whether it was followed in time.
 
     The consequence counts from the reading before the trigger (it may land in the same frame) up to the first
     reading at or after within_s past the trigger's reading, so a reading's lag cannot fail it. A trigger is not
     counted when nothing could show its consequence: the session ended inside the window; the window has a gap of
     more than UNOBSERVED times the session's usual reading interval (a reload or a respawn the readings did not see),
-    against ordinary slow turns, which stay within three; or it
-    came inside the window of the trigger before it, whose consequence may still hold (a second hit while the first
-    one's invulnerability lasts).
+    against ordinary slow turns, which stay within three; or it came inside the window of the trigger before it,
+    whose consequence may still hold (a second hit while the first one's invulnerability lasts).
     """
+    skipped = skipped if skipped is not None else {}
+    for key in ("window_cut", "unobserved_gap", "overlapped"):
+        skipped.setdefault(key, 0)
+    events = []
+    for index, readings in enumerate(sessions):
+        usual = _usual_gap(readings)
+        open_until = None
+        for i in range(1, len(readings)):
+            (_, _, a), (at, seq, b) = readings[i - 1], readings[i]
+            if item["when"] not in a or item["when"] not in b or not _triggered(item, a[item["when"]], b[item["when"]]):
+                continue
+            overlapped = open_until is not None and at <= open_until
+            open_until = at + item["within_s"]
+            if overlapped:
+                skipped["overlapped"] += 1
+                continue
+            window, times = [], [at]
+            for later_at, _, values in readings[i:]:
+                window.append(values.get(item["then"]))
+                times.append(later_at)
+                if later_at >= at + item["within_s"]:
+                    break
+            else:
+                skipped["window_cut"] += 1  # the session ended before the window did: not a measurement
+                continue
+            if usual and any(t2 - t1 > UNOBSERVED * usual for t1, t2 in zip(times, times[1:])):
+                skipped["unobserved_gap"] += 1
+                continue
+            events.append({"session": index, "seq": seq, "at": at, "before": a, "trigger": b,
+                           "followed": _followed(item, a.get(item["then"]), window)})
+    return events
+
+
+def score_transitions(transitions: Sequence[Mapping[str, Any]],
+                      sessions: Sequence[Sequence[tuple[float, int, dict]]]) -> list[dict[str, Any]]:
+    """Each transition at every counted trigger (`transition_events`): k of n not followed in time."""
     out = []
     for item in transitions:
-        events, failed, examples, skipped = 0, 0, [], {"window_cut": 0, "unobserved_gap": 0, "overlapped": 0}
-        for readings in sessions:
-            gaps = sorted(b[0] - a[0] for a, b in zip(readings, readings[1:]))
-            usual = gaps[len(gaps) // 2] if gaps else 0.0
-            open_until = None
-            for i in range(1, len(readings)):
-                (_, _, a), (at, seq, b) = readings[i - 1], readings[i]
-                if item["when"] not in a or item["when"] not in b or not _triggered(item, a[item["when"]], b[item["when"]]):
-                    continue
-                overlapped = open_until is not None and at <= open_until
-                open_until = at + item["within_s"]
-                if overlapped:
-                    skipped["overlapped"] += 1
-                    continue
-                window, times = [], [at]
-                for later_at, _, values in readings[i:]:
-                    window.append(values.get(item["then"]))
-                    times.append(later_at)
-                    if later_at >= at + item["within_s"]:
-                        break
-                else:
-                    skipped["window_cut"] += 1  # the session ended before the window did: not a measurement
-                    continue
-                if usual and any(t2 - t1 > UNOBSERVED * usual for t1, t2 in zip(times, times[1:])):
-                    skipped["unobserved_gap"] += 1
-                    continue
-                events += 1
-                if not _followed(item, a.get(item["then"]), window):
-                    failed += 1
-                    examples.append(seq)
-        verdict = ("unmeasured" if events < 2 else "mismatch" if 2 * failed > events
+        skipped: dict[str, int] = {}
+        events = transition_events(item, sessions, skipped)
+        failed = [e for e in events if not e["followed"]]
+        examples = [e["seq"] for e in failed]
+        verdict = ("unmeasured" if len(events) < 2 else "mismatch" if 2 * len(failed) > len(events)
                    else "held" if not failed else "mixed")
         when = (f"{item['when']} becomes {json.dumps(item['when_value'])}" if item["when_change"] == "becomes"
                 else f"{item['when']} {item['when_change']}")
         then = (f"{item['then']} reaches {json.dumps(item['then_value'])}" if item["then_expect"] == "reaches"
                 else f"{item['then']} {item['then_expect']}")
-        out.append({**item, "k": failed, "n": events, "verdict": verdict, "examples": examples[:5],
+        out.append({**item, "k": len(failed), "n": len(events), "verdict": verdict, "examples": examples[:5],
                     "not_counted": skipped,
                     "line": f"when {when}, {then} within {item['within_s']:g} s ({item['basis']}: {item['because']}); "
-                            f"not in {failed} of {events} times it happened in play"
+                            f"not in {len(failed)} of {len(events)} times it happened in play"
                             + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")})
     return out
+
+
+# --- investigating a rule that failed sometimes -------------------------------------------------------------------
+
+INVESTIGATE_SYSTEM = (
+    "A rule the game's declarations state was checked by code over recorded play. For a transition, each event is "
+    "a time its trigger was seen, and followed says whether its consequence came in time. For a duration, each "
+    "event is an episode of the reader's value, and followed says whether its length fits the declared one "
+    "(lasted gives the shortest and longest it can have been). It held at most events and failed at some. Each "
+    "event carries every reader's reading just before it began (before) and as it began (trigger), the last input "
+    "the player gave before it and how long before that input ended, for a duration the inputs given while it "
+    "lasted (inputs_during, by name, with how many times), and the seconds since the session began. Say what "
+    "condition, true at the failures and false at the events that were followed, would explain the failures: a "
+    "reader compared with a value, before or at the start; the last input (observable last_action, op == or !=, "
+    "value the input's name); or an input given during it (observable inputs_during, op contains, value the "
+    "input's name). A failure the rule's own cause repeating would explain (the input that sets a flag given again "
+    "while it is on) is worth naming. Give up to four, the most explanatory first. Code will test each against "
+    "every event; one that does not separate them will be reported as such, so do not stretch. If nothing in the "
+    "events separates them, give none."
+)
+HYPOTHESES = {"type": "object", "additionalProperties": False, "required": ["hypotheses"], "properties": {
+    "hypotheses": {"type": "array", "maxItems": 4, "items": {
+        "type": "object", "additionalProperties": False, "required": ["observable", "at", "op", "value", "explains"],
+        "properties": {"observable": {"type": "string"}, "at": {"type": "string", "enum": ["before", "trigger"]},
+                       "op": {"type": "string", "enum": ["==", "!=", "<", "<=", ">", ">=", "contains"]},
+                       "value": {"type": ["number", "boolean", "string"]}, "explains": {"type": "string"}}}}}}
+NOISE = ("camera", "controlled", "probe")
+INVESTIGATE_MAX_TOKENS = 16000  # 4000 ran out inside the reasoning on 40 duration episodes
+MAX_EVENTS = 40
+
+
+def play_inputs(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, float | None, str | None]]:
+    """Every input the game received, by start: (start, end, choice)."""
+    from playtest.runner.review import _inputs
+
+    inputs, _ = _inputs(list(trace_rows))
+    return [(item["start"], item["end"], item["choice"]) for item in inputs]
+
+
+def _flat_readers(values: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in values.items() if k not in NOISE and not isinstance(v, (dict, list))}
+
+
+def describe_events(events: Sequence[Mapping[str, Any]], inputs: Sequence[Sequence[tuple]],
+                    starts: Sequence[float]) -> list[dict[str, Any]]:
+    """The events as the investigation reads them: readers, the last input before each, time into the session."""
+    out = []
+    for event in events:
+        last = None
+        for start, end, choice in inputs[event["session"]]:
+            if start < event["at"]:
+                last = (choice, None if end is None else round(event["at"] - end, 2))
+        described = {"event": len(out), "followed": event["followed"], "before": _flat_readers(event["before"]),
+                     "trigger": _flat_readers(event["trigger"]),
+                     "last_action": last[0] if last else None,
+                     "last_action_ended_s_before": last[1] if last else None,
+                     "session_s": round(event["at"] - starts[event["session"]], 1)}
+        if "window" in event:
+            # A duration's episode: what was pressed while it lasted, by name, with how many times.
+            begin, end = event["window"]
+            during: dict[str, int] = {}
+            for start, _, choice in inputs[event["session"]]:
+                if begin <= start <= end and choice is not None:
+                    during[choice] = during.get(choice, 0) + 1
+            described["inputs_during"] = during
+            described["lasted"] = list(event["lasted"])
+        out.append(described)
+    return out
+
+
+def _holds(event: Mapping[str, Any], hypothesis: Mapping[str, Any]) -> bool | None:
+    if hypothesis["observable"] == "inputs_during":
+        if "inputs_during" not in event or hypothesis["op"] not in ("contains", "==", "!="):
+            return None
+        present = hypothesis["value"] in event["inputs_during"]
+        return not present if hypothesis["op"] == "!=" else present
+    if hypothesis["op"] == "contains":
+        return None
+    if hypothesis["observable"] == "last_action":
+        value = event.get("last_action")
+    else:
+        source = event.get(hypothesis["at"]) or {}
+        if hypothesis["observable"] not in source:
+            return None
+        value = source[hypothesis["observable"]]
+    target, op = hypothesis["value"], hypothesis["op"]
+    if op in ("==", "!="):
+        same = _close(value, target) if isinstance(target, (int, float)) and not isinstance(target, bool) else value == target
+        return same if op == "==" else not same
+    a, b = _number(value), _number(target)
+    if a is None or b is None:
+        return None
+    return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+
+
+def _fisher_greater(a: int, b: int, c: int, d: int) -> float:
+    """One-sided Fisher exact p that failures are this concentrated where the condition holds.
+
+    a: failed and held, b: followed and held, c: failed and not held, d: followed and not held.
+    """
+    from math import comb
+
+    row, col, n = a + b, a + c, a + b + c + d
+    total = comb(n, col)
+    return sum(comb(row, x) * comb(n - row, col - x) for x in range(a, min(row, col) + 1)) / total if total else 1.0
+
+
+def check_hypotheses(hypotheses: Sequence[Mapping[str, Any]], events: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """Each proposed condition against every event: a 2x2 count and how surely it separates the failures.
+
+    The condition was proposed after seeing these same events, so a separation here is a lead for a directed test,
+    not a finding: `supported` needs at least three failures, all of them under the condition, and p < 0.05.
+    """
+    out = []
+    for hypothesis in hypotheses:
+        counts = {"failed_held": 0, "followed_held": 0, "failed_not": 0, "followed_not": 0, "unknown": 0}
+        for event in events:
+            held = _holds(event, hypothesis)
+            if held is None:
+                counts["unknown"] += 1
+                continue
+            counts[("failed" if not event["followed"] else "followed") + ("_held" if held else "_not")] += 1
+        p = _fisher_greater(counts["failed_held"], counts["followed_held"], counts["failed_not"], counts["followed_not"])
+        failures = counts["failed_held"] + counts["failed_not"]
+        supported = failures >= 3 and counts["failed_not"] == 0 and p < 0.05
+        verdict = "supported" if supported else "separates" if p < 0.05 else "does not separate"
+        condition = f"{hypothesis['observable']} {hypothesis['op']} {json.dumps(hypothesis['value'])}" + (
+            "" if hypothesis["observable"] in ("last_action", "inputs_during")
+            else " (just before it began)" if hypothesis["at"] == "before" else " (as it began)")
+        out.append({**hypothesis, **counts, "p": round(p, 4), "verdict": verdict,
+                    "line": f"{condition}: {verdict}; failed {counts['failed_held']} of "
+                            f"{counts['failed_held'] + counts['followed_held']} events where it held and "
+                            f"{counts['failed_not']} of {counts['failed_not'] + counts['followed_not']} where it did "
+                            f"not (one-sided Fisher p = {p:.3f}; proposed after seeing these events)"})
+    return out
+
+
+def investigation_packet(rule: Mapping[str, Any], described: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The rule and its events, every failure and the followed ones spread evenly, up to MAX_EVENTS."""
+    failed = [e for e in described if not e["followed"]]
+    followed = [e for e in described if e["followed"]]
+    room = max(MAX_EVENTS - len(failed), 0)
+    step = max(len(followed) / room, 1.0) if room else 0
+    sample = [followed[int(i * step)] for i in range(min(room, len(followed)))] if room else []
+    return {"rule": {k: v for k, v in rule.items() if k not in ("basis", "set_aside")},
+            "events": sorted(failed + sample, key=lambda e: e["event"])}
 
 
 def _direction(values: Sequence[Any]) -> int | None:
@@ -521,6 +876,8 @@ def outcome(prediction: Mapping[str, Any], row: Mapping[str, Any], cell: Mapping
     observable = prediction["observable"]
     values = (cell.get("changed") or {}).get(observable)
     if values is None:
+        if any(observable in keys for keys in cell.get("trial_changed") or ()):
+            return "held"  # seen in some trials and not all: a flicker or a lagging reader, not a missing effect
         if observable in (row.get("ambient") or ()):
             return "ambient"
         if observable in (cell.get("baseline_changed") or ()):
@@ -608,9 +965,11 @@ def report(guard_rows: Sequence[Mapping[str, Any]], play_rows: Sequence[Mapping[
               "*ambient: the reader changes by itself there; masked: the state without the verb changes it; "
               "at_limit: it began where the verb's presses end; not_airborne: the in-air press went in before the body "
               "left the ground; unmeasured: no session measured that cell.*", ""]
-    lines += [f"- {r['verdict']}: {r['verb']} {r['cell']}, {r['observable']}" for r in unshown] or ["- none"]
+    lines += [f"- {r['verdict']}: " + (f"{r['verb']} {r['cell']}, {r['observable']}" if "cell" in r else r["line"])
+              for r in unshown] or ["- none"]
     lines += ["", f"## Set aside before scoring ({len(set_aside)})", ""]
-    lines += [f"- {item.get('verb') or item.get('observable') or item.get('when')}: {item['set_aside']}"
+    lines += [f"- {item.get('verb') or item.get('action') or item.get('observable') or item.get('when')}: "
+              f"{item['set_aside']}"
               + (f" ({item['precondition']})" if item.get("precondition") else "") for item in set_aside] or ["- none"]
     return "\n".join(lines) + "\n"
 
@@ -626,6 +985,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "can be read")
     predict.add_argument("--ref", help="the build under test's commit or branch in --project (default: its working "
                          "tree)")
+    predict.add_argument("--part", choices=("all", "magnitudes"), default="all",
+                         help="magnitudes: one focused call for the declared sizes only")
     scorer = sub.add_parser("score")
     scorer.add_argument("--expectations", type=Path, required=True)
     scorer.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with guards.json")
@@ -635,6 +996,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     reporter.add_argument("--play-score", type=Path, help="the output of score-play")
     reporter.add_argument("--title", default="Expectations against measurement")
     reporter.add_argument("--output", type=Path, required=True, help="a new Markdown file")
+    investigator = sub.add_parser("investigate")
+    investigator.add_argument("--expectations", type=Path, required=True)
+    investigator.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with trace.jsonl")
+    investigator.add_argument("--approval", type=Path, required=True)
+    investigator.add_argument("--output", type=Path, required=True, help="a new folder")
     player = sub.add_parser("score-play")
     player.add_argument("--expectations", type=Path, required=True)
     player.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with trace.jsonl")
@@ -649,12 +1015,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output.write_text(text, encoding="utf-8", newline="\n")
         print(text)
         return 0
+    if args.command == "investigate":
+        return investigate(args)
     if args.command == "score-play":
         expectations = json.loads(args.expectations.read_text(encoding="utf-8"))
         sessions = [play_readings([json.loads(line) for line in (run / "trace.jsonl").read_text(encoding="utf-8")
                                    .splitlines() if line.strip()]) for run in args.runs]
         rows = (score_ranges(expectations.get("ranges") or (), sessions)
-                + score_transitions(expectations.get("transitions") or (), sessions))
+                + score_transitions(expectations.get("transitions") or (), sessions)
+                + score_durations(expectations.get("durations") or (), sessions))
         mismatches = [r for r in rows if r["verdict"] == "mismatch"]
         result = {"runs": [str(r) for r in args.runs], "mismatches": mismatches, "scored": rows}
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -664,7 +1033,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "score":
         expectations = json.loads(args.expectations.read_text(encoding="utf-8"))
         tables = [json.loads((run / "guards.json").read_text(encoding="utf-8")) for run in args.runs]
-        rows = score(expectations["predictions"], tables)
+        rows = score(expectations["predictions"], tables) + score_magnitudes(expectations.get("magnitudes") or (),
+                                                                               tables)
         mismatches = [r for r in rows if r["verdict"] == "mismatch"]
         result = {"runs": [str(r) for r in args.runs], "set_aside": expectations.get("set_aside") or [],
                   "mismatches": mismatches, "scored": rows}
@@ -686,7 +1056,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     guards = json.loads(args.guards.read_text(encoding="utf-8"))
     packet = build_packet(manifest, discovery, guards,
                           project_reader(args.project, args.ref) if args.project is not None else None)
-    body = request_body(packet)
+    body = request_body(packet, args.part)
     sha = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "packet.json").write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -708,12 +1078,83 @@ def main(argv: Sequence[str] | None = None) -> int:
               "predictions": kept, **play, "set_aside": set_aside + play_aside, "answer": answer}
     (args.output / "expectations.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"status {status}, cost {cost}, {len(kept)} predictions, {len(play['ranges'])} ranges, "
-          f"{len(play['transitions'])} transitions kept; {len(set_aside) + len(play_aside)} set aside")
+          f"{len(play['transitions'])} transitions, {len(play['durations'])} durations, "
+          f"{len(play['magnitudes'])} magnitudes kept; {len(set_aside) + len(play_aside)} set aside")
     return 0 if status == 200 else 1
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def _send(body: Mapping[str, Any], approval: Mapping[str, Any], folder: Path, name: str) -> tuple[Any, Any]:
+    """One paid call, recorded in the folder's ledger before its answer is read."""
+    from playtest.bench import call_budget
+    from playtest.frontier import provider
+
+    sha = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    ledger = call_budget.Ledger(folder / name, dict(approval), MODEL)
+    reservation = ledger.reserve(episode=0, turn=0, based_on_seq=0, request_sha256=sha, requested_model=MODEL)
+    try:
+        status, data, latency, problem = provider.send_meta(dict(body), timeout_s=TIMEOUT_S)
+        usage = (data or {}).get("usage") or None
+        cost = provider._cost(usage)
+        reservation.finish(http_status=status, latency_ms=latency, cost_usd=cost, usage=usage, problem=problem)
+    except Exception:
+        reservation.finish(cost_usd=None, problem="the call failed before a response was recorded")
+        raise
+    choice = ((data or {}).get("choices") or [{}])[0] if status == 200 else {}
+    content = (choice.get("message") or {}).get("content")
+    answer = json.loads(content) if isinstance(content, str) and content.strip() else None
+    if status == 200 and answer is None:
+        # A reply with no content (the reasoning used every token): recorded as that, never read as "none found".
+        problem = problem or f"no answer content (finish_reason {choice.get('finish_reason')!r})"
+    return answer, {"request_sha256": sha, "status": status, "problem": problem, "usage": usage, "cost": cost}
+
+
+def investigate(args: argparse.Namespace) -> int:
+    """For each play rule that failed sometimes: the frontier proposes what separates its failures, code tests it."""
+    from playtest.bench import replay
+
+    approval, _ = replay._load(args.approval)
+    replay.validate_approval(approval, [MODEL])
+    if not os.environ.get("META_API_KEY"):
+        raise SystemExit("META_API_KEY is required")
+    expectations = json.loads(args.expectations.read_text(encoding="utf-8"))
+    traces = [[json.loads(line) for line in (run / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+               if line.strip()] for run in args.runs]
+    sessions = [play_readings(rows) for rows in traces]
+    inputs = [play_inputs(rows) for rows in traces]
+    starts = [readings[0][0] if readings else 0.0 for readings in sessions]
+    args.output.mkdir(parents=True, exist_ok=False)
+    results = []
+    rules = [(f"transition-{n}", rule, transition_events) for n, rule in
+             enumerate(expectations.get("transitions") or (), 1)]
+    rules += [(f"duration-{n}", rule, duration_events) for n, rule in enumerate(expectations.get("durations") or (), 1)]
+    for name, rule, events_of in rules:
+        events = events_of(rule, sessions)
+        if not any(not e["followed"] for e in events) or all(not e["followed"] for e in events):
+            continue  # held every time, or failed every time (a mismatch, not a condition to find)
+        described = describe_events(events, inputs, starts)
+        packet = investigation_packet(rule, described)
+        body = {"model": MODEL, "reasoning_effort": "low", "max_tokens": INVESTIGATE_MAX_TOKENS,
+                "messages": [{"role": "system", "content": INVESTIGATE_SYSTEM},
+                             {"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "hypotheses", "strict": True, "schema": HYPOTHESES}}}
+        answer, call = _send(body, approval, args.output, name)
+        tested = check_hypotheses((answer or {}).get("hypotheses") or (), described)
+        results.append({"name": name, "rule": rule, "events": len(described),
+                        "failed": sum(not e["followed"] for e in described), "call": call,
+                        "answered": answer is not None, "hypotheses": tested})
+        print(f"{name}: {len(described)} events, {results[-1]['failed']} failed, cost {call['cost']}"
+              + ("" if answer is not None else f"; no answer: {call['problem']}"))
+        for row in tested:
+            print("  " + row["line"])
+        # Written after every rule, so a later fault cannot lose a paid answer.
+        (args.output / "investigation.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8",
+                                                         newline="\n")
+    if not results:
+        (args.output / "investigation.json").write_text("[]\n", encoding="utf-8", newline="\n")
+    return 0
+
+
 
 
 class ExpectationFacts:
@@ -749,3 +1190,7 @@ class ExpectationFacts:
 def unmet_in_session(expectations: Mapping[str, Any], guards: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The predictions this one session's guard table did not meet (k of 1)."""
     return [row for row in score(expectations.get("predictions") or (), [guards]) if row["verdict"] == "mismatch"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

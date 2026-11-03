@@ -33,6 +33,8 @@ as a bug. The answer is pre-registered: saved with its cost and request hash bef
 | prediction | the guard tables | in this state (rest, a move's name, moving for every move, air) this verb changes this observable, in this direction, or reaches a declared value |
 | range | every reading of play sessions | this reader stays within a declared bound |
 | transition | reading pairs in play sessions | when this reader changes so, that one follows within `within_s` |
+| duration | episodes of a reader's value in play sessions | once it takes this value it keeps it for the declared seconds |
+| magnitude | the guard tables | a move's speed, the rise's height, or a verb's speed while a move is held, is the declared size |
 
 Code screens the answer. A prediction is set aside, kept but never scored, when it names a verb or an observable
 nobody measures, when `reaches` comes without a value, or when it needs a condition the guard states do not give (a
@@ -41,7 +43,7 @@ target in range, ammunition). That last rule alone removes the v2 class of "inte
 ## How code scores it (`score`, `score-play`)
 
 A guard-table cell is one of:
-- **held**: the effect was seen, the right way;
+- **held**: the effect was seen, the right way, in any trial of the cell (`trial_changed`: an effect seen in some trials and not others is a flicker or a lagging reader, not a missing one);
 - **missing, reversed, wrong_value**: it failed;
 - **ambient**: the reader changes by itself in that state, so no press can show it;
 - **masked**: the state without the verb already changes it (a stick's input reader while a key direction is held);
@@ -73,6 +75,29 @@ consequence:
   turns stay within 3×);
 - it came inside the previous trigger's window (a second hit while the first one's invulnerability lasts).
 
+A **magnitude** comes from the guard tables' own measurements: a move's speed is its baseline displacement over the
+press length (`held_s`) in every cell that chords it; the rise's height is the rise-alone peak in the air cells; a
+verb's speed is its cell's displacement over the press. Its band is wider below than above for the rise
+(-25%/+10%), because a 0.3 s reading rarely lands on the apex; speeds take ±15%, a verb's speed ±20%. The press
+lengths are in the packet, as plan parameters, so a declared speed can be turned into what the table will show.
+
+A **duration** is an interval check, sound under readings about 0.8 s apart. An episode's true length lies between its
+first and last reading with the value and the readings just outside it. A declared length outside that interval, with
+a tenth of itself as slack, is a violation. An episode at a session's edge, or with an unread stretch beside it, is
+not counted.
+
+## Investigating what failed sometimes (`investigate`)
+
+A transition that held at most of its triggers and failed at some is **mixed**: not a finding, but a lead. One Muse
+call per such rule gets every counted event: whether it was followed, every reader just before and at the trigger,
+the last input and how long before the trigger it ended, and the time into the session. It proposes up to four
+conditions that would separate the failures (a reader against a value, or the last input). Code tests each against
+every event as a 2×2 count with a one-sided Fisher exact p.
+
+The frontier proposed the condition after seeing these same events, so a separation is a lead for a directed test,
+not a finding. `supported` needs at least three failures, every one under the condition, and p < 0.05. A condition
+that does not separate is reported as that, which is the usual answer for noise.
+
 ## In play (`--expectations`)
 
 With `--measure-guards`, a session scores the predictions against its own guard table before play and saves
@@ -86,20 +111,44 @@ for measuring this method only; a run never uses a control.
 
 | | Held-out | Clean |
 |---|---|---|
-| FPSKit, guards (3 fresh sessions each) | aim_toggle at rest: aiming and the declared aim FOV 50 both missing 3/3 | 0 mismatches |
-| FPSKit, play (8 held-out, 7 clean sessions) | pitch within its declared ±80, jump count within its declared 2: held | held |
-| DragonBlaze, guards (3 fresh sessions each, in-air presses at the measured apex) | 0 mismatches; the double jump and the rest hold | 0 mismatches |
-| DragonBlaze, play (11 held-out, 12 clean sessions) | health within its declared 30: held. When health drops, invulnerability follows in 23 of 25 observable hits: mixed | 6 of 6 |
+| FPSKit, guards (7 held-out, 6 clean fresh sessions) | aim_toggle at rest: aiming and the declared aim FOV 50 both missing 7/7 | 0 mismatches |
+| FPSKit, magnitudes (3 each) | move speed 5.01 for a declared 5; dash forward 9.55 for 10.5; crouch 3.07 for 2.9: held | held |
+| FPSKit, play (11 held-out, 13 clean sessions) | pitch within its declared ±80, jump count within its declared 2: held | held |
+| DragonBlaze, guards (3 each, per-trial keys, in-air presses at the measured apex) | 0 mismatches | 0 mismatches |
+| DragonBlaze, magnitudes (3 each) | move speed 9.9–10.2 for a declared 10; dash 15.2 for the 15 Muse derived from dash 20 for 0.2 s and speed 10: held | held |
+| DragonBlaze, play (11 held-out, 12 clean sessions) | health within 30: held. Invulnerability after a hit: 22 of 24, mixed. Invulnerability lasting the declared 1.5 s: 16 of 28, mixed. Dash flag lasting 0.2 s: 1 of 2, mixed | 6 of 6; 3 of 6, mixed; no episode seen whole |
 
-The first version of the prompt also predicted direction-specific effects ("dash works in every direction") and the
+The investigation found nothing to support for any mixed rule. The invulnerability transition's two failures both came
+right after the agent's `sweep` option, which separates them at p = 0.004, but two failures is below the three
+`supported` needs. No condition separated the long invulnerability episodes, which the clean build shows too. The one
+long dash was S1 pressing dash every 0.7 s for 7 s: a run of fresh dashes, not a stuck flag.
+
+Blind score (a separate scorer reading the answer key, reporting matched ids and counts only): FPSKit 1 of 3 (b05),
+DragonBlaze 0 of 2, and neither DragonBlaze lead matched a seeded bug. Asked only yes or no, the scorer said that in
+both games an unmatched seeded bug concerns something these checks measured and found holding. Those checks were not
+tuned afterwards: a fix chosen from that answer would be fitted to the key.
+
+The first version of the prompt also predicted direction-specific effects ("dash works in every direction"), and the
 scorer had none of the cell outcomes above. Scored on the clean builds, it raised 6 FPSKit and 7 DragonBlaze
-mismatches, every one an artifact or a design rule. Each fix above is generic and came from those clean-build false
-positives, not from the answer key: the clean builds were this method's development set.
+mismatches, every one an artifact or a design rule. Later clean-build false positives fixed the same way: a jump's
+grounded flag and a pooled projectile's lifetime seen in one trial of two (now scored by any trial, `trial_changed`), a
+dash speed assumed backward too (the magnitude prompt now carries the direction rule). Each fix is generic and came
+from clean-build false positives, not from the answer key: the clean builds were this method's development set.
+
+## Live: the loop with S1 deciding (`runs/fpskit/live-expect-01`)
+
+One held-out FPSKit hunt with `--expectations`, 300 s, S1 d1-ultra, the frontier capped at 6 calls ($0.71 in all). The
+session's own guard table left two expectations unmet (aim_toggle: aiming never true, field of view never toward 50);
+both lines were in every one of S1's 251 requests. S1 escalated at turn 7. The frontier's first hypothesis was "aim
+toggle has no effect at rest", with what would confirm and what would refute it, and it directed about 20 aim_toggle
+presses in different situations. The run filed candidate findings f-41, f-51 and f-81 with the authors' declared values
+as the expected source. Their replays need a repro check the frontier did not give; the clean-reset reproduction is the
+guard measurement itself, 7 of 7 fresh sessions.
 
 ## Not done
 
-- A **mixed** expectation is a candidate for a controlled test the frontier directs: what differed between the
-  triggers that were followed and the ones that were not. That step is not built.
-- Calibration's measured speeds are not compared with declared ones. Opposite moves were within 1.5% on both builds,
-  so a symmetry relation over them found nothing.
-- `--expectations` has unit tests but has not run in a live session.
+- A **supported** condition from the investigation does not yet become a directed session (S1 steered to bring the
+  condition about, then the rule checked again). The live loop above directs tests from the frontier's own hypotheses.
+- The frontier's live findings have no replay `repro_check`.
+- Calibration's measured speeds are not compared with declared ones beyond the guard tables' own (opposite moves were
+  within 1.5% on both builds).

@@ -320,7 +320,8 @@ def _moved_differently(window: _Window, baseline: _Window) -> bool | None:
     return abs(window.displacement - baseline.displacement) > DISPLACEMENT_RATIO * baseline.displacement
 
 
-def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Window) -> dict[str, Any]:
+def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Window,
+         held_s: float | None = None) -> dict[str, Any]:
     """What every trial measured: the keys all of them changed, and a different motion only when each moved so."""
     keys = set.intersection(*(set(added) for added, _ in trials)) if trials else set()
     first, window = trials[0]
@@ -329,6 +330,9 @@ def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Wind
     return {"effect": bool(keys) or bool(moved), "changed": {k: _round(first[k]) for k in sorted(keys)},
             "displacement": _round(window.displacement), "baseline_displacement": _round(baseline.displacement),
             "moved_differently": moved, "trials": len(trials),
+            "held_s": _round(held_s),  # how long the press, and its baseline's, was held: displacement over it is a speed
+            # What each trial changed on its own: an effect seen in some trials is intermittent, not missing.
+            "trial_changed": [sorted(added) for added, _ in trials],
             # What a scorer needs to tell a missing effect from one the state hides: the keys the state changes by
             # itself, each trial's readings before its press (a reader already at its limit cannot move further),
             # and the furthest the body got, against the state's own furthest.
@@ -373,7 +377,7 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
             await meter.settle()
             window = await meter.window(action, hold_s, **press)
             measured.append((_added(window, baseline, ambient, trends), window))
-        return _row(measured, baseline)
+        return _row(measured, baseline, hold_s)
 
     for verb in plan["verbs"]:
         hold = catalog[verb].default_lease_s or DEFAULT_HOLD_S
