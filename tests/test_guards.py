@@ -170,3 +170,104 @@ def test_only_a_chord_that_does_what_its_verb_alone_does_not_is_offered_to_play(
     assert [(c.name, label) for c, label in offered] == [
         ("g_right_dash", "dash sprint while move right: both held together; measured before play: dashing changed; "
                          "the body moved differently from the direction alone")]
+
+
+def test_each_cell_keeps_what_a_scorer_needs_to_tell_a_hidden_effect_from_a_missing_one():
+    game = Game()
+    game.catalog = {**CATALOG, **{c.name: c.definition for c in guards.plan_guards(CATALOG, PRIMITIVES)["chords"]}}
+    table = asyncio.run(guards.measure_guards(game, game, game.catalog, PRIMITIVES, clock=game.clock, sleep=game.sleep))
+    dash = table["verbs"]["dash"]
+    right = dash["moving"]["right"]
+    assert len(right["starts"]) == 2 and "shots" in right["starts"][0]          # each trial's readings before it
+    assert right["peak_displacement"] > right["baseline_peak_displacement"] > 0  # dash went further, at its furthest
+    attack = table["verbs"]["attack"]
+    assert attack["rest"]["baseline_changed"] == sorted(attack["rest"]["baseline_changed"])
+    assert dash["rest"]["peak_displacement"] == 0.0
+
+
+def test_the_in_air_press_waits_for_the_body_to_leave_the_ground():
+    class Lagging(Game):
+        """The rise lifts the body only 0.3 s after it is pressed, later than the planned apex press."""
+
+        def step(self, seconds):
+            super().step(seconds)
+            self.y = 1.0 if self.air_until > 0 and self.now >= self.air_until - 0.6 + 0.3 and self.now < self.air_until else 0.0
+
+        async def observe_once(self):
+            observation = await super().observe_once()
+            observation.public["controlled"]["position"][1] = getattr(self, "y", 0.0)
+            return observation
+
+    primitives = SimpleNamespace(**{**vars(PRIMITIVES), "air_press_s": 0.05})
+    game = Lagging()
+    game.catalog = dict(CATALOG)
+    table = asyncio.run(guards.measure_guards(game, game, game.catalog, primitives, clock=game.clock, sleep=game.sleep))
+    assert all(d > 0 for d in table["verbs"]["attack"]["air"]["pressed_at"])   # pressed once it had risen
+
+
+def test_a_body_that_lifts_after_the_rise_is_released_is_still_pressed_in_the_air():
+    class LateLift(Game):
+        """The rise lifts the body from 0.7 s to 1.3 s after it is pressed, after its 0.6 s hold ends; attack fires
+        only while the body is down."""
+
+        def __init__(self):
+            super().__init__()
+            self.lift = (-1.0, -1.0)
+
+        def y(self):
+            return 1.0 if self.lift[0] <= self.now < self.lift[1] else 0.0
+
+        async def start_act(self, *, action, action_id, lease_s, **_):
+            self.held = action
+            controls = self.controls()
+            if "space" in controls and self.y() == 0.0:
+                self.lift = (self.now + 0.7, self.now + 1.3)
+            if "j" in controls and self.y() == 0.0:
+                self.shots += 1
+                self.last_shot = self.now
+            return [SimpleNamespace(status=SimpleNamespace(value="running"))]
+
+        async def observe_once(self):
+            observation = await super().observe_once()
+            observation.public["controlled"]["position"][1] = self.y()
+            return observation
+
+    game = LateLift()
+    game.catalog = dict(CATALOG)
+    table = asyncio.run(guards.measure_guards(game, game, game.catalog, PRIMITIVES, clock=game.clock, sleep=game.sleep))
+    air = table["verbs"]["attack"]["air"]
+    assert all(d > 0 for d in air["pressed_at"]) and air["effect"] is False    # pressed aloft: no shot
+
+
+def test_a_short_jump_is_pressed_at_its_measured_peak_not_a_planned_apex_after_landing():
+    class Hop(Game):
+        """The rise is up for 0.4 s only; the planned apex (0.6 s) is after it lands."""
+
+        def __init__(self):
+            super().__init__()
+            self.lift = (-1.0, -1.0)
+
+        def y(self):
+            return 1.0 if self.lift[0] <= self.now < self.lift[1] else 0.0
+
+        async def start_act(self, *, action, action_id, lease_s, **_):
+            self.held = action
+            controls = self.controls()
+            if "space" in controls and self.y() == 0.0:
+                self.lift = (self.now + 0.05, self.now + 0.4)
+            if "j" in controls and self.y() == 0.0:
+                self.shots += 1
+                self.last_shot = self.now
+            return [SimpleNamespace(status=SimpleNamespace(value="running"))]
+
+        async def observe_once(self):
+            observation = await super().observe_once()
+            observation.public["controlled"]["position"][1] = self.y()
+            return observation
+
+    primitives = SimpleNamespace(**{**vars(PRIMITIVES), "rise_duration_s": 1.2, "air_press_s": 0.6})
+    game = Hop()
+    game.catalog = dict(CATALOG)
+    table = asyncio.run(guards.measure_guards(game, game, game.catalog, primitives, clock=game.clock, sleep=game.sleep))
+    air = table["verbs"]["attack"]["air"]
+    assert all(d > 0 for d in air["pressed_at"]) and air["effect"] is False and air["timing"]["pressed_after_s"] < 0.4

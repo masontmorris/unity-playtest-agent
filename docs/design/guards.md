@@ -35,6 +35,7 @@ How the measurement works:
 - **Trials:** each state is pressed twice, and only what changed both times counts.
 - **Ambient keys:** a key that changes by itself is ambient. It still counts when a press moves it against its idle trend, which is a reset.
 - **Output:** the table is saved as `guards.json`. It decides nothing: no choice is added, removed or ranked.
+- **For a scorer:** each cell also keeps each trial's readings before its press (`starts`), the keys its baseline changed (`baseline_changed`) and the furthest the body got against the baseline's (`peak_displacement`). The in-air press goes in at the rise alone's highest reading, and `timing` records how. [`expectations.md`](expectations.md) scores declared expectations against these.
 
 ## Oracles
 

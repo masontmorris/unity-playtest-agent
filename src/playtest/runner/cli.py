@@ -215,6 +215,10 @@ def _parser() -> argparse.ArgumentParser:
                         help="before play, measure each verb at rest, while moving and in the air against a baseline "
                              "of each, and save the table as guards.json (the host must serve the guard chords: "
                              "playtest-export-catalog --guard-chords; also UPA_RUN_MEASURE_GUARDS)")
+    parser.add_argument("--expectations", type=Path, default=_env("UPA_RUN_EXPECTATIONS", Path, None),
+                        help="an expectations.json from `python -m playtest.runner.expectations predict`: with "
+                             "--measure-guards, each prediction this session's guard table does not meet is stated to "
+                             "S1 and the frontier as a measured fact (also UPA_RUN_EXPECTATIONS)")
     parser.add_argument("--decide-during-options", action="store_true",
                         default=_env("UPA_RUN_DECIDE_DURING_OPTIONS", switch, False),
                         help="run options, actions and skills in the background so S1 decides again at once: picking "
@@ -692,6 +696,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             guards = await measure_guards(client, readers, served, guard_primitives)
             replay._save(run_dir / "guards.json", guards)
         guard_lines: list[str] = []
+        expectation_lines: list[str] = []
         if args.measure_guards:
             from playtest.contracts.loop import Choice, ChoiceSource
             from .guards import plan_guards, unlocking_chords
@@ -710,6 +715,16 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             from .guards import asymmetries, asymmetry_line, summary_lines
             guard_lines = summary_lines(guards) + [
                 "asymmetry (a symmetry candidate): " + asymmetry_line(item) for item in asymmetries(guards)]
+            if args.expectations is not None:
+                from .expectations import unmet_in_session
+
+                # What the build's declarations say a verb does, written before any measurement, that this
+                # session's guard table did not show: facts for S1 and the frontier. Nothing is decided here.
+                unmet = unmet_in_session(json.loads(args.expectations.read_text(encoding="utf-8")), guards)
+                replay._save(run_dir / "expectations-unmet.json", {"expectations": str(args.expectations),
+                                                                    "unmet": unmet})
+                expectation_lines = [row["line"] for row in unmet]
+                guard_lines += ["expected from the declarations, not measured: " + line for line in expectation_lines]
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         # Detectors are opt-in: without them the loop reports to the readers' watch itself, so a trace is
         # unchanged. With them, the same watch plus the detectors is one watch, numbered in one sequence.
@@ -753,6 +768,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             facts = PatternFacts(facts, [reader.alias for reader in manifest.readers])
         if args.travel_facts:
             facts = TravelFacts(facts)
+        if expectation_lines:
+            from .expectations import ExpectationFacts
+            facts = ExpectationFacts(facts, expectation_lines)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,

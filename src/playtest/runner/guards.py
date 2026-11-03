@@ -43,6 +43,7 @@ DEFAULT_HOLD_S = 0.3
 MOVES_BODY = 0.05          # a verb that moves the body this far by itself is a movement, not chorded
 TRIALS = 2                 # presses per state: only what changed every time counts, so a rare flip does not
 IDLE_PREPASS_S = 3.0       # one idle window before any press, so readers that change on their own clock are ambient
+AIR_SPAN_S = 1.0           # how long past the rise's hold an in-air window keeps reading: a body can lift after release
 _NAME = re.compile(NAME)
 
 
@@ -161,6 +162,10 @@ class _Window:
     displacement: float | None
     status: str | None
     pressed_at: float | None = None   # how far the body was from its start when the second press was sent
+    before: dict[str, Any] | None = None  # every key as read right before the press
+    peak: float | None = None             # the furthest the body got from its start, at any reading (a jump lands)
+    left_at: float | None = None          # seconds after the press at which the body was first read off its start
+    path: list | None = None              # (seconds after the press, distance from the start) at each reading
 
 
 class _Meter:
@@ -197,7 +202,8 @@ class _Meter:
             await self.sleep(0.05)
 
     async def window(self, action: str | None, hold_s: float, *, then: str | None = None,
-                     then_after_s: float | None = None) -> _Window:
+                     then_after_s: float | None = None, then_hold_s: float | None = None,
+                     span_s: float | None = None) -> _Window:
         """Press `action` (None: no input) for `hold_s`; optionally press `then` `then_after_s` into it.
 
         Every key that read differently from the snapshot before the press, at any reading while held or just after,
@@ -223,15 +229,34 @@ class _Meter:
                                         based_on_seq=seq, max_age_s=MAX_AGE_S, lease_s=lease)
 
         pressed_at = None
+        peak = 0.0 if start is not None else None
+
+        def reach(now: tuple[float, ...] | None) -> None:
+            nonlocal peak
+            if peak is not None and now is not None and len(start) == len(now):
+                peak = max(peak, math.dist(start, now))
+
         try:
             if action is not None:
                 await press(action, observation.seq, hold_s)
             began, pressed_then = self.clock(), False
-            while self.clock() - began < hold_s:
+            # Readings run for `span_s` (default: the hold); the first press is held for `hold_s` only, so a body
+            # that lifts after the rise is released is still read in the air.
+            span = max(hold_s, span_s or 0.0)
+            left_at = None
+            path: list = []
+            while self.clock() - began < span:
                 values, now, observation = await self.snapshot()
                 note(values)
-                if then is not None and not pressed_then and self.clock() - began >= (then_after_s or 0.0):
-                    await press(then, observation.seq, max(hold_s - (self.clock() - began), SAMPLE_S))
+                reach(now)
+                elapsed = self.clock() - began
+                if start is not None and now is not None and len(start) == len(now):
+                    path.append((_round(elapsed), _round(math.dist(start, now))))
+                if left_at is None and start is not None and now is not None and len(start) == len(now) \
+                        and math.dist(start, now) > EPS:
+                    left_at = elapsed
+                if then is not None and not pressed_then and elapsed >= (then_after_s or 0.0):
+                    await press(then, observation.seq, then_hold_s or max(hold_s - elapsed, SAMPLE_S))
                     pressed_then = True
                     if start is not None and now is not None and len(start) == len(now):
                         pressed_at = math.dist(start, now)
@@ -248,9 +273,11 @@ class _Meter:
         await self.sleep(AFTER_S)
         after, end, _ = await self.snapshot()
         note(after)
+        reach(end)
         displacement = (math.dist(start, end) if start is not None and end is not None and len(start) == len(end)
                         else None)
-        return _Window(changed=changed, displacement=displacement, status=status, pressed_at=pressed_at)
+        return _Window(changed=changed, displacement=displacement, status=status, pressed_at=pressed_at,
+                       before=before, peak=peak, left_at=left_at, path=path)
 
 
 def _trend(values: Sequence[Any]) -> int:
@@ -302,6 +329,12 @@ def _row(trials: Sequence[tuple[dict[str, list[Any]], _Window]], baseline: _Wind
     return {"effect": bool(keys) or bool(moved), "changed": {k: _round(first[k]) for k in sorted(keys)},
             "displacement": _round(window.displacement), "baseline_displacement": _round(baseline.displacement),
             "moved_differently": moved, "trials": len(trials),
+            # What a scorer needs to tell a missing effect from one the state hides: the keys the state changes by
+            # itself, each trial's readings before its press (a reader already at its limit cannot move further),
+            # and the furthest the body got, against the state's own furthest.
+            "baseline_changed": sorted(baseline.changed),
+            "starts": [{k: _round(v) for k, v in (w.before or {}).items()} for _, w in trials],
+            "peak_displacement": _round(window.peak), "baseline_peak_displacement": _round(baseline.peak),
             "pressed_at": [_round(w.pressed_at) for _, w in trials] if any(w.pressed_at is not None for _, w in trials)
             else None,
             "status": ",".join(sorted({str(w.status) for _, w in trials}))}
@@ -364,8 +397,20 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
             row["moving"][chord.move] = await trials(chord.name, chord_hold, baseline, ambient)
         if rise is not None:
             await meter.settle()
-            jump = await meter.window(rise, rise_hold)
-            row["air"] = await trials(rise, rise_hold, jump, ambient, then=verb, then_after_s=apex_s)
+            # The baseline reads for as long as the trials do, so what the landing changes is the rise's alone.
+            air_span = rise_hold + AIR_SPAN_S
+            jump = await meter.window(rise, rise_hold, span_s=air_span)
+            # The verb goes in at the rise alone's highest reading, the apex it measured, a little early so the
+            # trial's own reading there is not missed; without one (no position), at the planned apex.
+            highest = max(jump.path or (), key=lambda point: point[1], default=None)
+            press_at = (max(highest[0] - SAMPLE_S, 0.0) if highest is not None and highest[1] > EPS else apex_s)
+            row["air"] = await trials(rise, rise_hold, jump, ambient, then=verb, then_after_s=press_at,
+                                      then_hold_s=hold, span_s=air_span)
+            if row["air"] is not None:
+                # How the in-air press was timed: the rise alone's readings, and when it was first read off the ground.
+                row["air"]["timing"] = {"apex_s": _round(apex_s), "rise_hold_s": _round(rise_hold),
+                                        "rise_left_at": _round(jump.left_at), "pressed_after_s": _round(press_at),
+                                        "rise_path": jump.path}
         table[verb] = row
     return {"verbs": table, "moves": plan["moves"], "rise": rise, "notes": notes}
 
