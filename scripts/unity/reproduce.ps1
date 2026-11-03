@@ -10,6 +10,7 @@ param(
     [int]$Attempts = 5,
     [double]$SettleSeconds = 3.0,
     [string]$CatalogPath,
+    [string]$ScenePath,
     [string]$UnityPath
 )
 
@@ -87,10 +88,12 @@ $provenance = [ordered]@{ schema_version = 1; trace = $trace; manifest = $manife
                           catalog_source = $catalogSource
                           harness = Get-GitState $repoRoot; game_before = Get-GitState $project; game_after = $null; run_exit_code = $null }
 $names = @('UPA_REPLAY_PLAN', 'UPA_REPLAY_OUTPUT', 'UPA_REPLAY_PYTHON', 'UPA_REPLAY_HANDSHAKE_DIR', 'UPA_REPLAY_MANIFEST',
-           'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256')
+           'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_SCENE_PATH')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
+    # The scene the session played (`-ScenePath`, as run-session.ps1 takes it); the host reloads it each attempt.
+    $env:UPA_SCENE_PATH = if ($ScenePath) { $ScenePath } else { $null }
     $env:UPA_REPLAY_PLAN = $plan
     $env:UPA_REPLAY_OUTPUT = $report
     $env:UPA_REPLAY_PYTHON = $python

@@ -15,8 +15,8 @@ using UnityEngine.TestTools;
 namespace Playtest.Bridge.Tests
 {
     /// <summary>
-    /// Hosts a replay reproduction: serves exactly the catalog the manifest exports, and reloads the first enabled
-    /// scene each time the replay client asks, strictly in order. The client replays and scores. This host never
+    /// Hosts a replay reproduction: serves exactly the catalog the manifest exports, and reloads the session's scene
+    /// (`UPA_SCENE_PATH`, else the first enabled one) each time the replay client asks, strictly in order. The client replays and scores. This host never
     /// sends, chooses or substitutes an input, and what the game logs is evidence, not a failure of this test.
     /// </summary>
     public sealed class ReplayPlayModeTests
@@ -98,7 +98,8 @@ namespace Playtest.Bridge.Tests
             try
             {
                 LogAssert.ignoreFailingMessages = true;
-                string scenePath = SceneUtility.GetScenePathByBuildIndex(0);
+                // The session's scene (UPA_SCENE_PATH), as every other host selects it; else the first enabled one.
+                string scenePath = BuildSceneSelection.Resolve();
                 Assert.That(scenePath, Is.Not.Null.And.Not.Empty, "an enabled scene is required");
                 yield return Load(scenePath, scene => loaded = scene);
                 yield return new WaitForSecondsRealtime(1f);
