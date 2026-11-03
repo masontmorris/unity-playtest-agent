@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -803,12 +804,24 @@ def investigation_packet(rule: Mapping[str, Any], described: Sequence[Mapping[st
             "events": sorted(failed + sample, key=lambda e: e["event"])}
 
 
-def _direction(values: Sequence[Any]) -> int | None:
-    """+1 or -1 by the reading furthest from the first one, or None when the readings are not numbers."""
+# A reader named for an angle, in degrees: its readings wrap (356 -> 43 is a turn of +47, not -313). Read from the
+# alias the preflight chose, the same rule for every game; any other reader's readings are taken as they are.
+ANGLE_NAME = re.compile(r"(yaw|pitch|roll|heading|angle|rotation|euler)", re.IGNORECASE)
+
+
+def is_angle(observable: str) -> bool:
+    return observable == "camera.rotation" or bool(ANGLE_NAME.search(observable.split(".")[-1]))
+
+
+def _direction(values: Sequence[Any], angle: bool = False) -> int | None:
+    """+1 or -1 by the reading furthest from the first one, or None when the readings are not numbers. An angle's
+    readings are unwrapped around the first one, so a turn across 0/360 keeps its sign."""
     numbers = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
     if len(numbers) != len(values) or len(numbers) < 2:
         return None
     first = numbers[0]
+    if angle:
+        numbers = [first + ((v - first + 180.0) % 360.0) - 180.0 for v in numbers]
     furthest = max(numbers[1:], key=lambda v: abs(v - first))
     return (furthest > first) - (furthest < first)
 
@@ -888,7 +901,7 @@ def outcome(prediction: Mapping[str, Any], row: Mapping[str, Any], cell: Mapping
         return "held"
     if prediction["expect"] == "reaches":
         return "held" if _reached(_furthest(values), prediction["value"]) else "wrong_value"
-    direction = _direction(values)
+    direction = _direction(values, is_angle(observable))
     if direction is None:
         return "held"
     return "held" if direction == (1 if prediction["expect"] == "increases" else -1) else "reversed"

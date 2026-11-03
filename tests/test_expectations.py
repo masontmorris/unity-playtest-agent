@@ -412,3 +412,14 @@ def test_the_magnitudes_call_asks_for_the_sizes_only():
     assert body["messages"][0]["content"] == expectations.MAGNITUDE_SYSTEM
     assert body["response_format"]["json_schema"]["schema"]["required"] == ["magnitudes"]
     assert expectations.request_body({"moves": []})["response_format"]["json_schema"]["name"] == "expectations"
+
+
+def test_a_turn_across_zero_keeps_its_sign_for_an_angle_and_only_for_an_angle():
+    turn = {"ambient": [], "rest": {"changed": {"yaw": [356.082, 43.402]}}, "moving": {}, "air": None}
+    health = {"ambient": [], "rest": {"changed": {"health": [300.0, 50.0]}}, "moving": {}, "air": None}
+    tables = [{"moves": [], "verbs": {"look_right": turn, "drink": health}}]
+    rows = expectations.score([prediction(verb="look_right", observable="yaw", expect="increases"),
+                               prediction(verb="drink", observable="health", expect="decreases")], tables)
+    assert [r["verdict"] for r in rows] == ["held", "held"]       # +47 degrees; a drop of 250 is a drop
+    assert expectations.is_angle("camera.rotation") and expectations.is_angle("player_yaw")
+    assert not expectations.is_angle("health")

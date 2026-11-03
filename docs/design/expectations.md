@@ -145,6 +145,17 @@ presses in different situations. The run filed candidate findings f-41, f-51 and
 as the expected source. Their replays need a repro check the frontier did not give; the clean-reset reproduction is the
 guard measurement itself, 7 of 7 fresh sessions.
 
+## Live on the clean build (`runs/fpskit/live-clean-01`)
+
+The same hunt on clean FPSKit, with expectations pre-registered from the clean build's own declarations (0
+mismatches against its three guards-only tables), 300 s, $0.32. It filed no finding: on a build with no seeded bug,
+every finding would be false. The frontier's hypotheses settled as normal behaviour each time (range exits as
+locomotion, the aim transition as aiming). One fact S1 got was false: look_right's yaw went 356.1 to 43.4, a turn of
++47 degrees across 0/360, which the scorer read as -313, "the other way". An angle's readings are now unwrapped
+around the first (`is_angle`: camera.rotation, or a reader whose alias names an angle: yaw, pitch, roll, heading,
+angle, rotation, euler), and the prediction holds on that table and every other clean one. Any other reader's
+readings are taken as they are, so a health that drops from 300 to 50 still drops.
+
 ## Not done
 
 - A **supported** condition from the investigation does not yet become a directed session (S1 steered to bring the
