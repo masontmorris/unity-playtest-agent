@@ -256,6 +256,8 @@ def _comparison(expected: Mapping[str, Any] | None, observed: Mapping[str, Any] 
     """
     if expected is None or observed is None or observed.get("net_displacement") is None:
         return None
+    if expected.get("timing_sensitive"):
+        return None  # a rise comes back down: its net displacement is whatever it was read at (choices._timing_sensitive)
     bounds = allowance(expected)
     seen = observed["net_displacement"]
     if bounds is None or isinstance(seen, bool) or not isinstance(seen, (int, float)) or not math.isfinite(seen):

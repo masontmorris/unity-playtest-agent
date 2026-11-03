@@ -382,11 +382,33 @@ def _input_text(item: InputBinding) -> str:
     return f"{name} ({values})"
 
 
+from playtest.preflight.verify import MEASUREMENT_TOLERANCE
+
+TIMING_FALL = 0.1  # a displacement that falls by more than this share at a longer hold comes back down (a rise)
+
+
+def _timing_sensitive(action: ManifestAction) -> bool:
+    """Whether calibration measured this control's net displacement falling as the hold lengthened.
+
+    A body that comes back down (a rise) is displaced by whatever it is read at: one net displacement depends on
+    when the reading after it lands, so it cannot be compared with the calibrated one, however tight the
+    calibration's spread. Measured from the calibration's own holds; no name is read.
+    """
+    holds = sorted((h for h in (action.calibrations[0].holds if action.calibrations else ())
+                    if h.mean_magnitude is not None), key=lambda h: h.requested_hold_s)
+    highest = 0.0
+    for h in holds:
+        if highest - h.mean_magnitude > max(TIMING_FALL * highest, MEASUREMENT_TOLERANCE):
+            return True  # a fall bigger than the measurement can blur, not noise around a body that hardly moved
+        highest = max(highest, h.mean_magnitude)
+    return False
+
+
 def _expected(action: ManifestAction, hold: float, measured: HoldMeasurement | None) -> dict[str, Any] | None:
     """The calibrated effect for exactly this declaration, or None when calibration measured none."""
     if measured is None or measured.mean_magnitude is None:
         return None
-    return {
+    out = {
         "source": "calibration",
         "control": action.inputs[0].control_id,
         "requested_hold_s": hold,
@@ -396,6 +418,9 @@ def _expected(action: ManifestAction, hold: float, measured: HoldMeasurement | N
         "effective_in_all_repeats": measured.effective_in_all_repeats,
         "unit": UNIT,
     }
+    if _timing_sensitive(action):
+        out["timing_sensitive"] = True
+    return out
 
 
 def _precondition(check: ManifestCheck) -> str:

@@ -44,6 +44,8 @@ def action_effects(expected: Mapping[str, Mapping[str, Any] | None]) -> dict[str
         shown = effect.get("net_displacement") if effect else None
         if isinstance(shown, bool) or not isinstance(shown, (int, float)) or not math.isfinite(shown):
             continue
+        if effect.get("timing_sensitive"):
+            continue  # its net displacement depends on when it is read: no replay could score it fairly
         bounds = allowance(effect)
         out[name] = frontier.Effect(expected=float(shown), allowance=bounds[1] if bounds is not None else None,
                                     unit=str(effect.get("unit") or UNIT))
