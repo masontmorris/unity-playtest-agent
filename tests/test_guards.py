@@ -130,3 +130,21 @@ def test_a_chord_the_host_does_not_serve_is_named_not_guessed():
     table = asyncio.run(guards.measure_guards(game, game, game.catalog, PRIMITIVES, clock=game.clock, sleep=game.sleep))
     assert table["verbs"]["dash"]["moving"] == {}
     assert any("g_right_dash is not in the served catalog" in note for note in table["notes"])
+
+
+def test_an_effect_seen_while_one_direction_is_held_and_not_its_opposite_is_an_asymmetry_and_tallies():
+    cell = lambda changed, moved=False: {"effect": bool(changed) or moved, "changed": changed, "moved_differently": moved}
+    table = {"moves": ["back", "forward"], "verbs": {
+        "dash": {"moving": {"back": cell({"blend": [0, 1]}, True), "forward": cell({}, False)}},
+        "aim": {"moving": {"back": cell({"zoom": [65, 50]}), "forward": cell({"zoom": [65, 50]})}}}}
+    found = guards.asymmetries(table)
+    assert [(a["verb"], a["key"], a["present_while"]) for a in found] == [("dash", "blend", "back"),
+                                                                           ("dash", "displacement", "back")]
+    assert "dash changed blend while back was held, and not while forward" in guards.asymmetry_line(found[0])
+    seeded = guards.tally([table, table, {"moves": ["back", "forward"], "verbs": {}}])
+    assert seeded["n"] == 3 and {a["k"] for a in seeded["asymmetries"]} == {2}
+    control = guards.tally([{"moves": ["back", "forward"], "verbs": {}}] * 3)
+    rows = guards.compare_tallies(seeded, control)
+    assert {r["verdict"] for r in rows} == {"specific"} and rows[0]["control_k"] == 0
+    rule = guards.compare_tallies(seeded, seeded)
+    assert {r["verdict"] for r in rule} == {"not_specific"}

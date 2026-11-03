@@ -693,8 +693,9 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             replay._save(run_dir / "guards.json", guards)
         guard_lines: list[str] = []
         if args.measure_guards:
-            from .guards import summary_lines
-            guard_lines = summary_lines(guards)
+            from .guards import asymmetries, asymmetry_line, summary_lines
+            guard_lines = summary_lines(guards) + [
+                "asymmetry (a symmetry candidate): " + asymmetry_line(item) for item in asymmetries(guards)]
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         # Detectors are opt-in: without them the loop reports to the readers' watch itself, so a trace is
         # unchanged. With them, the same watch plus the detectors is one watch, numbered in one sequence.

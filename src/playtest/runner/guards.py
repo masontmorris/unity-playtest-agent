@@ -362,3 +362,98 @@ def summary_lines(guards: Mapping[str, Any]) -> list[str]:
             parts.append(f"{state}: {what if cell['effect'] else 'no effect'}")
         lines.append(f"{verb}: " + "; ".join(parts))
     return lines
+
+
+def asymmetries(guards: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every verb effect seen while one measured direction was held and not while its opposite was.
+
+    The two planned directions are opposite by measurement, and the one pair a game is evidently built to treat
+    alike; rest against moving, or ground against air, differ by design and are not compared. An asymmetry is a
+    measured fact about this build, not a verdict: whether it is a bug is for the review, and whether it is
+    specific to this build is for a control.
+    """
+    out: list[dict[str, Any]] = []
+    moves = list(guards.get("moves") or ())
+    if len(moves) != 2:
+        return out
+    for verb, row in sorted((guards.get("verbs") or {}).items()):
+        cells = row.get("moving") or {}
+        if not all(m in cells and cells[m] for m in moves):
+            continue
+        for present, absent in (moves, moves[::-1]):
+            here, there = cells[present], cells[absent]
+            for key in sorted(set(here.get("changed") or {}) - set(there.get("changed") or {})):
+                out.append({"verb": verb, "key": key, "present_while": present, "absent_while": absent})
+            if here.get("moved_differently") is True and there.get("moved_differently") is False:
+                out.append({"verb": verb, "key": "displacement", "present_while": present, "absent_while": absent})
+    return out
+
+
+def asymmetry_line(item: Mapping[str, Any]) -> str:
+    what = "moved the body differently" if item["key"] == "displacement" else f"changed {item['key']}"
+    return (f"{item['verb']} {what} while {item['present_while']} was held, and not while "
+            f"{item['absent_while']} (its measured opposite) was held")
+
+
+def tally(tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """How many guard tables, one per fresh session, showed each asymmetry: k of n."""
+    counts: dict[tuple[str, str, str, str], int] = {}
+    for table in tables:
+        for item in asymmetries(table):
+            ident = (item["verb"], item["key"], item["present_while"], item["absent_while"])
+            counts[ident] = counts.get(ident, 0) + 1
+    return {"n": len(tables), "asymmetries": [
+        {"verb": v, "key": k, "present_while": p, "absent_while": a, "k": count}
+        for (v, k, p, a), count in sorted(counts.items())]}
+
+
+def compare_tallies(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Each asymmetry the seeded build showed, against the control: specific only when the control never shows it."""
+    control_k = {(a["verb"], a["key"], a["present_while"], a["absent_while"]): a["k"]
+                 for a in control.get("asymmetries") or ()}
+    out = []
+    for item in seeded.get("asymmetries") or ():
+        ident = (item["verb"], item["key"], item["present_while"], item["absent_while"])
+        k_control = control_k.get(ident, 0)
+        if seeded["n"] < 1 or control.get("n", 0) < 1:
+            verdict = "inconclusive"
+        elif k_control >= 1:
+            verdict = "not_specific"
+        else:
+            verdict = "specific"
+        out.append({**item, "n": seeded["n"], "control_k": k_control, "control_n": control.get("n", 0),
+                    "verdict": verdict, "line": asymmetry_line(item)})
+    return out
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """`tally` guard tables from fresh sessions, or `compare` a seeded tally with a control's."""
+    import argparse
+    import json
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(prog="python -m playtest.runner.guards", description=main.__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    counter = sub.add_parser("tally")
+    counter.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with guards.json")
+    counter.add_argument("--output", type=Path, required=True)
+    comparer = sub.add_parser("compare")
+    for name in ("seeded", "control", "output"):
+        comparer.add_argument(f"--{name}", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if args.output.exists():
+        parser.error("the output must be new")
+    if args.command == "tally":
+        tables = [json.loads((run / "guards.json").read_text(encoding="utf-8")) for run in args.runs]
+        result: Any = {**tally(tables), "runs": [str(run) for run in args.runs]}
+    else:
+        result = {"comparisons": compare_tallies(json.loads(args.seeded.read_text(encoding="utf-8")),
+                                                 json.loads(args.control.read_text(encoding="utf-8")))}
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    for row in result.get("comparisons") or result.get("asymmetries") or []:
+        print(json.dumps(row))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

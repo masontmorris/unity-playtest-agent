@@ -320,3 +320,14 @@ def test_a_replay_whose_plan_kept_no_session_start_readers_says_nothing_about_th
     built = report.build_report(run, reproduce_dirs=[_replay(tmp_path, "plain", run / "trace.jsonl")])
     assert built["findings"][0]["replays"][0]["reset_check"] is None
     assert "Reset restored" not in report.render_markdown(built)
+
+
+def test_guard_asymmetries_are_listed_specific_first_with_both_builds_k_of_n():
+    from playtest.runner import report as report_module
+    rows = [{"line": "look changed pitch while back was held", "verb": "look", "key": "pitch", "k": 5, "n": 5,
+             "control_k": 5, "control_n": 5, "verdict": "not_specific"},
+            {"line": "dash changed blend while back was held", "verb": "dash", "key": "blend", "k": 5, "n": 5,
+             "control_k": 0, "control_n": 5, "verdict": "specific"}]
+    md = "\n".join(report_module._guard_markdown(rows))
+    assert md.index("dash changed blend") < md.index("look changed pitch")
+    assert "| 5 of 5 | 0 of 5 | specific |" in md

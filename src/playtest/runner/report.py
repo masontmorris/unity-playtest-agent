@@ -441,6 +441,19 @@ def _usd_text(value: float | None) -> str:
     return "unknown" if value is None else f"${value:.4f}"
 
 
+def _guard_markdown(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Each guard asymmetry with how many fresh sessions showed it on the seeded build and on the control."""
+    lines = ["## Measured guard asymmetries", "",
+             "Before play, in fresh sessions, each verb was pressed while each of two measured opposite directions "
+             "was held, against the direction alone. An asymmetry is an effect seen with one and not the other; it "
+             "is specific when the control (unseeded) build never shows it.", "",
+             "| Asymmetry | Seeded | Control | Verdict |", "|---|---|---|---|"]
+    for row in sorted(rows, key=lambda r: (r.get("verdict") != "specific", r.get("verb"), r.get("key"))):
+        lines.append(f"| {_cell(row.get('line'))} | {row.get('k')} of {row.get('n')} | "
+                     f"{row.get('control_k')} of {row.get('control_n')} | {row.get('verdict')} |")
+    return lines + [""]
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     run, cost = report["run"], report["cost"]
     commit = (run.get("game_commit") or "unknown")[:7]
@@ -458,6 +471,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines += ["No findings were recorded in this run.", ""]
     for finding in report["findings"]:
         lines += _finding_markdown(finding)
+    if report.get("guard_asymmetries"):
+        lines += _guard_markdown(report["guard_asymmetries"])
     if report["proposed_not_recorded"]:
         lines += ["## Proposed but not recorded", ""]
         lines += [f"- {p['finding_id']} (request turn {p['request_turn']}): {p['reason']}"
@@ -604,6 +619,8 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--trace", type=Path, default=None, help="default: <run>/trace.jsonl")
     parser.add_argument("--reproduce", type=Path, action="append", default=[], help="a reproduce output folder")
     parser.add_argument("--finding", action="append", default=None, help="report only this finding_id")
+    parser.add_argument("--guards", type=Path, default=None,
+                        help="a guard comparison (python -m playtest.runner.guards compare) to report beside the findings")
     parser.add_argument("--output", type=Path, required=True, help="a new folder for report.json and report.md")
     return parser.parse_args(argv)
 
@@ -616,6 +633,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = build_report(args.run, trace_path=args.trace, reproduce_dirs=args.reproduce,
                               finding_ids=args.finding)
+        if args.guards is not None:
+            report["guard_asymmetries"] = json.loads(args.guards.read_text(encoding="utf-8"))["comparisons"]
     except (OSError, ValueError, KeyError) as exc:
         print(f"playtest-report: {exc}", file=sys.stderr)
         return 1

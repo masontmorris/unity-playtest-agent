@@ -181,8 +181,9 @@ def build_review_packet(trace_rows, manifest, discovery, guards=None):
               "start_height": _round(start[1]) if start else None, "inputs_not_run": not_run, "actions": actions}
     if guards:
         # What each verb did at rest, while a direction was held and in the air, measured before play.
-        from playtest.runner.guards import summary_lines
+        from playtest.runner.guards import asymmetries, asymmetry_line, summary_lines
         packet["measured_guards"] = summary_lines(guards)
+        packet["guard_asymmetries"] = [asymmetry_line(item) for item in asymmetries(guards)]
     return packet, windows
 
 
@@ -223,6 +224,9 @@ SYSTEM = (
     "effect in a state where it never had one is how this build measurably behaves, which by itself is neither a "
     "rule nor a bug: a claim about it needs another oracle (a declared value, an intent the effect contradicts, or "
     "a like input that works there). A row that differs from measured_guards in the same state is a contrast. "
+    "guard_asymmetries lists every verb effect measured while one direction was held and not while its measured "
+    "opposite was: each is a symmetry candidate. Judge each one: file it with oracle symmetry unless the intents or "
+    "declared values explain it, and say in uncertainty that a single session's measurement can be noise. "
     "Observations are measured; null means unknown, not zero."
 )
 # The invariant kinds a review claim may rest on, and the finding's expected source for each: a declared value is
