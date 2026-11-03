@@ -69,9 +69,18 @@ class Setpoint(Strict):
 
 
 class ReproCheckOut(Setpoint):
-    """What a replay can score: a manifest field, or an action's effect (effect.<action>), one comparator, one value."""
+    """What a replay can score: a manifest field, or an action's effect (effect.<action>), one comparator, one value.
+
+    `after_action` conditions a reader check on one action: the replay scores the reading right after each execution
+    of it, and changed or unchanged compare with the reading right before it. That is how a control with none of its
+    effect is shown when the reset already leaves its reader where the control should have moved it from.
+    """
 
     field: CheckFieldPath
+    after_action: ManifestName | None = Field(
+        None, description="An action: score the reading right after each replayed execution of it, changed and "
+                          "unchanged against the reading right before it; null to score from the reset. Reader "
+                          "fields only")
 
 
 class DirectiveOut(Strict):
@@ -257,6 +266,10 @@ SYSTEM = (
     "When an action stops having its calibrated effect, no reader need differ from rest, so the check may name "
     "effect.<action> from the manifest's effects: the net displacement of one execution of that action, in world "
     "units, with <, <=, > or >= and a number. The check must not hold for the expected displacement listed there. "
+    "When a control has none of its effect on a reader, the check may instead name that reader with after_action "
+    "set to the control's action: a replay then scores the reading right after each execution of it, and unchanged "
+    "compares with the reading right before it, so a reader the reset already leaves where the control should have "
+    "moved it from can show the bug. "
     "The packet's findings are the candidate findings already recorded in this run; do not propose one of them "
     "again.\n"
     "- A field's calibration, in the manifest, says how it changed when preflight sampled it on this same build "
@@ -472,6 +485,13 @@ def review(answer: FrontierAnswer, manifest: Manifest, refs: PacketRefs) -> Revi
         displacement and compares it with `<`, `<=`, `>` or `>=` and a number: the schema lists only such
         actions, but a decoded answer is a plain string, so it is checked here."""
         action = effect_action(sp.field)
+        after = getattr(sp, "after_action", None)
+        if after is not None:
+            if action is not None:
+                bad(item, "an effect check already names its action and takes no after_action")
+                return
+            if after not in manifest.actions:
+                bad(item, f"after_action {after!r} is not a manifest action")
         if action is None:
             setpoint(item, sp)
             return
@@ -673,5 +693,6 @@ def to_finding(f: FindingOut, *, finding_id: str, evidence_seq: Sequence[int] | 
                    expected_source=f.expected_source, actual=f.actual, conditions=f.conditions or None,
                    steps=list(f.steps), evidence_seq=list(f.evidence_seq if evidence_seq is None else evidence_seq),
                    uncertainty=f.uncertainty, severity=f.severity, severity_reason=f.severity_reason or None,
-                   repro_check=(ReproCheck(field=check.field, op=check.op, value=check.value, tolerance=check.tolerance)
+                   repro_check=(ReproCheck(field=check.field, op=check.op, value=check.value, tolerance=check.tolerance,
+                                           after_action=getattr(check, "after_action", None))
                                 if check is not None else None))

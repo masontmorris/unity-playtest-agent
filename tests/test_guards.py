@@ -271,3 +271,54 @@ def test_a_short_jump_is_pressed_at_its_measured_peak_not_a_planned_apex_after_l
     table = asyncio.run(guards.measure_guards(game, game, game.catalog, primitives, clock=game.clock, sleep=game.sleep))
     air = table["verbs"]["attack"]["air"]
     assert all(d > 0 for d in air["pressed_at"]) and air["effect"] is False and air["timing"]["pressed_after_s"] < 0.4
+
+
+def test_every_measured_opposite_pair_is_chorded_and_compared_within_itself():
+    body = [direction("forward", (0.0, 0.0, 1.0)), direction("back", (0.0, 0.0, -1.0))]
+    catalog = {**CATALOG, "forward": key("w"), "back": key("s")}
+    primitives = SimpleNamespace(**{**vars(PRIMITIVES), "body_directions": body})
+    plan = guards.plan_guards(catalog, primitives)
+    assert plan["moves"] == ["forward", "back", "right", "left"]
+    assert plan["pairs"] == [["forward", "back"], ["right", "left"]]
+    assert {c.name for c in plan["chords"]} >= {"g_forward_dash", "g_back_dash", "g_right_dash", "g_left_dash"}
+    cell = lambda changed: {"effect": bool(changed), "changed": changed, "moved_differently": False}
+    table = {"moves": plan["moves"], "pairs": plan["pairs"], "verbs": {"dash": {"moving": {
+        "forward": cell({"blend": [0, 1]}), "back": cell({}), "right": cell({"blend": [0, 1]}), "left": cell({})}}}}
+    found = [(a["present_while"], a["absent_while"]) for a in guards.asymmetries(table)]
+    assert found == [("forward", "back"), ("right", "left")]       # never forward against right
+    old = {"moves": ["forward", "back"], "verbs": table["verbs"]}   # a table from before pairs: its two moves
+    assert [(a["present_while"], a["absent_while"]) for a in guards.asymmetries(old)] == [("forward", "back")]
+
+
+def test_an_asymmetry_the_direction_causes_or_a_limit_explains_is_not_the_verbs():
+    def cell(changed, starts=None, moved=False):
+        return {"effect": bool(changed), "changed": changed, "moved_differently": moved, "starts": starts or []}
+
+    pickup = {"pickup_timer": [5.0, 0.0]}
+    verbs = {v: {"moving": {"right": cell(dict(pickup)), "left": cell({})}} for v in ("aim", "fire", "jump2")}
+    # look_down drives the pitch up; while left was held it began at the clamp a second trial pushed it to.
+    verbs["look_down"] = {"rest": cell({"pitch": [-80.0, -40.0]}), "moving": {
+        "right": cell({"pitch": [-30.0, 10.0, 70.0]}, [{"pitch": -30.0}, {"pitch": 70.0}]),
+        "left": cell({}, [{"pitch": 80.0}, {"pitch": 80.0}])}}
+    # the camera's Euler pitch wraps at 360 as it goes: 330 -> 13 is a rise, and 80 is its clamp.
+    verbs["look_rot"] = {"rest": cell({"camera.rotation": [[280.0, 10.0, 0.0], [305.0, 10.0, 0.0]]}), "moving": {
+        "right": cell({"camera.rotation": [[330.0, 10.0, 0.0], [13.0, 10.0, 0.0], [70.0, 10.0, 0.0]]}),
+        "left": cell({}, [{"camera.rotation": [80.0, 10.0, 0.0]}])}}
+    # crouch drives its blend up from 0; beginning at 0 is its rest, not its limit.
+    verbs["crouch"] = {"rest": cell({"crouch_blend": [0.0, 1.0]}), "moving": {
+        "right": cell({"crouch_blend": [0.0, 1.0]}, [{"crouch_blend": 0.0}]),
+        "left": cell({}, [{"crouch_blend": 0.0}])}}
+    verbs["dash"] = {"moving": {"right": cell({}, moved=True), "left": cell({}, moved=False)}}
+    table = {"moves": ["right", "left"], "pairs": [["right", "left"]], "verbs": verbs}
+    dropped = []
+    kept = guards.asymmetries(table, dropped=dropped)
+    assert [(a["verb"], a["key"]) for a in kept] == [("crouch", "crouch_blend"), ("dash", "displacement")]
+    reasons = {(d["verb"], d["key"]): d["reason"] for d in dropped}
+    assert reasons[("aim", "pickup_timer")] == "the direction's: 3 verbs share it"
+    assert reasons[("look_down", "pitch")] == reasons[("look_rot", "camera.rotation")] == "at a limit where it was absent"
+    own = {"crouch_blend", "displacement", "camera.rotation"}
+    assert [(a["verb"], a["key"]) for a in guards.asymmetries(table, own=own)] == [
+        ("crouch", "crouch_blend"), ("dash", "displacement")]
+    manifest = {"entity_id": "e", "readers": [{"alias": "crouch_blend", "descriptor": {"object_id": "e.0"}},
+                                              {"alias": "pickup_timer", "descriptor": {"object_id": "p"}}]}
+    assert "crouch_blend" in guards.own_keys(manifest) and "pickup_timer" not in guards.own_keys(manifest)

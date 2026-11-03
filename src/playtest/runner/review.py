@@ -187,9 +187,9 @@ def build_review_packet(trace_rows, manifest, discovery, guards=None):
               "start_height": _round(start[1]) if start else None, "inputs_not_run": not_run, "actions": actions}
     if guards:
         # What each verb did at rest, while a direction was held and in the air, measured before play.
-        from playtest.runner.guards import asymmetries, asymmetry_line, summary_lines
+        from playtest.runner.guards import asymmetries, asymmetry_line, own_keys, summary_lines
         packet["measured_guards"] = summary_lines(guards)
-        packet["guard_asymmetries"] = [asymmetry_line(item) for item in asymmetries(guards)]
+        packet["guard_asymmetries"] = [asymmetry_line(item) for item in asymmetries(guards, own=own_keys(manifest))]
     return packet, windows
 
 

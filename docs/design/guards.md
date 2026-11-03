@@ -35,6 +35,16 @@ How the measurement works:
 - **Trials:** each state is pressed twice, and only what changed both times counts.
 - **Ambient keys:** a key that changes by itself is ambient. It still counts when a press moves it against its idle trend, which is a reset.
 - **Output:** the table is saved as `guards.json`. It decides nothing: no choice is added, removed or ranked.
+- **Pairs:** verbs are chorded with every measured opposite pair of directions (`pairs`): the body's own forward
+  and back and the world's (a first-person body's strafes, a side-view body's left and right). An asymmetry
+  compares the two moves of one pair only.
+- **Asymmetries that are not the verb's** are left out of the list S1, the frontier and the review see, each with
+  its reason when asked: the same key asymmetric the same way for three or more verbs is the direction's (the body
+  walks into a pickup); a key where the opposite cell began at the end the verb drives it to is at a limit (a view
+  already pitched to its clamp, Euler angles unwrapped); with the manifest, a key on another object than the
+  controlled body is not the body's own. On clean FPSKit with both pairs this took 67 raw asymmetries over three
+  fresh sessions to 14, and the ones in most sessions from many to the dash that works only forward, a design rule
+  the expectations judge with the declarations; the dev build's seeded inverted dash gate kept all three rows, 3 of 3.
 - **For a scorer:** each cell also keeps each trial's readings before its press (`starts`), the keys its baseline changed (`baseline_changed`) and the furthest the body got against the baseline's (`peak_displacement`). The in-air press goes in at the rise alone's highest reading, and `timing` records how. [`expectations.md`](expectations.md) scores declared expectations against these.
 
 ## Oracles

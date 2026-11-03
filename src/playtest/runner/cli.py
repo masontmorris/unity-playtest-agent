@@ -215,6 +215,11 @@ def _parser() -> argparse.ArgumentParser:
                         help="before play, measure each verb at rest, while moving and in the air against a baseline "
                              "of each, and save the table as guards.json (the host must serve the guard chords: "
                              "playtest-export-catalog --guard-chords; also UPA_RUN_MEASURE_GUARDS)")
+    parser.add_argument("--guards-only", action="store_true",
+                        default=_env("UPA_RUN_GUARDS_ONLY", switch, False),
+                        help="with --measure-guards: measure the guard table (and score --expectations against it), "
+                             "save it, and end before play, with no S1 call: one fresh-start reproduction of the "
+                             "table (also UPA_RUN_GUARDS_ONLY)")
     parser.add_argument("--expectations", type=Path, default=_env("UPA_RUN_EXPECTATIONS", Path, None),
                         help="an expectations.json from `python -m playtest.runner.expectations predict`: with "
                              "--measure-guards, each prediction this session's guard table does not meet is stated to "
@@ -366,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
     project, output = args.project.resolve(), args.output.resolve()
     if args.approval is None:
         parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
+    if args.guards_only and not args.measure_guards:
+        parser.error("--guards-only measures the guard table: it needs --measure-guards")
     if args.max_calls is None or args.max_calls < 1:
         parser.error("--max-calls (or UPA_RUN_MAX_CALLS) is required and must be at least 1")
     if args.frontier and args.max_frontier_calls < 1:
@@ -517,6 +524,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["measure_air_rise"] = True
         if args.measure_guards:
             plan["measure_guards"] = True
+        if args.guards_only:
+            plan["guards_only"] = True
         if args.contingent:
             plan["contingent"] = True
         if args.placement:
@@ -712,9 +721,10 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                             params={}, source=ChoiceSource.manifest))
                 built.leases[chord.name] = chord.definition.default_lease_s
                 built.expected.setdefault(chord.name, None)
-            from .guards import asymmetries, asymmetry_line, summary_lines
+            from .guards import asymmetries, asymmetry_line, own_keys, summary_lines
             guard_lines = summary_lines(guards) + [
-                "asymmetry (a symmetry candidate): " + asymmetry_line(item) for item in asymmetries(guards)]
+                "asymmetry (a symmetry candidate): " + asymmetry_line(item)
+                for item in asymmetries(guards, own=own_keys(manifest))]
             if args.expectations is not None:
                 from .expectations import unmet_in_session
 
@@ -725,6 +735,17 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                                                     "unmet": unmet})
                 expectation_lines = [row["line"] for row in unmet]
                 guard_lines += ["expected from the declarations, not measured: " + line for line in expectation_lines]
+        if args.guards_only:
+            # One fresh start measured, and nothing played: no trace, no S1 call. The table and the expectations
+            # it did not meet are the run's whole record, beside its plan.
+            return {"version": 1, "status": "complete", "ending": "guards_only", "error": None, "turns": 0,
+                    "guards": "guards.json",
+                    "expectations_unmet": len(expectation_lines) if args.expectations is not None else None,
+                    "s1": {"provider": None, "model": None, "calls": 0, "call_cap": args.max_calls},
+                    "frontier": {"enabled": False, "calls": 0},
+                    "manifest": {"sha256": manifest_sha, "catalog_sha256": catalog_sha,
+                                 "entity_id": manifest.entity_id, "origin": args.manifest_origin},
+                    "trace": None}
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         # Detectors are opt-in: without them the loop reports to the readers' watch itself, so a trace is
         # unchanged. With them, the same watch plus the detectors is one watch, numbered in one sequence.

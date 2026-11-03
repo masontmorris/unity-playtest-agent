@@ -43,6 +43,7 @@ DEFAULT_HOLD_S = 0.3
 MOVES_BODY = 0.05          # a verb that moves the body this far by itself is a movement, not chorded
 TRIALS = 2                 # presses per state: only what changed every time counts, so a rare flip does not
 IDLE_PREPASS_S = 3.0       # one idle window before any press, so readers that change on their own clock are ambient
+SHARED_VERBS = 3           # an asymmetry this many verbs share in one direction is the direction's (a pickup walked into)
 AIR_SPAN_S = 1.0           # how long past the rise's hold an in-air window keeps reading: a body can lift after release
 _NAME = re.compile(NAME)
 
@@ -79,16 +80,35 @@ def _opposite_pair(directions: Sequence[Any]) -> list[Any]:
     return [first]
 
 
-def plan_guards(catalog: Mapping[str, ActionDefinition], primitives: Any) -> dict[str, Any]:
-    """The verbs, the two directions they are chorded with, the rise, and the generated chords.
+def _move_pairs(body: Sequence[Any], world: Sequence[Any]) -> tuple[list[Any], list[list[str]]]:
+    """The directions verbs are chorded with, and the measured opposite pairs among them.
 
-    Chords use the entity-relative directions when there are any (the body's own forward and back), else the world
-    ones. A verb is an action (not a skill) that calibration did not classify as a move or the rise, and whose
-    controls are disjoint from every measured direction's and the rise's. Nothing is chorded without a direction.
+    Every measured opposite pair is used: the body's own (forward and back) and the world's (a first-person body's
+    strafes, a side-view body's left and right), each direction once. With no opposite pair, the first direction
+    alone, as before: a verb is then measured moving, but no symmetry can be compared.
+    """
+    moves: list[Any] = []
+    pairs: list[list[str]] = []
+    for group in (body, world):
+        pair = _opposite_pair(group)
+        if len(pair) == 2 and not {d.action for d in pair} & {d.action for d in moves}:
+            moves += pair
+            pairs.append([d.action for d in pair])
+    if not moves:
+        moves = _opposite_pair(body or world)[:1]
+    return moves, pairs
+
+
+def plan_guards(catalog: Mapping[str, ActionDefinition], primitives: Any) -> dict[str, Any]:
+    """The verbs, the directions they are chorded with, the rise, and the generated chords.
+
+    Chords use every measured opposite pair of directions (`_move_pairs`). A verb is an action (not a skill) that
+    calibration did not classify as a move or the rise, and whose controls are disjoint from every measured
+    direction's and the rise's. Nothing is chorded without a direction.
     """
     world = list(getattr(primitives, "directions", ()) or ())
     body = list(getattr(primitives, "body_directions", ()) or ())
-    moves = _opposite_pair(body or world)
+    moves, pairs = _move_pairs(body, world)
     rise = getattr(getattr(primitives, "rise", None), "action", None)
     moving = {name for d in [*world, *body] for name in [d.action, *(a for a, _ in d.alternatives)]}
     moving |= {p.action for p in getattr(primitives, "classified", ()) or () if getattr(p, "kind", None) in ("move", "rise")}
@@ -112,8 +132,8 @@ def plan_guards(catalog: Mapping[str, ActionDefinition], primitives: Any) -> dic
                                      ActionDefinition(backend="input_system",
                                                       inputs=[InputBinding.model_validate(i.model_dump()) for i in inputs],
                                                       default_lease_s=hold)))
-    return {"verbs": verbs, "moves": [m.action for m in moves], "rise": rise if rise in catalog else None,
-            "chords": chords}
+    return {"verbs": verbs, "moves": [m.action for m in moves], "pairs": pairs,
+            "rise": rise if rise in catalog else None, "chords": chords}
 
 
 def _flat(values: Mapping[str, Any], public: Mapping[str, Any]) -> dict[str, Any]:
@@ -416,7 +436,7 @@ async def measure_guards(client: Any, readers: Any, catalog: Mapping[str, Action
                                         "rise_left_at": _round(jump.left_at), "pressed_after_s": _round(press_at),
                                         "rise_path": jump.path}
         table[verb] = row
-    return {"verbs": table, "moves": plan["moves"], "rise": rise, "notes": notes}
+    return {"verbs": table, "moves": plan["moves"], "pairs": plan["pairs"], "rise": rise, "notes": notes}
 
 
 def summary_lines(guards: Mapping[str, Any]) -> list[str]:
@@ -435,28 +455,140 @@ def summary_lines(guards: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def asymmetries(guards: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Every verb effect seen while one measured direction was held and not while its opposite was.
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
-    The two planned directions are opposite by measurement, and the one pair a game is evidently built to treat
-    alike; rest against moving, or ground against air, differ by design and are not compared. An asymmetry is a
-    measured fact about this build, not a verdict: whether it is a bug is for the review, and whether it is
-    specific to this build is for a control.
+
+def _components(value: Any) -> list[float | None] | None:
+    if isinstance(value, (list, tuple)):
+        return [_number(v) for v in value]
+    number = _number(value)
+    return None if number is None else [number]
+
+
+ANGLES = ("camera.rotation",)  # Euler degrees: they wrap at 360, so they are compared unwrapped around one reading
+
+
+def _at_limit(row: Mapping[str, Any], cell: Mapping[str, Any], key: str) -> bool:
+    """Whether a trial in the cell began with `key` already at the end the verb drives it to, in every component the
+    verb drives (a camera rotation follows the pitch to its clamp).
+
+    The verb's direction is read from the cells where it changed the key (a look down raises the pitch, a crouch
+    raises its blend). A trial that began at or beyond the furthest value seen that way, starts included (a second
+    trial can push a view to its clamp past what the first one recorded), cannot show the press: its absence there is
+    no contrast. A reader that began at its rest value, the end the verb drives it from, is not at a limit.
+    """
+    cells = [c for c in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air")) if c]
+    changed = [[parts for raw in ((c.get("changed") or {}).get(key) or ()) if (parts := _components(raw))]
+               for c in cells]
+    widths = {len(parts) for series in changed for parts in series}
+    if len(widths) != 1:
+        return False
+    width = widths.pop()
+    starts_all = [parts for c in cells for start in c.get("starts") or ()
+                  if (parts := _components((start or {}).get(key))) and len(parts) == width]
+    starts_here = [parts for start in cell.get("starts") or ()
+                   if (parts := _components((start or {}).get(key))) and len(parts) == width]
+    driven = 0
+    for i in range(width):
+        series = [[p[i] for p in s if p[i] is not None] for s in changed]
+        reference = next((values[0] for values in series if values), None)
+        if reference is None:
+            continue
+        unwrap = ((lambda v: reference + ((v - reference + 180.0) % 360.0) - 180.0) if key in ANGLES
+                  else (lambda v: v))
+        series = [[unwrap(v) for v in values] for values in series]
+        steps = [max(values[1:], key=lambda v: abs(v - values[0])) - values[0] for values in series if len(values) >= 2]
+        direction = (sum(steps) > EPS) - (sum(steps) < -EPS)
+        if not direction:
+            continue
+        driven += 1
+        seen = [v for values in series for v in values] + [unwrap(p[i]) for p in starts_all if p[i] is not None]
+        end_value = max(seen) if direction > 0 else min(seen)
+        if not any((unwrap(p[i]) - end_value) * direction >= -EPS for p in starts_here if p[i] is not None):
+            return False
+    return driven > 0
+
+
+def own_keys(manifest: Any) -> set[str] | None:
+    """The keys that belong to the controlled body: readers of the entity or an object under it, the camera parts and
+    the body's displacement. A reader on another object (a pickup the body walks into) is not the body's own."""
+    readers = manifest.get("readers") if isinstance(manifest, Mapping) else getattr(manifest, "readers", None)
+    entity = manifest.get("entity_id") if isinstance(manifest, Mapping) else getattr(manifest, "entity_id", None)
+    if not readers or not entity:
+        return None
+    own = {"displacement", "camera.position", "camera.rotation", "camera.field_of_view"}
+    for reader in readers:
+        descriptor = reader.get("descriptor") if isinstance(reader, Mapping) else getattr(reader, "descriptor", None)
+        alias = reader.get("alias") if isinstance(reader, Mapping) else getattr(reader, "alias", None)
+        object_id = (descriptor or {}).get("object_id") if isinstance(descriptor, Mapping) else getattr(
+            descriptor, "object_id", None)
+        if alias and isinstance(object_id, str) and (object_id == entity or object_id.startswith(entity + ".")):
+            own.add(alias)
+    return own
+
+
+def asymmetries(guards: Mapping[str, Any], *, dropped: list[dict[str, Any]] | None = None,
+                own: set[str] | None = None) -> list[dict[str, Any]]:
+    """Every verb effect seen while one move of a measured opposite pair was held and not while the other was.
+
+    Two kinds are not the verb's and are left out (into `dropped`, with the reason, when a list is given):
+    - **the direction's:** the same key asymmetric the same way for SHARED_VERBS or more verbs is what holding that
+      direction does in this place (the body walks into a pickup, a timer on the far side runs), not any one verb;
+    - **at a limit:** where the opposite cell began with the key already where the verb's presses end, its absence
+      there shows nothing;
+    - **not the body's:** with `own` (`own_keys`), a key outside it belongs to another object, which holding one
+      direction or the other walks the body into or away from.
+    """
+    found = _raw_asymmetries(guards)
+    shared: dict[tuple[str, str, str], set[str]] = {}
+    for item in found:
+        shared.setdefault((item["key"], item["present_while"], item["absent_while"]), set()).add(item["verb"])
+    out = []
+    for item in found:
+        verbs = shared[(item["key"], item["present_while"], item["absent_while"])]
+        row = (guards.get("verbs") or {}).get(item["verb"]) or {}
+        absent = (row.get("moving") or {}).get(item["absent_while"]) or {}
+        reason = ("not the body's own" if own is not None and item["key"] not in own
+                  else f"the direction's: {len(verbs)} verbs share it" if len(verbs) >= SHARED_VERBS
+                  else "at a limit where it was absent"
+                  if item["key"] != "displacement" and _at_limit(row, absent, item["key"]) else None)
+        if reason is None:
+            out.append(item)
+        elif dropped is not None:
+            dropped.append({**item, "reason": reason})
+    return out
+
+
+def _raw_asymmetries(guards: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every verb effect seen while one move of a measured opposite pair was held and not while the other was.
+
+    The moves of a pair are opposite by measurement, the pairs a game is evidently built to treat alike; rest
+    against moving, ground against air, or one pair against another differ by design and are not compared. An
+    asymmetry is a measured fact about this build, not a verdict: whether it is a bug is for the review and the
+    frontier, and how often it recurs from a fresh start is for a tally of fresh sessions.
     """
     out: list[dict[str, Any]] = []
     moves = list(guards.get("moves") or ())
-    if len(moves) != 2:
-        return out
+    # A table from before pairs were recorded measured one pair: its two moves.
+    pairs = [list(p) for p in guards.get("pairs") or ()] or ([moves] if len(moves) == 2 else [])
     for verb, row in sorted((guards.get("verbs") or {}).items()):
         cells = row.get("moving") or {}
-        if not all(m in cells and cells[m] for m in moves):
-            continue
-        for present, absent in (moves, moves[::-1]):
-            here, there = cells[present], cells[absent]
-            for key in sorted(set(here.get("changed") or {}) - set(there.get("changed") or {})):
-                out.append({"verb": verb, "key": key, "present_while": present, "absent_while": absent})
-            if here.get("moved_differently") is True and there.get("moved_differently") is False:
-                out.append({"verb": verb, "key": "displacement", "present_while": present, "absent_while": absent})
+        for pair in pairs:
+            if all(m in cells and cells[m] for m in pair):
+                out += _pair_asymmetries(verb, cells, pair)
+    return out
+
+
+def _pair_asymmetries(verb: str, cells: Mapping[str, Any], pair: Sequence[str]) -> list[dict[str, Any]]:
+    """What the verb changed while one move of an opposite pair was held and not while the other was."""
+    out: list[dict[str, Any]] = []
+    for present, absent in (pair, pair[::-1]):
+        here, there = cells[present], cells[absent]
+        for key in sorted(set(here.get("changed") or {}) - set(there.get("changed") or {})):
+            out.append({"verb": verb, "key": key, "present_while": present, "absent_while": absent})
+        if here.get("moved_differently") is True and there.get("moved_differently") is False:
+            out.append({"verb": verb, "key": "displacement", "present_while": present, "absent_while": absent})
     return out
 
 
@@ -466,11 +598,11 @@ def asymmetry_line(item: Mapping[str, Any]) -> str:
             f"{item['absent_while']} (its measured opposite) was held")
 
 
-def tally(tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def tally(tables: Sequence[Mapping[str, Any]], own: set[str] | None = None) -> dict[str, Any]:
     """How many guard tables, one per fresh session, showed each asymmetry: k of n."""
     counts: dict[tuple[str, str, str, str], int] = {}
     for table in tables:
-        for item in asymmetries(table):
+        for item in asymmetries(table, own=own):
             ident = (item["verb"], item["key"], item["present_while"], item["absent_while"])
             counts[ident] = counts.get(ident, 0) + 1
     return {"n": len(tables), "asymmetries": [
@@ -522,6 +654,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     counter = sub.add_parser("tally")
     counter.add_argument("--runs", type=Path, nargs="+", required=True, help="run folders, each with guards.json")
     counter.add_argument("--output", type=Path, required=True)
+    counter.add_argument("--manifest", type=Path, help="the run's manifest: asymmetries are then judged on the "
+                         "controlled body's own readers (own_keys)")
     comparer = sub.add_parser("compare")
     for name in ("seeded", "control", "output"):
         comparer.add_argument(f"--{name}", type=Path, required=True)
@@ -530,7 +664,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("the output must be new")
     if args.command == "tally":
         tables = [json.loads((run / "guards.json").read_text(encoding="utf-8")) for run in args.runs]
-        result: Any = {**tally(tables), "runs": [str(run) for run in args.runs]}
+        own = own_keys(json.loads(args.manifest.read_text(encoding="utf-8"))) if args.manifest else None
+        result: Any = {**tally(tables, own), "runs": [str(run) for run in args.runs]}
     else:
         result = {"comparisons": compare_tallies(json.loads(args.seeded.read_text(encoding="utf-8")),
                                                  json.loads(args.control.read_text(encoding="utf-8")))}
