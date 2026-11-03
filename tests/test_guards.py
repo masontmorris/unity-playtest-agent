@@ -150,6 +150,9 @@ def test_an_effect_seen_while_one_direction_is_held_and_not_its_opposite_is_an_a
     assert {r["verdict"] for r in rule} == {"not_specific"}
     rare = guards.tally([table, {"moves": ["back", "forward"], "verbs": {}}, {"moves": ["back", "forward"], "verbs": {}}])
     assert {r["verdict"] for r in guards.compare_tallies(rare, control)} == {"sporadic"}   # 1 of 3: noise-sized
+    flaky = {"n": 3, "asymmetries": [{"verb": "aim", "key": "blend", "present_while": "back", "absent_while": "forward",
+                                      "k": 1}]}
+    assert {r["verdict"] for r in guards.compare_tallies(seeded, flaky)} == {"noisy_key", "specific"}
 
 
 def test_only_a_chord_that_does_what_its_verb_alone_does_not_is_offered_to_play():
