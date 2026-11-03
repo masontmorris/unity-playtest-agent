@@ -15,7 +15,10 @@ import base64
 from typing import Any
 
 IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1.1": "images",
-                   "liquid-d1-ultra": "images", "meta-muse-spark-s1": "meta"}
+                   "liquid-d1-ultra": "images", "meta-muse-spark-s1": "meta",
+                   # Our Modal server takes the Liquid transport and rewrites it for Flide exactly as the
+                   # 2 November image-correctness check verified (scripts/modal/mammoth_flide.py).
+                   "mammoth-1-modal": "images"}
 IMAGE_TOKENS = {"messages": 1000, "images": 1400, "meta": 1400}  # fallback estimate
 
 

@@ -16,8 +16,9 @@ file through UPA_SESSION_CATALOG and UPA_SESSION_CATALOG_SHA256; if it is absent
 client finds it is not the manifest's export, the run ends before any paid call. A session never falls back
 to the keyboard-only catalog the other bench modules use. -S1Arm picks S1's model, one of replay.ARMS
 (default liquid-d1-ultra). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
-arms, and LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms. The script checks them by name only and
-never prints them.
+arms, LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms, and MODAL_MAMMOTH_TOKEN_ID,
+MODAL_MAMMOTH_TOKEN_SECRET and MODAL_MAMMOTH_URL for mammoth-1-modal (our Flide server on Modal).
+The script checks them by name only and never prints them.
 
 No paid call starts without an approval file and a call cap (-MaxCalls). Every call reserves its row in
 `<OutputDirectory>/calls` before it is sent. The output directory must be new and outside the Unity
@@ -134,6 +135,7 @@ $s1Credentials = @{
     'mammoth-1' = @('BASETEN_API_KEY'); 'elephant-1' = @('BASETEN_API_KEY')
     'liquid-d1.1' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL'); 'liquid-d1-ultra' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL')
     'meta-muse-spark-s1' = @('META_API_KEY')
+    'mammoth-1-modal' = @('MODAL_MAMMOTH_TOKEN_ID', 'MODAL_MAMMOTH_URL', 'MODAL_MAMMOTH_TOKEN_SECRET')
 }
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."
