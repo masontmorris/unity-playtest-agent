@@ -33,8 +33,9 @@ baseline:
 - **not reproduced:** later readings were scored and none satisfied it;
 - **unknown:** no later reading could be scored.
 
-An input-conditioned check (a reader check with `after_action`) is scored on the reading taken right after each
-replayed execution of that action; `changed` and `unchanged` compare with the reading taken right before it. It
+An input-conditioned check (a reader check with `after_action`) is scored on the readings taken while each replayed
+execution of that action is held and right after it ends; `changed` and `unchanged` compare with the reading taken
+right before it. What an input changes only while it is held (a blend, a stance) is gone by the reading after it. It
 shows an input that has none of its effect, which leaves the readers in a state the reset already puts them in:
 - **reproduced:** every scored execution's reading satisfied the check;
 - **not reproduced:** at least one did not;
@@ -49,6 +50,15 @@ snapshots, as the live probe does. It is scored on the scored execution's measur
 - **reproduced:** the scored execution's measured displacement satisfies the check;
 - **not reproduced:** it was measured and does not;
 - **unknown:** it was not measured (an unknown position is unknown, never zero).
+
+**`compare`** reads the same plan replayed on the seeded build and on a control build (the unseeded base) and
+says whether the replay shows something specific to the seeded build:
+- **specific:** reproduced on the seeded build (k >= 1) and not on the control (k = 0 of n >= 1);
+- **not specific:** the control reproduces it too, so it is the game's normal behaviour or a rule, not a defect
+  of the seeded build, and the finding is not moved to reproduced;
+- **not reproduced:** k = 0 on the seeded build;
+- **inconclusive:** either side scored no attempt.
+A seeded replay's own k of n never moves a finding by itself once a control was run; the comparison does.
 
 An attempt in which an input was rejected or failed diverged from the session. It is invalid: kept with its
 reason, and never counted in n.
@@ -511,9 +521,15 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
             observation = await client.observe_once()
             sent_s = loop.time() - started
             action_id = f"reproduce-{uuid.uuid4().hex}"
-            records = await client.act(action_id=action_id, choice_id=item.get("choice_id") or item["action"],
-                                       action=item["action"], params=item.get("params") or None,
-                                       based_on_seq=observation.seq, max_age_s=MAX_AGE_S, lease_s=item.get("lease_s"))
+            request = dict(action_id=action_id, choice_id=item.get("choice_id") or item["action"],
+                           action=item["action"], params=item.get("params") or None,
+                           based_on_seq=observation.seq, max_age_s=MAX_AGE_S, lease_s=item.get("lease_s"))
+            if conditioned and readers is not None:
+                prior_value = (getattr(prior, "values", {}) or {}).get(alias)
+                records = await _act_reading_while_held(client, request, readers, alias, check, kind, prior_value,
+                                                        item, attempt, started, plan["sample_interval_s"])
+            else:
+                records = await client.act(**request)
             terminal = records[-1]
             status = getattr(terminal.status, "value", terminal.status)
             row = {"turn": item["turn"], "action": item["action"], "recorded_offset_s": item["offset_s"],
@@ -588,17 +604,52 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
     return attempt
 
 
+async def _act_reading_while_held(client: Any, request: Mapping[str, Any], readers: Any, alias: str, check: ReproCheck,
+                                  kind: Any, prior_value: Any, item: Mapping[str, Any], attempt: dict[str, Any],
+                                  started: float, interval_s: float) -> list[Any]:
+    """Start the input, read the readers until its terminal record arrives, and return its records.
+
+    `start_act` releases the connection while the input runs, so the readers can be read during the hold. Each
+    reading is scored like the one after the input, against the reading right before it.
+    """
+    loop = asyncio.get_running_loop()
+    records = await client.start_act(**request)
+    if _status(records[-1]) in _TERMINAL:
+        return records
+    collecting = asyncio.ensure_future(client.collect_act(request["action_id"]))
+    while not collecting.done():
+        sample = await readers.read()
+        reading = _reading(sample, alias, check, kind, prior_value, f"while turn {item['turn']} held",
+                           loop.time() - started)
+        reading.update(after_action=item["action"], before_value=prior_value, while_held=True)
+        if prior_value is None and check.op in (Comparator.changed, Comparator.unchanged):
+            reading["satisfied"] = None
+        attempt["readings"].append(reading)
+        await asyncio.wait({collecting}, timeout=interval_s)
+    return collecting.result()
+
+
+_TERMINAL = frozenset({"completed", "failed", "cancelled", "timed_out", "rejected"})
+
+
+def _status(record: Any) -> Any:
+    status = getattr(record, "status", None)
+    return getattr(status, "value", status)
+
+
 def _score_conditioned(attempt: dict[str, Any]) -> None:
     """Reproduced when every scored execution's reading satisfied the check; any that did not is a miss."""
     outcomes = [reading["satisfied"] for reading in attempt["readings"] if "after_action" in reading]
     if any(outcome is False for outcome in outcomes):
         attempt.update(valid=True, result="not_reproduced",
-                       reason="a reading right after an execution of the action did not satisfy the repro_check")
+                       reason="a reading during or right after an execution of the action did not satisfy the "
+                              "repro_check")
     elif outcomes and all(outcome is True for outcome in outcomes):
         attempt.update(valid=True, result="reproduced",
-                       reason="every reading right after an execution of the action satisfied the repro_check")
+                       reason="every reading during and right after an execution of the action satisfied the "
+                              "repro_check")
     else:
-        attempt.update(valid=True, result="unknown", reason="no reading right after an execution could be scored")
+        attempt.update(valid=True, result="unknown", reason="no reading during or after an execution could be scored")
 
 
 READER_BASIS = ("k counts valid attempts where the repro_check did not hold after the reset and a later "
@@ -628,8 +679,9 @@ def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) ->
                              "inputs_replayed": len(deviations)}}
 
 
-CONDITIONED_BASIS = ("k counts valid attempts where every reading right after an execution of the check's action "
-                     "satisfied it (changed and unchanged against the reading right before it); n counts valid "
+CONDITIONED_BASIS = ("k counts valid attempts where every reading while an execution of the check's action was "
+                     "held and right after it satisfied it (changed and unchanged against the reading right before "
+                     "it); n counts valid "
                      "attempts that scored at least one such reading. Unknown attempts (no such reading could be "
                      "scored) and invalid (diverged or failed) attempts are in neither")
 OVERRIDE_REASON = "an operator check overrode the finding's own, so the finding's state is unchanged"
@@ -684,6 +736,45 @@ async def measure(plan: Mapping[str, Any], reload: Callable[[int], Awaitable[dic
             "finding_update": update, "finding_update_reason": update_reason, "finished_at_utc": _utcnow()}
 
 
+# --- control comparison --------------------------------------------------------------------------
+
+
+SPECIFIC = "specific"
+NOT_SPECIFIC = "not_specific"
+NOT_REPRODUCED = "not_reproduced"
+INCONCLUSIVE = "inconclusive"
+
+
+def compare_with_control(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether a replay reproduces on the seeded build and not on the control; and the finding's next state.
+
+    Both reports must come from the same plan, or they replayed different things and are not compared.
+    """
+    if seeded.get("plan_sha256") != control.get("plan_sha256") or seeded.get("plan_sha256") is None:
+        raise ValueError("the seeded and control replays were made from different plans")
+    s, c = seeded["summary"], control["summary"]
+    if s["n"] < 1 or c["n"] < 1:
+        verdict, reason = INCONCLUSIVE, "a side scored no attempt"
+    elif s["k"] == 0:
+        verdict, reason = NOT_REPRODUCED, "the seeded build did not reproduce it"
+    elif c["k"] >= 1:
+        verdict, reason = NOT_SPECIFIC, ("the control build reproduces it too: the game's normal behaviour or a rule, "
+                                         "not a defect of the seeded build")
+    else:
+        verdict, reason = SPECIFIC, "reproduced on the seeded build and not on the control"
+    update = seeded.get("finding_update")
+    if update is not None and verdict != SPECIFIC:
+        update = dict(update)
+        update["state"] = FindingState.repro_attempted.value if verdict != INCONCLUSIVE else update.get("state")
+        update = Finding.model_validate(update).model_dump(mode="json")
+    return {"schema_version": SCHEMA_VERSION, "kind": "replay_control_comparison", "model_calls": 0,
+            "finding_id": seeded.get("finding_id"), "repro_check": seeded.get("repro_check"),
+            "plan_sha256": seeded.get("plan_sha256"), "verdict": verdict, "reason": reason,
+            "seeded": {"k": s["k"], "n": s["n"], "unknown": s["unknown"], "status": seeded.get("status")},
+            "control": {"k": c["k"], "n": c["n"], "unknown": c["unknown"], "status": control.get("status")},
+            "finding_update": update, "finished_at_utc": _utcnow()}
+
+
 # --- command line --------------------------------------------------------------------------------
 
 
@@ -705,11 +796,29 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     for name in ("project", "plan", "manifest", "output", "handshake-dir"):
         runner.add_argument(f"--{name}", type=Path, required=True)
     runner.add_argument("--reload-timeout", type=float, default=RELOAD_TIMEOUT_S)
+    comparer = sub.add_parser("compare", help="compare a seeded replay with the same plan on a control build")
+    for name in ("seeded", "control", "output"):
+        comparer.add_argument(f"--{name}", type=Path, required=True)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
+    if args.command == "compare":
+        try:
+            seeded = json.loads((args.seeded / "reproduce.json").read_text(encoding="utf-8"))
+            control = json.loads((args.control / "reproduce.json").read_text(encoding="utf-8"))
+            result = compare_with_control(seeded, control)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"reproduce compare: {exc}", file=sys.stderr)
+            return 1
+        if args.output.exists():
+            print("reproduce compare: the output must be new", file=sys.stderr)
+            return 1
+        args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        print(f"compare: {result['verdict']} (seeded k={result['seeded']['k']} n={result['seeded']['n']}, "
+              f"control k={result['control']['k']} n={result['control']['n']})")
+        return 0
     if args.command == "plan":
         try:
             check = json.loads(args.repro_check.read_text(encoding="utf-8")) if args.repro_check else None

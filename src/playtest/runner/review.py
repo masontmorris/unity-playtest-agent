@@ -155,7 +155,8 @@ def build_review_packet(trace_rows, manifest, discovery):
         first = public(before)
         position = (first.get("probe") or {}).get("anchor", {}).get("position")
         row_id = len(actions)
-        windows[row_id] = (before["trace_seq"], after["trace_seq"], item)
+        # The readers the row measured changing, after it or while it was held: a contrast for another row's check.
+        windows[row_id] = (before["trace_seq"], after["trace_seq"], item, frozenset(changed) | frozenset(during))
         entry = {"row": row_id, "turn": item["turn"], "choice": item["choice"], "kind": item["kind"],
                  "held_s": item["held_s"], "stopped_early": item["stopped_early"],
                  "measured_over_s": _round(_epoch(after["body"].get("wall_utc")) - _epoch(before["body"].get("wall_utc"))),
@@ -203,8 +204,10 @@ SYSTEM = (
     "check, and nothing about the measurement method. For each finding give a repro_check a replay can score, or "
     "null when no reader can show it: a reader the bug makes cross a value; or, for a plain input that has none of "
     "its effect, after_action set to that row's action with the reader it should change and op unchanged, so a "
-    "replay checks the reading right after each execution of it. Observations are measured; null means unknown, "
-    "not zero."
+    "replay checks the readings while and right after each execution of it. Give after_action only when a contrast "
+    "row, cited in contrast_rows, shows that same reader changing after this or a like input in another situation: "
+    "without one a replay cannot tell a missing effect from a rule of the game that withholds it here. "
+    "Observations are measured; null means unknown, not zero."
 )
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["findings"], "properties": {"findings": {
     "type": "array", "maxItems": 5, "items": {"type": "object", "additionalProperties": False,
@@ -241,15 +244,15 @@ def request_body(packet):
 def findings_from_answer(answer, windows, manifest):
     """Candidate findings from the review's answer; each cites the two observations around every row it names."""
     readers = {r['alias']: r['kind'] for r in manifest['readers']}
-    ran = {item['action'] for _, _, item in windows.values() if item['kind'] == 'input' and item['action']}
+    ran = {item['action'] for _, _, item, _ in windows.values() if item['kind'] == 'input' and item['action']}
     findings, rejected = [], []
     for n, item in enumerate(answer['findings'], 1):
         try:
             cited = [windows[row] for row in item['evidence_rows'] if row in windows]
-            seq = list(dict.fromkeys(entry for before, after, _ in cited for entry in (before, after)))
+            seq = list(dict.fromkeys(entry for before, after, _, _ in cited for entry in (before, after)))
             if not seq:
                 raise ValueError('no observation evidence for cited rows')
-            steps = [json.dumps(input_['choice'], ensure_ascii=False) for _, _, input_ in cited
+            steps = [json.dumps(input_['choice'], ensure_ascii=False) for _, _, input_, _ in cited
                      if input_['choice'] is not None]
             check = item['repro_check']
             uncertainty = item['uncertainty']
@@ -264,7 +267,15 @@ def findings_from_answer(answer, windows, manifest):
                                and math.isfinite(value) and op in ('<', '<=', '>', '>=', '==', '!='))
                               or (kind == 'bool' and isinstance(value, bool) and op in ('==', '!=')))
                              and (after is None or after in ran))
-                if valid:
+                contrasted = after is None or any(check['reader'] in windows[row][3]
+                                                  for row in item['contrast_rows'] if row in windows)
+                if valid and not contrasted:
+                    # Without a row where the reader did change, a replay cannot tell an input that lost its effect
+                    # from a rule of the game that withholds it in this situation.
+                    check = None
+                    uncertainty += (' Repro check rejected: no contrast row shows that reader changing, so a replay '
+                                    'could not tell a missing effect from a rule of the game.')
+                elif valid:
                     check = {'field': 'public.' + check['reader'], 'op': op, 'value': value}
                     if after is not None:
                         check['after_action'] = after

@@ -123,3 +123,20 @@ def test_cli_one_reservation(tmp_path, monkeypatch):
     review.main()
     assert calls == ['reserve','finish']
     assert (tmp_path/'out/finding-r-1.json').exists()
+
+
+def test_an_input_conditioned_check_needs_a_contrast_row_where_its_reader_changed(monkeypatch):
+    monkeypatch.setattr(review, 'declared_configuration', lambda *args: [])
+    manifest = {'actions': [], 'skills': [], 'entity_id': 'e',
+                'readers': [{'alias': 'x', 'kind': 'number'}, {'alias': 'zoom', 'kind': 'number'}]}
+    _, windows = review.build_review_packet(rows(), manifest, {})
+    unchanged = {'reader': 'zoom', 'op': 'unchanged', 'value': None, 'after_action': 'go'}
+    findings, _ = review.findings_from_answer({'findings': [
+        item(evidence_rows=[0], contrast_rows=[1], repro_check=unchanged),   # aim held: zoom changed there
+        item(evidence_rows=[0], contrast_rows=[], repro_check=unchanged),    # no contrast at all
+        item(evidence_rows=[1], contrast_rows=[0], repro_check=unchanged),   # go never changed zoom
+    ]}, windows, manifest)
+    assert findings[0].repro_check is not None and findings[0].repro_check.after_action == 'go'
+    for finding in findings[1:]:
+        assert finding.repro_check is None and 'no contrast row shows that reader changing' in finding.uncertainty
+    assert 'contrast row' in review.SYSTEM
