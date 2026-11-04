@@ -377,3 +377,24 @@ def test_a_sweep_is_offered_only_at_a_tried_place_with_the_controls_untried_ther
         memory.record(OptionOutcome(option_id, "hop", {}, here, here, [0, 0, 0], "blocked", 0.5, scene="s"))
     spec = sweep_spec(offered, memory, "s", here)
     assert spec.template == "sweep" and spec.params["actions"] == ["use", "odd"]
+
+
+def test_a_press_test_is_offered_beside_the_options_only_while_its_control_is_offered():
+    from types import SimpleNamespace
+
+    from playtest.contracts.loop import Choice
+    from playtest.runner.choices import options_choices
+    from playtest.runner.expectations import press_test_specs
+    from playtest.runner.options.memory import OutcomeMemory
+
+    primitives = SimpleNamespace(directions=(), body_directions=(), can_hop=False, rise=None, classified=())
+    observation = SimpleNamespace(scene="s", public={"controlled": {"position": [0.0, 0.0, 0.0]}})
+    tests = press_test_specs({"action_rules": [{"action": "attack", "within_s": 1.5},
+                                               {"action": "interact", "within_s": 2.0}]})
+    offered = [Choice(id="attack", kind="action", action="attack", label="Attack", source="manifest")]
+    choices = options_choices(offered, primitives, OutcomeMemory(cell=0.5), observation, tests=tests)
+    test = next(c for c in choices if c.id == "test:attack")
+    assert test.kind is ChoiceKind.option and test.template == "press_test"
+    assert test.params == {"action": "attack", "presses": 4, "wait_s": 2.0}
+    assert test.label.startswith("test attack: press it 4 times, each followed by 2 s with nothing pressed")
+    assert "test:interact" not in {c.id for c in choices}   # interact is not offered: neither is its test

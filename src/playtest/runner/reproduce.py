@@ -213,7 +213,8 @@ def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skippe
     """Append the inputs one option entry sent, each with the lease of the time it measurably held.
 
     An option holds one input at a time: each new input supersedes the last, and the release ends the final one.
-    So an input held until the next one's measured start, or, for the last, for the duration its release reported.
+    So an input is held for its own measured duration when its receipts recorded its end, otherwise until the next
+    one's measured start, or, for the last, for the duration its release reported.
     A last input whose release the receipts never recorded (the option ended with it still running) is held until
     the option's measured end: its outcome's duration from the first input's start.
     """
@@ -244,7 +245,12 @@ def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skippe
             skipped["unrecorded"] += 1
             continue
         following = next((s for _, s in started[index + 1:] if s is not None), None)
-        if following is not None:
+        ended = (_number(record.get("applied_duration_s"))
+                 if record.get("status") in ("completed", "cancelled") else None)
+        if ended is not None and ended > 0:
+            # Its own measured end (a sweep or press test releases each press before a wait): never past the next.
+            held = min(ended, following - start) if following is not None else ended
+        elif following is not None:
             held = following - start
         elif record.get("release_verified") is True:
             held = _number(record.get("applied_duration_s"))

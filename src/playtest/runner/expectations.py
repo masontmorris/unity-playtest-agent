@@ -540,7 +540,8 @@ def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple
 
 
 def play_readings(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, int, dict[str, Any]]]:
-    """Every observation's public readers, by wall time: (epoch seconds, trace_seq, values)."""
+    """Every observation's public readers, by wall time: (epoch seconds, trace_seq, values); with the press-anchored
+    readings of effect records and the readings a press test took."""
     from playtest.runner.review import _epoch
 
     out = []
@@ -555,6 +556,11 @@ def play_readings(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, 
             observed = body.get("observed") or {}
             for key in ("readers_before", "readers_after"):
                 reading = observed.get(key)
+                if isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float)):
+                    out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading.get("values") or {})))
+        elif row.get("kind") == "option":
+            # A press test reads the readers itself while S1 waits for it: around each press and through each wait.
+            for reading in ((body.get("outcome") or {}).get("measured") or {}).get("readings") or ():
                 if isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float)):
                     out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading.get("values") or {})))
     out.sort(key=lambda item: item[0])
@@ -598,8 +604,11 @@ def score_ranges(ranges: Sequence[Mapping[str, Any]],
 
 
 # How far a measured magnitude may sit from its declared value: sampling only lowers a peak (a reading rarely lands
-# on the apex), and a press's average speed includes its start.
-BANDS = {"move_speed": (0.15, 0.15), "verb_speed": (0.2, 0.2), "rise_height": (0.25, 0.1)}
+# on the apex), and a press's average speed includes its start. Set from the clean builds' guard tables (20 FPSKit,
+# 42 DragonBlaze): a move's speed stayed within -3.1%/+8.7% of its declared value in all 76 readings; a verb's speed
+# left ±15% in 6 of 186, never in more than 2 of one magnitude's 24. A size is a mismatch only when most tables
+# measure it outside its band.
+BANDS = {"move_speed": (0.10, 0.10), "verb_speed": (0.15, 0.15), "rise_height": (0.25, 0.1)}
 
 
 def _median(values: Sequence[float]) -> float | None:
@@ -1682,7 +1691,44 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
     return out[:limit]
 
 
-def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
+PRESS_TEST_PRESSES = 4      # the presses one test makes: the test plan's own "4 times or more"
+PRESS_TEST_MARGIN_S = 0.5   # past a rule's window, so the next press is not inside it (`action_events`)
+PRESS_TEST_MAX_WINDOW_S = 5.0   # a longer window would make one test outlast S1's attention: not offered
+
+
+def press_test_specs(*expectations: Mapping[str, Any]) -> list[Any]:
+    """One press-test option per input a pre-registered action rule presses: that input pressed
+    `PRESS_TEST_PRESSES` times, each followed by the longest of its rules' windows plus a margin with nothing
+    pressed, so no press lands inside the last one's window and every press can be counted. A situation's rule
+    gets none: whether a press was made in its situation is read from the press's own effect record, which an
+    option's presses do not have.
+
+    Written by code from the rules, never by a model; offered as a choice S1 may take or leave, never run by
+    itself. An input whose window is longer than `PRESS_TEST_MAX_WINDOW_S` gets none.
+    """
+    from .options.model import OptionSpec
+
+    windows: dict[str, float] = {}
+    for doc in expectations:
+        for rule in doc.get("action_rules") or ():
+            action, within = rule.get("action"), rule.get("within_s")
+            if isinstance(action, str) and action and isinstance(within, (int, float)) and within > 0:
+                windows[action] = max(windows.get(action, 0.0), float(within))
+    specs = []
+    for action, within in windows.items():
+        if within > PRESS_TEST_MAX_WINDOW_S:
+            continue
+        wait = round(within + PRESS_TEST_MARGIN_S, 3)
+        total = PRESS_TEST_PRESSES * (wait + 0.2)
+        specs.append(OptionSpec(
+            option_id=f"test:{action}", template="press_test",
+            params={"action": action, "presses": PRESS_TEST_PRESSES, "wait_s": wait},
+            intent=(f"test {action}: press it {PRESS_TEST_PRESSES} times, each followed by {wait:g} s with nothing "
+                    f"pressed, about {total:.0f} s")))
+    return specs
+
+
+def test_plan(expectations: Mapping[str, Any], *, presses: int = 4, tests: bool = False) -> str:
     """A session objective that asks for each action rule's press to be made on purpose, in plain words.
 
     Written by code from the pre-registered rules, never by a model, so it says nothing the rules do not: the input
@@ -1705,8 +1751,10 @@ def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
     if not steps:
         return ""
     numbered = "; ".join(f"({n}) {step}" for n, step in enumerate(steps, 1))
+    offered = (" A test option for an input (test:<input>) makes its presses that far apart for you." if tests
+               else "")
     return (f"Try each of these on purpose, {presses} times or more, a few seconds apart, so each one can be seen on "
-            f"its own: {numbered}. Then keep exploring.")
+            f"its own: {numbered}.{offered} Then keep exploring.")
 
 
 def _send(body: Mapping[str, Any], approval: Mapping[str, Any], folder: Path, name: str) -> tuple[Any, Any]:
@@ -1814,9 +1862,11 @@ class ExpectationFacts:
 
 
 def unmet_in_session(expectations: Mapping[str, Any], guards: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The predictions this one session's guard table did not meet (k of 1), each labelled by its oracle."""
-    return [tiered(row) for row in score(expectations.get("predictions") or (), [guards])
-            if row["verdict"] == "mismatch"]
+    """The predictions and declared sizes this one session's guard table did not meet (k of 1), each labelled by
+    its oracle."""
+    rows = (score(expectations.get("predictions") or (), [guards])
+            + score_magnitudes(expectations.get("magnitudes") or (), [guards]))
+    return [tiered(row) for row in rows if row["verdict"] == "mismatch"]
 
 
 NAMES_ONLY = " [inferred from names only: no stated intent or declared value says so]"

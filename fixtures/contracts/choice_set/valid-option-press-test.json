@@ -1,0 +1,19 @@
+{
+  "set_version": 1,
+  "built_from_seq": 2,
+  "choices": [
+    {
+      "id": "test:attack",
+      "kind": "option",
+      "label": "test attack: press it 4 times, each followed by 2 s with nothing pressed, about 9 s",
+      "option_id": "test:attack",
+      "template": "press_test",
+      "params": {
+        "action": "attack",
+        "presses": 4,
+        "wait_s": 2.0
+      },
+      "source": "manifest"
+    }
+  ]
+}

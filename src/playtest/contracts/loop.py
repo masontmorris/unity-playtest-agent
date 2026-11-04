@@ -34,7 +34,7 @@ class Choice(Strict):
     action: str | None = None
     skill: str | None = None
     option_id: str | None = Field(None, min_length=1, exclude_if=lambda v: v is None)
-    template: Literal["traverse", "retreat", "hop", "wait", "place", "sweep"] | None = Field(None, exclude_if=lambda v: v is None)
+    template: Literal["traverse", "retreat", "hop", "wait", "place", "sweep", "press_test"] | None = Field(None, exclude_if=lambda v: v is None)
     role: Literal["frontier", "helper"] | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     preconditions: list[str] = Field(default_factory=list)

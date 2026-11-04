@@ -101,8 +101,9 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
 
 
 def options_choices(choices: list[Choice], primitives: Any, memory: Any, observation: Any,
-                    *, placement: bool = False, regions: Any = ()) -> list[Choice]:
-    """Rebuild option labels against this observation; never select an option here."""
+                    *, placement: bool = False, regions: Any = (), tests: Any = ()) -> list[Choice]:
+    """Rebuild option labels against this observation; never select an option here. `tests` are the press tests
+    to offer (`press_test_specs`), each only while its control is offered."""
     from .options.primitives import option_specs
     from .options.model import OptionSpec
 
@@ -135,6 +136,8 @@ def options_choices(choices: list[Choice], primitives: Any, memory: Any, observa
     sweep = sweep_spec(retained, memory, scene, position)
     if sweep is not None:
         specs.append(sweep)
+    served = {c.action for c in choices if c.kind is ChoiceKind.action and c.action}
+    specs += [spec for spec in tests if spec.params.get("action") in served]
     offered = [Choice(id=s.option_id, kind=ChoiceKind.option, option_id=s.option_id, template=s.template,
                       params=s.params, label=f"{s.intent} — {memory.suffix(scene, position, s.option_id)}",
                       source=ChoiceSource.manifest) for s in specs]

@@ -266,7 +266,7 @@ def test_a_declared_magnitude_is_checked_against_what_the_guard_tables_measured_
         {"quantity": "rise_height", "action": "jump", "state": None, "value": 1.2, "basis": "declared_value",
          "because": "jumpHeight 1.2"}], [magnitude_table(back_speed=2.5, peak=1.0)] * 3)
     assert [r["verdict"] for r in rows] == ["held", "mismatch", "held", "held"]
-    assert rows[1]["measured"] == [2.5, 2.5, 2.5] and "outside -15%/+15% in 3 of 3" in rows[1]["line"]
+    assert rows[1]["measured"] == [2.5, 2.5, 2.5] and "outside -10%/+10% in 3 of 3" in rows[1]["line"]
     # A peak read 17% under its declared height is sampling (a reading rarely lands on the apex); 31% under is not.
     (low,) = expectations.score_magnitudes([{"quantity": "rise_height", "action": "jump", "state": None,
                                              "basis": "declared_value", "because": "x", "value": 1.45}],
@@ -671,3 +671,53 @@ def test_a_rule_gives_the_replay_check_a_finding_about_it_would_carry():
                                    "value": None}
     assert replay_check({**talk, "then_value": 10})["tolerance"] == 0.5
     assert replay_check({**spawn, "condition_observable": "grounded"}) is None   # a replay cannot hold to it
+
+
+def test_a_press_test_presses_each_rules_input_four_times_its_longest_window_apart_and_never_a_situations():
+    specs = expectations.press_test_specs(
+        {"action_rules": [attack_rule(within_s=1.0), attack_rule(within_s=1.5), attack_rule(action="dash", within_s=2.0),
+                          attack_rule(action="charge", within_s=8.0)],
+         "situations": [attack_rule(action="interact", situation="next to the NPC")]},
+        {"action_rules": [attack_rule(action="dash", within_s=1.0)]})
+    assert [(s.option_id, s.template, s.params) for s in specs] == [
+        ("test:attack", "press_test", {"action": "attack", "presses": 4, "wait_s": 2.0}),
+        ("test:dash", "press_test", {"action": "dash", "presses": 4, "wait_s": 2.5})]
+    assert specs[0].intent == "test attack: press it 4 times, each followed by 2 s with nothing pressed, about 9 s"
+    plan = expectations.test_plan({"action_rules": [attack_rule()]}, tests=True)
+    assert plan.endswith("A test option for an input (test:<input>) makes its presses that far apart for you. "
+                         "Then keep exploring.")
+
+
+def test_a_press_tests_presses_and_its_own_readings_score_an_action_rule_at_every_press():
+    """One press test of attack, as its option trace row records it: four presses two seconds apart, released and
+    collected, with the readers read around each press and through each wait. Every press is counted."""
+    receipts, readings = [], []
+    for n in range(4):
+        start = 100.0 + 2.2 * n
+        receipts += [{"type": "request", "action_id": f"test:attack.{n + 1}", "action": "attack"},
+                     {"type": "execution", "action_id": f"test:attack.{n + 1}", "status": "running",
+                      "input_start_wall_s": start},
+                     {"type": "execution", "action_id": f"test:attack.{n + 1}", "status": "completed",
+                      "input_start_wall_s": start, "applied_duration_s": 0.2}]
+        shots = [0, 1, 1, 2][n]   # the second press's shot never comes
+        readings += [{"wall_s": start - 0.01, "values": {"cooldown": 0.0, "shots": shots}}]
+        readings += [{"wall_s": start + 0.25 + 0.5 * k, "values": {"cooldown": 0.0, "shots": shots + (n != 1)}}
+                     for k in range(4)]
+    rows = [{"kind": "option", "trace_seq": 7, "body": {
+        "option_id": "test:attack", "template": "press_test", "receipts": receipts,
+        "outcome": {"measured": {"pressed": 4, "readings": readings}}}}]
+    presses = expectations.play_presses(rows)
+    assert [p[0] for p in presses] == [100.0, 102.2, 104.4, 106.6]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    (row,) = expectations.score_action_rules([no_condition], [expectations.play_readings(rows)], [presses], [controls])
+    assert (row["n"], row["k"], row["verdict"]) == (4, 1, "mixed")
+    assert row["not_counted"]["overlapped"] == 0
+
+
+def test_a_declared_size_one_sessions_table_measures_outside_its_band_is_stated_to_that_session():
+    size = {"quantity": "move_speed", "action": "back", "state": None, "value": 5.0, "basis": "declared_value",
+            "because": "moveSpeed 5"}
+    (row,) = expectations.unmet_in_session({"predictions": [], "magnitudes": [size]}, magnitude_table(back_speed=2.5))
+    assert row["verdict"] == "mismatch" and row["line"].startswith("move speed of back: expected 5")
+    assert expectations.unmet_in_session({"predictions": [], "magnitudes": [size]}, magnitude_table()) == []

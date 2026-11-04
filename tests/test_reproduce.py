@@ -838,3 +838,12 @@ def test_an_options_last_input_left_running_is_held_until_the_options_measured_e
     assert skipped == {}
     sweep["body"]["outcome"] = {}   # no measured end: the last input is still left out, never guessed
     assert recorded_inputs([sweep], 99)[1] == {"option_unmeasured": 1}
+
+
+def test_an_option_input_whose_receipts_recorded_its_end_is_held_for_that_long_not_until_the_next():
+    from playtest.runner.reproduce import recorded_inputs
+    test = _option(5, 1, [(1, "attack", 101.0, "completed", 0.2), (2, "attack", 103.2, "completed", 0.2)])
+    inputs, skipped = recorded_inputs([test], 99)
+    # each press was released before a 2 s wait: replayed as two 0.2 s presses 2.2 s apart, not a 2.2 s hold
+    assert [(i["action"], i["lease_s"], i["offset_s"]) for i in inputs] == [("attack", 0.2, 0.0), ("attack", 0.2, 2.2)]
+    assert skipped == {}

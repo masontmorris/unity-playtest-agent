@@ -6,17 +6,19 @@ S1 decides when to escalate, the frontier decides what to file, and code only me
 
 1. **guards**: one guards-only session (`run-session.ps1 -MeasureGuards -GuardsOnly`), no model call: the verbs the
    predictions are written about, as the build serves them.
-2. **predict**: the frontier writes, from the build's declarations only, what each verb must do (`--part all`) and
-   what each press must make happen, including situations near scene objects (`--part actions`).
+2. **predict**: the frontier writes, from the build's declarations only, what each verb must do (`--part all`),
+   what each press must make happen, including situations near scene objects (`--part actions`), and the sizes
+   the declared values fix for the body's motion (`--part magnitudes`).
 3. **objective**: code turns the action rules into a test plan (`expectations test-plan`), followed by the
    standing playtest objective.
 4. **sessions**: N live sessions with S1 and the frontier, each with the guard table measured first, press
-   readings, the situations placed, and the expectations as facts. They run one after another (one Editor per
+   readings, the situations placed, the expectations as facts, and one press-test option per input the action
+   rules press (S1 may take it or leave it). They run one after another (one Editor per
    project) and share one outcome memory, so a later session can reuse where an earlier one went.
 5. **replays**: every candidate finding the frontier filed with a repro_check is replayed k of n from reloads
    (`reproduce.ps1`), with no model call. A finding with no repro_check is listed as not replayable.
 6. **scores**: the pre-registered expectations are scored by code on every session's guard table and trace
-   (`expectations score`, `score-play`).
+   (`expectations score`, `score-play`); the declared sizes on every guard table.
 7. **report**: `hunt.md` and `hunt.json` say what was filed, what reproduced, what the rules measured, and the cost.
 
 The config is a JSON object: project, ref (the branch the project must be on), entity, calibration, manifest,
@@ -51,7 +53,7 @@ PLAYTEST = (
 # The live loop's settings, the same on every game: only the config's paths and measured setup differ.
 SESSION_ENV = {"UPA_RUN_DETECTORS": "1", "UPA_RUN_KEEP_HELP_ACROSS_RESTART": "1", "UPA_RUN_FRONTIER_CLIP_S": "30",
                "UPA_RUN_HOLD_MET_DIRECTIVE": "1", "UPA_RUN_DECIDE_DURING_OPTIONS": "1",
-               "UPA_RUN_MEASURE_AIR_RISE": "1"}
+               "UPA_RUN_MEASURE_AIR_RISE": "1", "UPA_RUN_PRESS_TESTS": "1"}
 SESSION_FLAGS = ("-RecordFrames", "-S1GameView", "-CoverageFacts", "-PatternFacts", "-S1Instructions", "policy/2",
                  "-FinishLabel", "conditional", "-S1ContinuousInput", "-Options", "-S1Context", "compact-menu",
                  "-Contingent", "-PacingBurst", "0.5", "-MeasureGuards", "-PressReadings", "-NoFinish")
@@ -192,13 +194,29 @@ def predict_step(config: Mapping[str, Any], out: Path, guards: Path, part: str, 
     return result
 
 
+def session_expectations(every: Path, magnitudes: Path, out: Path) -> Path:
+    """The expectations each session states, unmet, as measured facts: the full prediction's, with the declared
+    sizes the focused call wrote added to its own, so a session's guard table is checked against both."""
+    path = out / "expectations-session.json"
+    if path.is_file():
+        return path
+    sizes = json.loads(magnitudes.read_text(encoding="utf-8")).get("magnitudes") or []
+    if not sizes:
+        return every
+    doc = json.loads(every.read_text(encoding="utf-8"))
+    doc["magnitudes"] = [*(doc.get("magnitudes") or []), *sizes]
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
 def objective_step(actions: Path, out: Path) -> Path:
     path = out / "objective.txt"
     if path.is_file():
         return path
     from .expectations import test_plan
 
-    plan = test_plan(json.loads(actions.read_text(encoding="utf-8")))
+    plan = test_plan(json.loads(actions.read_text(encoding="utf-8")),
+                     tests=SESSION_ENV.get("UPA_RUN_PRESS_TESTS") == "1")
     if plan.endswith("Then keep exploring."):
         plan = plan[: -len("Then keep exploring.")]
     text = (plan + PLAYTEST) if plan else PLAYTEST.removeprefix("Then playtest the rest of the session as usual: ")
@@ -274,15 +292,17 @@ def replay_step(config: Mapping[str, Any], out: Path, session: Path, finding: Ma
             "reason": reasons.most_common(1)[0][0] if reasons else None}
 
 
-def scores_step(out: Path, every: Path, actions: Path, guards: Path, sessions: Sequence[Path]) -> dict[str, Any]:
+def scores_step(out: Path, every: Path, actions: Path, guards: Path, sessions: Sequence[Path],
+                magnitudes: Path | None = None) -> dict[str, Any]:
     from .expectations import main as expectations
 
     runs = [guards.parent, *(s for s in sessions if (s / "guards.json").is_file())]
     result: dict[str, Any] = {}
-    guard_score = out / "guard-score.json"
-    if not guard_score.is_file():
-        expectations(["score", "--expectations", str(every), "--runs", *map(str, runs), "--output", str(guard_score)])
-    result["guards"] = json.loads(guard_score.read_text(encoding="utf-8"))
+    for name, path, target in (("guards", every, out / "guard-score.json"),
+                               ("magnitudes", magnitudes, out / "magnitude-score.json")):
+        if path is not None and not target.is_file():
+            expectations(["score", "--expectations", str(path), "--runs", *map(str, runs), "--output", str(target)])
+        result[name] = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {"scored": []}
     played = [s for s in sessions if (s / "trace.jsonl").is_file()]
     for name, path in (("play", every), ("rules", actions)):
         target = out / f"{name}-score.json"
@@ -296,7 +316,7 @@ def scores_step(out: Path, every: Path, actions: Path, guards: Path, sessions: S
 def unmet_rows(scores: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Every mismatch the scores found, each once: a rule both expectation files hold is scored twice."""
     seen: dict[str, dict[str, Any]] = {}
-    for name in ("guards", "play", "rules"):
+    for name in ("guards", "magnitudes", "play", "rules"):
         for row in scores.get(name, {}).get("scored", []):
             if row.get("verdict") == "mismatch":
                 seen.setdefault(row["line"], row)
@@ -338,6 +358,9 @@ def report(config: Mapping[str, Any], out: Path, sessions: Sequence[Path], filed
     if not unmet:
         lines.append("None.")
     lines += [f"- {row['line']}" for row in unmet]
+    lines += ["", "## Declared sizes measured on the guard tables", ""]
+    lines += [f"- {row['verdict']}: {row['line']}" for row in scores.get("magnitudes", {}).get("scored", [])] or [
+        "None written."]
     return "\n".join(lines) + "\n"
 
 
@@ -351,9 +374,11 @@ def hunt(config: Mapping[str, Any], out: Path, say=print) -> dict[str, Any]:
     guards = guards_step(config, out, env, say)
     every = predict_step(config, out, guards, "all", env, say)
     actions = predict_step(config, out, guards, "actions", env, say)
+    magnitudes = predict_step(config, out, guards, "magnitudes", env, say)
+    stated = session_expectations(every, magnitudes, out)
     objective = objective_step(actions, out)
     sessions = [s for n in range(1, int(config["sessions"]) + 1)
-                if (s := session_step(config, out, n, objective, every, actions, env, say)) is not None]
+                if (s := session_step(config, out, n, objective, stated, actions, env, say)) is not None]
     filed = []
     for session in sessions:
         for finding in findings(session):
@@ -362,7 +387,7 @@ def hunt(config: Mapping[str, Any], out: Path, say=print) -> dict[str, Any]:
             replay = (replay_step(config, out, session, finding, say) if finding.get("repro_check")
                       else {"status": "no repro_check"})
             filed.append({**finding, "session": session.name, "replay": replay})
-    scores = scores_step(out, every, actions, guards, sessions)
+    scores = scores_step(out, every, actions, guards, sessions, magnitudes)
     text = report(config, out, sessions, filed, scores)
     (out / "hunt.md").write_text(text, encoding="utf-8", newline="\n")
     result = {"config": dict(config), "sessions": [s.name for s in sessions], "findings": filed,

@@ -44,6 +44,9 @@ PERIOD_S = 1.0 / OBSERVATION_HZ
 MAX_AGE_S = 10 * PERIOD_S
 SWEEP_HOLD_S = 0.2     # one press of each control a sweep tries
 SWEEP_SETTLE_S = 0.6   # how long after each press a sweep watches for a change
+PRESS_TEST_READ_S = 0.5   # how often a press test reads the readers through a wait: about a turn's pace
+# The observation's own fields, beside the manifest's readers: a press test's readings keep the readers only.
+_NOT_READERS = ("camera", "probe", "controlled")
 
 # A block is called only over a window long enough for one fast tick to be noise: six observation
 # periods, a bit under a third of a second.
@@ -649,6 +652,13 @@ class OptionExecutor:
                 await self._sweep(run)
             finally:
                 self._uncommitted.set()
+        elif spec.template == "press_test":
+            # Committed like a sweep: each press is a measurement, and its window cut short measures nothing.
+            self._uncommitted.clear()
+            try:
+                await self._press_test(run)
+            finally:
+                self._uncommitted.set()
         else:  # OptionSpec already rejects an unknown template; this is the fail-closed remainder.
             run.end("rejected", f"no executor for template {spec.template!r}")
 
@@ -943,8 +953,8 @@ class OptionExecutor:
                     ended = f"{action!r} changed the scene from {scene!r} to {observation.scene!r}"
                     break
             if ended is None:
-                await self._client.stop("release")
-                run.held = None
+                # Released and collected, so the press's measured end is in its receipts, not only its start.
+                await self._release(run)
             end = _pose(self._last_obs)
             tried.append({"action": action, "start": list(start) if start else None,
                           "end": list(end) if end else None})
@@ -952,6 +962,56 @@ class OptionExecutor:
                 run.end("state_changed", ended)
                 return
         run.end("blocked", f"none of {len(tried)} controls changed the scene")
+
+    async def _press_test(self, run: _Run) -> None:
+        """One control pressed `presses` times, each press followed by `wait_s` with nothing pressed, so what
+        follows each press is its own. Ends `succeeded` after the last wait, or `state_changed` at a scene change.
+
+        Committed like a sweep: S1 is not asked again until it ends, so it reads the readers itself, into
+        `measured["readings"]`: just before each press, just after its release, and every `PRESS_TEST_READ_S`
+        through each wait. Every press is released and collected, so its measured start and end are in the
+        receipts; `measured["pressed"]` counts the presses made.
+        """
+        params = run.spec.params or {}
+        action, presses, wait_s = params.get("action"), params.get("presses"), _finite(params.get("wait_s"))
+        if (not isinstance(action, str) or not action or not isinstance(presses, int) or presses < 1
+                or wait_s is None or wait_s < 0):
+            run.end("rejected", "a press test needs a control, a positive press count and a non-negative wait")
+            return
+        run.measured["pressed"] = 0
+        readings: list[dict[str, Any]] = []
+        run.measured["readings"] = readings
+
+        def read() -> None:
+            observation = self._last_obs
+            if observation is not None and observation.wall_utc is not None:
+                readings.append({"wall_s": observation.wall_utc.timestamp(),
+                                 "values": {k: v for k, v in observation.public.items() if k not in _NOT_READERS}})
+
+        if await self._tick(run) is None:
+            return
+        for _ in range(presses):
+            read()
+            if not await self._hold(run, action, self._observation(), lease_s=SWEEP_HOLD_S):
+                return
+            until = self._clock() + SWEEP_HOLD_S
+            while self._clock() < until:
+                if await self._tick(run) is None:
+                    return
+            await self._release(run)
+            run.measured["pressed"] += 1
+            if await self._tick(run) is None:
+                return
+            read()
+            until, next_read = self._clock() + wait_s, self._clock() + PRESS_TEST_READ_S
+            while self._clock() < until:
+                if await self._tick(run) is None:
+                    return
+                if self._clock() >= next_read:
+                    read()
+                    next_read += PRESS_TEST_READ_S
+        read()
+        run.end("succeeded")
 
     async def _wait(self, run: _Run) -> None:
         """Hold nothing for the requested seconds. Always succeeds, by the spec's own table."""
