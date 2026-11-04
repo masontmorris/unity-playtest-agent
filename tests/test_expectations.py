@@ -737,3 +737,41 @@ def test_a_declared_size_one_sessions_table_measures_outside_its_band_is_stated_
     (row,) = expectations.unmet_in_session({"predictions": [], "magnitudes": [size]}, magnitude_table(back_speed=2.5))
     assert row["verdict"] == "mismatch" and row["line"].startswith("move speed of back: expected 5")
     assert expectations.unmet_in_session({"predictions": [], "magnitudes": [size]}, magnitude_table()) == []
+
+
+def test_a_rule_failing_where_fresh_presses_change_its_reader_only_sometimes_is_intermittent_not_a_mismatch():
+    def table(trials):
+        return {"verbs": {"attack": {"rest": {"changed": {"shots": [0, 1]}, "trial_changed": trials,
+                                              "trial_persisted": trials},
+                                     "moving": {}, "air": None}}}
+    sometimes, always = table([["shots"], []]), table([["shots"], ["shots"]])
+    assert expectations.guard_evidence("attack", "shots", [sometimes, sometimes]) == "sometimes"
+    assert expectations.guard_evidence("attack", "shots", [sometimes, always]) == "lasts"
+    readings = [(i * 0.5, 100 + i, {"cooldown": 0.0, "shots": 0}) for i in range(21)]
+    presses = [(0.2, 0.3, "attack"), (4.2, 4.3, "attack"), (8.2, 8.3, "attack")]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls], [sometimes])
+    assert (row["k"], row["n"], row["verdict"]) == (3, 3, "intermittent")
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls], [always])
+    assert row["verdict"] == "guarded"
+
+
+def test_the_live_rule_lines_leave_out_what_a_press_anchored_reading_cannot_show():
+    def obs(seq, t, shots):
+        stamp = f"2026-11-04T00:00:{t:06.3f}+00:00"
+        return {"trace_seq": seq, "kind": "observation", "body": {"wall_utc": stamp, "public": {"shots": shots}}}
+
+    def press(seq, t):
+        return {"trace_seq": seq, "kind": "execution", "body": {"request": {"action": "attack"}, "records": [
+            {"status": "completed", "input_start_wall_s": 1793750400.0 + t, "applied_duration_s": 0.2}]}}
+    rows = [obs(n, n * 0.5, 0) for n in range(1, 40)] + [press(100 + n, 1.0 + 4 * n) for n in range(4)]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    rule = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    held_only = {"verbs": {"attack": {"rest": {"changed": {"shots": [0, 1]}, "trial_changed": [["shots"], ["shots"]],
+                                               "trial_persisted": [[], []]}, "moving": {}, "air": None}}}
+    never = {"verbs": {"attack": {"rest": {"changed": {}, "trial_changed": [[], []], "trial_persisted": [[], []]},
+                                  "moving": {}, "air": None}}}
+    assert expectations.live_rule_lines({"action_rules": [rule]}, rows, controls, held_only) == []
+    (line,) = expectations.live_rule_lines({"action_rules": [rule]}, rows, controls, never)
+    assert line.startswith("mismatch: pressing attack: shots increases within 1 s")

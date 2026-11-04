@@ -865,19 +865,23 @@ def _drop_at_limit(item: Mapping[str, Any], readings: Sequence[tuple[float, int,
 
 def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> str | None:
     """What the guard tables measured of `verb` changing `key`: "lasts" (still changed just after a press ended, in
-    some cell), "while_held" (changed only while held), "never" (in no cell of any table), or None (no table measured
-    the verb). The tables say what a reading can show, never whether a rule held."""
+    some cell), "while_held" (changed only while held), "sometimes" (in some trials of a cell and not in others, and
+    in every trial of none: a fresh, controlled press shows it only some of the time), "never" (in no cell of any
+    table), or None (no table measured the verb). The tables say what a reading can show, never whether a rule
+    held."""
     rows = [(t.get("verbs") or {}).get(verb) for t in tables]
     rows = [r for r in rows if r]
     if not rows:
         return None
-    changed = persisted = False
+    changed = persisted = every_trial = False
     for row in rows:
         for cell in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air")):
             if not cell:
                 continue
-            if key in (cell.get("changed") or {}) or any(key in keys for keys in cell.get("trial_changed") or ()):
+            trials = [keys or () for keys in cell.get("trial_changed") or ()]
+            if key in (cell.get("changed") or {}) or any(key in keys for keys in trials):
                 changed = True
+                every_trial = every_trial or not trials or all(key in keys for keys in trials)
             if any(key in keys for keys in cell.get("trial_persisted") or ()):
                 persisted = True
     if not changed:
@@ -885,7 +889,7 @@ def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> 
     if not persisted and any("trial_persisted" in (c or {}) for row in rows
                              for c in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air"))):
         return "while_held"
-    return "lasts"
+    return "lasts" if every_trial else "sometimes"
 
 
 def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Sequence[tuple[float, int, dict]]],
@@ -896,8 +900,9 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
 
     With guard tables of the same build, a rule that failed is read against what they measured of its input
     changing its reader: changed only while held, a press-anchored reading cannot show it (while_held); changed in
-    some measured state but not in these presses, it is a guard (guarded); never changed anywhere, it stays a
-    mismatch, the strongest evidence.
+    only some trials of a fresh press and in every trial of none, a failed press is what they measured too
+    (intermittent); changed in some measured state but not in these presses, it is a guard (guarded); never changed
+    anywhere, it stays a mismatch, the strongest evidence.
     """
     out = []
     for item in rules:
@@ -909,6 +914,8 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
         evidence = guard_evidence(item["action"], item["then"], guards) if guards else None
         if verdict in ("mismatch", "mixed") and evidence == "while_held":
             verdict = "while_held"
+        elif verdict in ("mismatch", "mixed") and evidence == "sometimes":
+            verdict = "intermittent"
         elif verdict == "mismatch" and evidence == "lasts":
             verdict = "guarded"
         condition = ("" if item.get("condition_observable") is None else
@@ -1376,7 +1383,7 @@ TIERS = (("mismatch", "Not met", "the expectation failed in most of the sessions
          ("mixed", "Sporadic", "it failed in some sessions or events and held in others: a candidate for a "
                                "controlled test, not a finding"),
          ("held", "Held", "it was met every time it could be shown"))
-UNSHOWN = ("ambient", "masked", "at_limit", "not_airborne", "while_held", "unmeasured")
+UNSHOWN = ("ambient", "masked", "at_limit", "not_airborne", "while_held", "intermittent", "unmeasured")
 
 
 def report(guard_rows: Sequence[Mapping[str, Any]], play_rows: Sequence[Mapping[str, Any]],
@@ -1678,7 +1685,9 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
                     limit: int = LIVE_RULES_SHOWN) -> list[str]:
     """Each pre-registered action rule and situation, scored by code on this session's presses so far, as one line
     with its verdict: the same scoring `score-play` does after the session. A rule with fewer than two counted
-    presses is left out (nothing measured yet). A measurement for the frontier, never a decision: it judges them.
+    presses is left out (nothing measured yet), and so is one the guard tables say a press-anchored reading cannot
+    show (while_held, intermittent): its failed presses measure the reading, not the game. A measurement for the
+    frontier, never a decision: it judges them.
     """
     sessions, presses = [play_readings(trace_rows)], [play_presses(trace_rows)]
     tables = [guards] if guards else []
@@ -1687,7 +1696,7 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
                                [situation_presses(trace_rows)], tables))
     out = []
     for row in rows:
-        if row.get("verdict") == "unmeasured":
+        if row.get("verdict") in ("unmeasured", "while_held", "intermittent"):
             continue
         line = f"{row['verdict']}: {row['line']}"
         check = replay_check(row) if row.get("verdict") == "mismatch" else None

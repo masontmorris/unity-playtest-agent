@@ -969,8 +969,8 @@ class OptionExecutor:
         follows each press is its own. Ends `succeeded` after the last wait, or `state_changed` at a scene change.
 
         Committed like a sweep: S1 is not asked again until it ends, so it reads the session's readers itself,
-        into `measured["readings"]`: just before each press, just after its release, and every `PRESS_TEST_READ_S`
-        through each wait. Every press is released and collected, so its measured start and end are in the
+        into `measured["readings"]`: just before each press, once while it is held, just after its release, and
+        every `PRESS_TEST_READ_S` through each wait. Every press is released and collected, so its measured start and end are in the
         receipts; `measured["pressed"]` counts the presses made.
         """
         params = run.spec.params or {}
@@ -1003,6 +1003,7 @@ class OptionExecutor:
             if not await self._hold(run, action, self._observation(), lease_s=SWEEP_HOLD_S):
                 return
             until = self._clock() + SWEEP_HOLD_S
+            await read()   # while held: an effect shorter than the reading pace (a dash's flag) is still read
             while self._clock() < until:
                 if await self._tick(run) is None:
                     return
