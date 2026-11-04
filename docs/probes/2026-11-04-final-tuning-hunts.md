@@ -33,7 +33,7 @@ The clean runs found four faults in the new measurement, each fixed before the n
 | Hunt | Sessions (ending, turns, press tests) | Findings and replay | Cost |
 |---|---|---|---|
 | DragonBlaze `clean-04` | wall limit 119, 45; 162, 34; 157, 41 | f-69, f-81, f-108: interact near the NPC never starts dialogue, each **5 of 5**: the known base-game defect | $0.70 |
-| FPSKit `clean-02` | wall limit 257, 30; 154, 40; 140, 48 | f-190, f-201, f-67: interact at the dispenser changes no dispenser timer (see below) | $0.90 |
+| FPSKit `clean-02` | wall limit 257, 30; 154, 40; 140, 48 | f-190, f-201, f-67: interact at the dispenser changes no dispenser timer (see below). f-67 **4 of 4** (1 unknown); f-190, f-201 0 of 0, 5 unknown (no replayed press reached the region) | $0.90 |
 
 DragonBlaze `clean-04` ran on the commit before the limit-line text. That change touches only text the frontier
 reads; DragonBlaze's rules had no press at a reader's limit.
@@ -54,7 +54,8 @@ On FPSKit `clean-02`, aim_toggle held in 112 presses, and the looks held in 31 t
 
 **The clean FPSKit dispenser finding is a false finding.** This one is not fixed. The rule says interact within 3
 of `PickupDispenser-BlasterA` changes its timer, citing `interactMaxDistance` 3.0. It was unmeasured in all three
-earlier clean sessions (no press inside the region). Here it failed 15 of 15, and the frontier filed it three times.
+earlier clean sessions (no press inside the region). Here it failed 15 of 15, the frontier filed it three times,
+and f-67 replayed 4 of 4: on the clean build, interact at the dispenser changes no timer.
 The interact distance is probably a raycast's reach, so the press also needs the item in view, which a
 distance-only situation cannot express. The 4 November held-out FPSKit hunt filed the same kind of finding before
 any of this tuning (f-64, f-91, "interact by a dispenser"). So it is not new to this pass, but the clean build is not
