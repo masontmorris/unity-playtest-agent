@@ -654,3 +654,20 @@ def test_every_answer_schema_lists_every_property_as_required_as_strict_mode_dem
     for part in ("all", "actions", "magnitudes"):
         walk(expectations.request_body({"moves": [{"name": "right"}]}, part)["response_format"]["json_schema"]["schema"])
     walk(expectations.HYPOTHESES)
+
+
+def test_a_rule_gives_the_replay_check_a_finding_about_it_would_carry():
+    from playtest.contracts.investigation import ReproCheck
+    from playtest.runner.expectations import replay_check
+
+    talk = {"action": "interact", "then": "dialogue_typing", "then_expect": "reaches", "then_value": True,
+            "condition_observable": None, "target_object": "npc", "region_id": "situation_1"}
+    check = replay_check(talk)
+    assert check == {"field": "public.dialogue_typing", "after_action": "interact", "op": "!=", "value": True,
+                     "within_region": "situation_1"}
+    ReproCheck.model_validate(check)
+    spawn = {"action": "attack", "then": "projectile_life", "then_expect": "changes", "condition_observable": None}
+    assert replay_check(spawn) == {"field": "public.projectile_life", "after_action": "attack", "op": "unchanged",
+                                   "value": None}
+    assert replay_check({**talk, "then_value": 10})["tolerance"] == 0.5
+    assert replay_check({**spawn, "condition_observable": "grounded"}) is None   # a replay cannot hold to it

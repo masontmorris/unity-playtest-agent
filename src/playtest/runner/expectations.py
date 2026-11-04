@@ -1634,6 +1634,27 @@ def score_situations(situations: Sequence[Mapping[str, Any]], sessions: Sequence
 LIVE_RULES_SHOWN = 8
 
 
+def replay_check(rule: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The replay check a finding about this rule would carry, made from the rule as written: its reader read right
+    after each press of its action (inside its situation's region, for a situation), failing to do what the rule
+    says. None for a rule with a reader condition, which a replay cannot hold to: every press would be scored."""
+    if rule.get("condition_observable") is not None or not rule.get("then") or not rule.get("action"):
+        return None
+    check: dict[str, Any] = {"field": f"public.{rule['then']}", "after_action": rule["action"]}
+    if rule.get("then_expect") == "reaches":
+        value = rule.get("then_value")
+        check.update(op="!=", value=value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            check["tolerance"] = round(TOLERANCE * max(abs(value), 1.0), 6)
+    elif rule.get("then_expect") in ("changes", "increases", "decreases"):
+        check.update(op="unchanged", value=None)
+    else:
+        return None
+    if rule.get("target_object") and rule.get("region_id"):
+        check["within_region"] = rule["region_id"]
+    return check
+
+
 def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mapping[str, Any]],
                     controls: Mapping[str, frozenset], guards: Mapping[str, Any] | None = None,
                     limit: int = LIVE_RULES_SHOWN) -> list[str]:
@@ -1646,7 +1667,16 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
     rows = (score_action_rules(expectations.get("action_rules") or (), sessions, presses, [controls], tables)
             + score_situations(expectations.get("situations") or (), sessions, presses, [controls],
                                [situation_presses(trace_rows)], tables))
-    return [f"{row['verdict']}: {row['line']}" for row in rows if row.get("verdict") != "unmeasured"][:limit]
+    out = []
+    for row in rows:
+        if row.get("verdict") == "unmeasured":
+            continue
+        line = f"{row['verdict']}: {row['line']}"
+        check = replay_check(row) if row.get("verdict") == "mismatch" else None
+        if check is not None:
+            line += f"; a finding about it can carry this repro_check: {json.dumps(check)}"
+        out.append(line)
+    return out[:limit]
 
 
 def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:

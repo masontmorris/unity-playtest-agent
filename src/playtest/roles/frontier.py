@@ -275,6 +275,8 @@ SYSTEM = (
     "compares with the reading right before it, so a reader the reset already leaves where the control should have "
     "moved it from can show the bug. When the control should work only in a situation (next to someone to talk "
     "to), set within_region to that situation's progress region so only executions made inside it are scored. "
+    "A rule written before play that the facts score as a mismatch may give the repro_check a finding about it "
+    "can carry; use it unless the evidence shows a better one. "
     "The packet's findings are the candidate findings already recorded in this run; do not propose one of them "
     "again.\n"
     "- A field's calibration, in the manifest, says how it changed when preflight sampled it on this same build "
