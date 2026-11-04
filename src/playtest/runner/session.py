@@ -323,7 +323,7 @@ async def run_session(
             running: Any = None  # the executor of the option now running, for `interrupt`
 
             async def run(self, choice):
-                executor = OptionExecutor(loop.client, option_primitives, flight=self.flight)
+                executor = OptionExecutor(loop.client, option_primitives, flight=self.flight, readers=readers)
                 self.running = executor
                 try:
                     result = await executor.run(OptionSpec(choice.option_id, choice.template, choice.params,

@@ -713,6 +713,22 @@ def test_a_press_tests_presses_and_its_own_readings_score_an_action_rule_at_ever
     (row,) = expectations.score_action_rules([no_condition], [expectations.play_readings(rows)], [presses], [controls])
     assert (row["n"], row["k"], row["verdict"]) == (4, 1, "mixed")
     assert row["not_counted"]["overlapped"] == 0
+    # The same presses with readings that carry no reader value: nothing was read, so nothing is counted or failed.
+    for reading in readings:
+        reading["values"] = {}
+    (row,) = expectations.score_action_rules([no_condition], [expectations.play_readings(rows)], [presses], [controls])
+    assert (row["n"], row["k"], row["verdict"]) == (0, 0, "unmeasured")
+
+
+def test_a_press_whose_reader_was_never_read_in_its_window_is_unread_never_failed():
+    readings = [(0.0, 1, {"cooldown": 0.0}), (0.5, 2, {"cooldown": 0.0}), (1.0, 3, {"cooldown": 0.0}),
+                (1.5, 4, {"cooldown": 0.0, "shots": 0}), (3.0, 5, {"cooldown": 0.0, "shots": 0}),
+                (3.5, 6, {"cooldown": 0.0, "shots": 0}), (4.0, 7, {"cooldown": 0.0, "shots": 0})]
+    presses = [(0.1, 0.2, "attack"), (3.1, 3.2, "attack")]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None, within_s=0.5)
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls])
+    assert row["not_counted"]["unread"] == 1 and (row["n"], row["k"]) == (1, 1)
 
 
 def test_a_declared_size_one_sessions_table_measures_outside_its_band_is_stated_to_that_session():

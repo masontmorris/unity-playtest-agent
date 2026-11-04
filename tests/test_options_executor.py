@@ -742,15 +742,40 @@ def test_a_press_test_with_no_control_or_press_count_is_rejected_before_any_pres
     assert world.requests == []
 
 
-def test_a_press_test_reads_the_readers_around_each_press_and_through_each_wait():
+class _Readers:
+    """The session's field readers: each read returns every reader's value now (here, how many reads came before)."""
+
+    def __init__(self, fail_after: int | None = None):
+        self.reads, self.fail_after = 0, fail_after
+
+    async def read(self):
+        from types import SimpleNamespace
+
+        self.reads += 1
+        if self.fail_after is not None and self.reads > self.fail_after:
+            raise RuntimeError("inspect failed")
+        return SimpleNamespace(values={"count": self.reads})
+
+
+def test_a_press_test_reads_the_sessions_readers_around_each_press_and_through_each_wait():
     world, primitives, _ = build("traverse+x")
     spec = OptionSpec(option_id="test:rise_up", template="press_test",
                       params={"action": "rise_up", "presses": 2, "wait_s": 1.0}, intent="test rise_up")
-    outcome = run_spec(world, primitives, spec)
+    outcome = run_spec(world, primitives, spec, readers=_Readers())
     readings = outcome.measured["readings"]
     times = [row["wall_s"] for row in readings]
     assert times == sorted(times) and len(readings) >= 2 * 3
-    assert all(not {"camera", "probe", "controlled"} & set(row["values"]) for row in readings)
+    assert [row["values"]["count"] for row in readings] == list(range(1, len(readings) + 1))
+
+
+def test_a_press_test_with_no_readers_or_a_failed_read_records_no_reading_for_it():
+    world, primitives, _ = build("traverse+x")
+    spec = OptionSpec(option_id="test:rise_up", template="press_test",
+                      params={"action": "rise_up", "presses": 2, "wait_s": 1.0}, intent="test rise_up")
+    assert run_spec(world, primitives, spec).measured["readings"] == []
+    world, primitives, _ = build("traverse+x")
+    outcome = run_spec(world, primitives, spec, readers=_Readers(fail_after=2))
+    assert [row["values"]["count"] for row in outcome.measured["readings"]] == [1, 2]
 
 
 def test_a_press_test_is_committed_so_an_interrupt_lets_every_press_and_wait_finish():

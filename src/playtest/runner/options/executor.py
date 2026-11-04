@@ -45,8 +45,6 @@ MAX_AGE_S = 10 * PERIOD_S
 SWEEP_HOLD_S = 0.2     # one press of each control a sweep tries
 SWEEP_SETTLE_S = 0.6   # how long after each press a sweep watches for a change
 PRESS_TEST_READ_S = 0.5   # how often a press test reads the readers through a wait: about a turn's pace
-# The observation's own fields, beside the manifest's readers: a press test's readings keep the readers only.
-_NOT_READERS = ("camera", "probe", "controlled")
 
 # A block is called only over a window long enough for one fast tick to be noise: six observation
 # periods, a bit under a third of a second.
@@ -521,7 +519,8 @@ class OptionExecutor:
 
     `dead_fields` names manifest-declared death or health readers by their `observation.public` path and
     the value that means dead (``True`` for a flag, ``0`` for a count that reaches zero). Only declared
-    readers are watched: the executor invents none.
+    readers are watched: the executor invents none. `readers` (the session's field readers) is what a press
+    test reads; without it a press test takes no readings, and its presses are scored as unread.
     """
 
     def __init__(
@@ -535,8 +534,10 @@ class OptionExecutor:
         period_s: float = PERIOD_S,
         flight: dict[str, Any] | None = None,
         wall_clock: Callable[[], datetime] | None = None,
+        readers: Any = None,
     ) -> None:
         self._client = client
+        self._readers = readers
         self._primitives = primitives
         self._clock = clock
         self._sleep = sleep or asyncio.sleep
@@ -967,8 +968,8 @@ class OptionExecutor:
         """One control pressed `presses` times, each press followed by `wait_s` with nothing pressed, so what
         follows each press is its own. Ends `succeeded` after the last wait, or `state_changed` at a scene change.
 
-        Committed like a sweep: S1 is not asked again until it ends, so it reads the readers itself, into
-        `measured["readings"]`: just before each press, just after its release, and every `PRESS_TEST_READ_S`
+        Committed like a sweep: S1 is not asked again until it ends, so it reads the session's readers itself,
+        into `measured["readings"]`: just before each press, just after its release, and every `PRESS_TEST_READ_S`
         through each wait. Every press is released and collected, so its measured start and end are in the
         receipts; `measured["pressed"]` counts the presses made.
         """
@@ -982,16 +983,23 @@ class OptionExecutor:
         readings: list[dict[str, Any]] = []
         run.measured["readings"] = readings
 
-        def read() -> None:
-            observation = self._last_obs
-            if observation is not None and observation.wall_utc is not None:
-                readings.append({"wall_s": observation.wall_utc.timestamp(),
-                                 "values": {k: v for k, v in observation.public.items() if k not in _NOT_READERS}})
+        async def read() -> None:
+            # The session's readers, read as a press reading is (`--press-readings`): a read that fails, or no
+            # readers at all, is no reading, never a reading with nothing in it.
+            if self._readers is None:
+                return
+            try:
+                sample = await self._readers.read()
+            except Exception:  # noqa: BLE001 - a reading that could not be taken is unmeasured
+                return
+            values = getattr(sample, "values", None)
+            if isinstance(values, Mapping) and values:
+                readings.append({"wall_s": self._wall_clock().timestamp(), "values": dict(values)})
 
         if await self._tick(run) is None:
             return
         for _ in range(presses):
-            read()
+            await read()
             if not await self._hold(run, action, self._observation(), lease_s=SWEEP_HOLD_S):
                 return
             until = self._clock() + SWEEP_HOLD_S
@@ -1002,15 +1010,15 @@ class OptionExecutor:
             run.measured["pressed"] += 1
             if await self._tick(run) is None:
                 return
-            read()
+            await read()
             until, next_read = self._clock() + wait_s, self._clock() + PRESS_TEST_READ_S
             while self._clock() < until:
                 if await self._tick(run) is None:
                     return
                 if self._clock() >= next_read:
-                    read()
+                    await read()
                     next_read += PRESS_TEST_READ_S
-        read()
+        await read()
         run.end("succeeded")
 
     async def _wait(self, run: _Run) -> None:

@@ -561,8 +561,9 @@ def play_readings(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, 
         elif row.get("kind") == "option":
             # A press test reads the readers itself while S1 waits for it: around each press and through each wait.
             for reading in ((body.get("outcome") or {}).get("measured") or {}).get("readings") or ():
-                if isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float)):
-                    out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading.get("values") or {})))
+                if (isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float))
+                        and reading.get("values")):
+                    out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading["values"])))
     out.sort(key=lambda item: item[0])
     return out
 
@@ -778,10 +779,11 @@ def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[flo
     The consequence counts from the reading just before the press up to the first reading at or after within_s past
     the press's end, so a reading's lag cannot fail it. A press is not counted when its condition did not hold or
     could not be read just before it, when the next press of the same input lands inside its window, when the session ended
-    inside its window, or when an unread stretch lies inside it.
+    inside its window, when an unread stretch lies inside it, or when its reader was not read just before it or
+    anywhere in its window.
     """
     skipped = skipped if skipped is not None else {}
-    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap", "at_limit"):
+    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap", "at_limit", "unread"):
         skipped.setdefault(key, 0)
     events = []
     for index, (readings, pressed, served) in enumerate(zip(sessions, presses, controls)):
@@ -816,6 +818,10 @@ def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[flo
                 continue
             if usual and any(b - a > UNOBSERVED * usual for a, b in zip(stamps, stamps[1:])):
                 skipped["unobserved_gap"] += 1
+                continue
+            if before.get(item["then"]) is None or all(v is None for v in window):
+                # Its reader was not read before the press or in its window: unknown, never a failure.
+                skipped["unread"] += 1
                 continue
             events.append({"session": index, "seq": readings[before_index][1], "at": start, "action": action,
                            "before": before, "trigger": readings[before_index + 1][2] if window else before,
