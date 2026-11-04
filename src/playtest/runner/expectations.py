@@ -772,7 +772,8 @@ def _condition_holds(item: Mapping[str, Any], values: Mapping[str, Any]) -> bool
 
 def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[float, int, dict]]],
                   presses: Sequence[Sequence[tuple[float, float, str]]], controls: Sequence[Mapping[str, frozenset]],
-                  skipped: dict[str, int] | None = None) -> list[dict[str, Any]]:
+                  skipped: dict[str, int] | None = None,
+                  limits: list[tuple[float, int]] | None = None) -> list[dict[str, Any]]:
     """Every press of the rule's input (alone or inside a chord or option that includes its controls) whose
     consequence could be read, with whether it followed in time.
 
@@ -826,14 +827,14 @@ def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[flo
             events.append({"session": index, "seq": readings[before_index][1], "at": start, "action": action,
                            "before": before, "trigger": readings[before_index + 1][2] if window else before,
                            "followed": _followed(item, before.get(item["then"]), window), "window": window})
-        _drop_at_limit(item, readings, events, index, skipped)
+        _drop_at_limit(item, readings, events, index, skipped, limits)
     for event in events:
         event.pop("window", None)
     return events
 
 
 def _drop_at_limit(item: Mapping[str, Any], readings: Sequence[tuple[float, int, dict]], events: list[dict[str, Any]],
-                   session: int, skipped: dict[str, int]) -> None:
+                   session: int, skipped: dict[str, int], limits: list[tuple[float, int]] | None = None) -> None:
     """Leave out this session's failed presses that began with the reader already where the input drives it.
 
     The input's direction is read from its own presses that were followed (a look down raised the pitch). A failed
@@ -861,6 +862,8 @@ def _drop_at_limit(item: Mapping[str, Any], readings: Sequence[tuple[float, int,
         if not e["followed"] and start is not None and (start - end) * direction >= -1e-3:
             events.remove(e)
             skipped["at_limit"] = skipped.get("at_limit", 0) + 1
+            if limits is not None and (end, direction) not in limits:
+                limits.append((end, direction))
 
 
 def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> str | None:
@@ -907,8 +910,12 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
     out = []
     for item in rules:
         skipped: dict[str, int] = {}
-        events = action_events(item, sessions, presses, controls, skipped)
+        limits: list[tuple[float, int]] = []
+        events = action_events(item, sessions, presses, controls, skipped, limits)
         failed = [e for e in events if not e["followed"]]
+        limit = (" or ".join(f"{value:g}" for value, _ in limits) + ", the furthest value read in the direction this "
+                 "input moves it (" + "; ".join(sorted({"increasing" if d > 0 else "decreasing" for _, d in limits}))
+                 + ")") if limits else ""
         verdict = ("unmeasured" if len(events) < 2 else "mismatch" if 2 * len(failed) > len(events)
                    else "held" if not failed else "mixed")
         evidence = guard_evidence(item["action"], item["then"], guards) if guards else None
@@ -928,9 +935,8 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
                     "line": f"pressing {item['action']}{condition}: {then} within {item['within_s']:g} s "
                             f"({item['basis']}: {item['because']}); not in {len(failed)} of {len(events)} presses "
                             f"in play" + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")
-                            + (f"; {skipped['at_limit']} presses began with {item['then']} already at the furthest "
-                               f"value read in the direction this input moves it, and were not counted"
-                               if skipped.get("at_limit") else "")})
+                            + (f"; {skipped['at_limit']} presses began with {item['then']} already at {limit}, and "
+                               f"were not counted" if skipped.get("at_limit") else "")})
     return out
 
 
