@@ -1612,9 +1612,12 @@ def score_situations(situations: Sequence[Mapping[str, Any]], sessions: Sequence
         if item.get("target_object") is None:
             continue
         kept_presses, skipped_out, unread = [], 0, 0
-        for pressed, recorded in zip(presses, effects):
+        for pressed, recorded, served in zip(presses, effects, controls):
             mine = []
+            verb = served.get(item["action"])
             for start, end, action in pressed:
+                if action != item["action"] and not (verb and verb <= served.get(action, frozenset())):
+                    continue   # another input's press says nothing about this rule's situation
                 observed = next((o for t, o in recorded if abs(t - start) <= 1.5 and t <= start + 0.05), None)
                 where = _in_situation(item, observed) if observed is not None else None
                 if where is None:
