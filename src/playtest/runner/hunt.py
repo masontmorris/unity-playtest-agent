@@ -138,7 +138,7 @@ def guards_step(config: Mapping[str, Any], out: Path, env: Mapping[str, str], sa
     if folder.exists():
         raise HuntError(f"{folder} exists without guards.json; move it aside to measure again")
     say("guards: one guards-only session (no model call)")
-    code = _run(_pwsh("run-session.ps1", *_base(config, folder), "-MaxCalls", "1", "-WallLimitSeconds", "60",
+    code = _run(_pwsh("run-session.ps1", *_base(config, folder), "-MaxCalls", "1", "-WallLimitSeconds", "180",
                       "-Objective", "measure the guard table", "-MeasureGuards", "-GuardsOnly", "-NoFinish",
                       "-ManifestOrigin", f"hunt guards on {config['ref']}"), out / "guards.log", env)
     if not (folder / "guards.json").is_file():
