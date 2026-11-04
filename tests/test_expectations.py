@@ -574,6 +574,8 @@ def test_one_stick_pushed_two_ways_is_two_inputs_and_a_reader_at_its_clamp_canno
     (row,) = expectations.score_action_rules([rule], [readings], [presses], [controls])
     # Three presses raised the pitch; the fourth began at 80, the furthest the session read: at its clamp.
     assert (row["n"], row["k"], row["verdict"], row["not_counted"]["at_limit"]) == (3, 0, "held", 1)
+    assert row["line"].endswith("; 1 presses began with pitch already at the furthest value read in the direction "
+                                "this input moves it, and were not counted")
     dead = [(i * 1.0, 100 + i, {"pitch": 10.0}) for i in range(13)]
     (row,) = expectations.score_action_rules([rule], [dead], [presses], [controls])
     assert (row["k"], row["verdict"]) == (4, "mismatch")          # never moved: no direction, nothing left out

@@ -927,7 +927,10 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
                     "not_counted": skipped, "guard_evidence": evidence,
                     "line": f"pressing {item['action']}{condition}: {then} within {item['within_s']:g} s "
                             f"({item['basis']}: {item['because']}); not in {len(failed)} of {len(events)} presses "
-                            f"in play" + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")})
+                            f"in play" + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")
+                            + (f"; {skipped['at_limit']} presses began with {item['then']} already at the furthest "
+                               f"value read in the direction this input moves it, and were not counted"
+                               if skipped.get("at_limit") else "")})
     return out
 
 
