@@ -242,6 +242,11 @@ def _parser() -> argparse.ArgumentParser:
                         help="run options, actions and skills in the background so S1 decides again at once: picking "
                              "the running one again keeps it going, another choice interrupts it; a hop in flight is "
                              "waited out (opt in; also UPA_RUN_DECIDE_DURING_OPTIONS)")
+    parser.add_argument("--press-tests", action="store_true",
+                        default=_env("UPA_RUN_PRESS_TESTS", switch, False),
+                        help="with --options and --expectations or --situations: offer one press-test option per "
+                             "input their action rules press, that input pressed 4 times with each "
+                             "rule's window between presses (opt in; also UPA_RUN_PRESS_TESTS)")
     parser.add_argument("--hold-met-directive", action="store_true",
                         default=_env("UPA_RUN_HOLD_MET_DIRECTIVE", switch, False),
                         help="keep a directive whose setpoint was met in S1's context, marked met, until its own "
@@ -534,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["hold_met_directive"] = True
         if args.decide_during_options:
             plan["decide_during_options"] = True
+        if args.press_tests:
+            plan["press_tests"] = True
         if args.measure_air_rise:
             plan["measure_air_rise"] = True
         if args.measure_guards:
@@ -669,6 +676,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         primitives = memory = None
         if args.placement and not args.options:
             raise ValueError("--placement requires --options")
+        if args.press_tests and not args.options:
+            raise ValueError("--press-tests requires --options")
         if args.options:
             from .options.primitives import primitives_from_calibration
             from .options.memory import OutcomeMemory
@@ -860,6 +869,16 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                                   max_calls=args.max_frontier_calls,  # the cap the record states, not the arm's
                                   rules=live_rules)
                      if args.frontier else None)
+        press_tests: list[Any] = []
+        if args.press_tests:
+            from .expectations import press_test_specs
+
+            # Offered beside the other options, from the rules this session was given; S1 alone selects one.
+            press_tests = press_test_specs(*(json.loads(path.read_text(encoding="utf-8"))
+                                             for path in dict.fromkeys(p for p in (args.expectations, args.situations)
+                                                                       if p is not None)))
+            replay._save(run_dir / "press-tests.json", {"options": [
+                {"option_id": s.option_id, "params": s.params, "intent": s.intent} for s in press_tests]})
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(
@@ -874,7 +893,7 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 option_primitives=primitives, option_memory=memory, placement=args.placement,
                 reach_regions=manifest.reach_regions,
                 keep_help_across_restart=args.keep_help_across_restart,
-                decide_during_options=args.decide_during_options)
+                decide_during_options=args.decide_during_options, press_tests=press_tests)
             closing = (result.status, result.error)
             after_close = None
             if result.error is not None and "closed" in result.error:

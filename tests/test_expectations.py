@@ -266,7 +266,7 @@ def test_a_declared_magnitude_is_checked_against_what_the_guard_tables_measured_
         {"quantity": "rise_height", "action": "jump", "state": None, "value": 1.2, "basis": "declared_value",
          "because": "jumpHeight 1.2"}], [magnitude_table(back_speed=2.5, peak=1.0)] * 3)
     assert [r["verdict"] for r in rows] == ["held", "mismatch", "held", "held"]
-    assert rows[1]["measured"] == [2.5, 2.5, 2.5] and "outside -15%/+15% in 3 of 3" in rows[1]["line"]
+    assert rows[1]["measured"] == [2.5, 2.5, 2.5] and "outside -10%/+10% in 3 of 3" in rows[1]["line"]
     # A peak read 17% under its declared height is sampling (a reading rarely lands on the apex); 31% under is not.
     (low,) = expectations.score_magnitudes([{"quantity": "rise_height", "action": "jump", "state": None,
                                              "basis": "declared_value", "because": "x", "value": 1.45}],
@@ -574,6 +574,8 @@ def test_one_stick_pushed_two_ways_is_two_inputs_and_a_reader_at_its_clamp_canno
     (row,) = expectations.score_action_rules([rule], [readings], [presses], [controls])
     # Three presses raised the pitch; the fourth began at 80, the furthest the session read: at its clamp.
     assert (row["n"], row["k"], row["verdict"], row["not_counted"]["at_limit"]) == (3, 0, "held", 1)
+    assert row["line"].endswith("; 1 presses began with pitch already at 80, the furthest value read in the "
+                                "direction this input moves it (increasing), and were not counted")
     dead = [(i * 1.0, 100 + i, {"pitch": 10.0}) for i in range(13)]
     (row,) = expectations.score_action_rules([rule], [dead], [presses], [controls])
     assert (row["k"], row["verdict"]) == (4, "mismatch")          # never moved: no direction, nothing left out
@@ -671,3 +673,107 @@ def test_a_rule_gives_the_replay_check_a_finding_about_it_would_carry():
                                    "value": None}
     assert replay_check({**talk, "then_value": 10})["tolerance"] == 0.5
     assert replay_check({**spawn, "condition_observable": "grounded"}) is None   # a replay cannot hold to it
+
+
+def test_a_press_test_presses_each_rules_input_four_times_its_longest_window_apart_and_never_a_situations():
+    specs = expectations.press_test_specs(
+        {"action_rules": [attack_rule(within_s=1.0), attack_rule(within_s=1.5), attack_rule(action="dash", within_s=2.0),
+                          attack_rule(action="charge", within_s=8.0)],
+         "situations": [attack_rule(action="interact", situation="next to the NPC")]},
+        {"action_rules": [attack_rule(action="dash", within_s=1.0)]})
+    assert [(s.option_id, s.template, s.params) for s in specs] == [
+        ("test:attack", "press_test", {"action": "attack", "presses": 4, "wait_s": 2.0}),
+        ("test:dash", "press_test", {"action": "dash", "presses": 4, "wait_s": 2.5})]
+    assert specs[0].intent == "test attack: press it 4 times, each followed by 2 s with nothing pressed, about 9 s"
+    plan = expectations.test_plan({"action_rules": [attack_rule()]}, tests=True)
+    assert plan.endswith("A test option for an input (test:<input>) makes its presses that far apart for you. "
+                         "Then keep exploring.")
+
+
+def test_a_press_tests_presses_and_its_own_readings_score_an_action_rule_at_every_press():
+    """One press test of attack, as its option trace row records it: four presses two seconds apart, released and
+    collected, with the readers read around each press and through each wait. Every press is counted."""
+    receipts, readings = [], []
+    for n in range(4):
+        start = 100.0 + 2.2 * n
+        receipts += [{"type": "request", "action_id": f"test:attack.{n + 1}", "action": "attack"},
+                     {"type": "execution", "action_id": f"test:attack.{n + 1}", "status": "running",
+                      "input_start_wall_s": start},
+                     {"type": "execution", "action_id": f"test:attack.{n + 1}", "status": "completed",
+                      "input_start_wall_s": start, "applied_duration_s": 0.2}]
+        shots = [0, 1, 1, 2][n]   # the second press's shot never comes
+        readings += [{"wall_s": start - 0.01, "values": {"cooldown": 0.0, "shots": shots}}]
+        readings += [{"wall_s": start + 0.25 + 0.5 * k, "values": {"cooldown": 0.0, "shots": shots + (n != 1)}}
+                     for k in range(4)]
+    rows = [{"kind": "option", "trace_seq": 7, "body": {
+        "option_id": "test:attack", "template": "press_test", "receipts": receipts,
+        "outcome": {"measured": {"pressed": 4, "readings": readings}}}}]
+    presses = expectations.play_presses(rows)
+    assert [p[0] for p in presses] == [100.0, 102.2, 104.4, 106.6]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    (row,) = expectations.score_action_rules([no_condition], [expectations.play_readings(rows)], [presses], [controls])
+    assert (row["n"], row["k"], row["verdict"]) == (4, 1, "mixed")
+    assert row["not_counted"]["overlapped"] == 0
+    # The same presses with readings that carry no reader value: nothing was read, so nothing is counted or failed.
+    for reading in readings:
+        reading["values"] = {}
+    (row,) = expectations.score_action_rules([no_condition], [expectations.play_readings(rows)], [presses], [controls])
+    assert (row["n"], row["k"], row["verdict"]) == (0, 0, "unmeasured")
+
+
+def test_a_press_whose_reader_was_never_read_in_its_window_is_unread_never_failed():
+    readings = [(0.0, 1, {"cooldown": 0.0}), (0.5, 2, {"cooldown": 0.0}), (1.0, 3, {"cooldown": 0.0}),
+                (1.5, 4, {"cooldown": 0.0, "shots": 0}), (3.0, 5, {"cooldown": 0.0, "shots": 0}),
+                (3.5, 6, {"cooldown": 0.0, "shots": 0}), (4.0, 7, {"cooldown": 0.0, "shots": 0})]
+    presses = [(0.1, 0.2, "attack"), (3.1, 3.2, "attack")]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None, within_s=0.5)
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls])
+    assert row["not_counted"]["unread"] == 1 and (row["n"], row["k"]) == (1, 1)
+
+
+def test_a_declared_size_one_sessions_table_measures_outside_its_band_is_stated_to_that_session():
+    size = {"quantity": "move_speed", "action": "back", "state": None, "value": 5.0, "basis": "declared_value",
+            "because": "moveSpeed 5"}
+    (row,) = expectations.unmet_in_session({"predictions": [], "magnitudes": [size]}, magnitude_table(back_speed=2.5))
+    assert row["verdict"] == "mismatch" and row["line"].startswith("move speed of back: expected 5")
+    assert expectations.unmet_in_session({"predictions": [], "magnitudes": [size]}, magnitude_table()) == []
+
+
+def test_a_rule_failing_where_fresh_presses_change_its_reader_only_sometimes_is_intermittent_not_a_mismatch():
+    def table(trials):
+        return {"verbs": {"attack": {"rest": {"changed": {"shots": [0, 1]}, "trial_changed": trials,
+                                              "trial_persisted": trials},
+                                     "moving": {}, "air": None}}}
+    sometimes, always = table([["shots"], []]), table([["shots"], ["shots"]])
+    assert expectations.guard_evidence("attack", "shots", [sometimes, sometimes]) == "sometimes"
+    assert expectations.guard_evidence("attack", "shots", [sometimes, always]) == "lasts"
+    readings = [(i * 0.5, 100 + i, {"cooldown": 0.0, "shots": 0}) for i in range(21)]
+    presses = [(0.2, 0.3, "attack"), (4.2, 4.3, "attack"), (8.2, 8.3, "attack")]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    no_condition = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls], [sometimes])
+    assert (row["k"], row["n"], row["verdict"]) == (3, 3, "intermittent")
+    (row,) = expectations.score_action_rules([no_condition], [readings], [presses], [controls], [always])
+    assert row["verdict"] == "guarded"
+
+
+def test_the_live_rule_lines_leave_out_what_a_press_anchored_reading_cannot_show():
+    def obs(seq, t, shots):
+        stamp = f"2026-11-04T00:00:{t:06.3f}+00:00"
+        return {"trace_seq": seq, "kind": "observation", "body": {"wall_utc": stamp, "public": {"shots": shots}}}
+
+    def press(seq, t):
+        return {"trace_seq": seq, "kind": "execution", "body": {"request": {"action": "attack"}, "records": [
+            {"status": "completed", "input_start_wall_s": 1793750400.0 + t, "applied_duration_s": 0.2}]}}
+    rows = [obs(n, n * 0.5, 0) for n in range(1, 40)] + [press(100 + n, 1.0 + 4 * n) for n in range(4)]
+    controls = {"attack": frozenset({("Mouse", "left")})}
+    rule = attack_rule(condition_observable=None, condition_op=None, condition_value=None)
+    held_only = {"verbs": {"attack": {"rest": {"changed": {"shots": [0, 1]}, "trial_changed": [["shots"], ["shots"]],
+                                               "trial_persisted": [[], []]}, "moving": {}, "air": None}}}
+    never = {"verbs": {"attack": {"rest": {"changed": {}, "trial_changed": [[], []], "trial_persisted": [[], []]},
+                                  "moving": {}, "air": None}}}
+    assert expectations.live_rule_lines({"action_rules": [rule]}, rows, controls, held_only) == []
+    (line,) = expectations.live_rule_lines({"action_rules": [rule]}, rows, controls, never)
+    assert line.startswith("mismatch: pressing attack: shots increases within 1 s")

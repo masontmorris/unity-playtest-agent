@@ -79,13 +79,13 @@ def test_a_hunt_runs_each_step_in_order_replays_what_was_filed_and_reports_it(tm
     result = hunt.hunt(config, tmp_path / "out", say=lambda text: None)
     kinds = [("guards" if "-GuardsOnly" in c else "predict " + c[c.index("--part") + 1] if "predict" in c
               else "replay" if any("reproduce.ps1" in str(a) for a in c) else "session") for c in steps.calls]
-    assert kinds == ["guards", "predict all", "predict actions", "session", "session", "replay"]
-    session = steps.calls[3]
+    assert kinds == ["guards", "predict all", "predict actions", "predict magnitudes", "session", "session", "replay"]
+    session = steps.calls[4]
     assert Path(session[session.index("-SituationsPath") + 1]).parent.name == "expect-actions"
     assert Path(session[session.index("-ExpectationsPath") + 1]).parent.name == "expect-all"
     assert "-PressReadings" in session and "-MeasureGuards" in session
-    assert (tmp_path / "out" / "objective.txt").read_text(encoding="utf-8").startswith(
-        "Try each of these on purpose")
+    objective = (tmp_path / "out" / "objective.txt").read_text(encoding="utf-8")
+    assert objective.startswith("Try each of these on purpose") and "test:<input>" in objective
     assert [f["finding_id"] for f in result["findings"]] == ["f-9"]
     assert result["findings"][0]["replay"]["k"] == 5
     text = (tmp_path / "out" / "hunt.md").read_text(encoding="utf-8")
@@ -94,6 +94,38 @@ def test_a_hunt_runs_each_step_in_order_replays_what_was_filed_and_reports_it(tm
     steps.calls.clear()   # a second run resumes: nothing already done runs again
     hunt.hunt(config, tmp_path / "out", say=lambda text: None)
     assert steps.calls == []
+
+
+def test_the_declared_sizes_the_focused_call_wrote_are_stated_in_each_session_beside_the_full_predictions(
+        tmp_path, steps, monkeypatch):
+    size = {"quantity": "move_speed", "action": "move_right", "state": None, "value": 10.0, "basis": "declared_value",
+            "because": "speed 10"}
+    original = steps.__call__
+
+    def with_sizes(args, log, env=None):
+        code = original(args, log, env)
+        if "predict" in args and args[args.index("--part") + 1] == "magnitudes":
+            Path(args[args.index("--output") + 1], "expectations.json").write_text(
+                json.dumps({"predictions": [], "magnitudes": [size]}), encoding="utf-8")
+        return code
+
+    monkeypatch.setattr(hunt, "_run", with_sizes)
+    hunt.hunt(_config(tmp_path), tmp_path / "out", say=lambda text: None)
+    session = next(c for c in steps.calls if "-ExpectationsPath" in c)
+    stated = Path(session[session.index("-ExpectationsPath") + 1])
+    assert stated.name == "expectations-session.json"
+    assert json.loads(stated.read_text(encoding="utf-8")) == {"predictions": [], "magnitudes": [size]}
+
+
+def test_the_report_lists_every_declared_size_and_counts_a_size_off_in_most_tables_as_unmet(tmp_path):
+    sizes = [{"verdict": "held", "line": "move speed of move_right: expected 10"},
+             {"verdict": "mismatch", "line": "verb speed of dash while move_right held: expected 15"}]
+    scores = {"guards": {"scored": []}, "magnitudes": {"scored": sizes}, "play": {"scored": []},
+              "rules": {"scored": []}}
+    text = hunt.report(_config(tmp_path), tmp_path, [], [], scores)
+    unmet, measured = text.split("## Declared sizes measured on the guard tables")
+    assert "verb speed of dash" in unmet and "move speed of move_right" not in unmet
+    assert "- held: move speed of move_right" in measured and "- mismatch: verb speed of dash" in measured
 
 
 def test_a_hunt_refuses_a_project_on_another_branch_and_a_config_with_unknown_keys(tmp_path, monkeypatch):

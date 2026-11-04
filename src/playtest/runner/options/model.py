@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 TERMINATIONS = ("succeeded", "blocked", "fell", "state_changed", "timed_out", "rejected", "unmeasured", "interrupted")
-TEMPLATES = ("traverse", "retreat", "hop", "wait", "place", "sweep")
+TEMPLATES = ("traverse", "retreat", "hop", "wait", "place", "sweep", "press_test")
 
 
 @dataclass(frozen=True)

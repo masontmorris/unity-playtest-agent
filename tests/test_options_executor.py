@@ -700,3 +700,104 @@ def test_a_body_relative_hop_resolves_its_direction_from_the_measured_yaw_and_cl
     outcome = run_spec(world, primitives, body)
     assert outcome.terminated_by == "succeeded", outcome.receipts
     assert [round(v, 6) for v in outcome.measured["world_direction"]] == [1.0, 0.0, 0.0]
+
+
+# --- press test ---------------------------------------------------------------------------
+
+
+def _terminal(outcome: OptionOutcome) -> dict[str, str]:
+    """Each input's last execution receipt status, by action id."""
+    last = {}
+    for row in outcome.receipts:
+        if row.get("type") == "execution":
+            last[row["action_id"]] = row["status"]
+    return last
+
+
+def test_a_sweep_releases_and_collects_each_press_so_its_end_is_in_the_receipts():
+    world, primitives, _ = build("traverse+x")
+    sweep = OptionSpec(option_id="sweep", template="sweep", params={"actions": ["rise_up", "move_left"]},
+                       intent="try each untried control once")
+    outcome = run_spec(world, primitives, sweep)
+    assert _terminal(outcome) == {"sweep.1": "completed", "sweep.2": "completed"}
+
+
+def test_a_press_test_presses_its_control_apart_with_nothing_pressed_between_and_succeeds():
+    world, primitives, _ = build("traverse+x")
+    spec = OptionSpec(option_id="test:rise_up", template="press_test",
+                      params={"action": "rise_up", "presses": 3, "wait_s": 1.0}, intent="test rise_up")
+    outcome = run_spec(world, primitives, spec)
+    assert outcome.terminated_by == "succeeded" and outcome.measured["pressed"] == 3
+    assert [row["action"] for row in world.requests] == ["rise_up"] * 3
+    assert _terminal(outcome) == {f"test:rise_up.{n}": "completed" for n in (1, 2, 3)}
+    assert outcome.duration_s >= 3 * 1.0
+
+
+def test_a_press_test_with_no_control_or_press_count_is_rejected_before_any_press():
+    world, primitives, _ = build("traverse+x")
+    for params in ({"action": "", "presses": 2, "wait_s": 1.0}, {"action": "rise_up", "presses": 0, "wait_s": 1.0},
+                   {"action": "rise_up", "presses": 2, "wait_s": None}):
+        outcome = run_spec(world, primitives, OptionSpec("test:x", "press_test", params, "test"))
+        assert outcome.terminated_by == "rejected"
+    assert world.requests == []
+
+
+class _Readers:
+    """The session's field readers: each read returns every reader's value now (here, how many reads came before)."""
+
+    def __init__(self, fail_after: int | None = None):
+        self.reads, self.fail_after = 0, fail_after
+
+    async def read(self):
+        from types import SimpleNamespace
+
+        self.reads += 1
+        if self.fail_after is not None and self.reads > self.fail_after:
+            raise RuntimeError("inspect failed")
+        return SimpleNamespace(values={"count": self.reads})
+
+
+def test_a_press_test_reads_the_sessions_readers_around_each_press_and_through_each_wait():
+    world, primitives, _ = build("traverse+x")
+    spec = OptionSpec(option_id="test:rise_up", template="press_test",
+                      params={"action": "rise_up", "presses": 2, "wait_s": 1.0}, intent="test rise_up")
+    outcome = run_spec(world, primitives, spec, readers=_Readers())
+    readings = outcome.measured["readings"]
+    times = [row["wall_s"] for row in readings]
+    assert times == sorted(times) and len(readings) >= 2 * 3
+    assert [row["values"]["count"] for row in readings] == list(range(1, len(readings) + 1))
+
+
+def test_a_press_test_with_no_readers_or_a_failed_read_records_no_reading_for_it():
+    world, primitives, _ = build("traverse+x")
+    spec = OptionSpec(option_id="test:rise_up", template="press_test",
+                      params={"action": "rise_up", "presses": 2, "wait_s": 1.0}, intent="test rise_up")
+    assert run_spec(world, primitives, spec).measured["readings"] == []
+    world, primitives, _ = build("traverse+x")
+    outcome = run_spec(world, primitives, spec, readers=_Readers(fail_after=2))
+    assert [row["values"]["count"] for row in outcome.measured["readings"]] == [1, 2]
+
+
+def test_a_press_test_is_committed_so_an_interrupt_lets_every_press_and_wait_finish():
+    world, primitives, _ = build("traverse+x")
+    spec = OptionSpec(option_id="test:rise_up", template="press_test",
+                      params={"action": "rise_up", "presses": 3, "wait_s": 1.0}, intent="test rise_up")
+
+    async def yielding(seconds):
+        await world.sleep(seconds)
+        await asyncio.sleep(0)
+
+    async def main():
+        executor = OptionExecutor(world, primitives, clock=world.clock, sleep=yielding, wall_clock=world.wall_clock)
+        task = asyncio.create_task(executor.run(spec))
+        for _ in range(2000):
+            if executor.committed or task.done():
+                break
+            await asyncio.sleep(0)
+        assert executor.committed
+        executor.interrupt("S1 chose wait")
+        return await task
+
+    outcome = asyncio.run(main())
+    assert outcome.terminated_by == "succeeded" and outcome.measured["pressed"] == 3
+    assert world.held == set()

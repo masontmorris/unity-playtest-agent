@@ -540,7 +540,8 @@ def screened_play(answer: Mapping[str, Any], packet: Mapping[str, Any]) -> tuple
 
 
 def play_readings(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, int, dict[str, Any]]]:
-    """Every observation's public readers, by wall time: (epoch seconds, trace_seq, values)."""
+    """Every observation's public readers, by wall time: (epoch seconds, trace_seq, values); with the press-anchored
+    readings of effect records and the readings a press test took."""
     from playtest.runner.review import _epoch
 
     out = []
@@ -557,6 +558,12 @@ def play_readings(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, 
                 reading = observed.get(key)
                 if isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float)):
                     out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading.get("values") or {})))
+        elif row.get("kind") == "option":
+            # A press test reads the readers itself while S1 waits for it: around each press and through each wait.
+            for reading in ((body.get("outcome") or {}).get("measured") or {}).get("readings") or ():
+                if (isinstance(reading, Mapping) and isinstance(reading.get("wall_s"), (int, float))
+                        and reading.get("values")):
+                    out.append((float(reading["wall_s"]), row.get("trace_seq"), dict(reading["values"])))
     out.sort(key=lambda item: item[0])
     return out
 
@@ -598,8 +605,11 @@ def score_ranges(ranges: Sequence[Mapping[str, Any]],
 
 
 # How far a measured magnitude may sit from its declared value: sampling only lowers a peak (a reading rarely lands
-# on the apex), and a press's average speed includes its start.
-BANDS = {"move_speed": (0.15, 0.15), "verb_speed": (0.2, 0.2), "rise_height": (0.25, 0.1)}
+# on the apex), and a press's average speed includes its start. Set from the clean builds' guard tables (20 FPSKit,
+# 42 DragonBlaze): a move's speed stayed within -3.1%/+8.7% of its declared value in all 76 readings; a verb's speed
+# left ±15% in 6 of 186, never in more than 2 of one magnitude's 24. A size is a mismatch only when most tables
+# measure it outside its band.
+BANDS = {"move_speed": (0.10, 0.10), "verb_speed": (0.15, 0.15), "rise_height": (0.25, 0.1)}
 
 
 def _median(values: Sequence[float]) -> float | None:
@@ -762,17 +772,19 @@ def _condition_holds(item: Mapping[str, Any], values: Mapping[str, Any]) -> bool
 
 def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[float, int, dict]]],
                   presses: Sequence[Sequence[tuple[float, float, str]]], controls: Sequence[Mapping[str, frozenset]],
-                  skipped: dict[str, int] | None = None) -> list[dict[str, Any]]:
+                  skipped: dict[str, int] | None = None,
+                  limits: list[tuple[float, int]] | None = None) -> list[dict[str, Any]]:
     """Every press of the rule's input (alone or inside a chord or option that includes its controls) whose
     consequence could be read, with whether it followed in time.
 
     The consequence counts from the reading just before the press up to the first reading at or after within_s past
     the press's end, so a reading's lag cannot fail it. A press is not counted when its condition did not hold or
     could not be read just before it, when the next press of the same input lands inside its window, when the session ended
-    inside its window, or when an unread stretch lies inside it.
+    inside its window, when an unread stretch lies inside it, or when its reader was not read just before it or
+    anywhere in its window.
     """
     skipped = skipped if skipped is not None else {}
-    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap", "at_limit"):
+    for key in ("condition_not_met", "overlapped", "window_cut", "unobserved_gap", "at_limit", "unread"):
         skipped.setdefault(key, 0)
     events = []
     for index, (readings, pressed, served) in enumerate(zip(sessions, presses, controls)):
@@ -808,17 +820,21 @@ def action_events(item: Mapping[str, Any], sessions: Sequence[Sequence[tuple[flo
             if usual and any(b - a > UNOBSERVED * usual for a, b in zip(stamps, stamps[1:])):
                 skipped["unobserved_gap"] += 1
                 continue
+            if before.get(item["then"]) is None or all(v is None for v in window):
+                # Its reader was not read before the press or in its window: unknown, never a failure.
+                skipped["unread"] += 1
+                continue
             events.append({"session": index, "seq": readings[before_index][1], "at": start, "action": action,
                            "before": before, "trigger": readings[before_index + 1][2] if window else before,
                            "followed": _followed(item, before.get(item["then"]), window), "window": window})
-        _drop_at_limit(item, readings, events, index, skipped)
+        _drop_at_limit(item, readings, events, index, skipped, limits)
     for event in events:
         event.pop("window", None)
     return events
 
 
 def _drop_at_limit(item: Mapping[str, Any], readings: Sequence[tuple[float, int, dict]], events: list[dict[str, Any]],
-                   session: int, skipped: dict[str, int]) -> None:
+                   session: int, skipped: dict[str, int], limits: list[tuple[float, int]] | None = None) -> None:
     """Leave out this session's failed presses that began with the reader already where the input drives it.
 
     The input's direction is read from its own presses that were followed (a look down raised the pitch). A failed
@@ -846,23 +862,29 @@ def _drop_at_limit(item: Mapping[str, Any], readings: Sequence[tuple[float, int,
         if not e["followed"] and start is not None and (start - end) * direction >= -1e-3:
             events.remove(e)
             skipped["at_limit"] = skipped.get("at_limit", 0) + 1
+            if limits is not None and (end, direction) not in limits:
+                limits.append((end, direction))
 
 
 def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> str | None:
     """What the guard tables measured of `verb` changing `key`: "lasts" (still changed just after a press ended, in
-    some cell), "while_held" (changed only while held), "never" (in no cell of any table), or None (no table measured
-    the verb). The tables say what a reading can show, never whether a rule held."""
+    some cell), "while_held" (changed only while held), "sometimes" (in some trials of a cell and not in others, and
+    in every trial of none: a fresh, controlled press shows it only some of the time), "never" (in no cell of any
+    table), or None (no table measured the verb). The tables say what a reading can show, never whether a rule
+    held."""
     rows = [(t.get("verbs") or {}).get(verb) for t in tables]
     rows = [r for r in rows if r]
     if not rows:
         return None
-    changed = persisted = False
+    changed = persisted = every_trial = False
     for row in rows:
         for cell in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air")):
             if not cell:
                 continue
-            if key in (cell.get("changed") or {}) or any(key in keys for keys in cell.get("trial_changed") or ()):
+            trials = [keys or () for keys in cell.get("trial_changed") or ()]
+            if key in (cell.get("changed") or {}) or any(key in keys for keys in trials):
                 changed = True
+                every_trial = every_trial or not trials or all(key in keys for keys in trials)
             if any(key in keys for keys in cell.get("trial_persisted") or ()):
                 persisted = True
     if not changed:
@@ -870,7 +892,7 @@ def guard_evidence(verb: str, key: str, tables: Sequence[Mapping[str, Any]]) -> 
     if not persisted and any("trial_persisted" in (c or {}) for row in rows
                              for c in (row.get("rest"), *(row.get("moving") or {}).values(), row.get("air"))):
         return "while_held"
-    return "lasts"
+    return "lasts" if every_trial else "sometimes"
 
 
 def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Sequence[tuple[float, int, dict]]],
@@ -881,19 +903,26 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
 
     With guard tables of the same build, a rule that failed is read against what they measured of its input
     changing its reader: changed only while held, a press-anchored reading cannot show it (while_held); changed in
-    some measured state but not in these presses, it is a guard (guarded); never changed anywhere, it stays a
-    mismatch, the strongest evidence.
+    only some trials of a fresh press and in every trial of none, a failed press is what they measured too
+    (intermittent); changed in some measured state but not in these presses, it is a guard (guarded); never changed
+    anywhere, it stays a mismatch, the strongest evidence.
     """
     out = []
     for item in rules:
         skipped: dict[str, int] = {}
-        events = action_events(item, sessions, presses, controls, skipped)
+        limits: list[tuple[float, int]] = []
+        events = action_events(item, sessions, presses, controls, skipped, limits)
         failed = [e for e in events if not e["followed"]]
+        limit = (" or ".join(f"{value:g}" for value, _ in limits) + ", the furthest value read in the direction this "
+                 "input moves it (" + "; ".join(sorted({"increasing" if d > 0 else "decreasing" for _, d in limits}))
+                 + ")") if limits else ""
         verdict = ("unmeasured" if len(events) < 2 else "mismatch" if 2 * len(failed) > len(events)
                    else "held" if not failed else "mixed")
         evidence = guard_evidence(item["action"], item["then"], guards) if guards else None
         if verdict in ("mismatch", "mixed") and evidence == "while_held":
             verdict = "while_held"
+        elif verdict in ("mismatch", "mixed") and evidence == "sometimes":
+            verdict = "intermittent"
         elif verdict == "mismatch" and evidence == "lasts":
             verdict = "guarded"
         condition = ("" if item.get("condition_observable") is None else
@@ -905,7 +934,9 @@ def score_action_rules(rules: Sequence[Mapping[str, Any]], sessions: Sequence[Se
                     "not_counted": skipped, "guard_evidence": evidence,
                     "line": f"pressing {item['action']}{condition}: {then} within {item['within_s']:g} s "
                             f"({item['basis']}: {item['because']}); not in {len(failed)} of {len(events)} presses "
-                            f"in play" + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")})
+                            f"in play" + (f" (at trace seq {', '.join(map(str, examples[:5]))})" if examples else "")
+                            + (f"; {skipped['at_limit']} presses began with {item['then']} already at {limit}, and "
+                               f"were not counted" if skipped.get("at_limit") else "")})
     return out
 
 
@@ -1361,7 +1392,7 @@ TIERS = (("mismatch", "Not met", "the expectation failed in most of the sessions
          ("mixed", "Sporadic", "it failed in some sessions or events and held in others: a candidate for a "
                                "controlled test, not a finding"),
          ("held", "Held", "it was met every time it could be shown"))
-UNSHOWN = ("ambient", "masked", "at_limit", "not_airborne", "while_held", "unmeasured")
+UNSHOWN = ("ambient", "masked", "at_limit", "not_airborne", "while_held", "intermittent", "unmeasured")
 
 
 def report(guard_rows: Sequence[Mapping[str, Any]], play_rows: Sequence[Mapping[str, Any]],
@@ -1663,7 +1694,9 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
                     limit: int = LIVE_RULES_SHOWN) -> list[str]:
     """Each pre-registered action rule and situation, scored by code on this session's presses so far, as one line
     with its verdict: the same scoring `score-play` does after the session. A rule with fewer than two counted
-    presses is left out (nothing measured yet). A measurement for the frontier, never a decision: it judges them.
+    presses is left out (nothing measured yet), and so is one the guard tables say a press-anchored reading cannot
+    show (while_held, intermittent): its failed presses measure the reading, not the game. A measurement for the
+    frontier, never a decision: it judges them.
     """
     sessions, presses = [play_readings(trace_rows)], [play_presses(trace_rows)]
     tables = [guards] if guards else []
@@ -1672,7 +1705,7 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
                                [situation_presses(trace_rows)], tables))
     out = []
     for row in rows:
-        if row.get("verdict") == "unmeasured":
+        if row.get("verdict") in ("unmeasured", "while_held", "intermittent"):
             continue
         line = f"{row['verdict']}: {row['line']}"
         check = replay_check(row) if row.get("verdict") == "mismatch" else None
@@ -1682,7 +1715,44 @@ def live_rule_lines(expectations: Mapping[str, Any], trace_rows: Sequence[Mappin
     return out[:limit]
 
 
-def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
+PRESS_TEST_PRESSES = 4      # the presses one test makes: the test plan's own "4 times or more"
+PRESS_TEST_MARGIN_S = 0.5   # past a rule's window, so the next press is not inside it (`action_events`)
+PRESS_TEST_MAX_WINDOW_S = 5.0   # a longer window would make one test outlast S1's attention: not offered
+
+
+def press_test_specs(*expectations: Mapping[str, Any]) -> list[Any]:
+    """One press-test option per input a pre-registered action rule presses: that input pressed
+    `PRESS_TEST_PRESSES` times, each followed by the longest of its rules' windows plus a margin with nothing
+    pressed, so no press lands inside the last one's window and every press can be counted. A situation's rule
+    gets none: whether a press was made in its situation is read from the press's own effect record, which an
+    option's presses do not have.
+
+    Written by code from the rules, never by a model; offered as a choice S1 may take or leave, never run by
+    itself. An input whose window is longer than `PRESS_TEST_MAX_WINDOW_S` gets none.
+    """
+    from .options.model import OptionSpec
+
+    windows: dict[str, float] = {}
+    for doc in expectations:
+        for rule in doc.get("action_rules") or ():
+            action, within = rule.get("action"), rule.get("within_s")
+            if isinstance(action, str) and action and isinstance(within, (int, float)) and within > 0:
+                windows[action] = max(windows.get(action, 0.0), float(within))
+    specs = []
+    for action, within in windows.items():
+        if within > PRESS_TEST_MAX_WINDOW_S:
+            continue
+        wait = round(within + PRESS_TEST_MARGIN_S, 3)
+        total = PRESS_TEST_PRESSES * (wait + 0.2)
+        specs.append(OptionSpec(
+            option_id=f"test:{action}", template="press_test",
+            params={"action": action, "presses": PRESS_TEST_PRESSES, "wait_s": wait},
+            intent=(f"test {action}: press it {PRESS_TEST_PRESSES} times, each followed by {wait:g} s with nothing "
+                    f"pressed, about {total:.0f} s")))
+    return specs
+
+
+def test_plan(expectations: Mapping[str, Any], *, presses: int = 4, tests: bool = False) -> str:
     """A session objective that asks for each action rule's press to be made on purpose, in plain words.
 
     Written by code from the pre-registered rules, never by a model, so it says nothing the rules do not: the input
@@ -1705,8 +1775,10 @@ def test_plan(expectations: Mapping[str, Any], *, presses: int = 4) -> str:
     if not steps:
         return ""
     numbered = "; ".join(f"({n}) {step}" for n, step in enumerate(steps, 1))
+    offered = (" A test option for an input (test:<input>) makes its presses that far apart for you." if tests
+               else "")
     return (f"Try each of these on purpose, {presses} times or more, a few seconds apart, so each one can be seen on "
-            f"its own: {numbered}. Then keep exploring.")
+            f"its own: {numbered}.{offered} Then keep exploring.")
 
 
 def _send(body: Mapping[str, Any], approval: Mapping[str, Any], folder: Path, name: str) -> tuple[Any, Any]:
@@ -1814,9 +1886,11 @@ class ExpectationFacts:
 
 
 def unmet_in_session(expectations: Mapping[str, Any], guards: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The predictions this one session's guard table did not meet (k of 1), each labelled by its oracle."""
-    return [tiered(row) for row in score(expectations.get("predictions") or (), [guards])
-            if row["verdict"] == "mismatch"]
+    """The predictions and declared sizes this one session's guard table did not meet (k of 1), each labelled by
+    its oracle."""
+    rows = (score(expectations.get("predictions") or (), [guards])
+            + score_magnitudes(expectations.get("magnitudes") or (), [guards]))
+    return [tiered(row) for row in rows if row["verdict"] == "mismatch"]
 
 
 NAMES_ONLY = " [inferred from names only: no stated intent or declared value says so]"

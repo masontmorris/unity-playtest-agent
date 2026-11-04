@@ -282,6 +282,7 @@ async def run_session(
     instructions: str = INSTRUCTIONS,
     keep_help_across_restart: bool = False,
     decide_during_options: bool = False,
+    press_tests: Any = (),
 ) -> SessionResult:
     """`budget` paces the turns; `sleep` is how the loop waits out a wait choice's duration.
 
@@ -297,6 +298,9 @@ async def run_session(
     blocked eleven times stops reading `untried`. The option port records its own outcomes, unchanged.
 
     `instructions` is the one question text every payload carries; its default keeps today's bytes.
+
+    `press_tests` are press-test options (`expectations.press_test_specs`) offered beside the others while their
+    control is offered; like every option, only S1 selects one.
     """
     if max_provider_failures < 1:
         raise ValueError("max_provider_failures must be at least 1")
@@ -319,7 +323,7 @@ async def run_session(
             running: Any = None  # the executor of the option now running, for `interrupt`
 
             async def run(self, choice):
-                executor = OptionExecutor(loop.client, option_primitives, flight=self.flight)
+                executor = OptionExecutor(loop.client, option_primitives, flight=self.flight, readers=readers)
                 self.running = executor
                 try:
                     result = await executor.run(OptionSpec(choice.option_id, choice.template, choice.params,
@@ -350,7 +354,7 @@ async def run_session(
         if option_primitives is not None:
             from .choices import options_choices
             choices = options_choices(list(choices), option_primitives, option_memory, observation,
-                                      placement=placement, regions=reach_regions)
+                                      placement=placement, regions=reach_regions, tests=press_tests)
         return choices
 
     def file_settled(report):

@@ -115,7 +115,7 @@ from .trace_sink import TraceSink
 DecisionSource = Callable[[ChoiceSet, Observation | None], Any]
 
 _HELP_KINDS = (ChoiceKind.escalate, ChoiceKind.delegate)
-_COMMITTED_TEMPLATES = ("hop", "sweep")  # options that run to their end once started
+_COMMITTED_TEMPLATES = ("hop", "sweep", "press_test")  # options that run to their end once started
 _EXECUTABLE_KINDS = (ChoiceKind.action, ChoiceKind.skill)
 _NO_SOURCE: Any = object()
 _STOP_REASONS = ("user", "reset", "scene_change", "disconnect", "error", "finish")

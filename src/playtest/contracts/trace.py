@@ -169,7 +169,7 @@ class TraceEntry(Strict):
                 body = self.body
                 if not isinstance(body["option_id"], str) or not body["option_id"]:
                     raise ValueError("option_id must be non-empty")
-                if body["template"] not in ("traverse", "retreat", "hop", "wait", "place", "sweep"):
+                if body["template"] not in ("traverse", "retreat", "hop", "wait", "place", "sweep", "press_test"):
                     raise ValueError("unknown option template")
                 if not isinstance(body["params"], dict) or not isinstance(body["outcome"], dict) or not isinstance(body["receipts"], list):
                     raise ValueError("option params and outcome must be objects and receipts a list")

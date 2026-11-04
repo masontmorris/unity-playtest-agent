@@ -240,11 +240,42 @@ around the first (`is_angle`: camera.rotation, or a reader whose alias names an 
 angle, rotation, euler), and the prediction holds on that table and every other clean one. Any other reader's
 readings are taken as they are, so a health that drops from 300 to 50 still drops.
 
+## Final tuning pass (#244, 2026-11-04)
+
+Tuned on the clean builds only (FPSKit `bridge-v0`, DragonBlaze `upa/clean`); nothing here was chosen from a held-out
+result or the answer key. Two of the issue's three directions:
+
+**Declared sizes in the hunt.** `playtest-hunt` asked only `--part all` and `--part actions`, and on clean DragonBlaze
+the full call wrote no magnitude, so no declared speed was checked at all. The hunt now makes the focused
+`--part magnitudes` call, scores its sizes on every guard table (`magnitude-score.json`, listed in `hunt.md`), and
+states a size a session's own table measures outside its band to S1 and the frontier, as for a prediction. The bands
+come from the clean guard tables (20 FPSKit, 42 DragonBlaze) against the earlier clean magnitude calls
+(`expect-mag-04`): a move's speed stayed within -3.1%/+8.7% of its declared value in all 76 readings, so its band
+goes from ±15% to ±10%; a verb's speed left ±15% in 6 of 186 readings, never in more than 2 of one size's 24, so ±20%
+goes to ±15%. A tighter verb band does not hold: at ±10% DragonBlaze's jump_pad while moving left it in 10 of 24.
+
+**Presses a rule can count.** On the clean hunt most presses were not counted because the next press of the same input
+fell inside their window (DragonBlaze: interact 44 overlapped against 27 counted, dash 33 against 17; FPSKit's clean
+directed session: aim_toggle 27 against 1), and attack was pressed twice in three sessions, so both attack rules stayed
+unmeasured. Two changes:
+- a **press test** option (`test:<input>`, template `press_test`), one per input an action rule presses: the input
+  pressed 4 times, each press followed by its rules' longest window plus 0.5 s with nothing pressed. It is offered
+  beside the other options and only S1 selects it. It is committed like a sweep, and since S1's own readings stop while
+  it runs, it reads the readers itself just before each press, just after its release and every 0.5 s of each wait;
+  `play_readings` reads them. A situation's rule gets no press test, because whether a press was in its situation is
+  read from the press's own effect record, which an option's presses do not have;
+- a **sweep** now releases and collects each press, so its receipts carry the press's measured end. Before, only a
+  `running` record was kept and the scorer dropped every sweep press. The replay holds an option input for its own
+  measured duration when the receipts carry one, rather than until the next input starts.
+
+The test plan names the press-test options.
+
 ## Not done
 
 - A **supported** condition from the investigation does not yet become a directed session (S1 steered to bring the
   condition about, then the rule checked again). The live loop above directs tests from the frontier's own hypotheses.
 - The frontier's live findings often have no replay `repro_check` (f-174 had none; the check was the operator's).
 - A situation with no press (touching a hazard lowers health, reaching a pickup deactivates it) is not predicted.
+  #244 left it out: the distance that counts as touching is a collider's size, which no authored value gives.
 - Calibration's measured speeds are not compared with declared ones beyond the guard tables' own (opposite moves were
   within 1.5% on both builds).
