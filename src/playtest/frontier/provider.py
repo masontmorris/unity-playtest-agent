@@ -39,7 +39,8 @@ URL = "https://api.meta.ai/v1/chat/completions"
 
 # USD per million tokens (input, cached input, output), from the Meta Model API's pricing page. A cached prompt
 # token replaces the normal prompt rate; it is not added.
-PRICES = {"muse-spark-1.3": (1.25, 0.15, 4.25), "muse-wonder-1.0": (4.00, 0.20, 20.00)}
+PRICES = {"muse-spark-1.3": (1.25, 0.15, 4.25), "muse-spark-1.3-contributor": (0.10, 0.002, 0.20),
+          "muse-wonder-1.0": (4.00, 0.20, 20.00)}
 DEFAULT_MODEL = "muse-spark-1.3"
 MODEL = DEFAULT_MODEL  # the frontier model of this process; `use_model` sets it before any call
 PRICE_INPUT_PER_MTOK, PRICE_CACHED_INPUT_PER_MTOK, PRICE_OUTPUT_PER_MTOK = PRICES[DEFAULT_MODEL]

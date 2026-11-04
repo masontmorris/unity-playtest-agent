@@ -90,7 +90,7 @@ param(
     [switch]$GuardsOnly,
     [switch]$PressReadings,
     [string]$SituationsPath,
-    [ValidateSet('muse-spark-1.3', 'muse-wonder-1.0')][string]$FrontierModel = 'muse-spark-1.3',
+    [ValidateSet('muse-spark-1.3', 'muse-spark-1.3-contributor', 'muse-wonder-1.0')][string]$FrontierModel = 'muse-spark-1.3',
     [string]$ExpectationsPath,
     [ValidateRange(1, 16384)][int]$CaptureWidth = 640,
     [ValidateRange(1, 16384)][int]$CaptureHeight = 480,
