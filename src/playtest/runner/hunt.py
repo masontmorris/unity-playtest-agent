@@ -236,8 +236,13 @@ def replay_step(config: Mapping[str, Any], out: Path, session: Path, finding: Ma
         return {"status": "failed", "log": str(out / "replays" / f"{name}.log")}
     data = json.loads(report.read_text(encoding="utf-8"))
     summary = data.get("summary") or {}
+    from collections import Counter
+
+    reasons = Counter(a.get("reason") for a in data.get("attempts") or () if a.get("result") != "reproduced")
     return {"status": data.get("status"), "k": summary.get("k"), "n": summary.get("n"),
-            "unknown": summary.get("unknown"), "attempted": summary.get("attempted"), "folder": str(folder)}
+            "unknown": summary.get("unknown"), "attempted": summary.get("attempted"), "folder": str(folder),
+            "skipped_inputs": (data.get("plan") or {}).get("skipped_inputs"),
+            "reason": reasons.most_common(1)[0][0] if reasons else None}
 
 
 def scores_step(out: Path, every: Path, actions: Path, guards: Path, sessions: Sequence[Path]) -> dict[str, Any]:
@@ -295,6 +300,8 @@ def report(config: Mapping[str, Any], out: Path, sessions: Sequence[Path], filed
         replay = item["replay"]
         kn = (f"reproduced {replay['k']} of {replay['n']} ({replay['unknown']} unknown)"
               if replay.get("k") is not None else replay.get("status") or "not replayed")
+        if replay.get("reason") and not replay.get("n"):
+            kn += f"; {replay['reason']}"
         lines.append(f"- **{item['finding_id']}** ({item['session']}): {item['title']}. Expected: {item['expected']} "
                      f"Actual: {item['actual']} Replay: {kn}.")
     lines += ["", "## Pre-registered expectations that code found unmet", ""]

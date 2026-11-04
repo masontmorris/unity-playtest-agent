@@ -827,3 +827,14 @@ def test_a_control_replay_decides_whether_a_reproduction_is_specific_to_the_seed
     assert reproduce.compare_with_control(_report(3, 5), _report(0, 0))["verdict"] == "inconclusive"
     with pytest.raises(ValueError, match="different plans"):
         reproduce.compare_with_control(_report(5, 5), _report(0, 5, plan="p2"))
+
+
+def test_an_options_last_input_left_running_is_held_until_the_options_measured_end():
+    from playtest.runner.reproduce import recorded_inputs
+    sweep = _option(5, 1, [(1, "move_left", 101.0, "running", None), (2, "move_right", 101.6, "running", None)])
+    sweep["body"]["outcome"] = {"duration_s": 2.5}
+    inputs, skipped = recorded_inputs([sweep], 99)
+    assert [(i["action"], i["lease_s"]) for i in inputs] == [("move_left", 0.6), ("move_right", 1.9)]
+    assert skipped == {}
+    sweep["body"]["outcome"] = {}   # no measured end: the last input is still left out, never guessed
+    assert recorded_inputs([sweep], 99)[1] == {"option_unmeasured": 1}

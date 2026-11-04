@@ -214,6 +214,8 @@ def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skippe
 
     An option holds one input at a time: each new input supersedes the last, and the release ends the final one.
     So an input held until the next one's measured start, or, for the last, for the duration its release reported.
+    A last input whose release the receipts never recorded (the option ended with it still running) is held until
+    the option's measured end: its outcome's duration from the first input's start.
     """
     body = entry["body"]
     receipts = [r for r in body.get("receipts") or () if isinstance(r, Mapping)]
@@ -226,6 +228,7 @@ def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skippe
         if record["action_id"] not in last:
             order.append(record["action_id"])
         last[record["action_id"]] = record
+    lasted = _number((body.get("outcome") or {}).get("duration_s"))
     started = []
     for action_id in order:
         if last[action_id].get("status") == "rejected":
@@ -245,6 +248,8 @@ def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skippe
             held = following - start
         elif record.get("release_verified") is True:
             held = _number(record.get("applied_duration_s"))
+        elif record.get("status") == "running" and lasted is not None and started[0][1] is not None:
+            held = started[0][1] + lasted - start
         else:
             held = None
         if held is None or held <= 0:
