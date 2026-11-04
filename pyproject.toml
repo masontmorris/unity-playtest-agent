@@ -44,6 +44,7 @@ playtest-approval = "playtest.runner.approval:main"
 playtest-restart-smoke = "playtest.runner.restart_smoke:main"
 playtest-report = "playtest.runner.report:main"
 playtest-review = "playtest.runner.review:main"
+playtest-dashboard = "playtest.dashboard.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/playtest"]
