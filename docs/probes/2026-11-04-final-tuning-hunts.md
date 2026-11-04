@@ -63,6 +63,37 @@ free of false findings.
 
 Clean spend, including the stopped runs: about $3.33.
 
-## Held-out hunts after the freeze
+## Held-out hunts on the frozen code
 
-Not yet run.
+One `playtest-hunt` per game on `d21c81a` (#245), with the same builds, manifests and settings as the 4 November
+record: DragonBlaze `eval/dragonblaze/all`, FPSKit `eval/fpskit/all`. Both started before noon because the code was
+already merged and frozen; nothing changed between them.
+
+| Hunt | Sessions (ending, turns, press tests) | Findings and replay | Cost |
+|---|---|---|---|
+| DragonBlaze `heldout-02` | wall limit 87, 36; 126, 32; 114, 33 | f-99, f-69: interact near the NPC never starts dialogue (the known base-game defect); f-99 **5 of 5** | $0.55 |
+| FPSKit `heldout-02` | wall limit 158, 39; 108, 48; 291, 21 | f-88, f-64: aim_toggle never enables aiming, each **5 of 5**; f-74, f-77: the dispenser rule, 1 of 5 and 0 of 0 (5 unknown) | $1.16 |
+
+Declared sizes: 4 of 4 held on DragonBlaze, 8 of 8 on FPSKit. Unmet expectations (code only, nothing the frontier
+filed): DragonBlaze 3, the projectile lifetime above its declared 5 once (5.099) and the two dialogue rules; FPSKit 4,
+three aim_toggle guard predictions and the dispenser rule.
+
+## Blind score
+
+A separate scorer read `keys/SCHEMA.md`, the keys and the known-defect lists; only ids and counts came back.
+
+| Build | Seeded bugs | Matched by a filed finding | Matched only by an unmet expectation | 4 November |
+|---|---|---|---|---|
+| FPSKit held-out | 3 | 1 (b05: f-88, f-64) | 0 | 1 (b05) |
+| DragonBlaze held-out | 2 | 0 | 0 | 0 |
+
+**No change.** Every filed finding and unmet line outside b05 matched nothing: the dialogue findings (not on the
+eval repo's DragonBlaze known-defect list), the dispenser findings, and the projectile lifetime line.
+
+What it says, without the key: the two directions tried here, checked declared sizes and many more counted presses
+per rule, measured more than before and found nothing new. The missed bugs are not in a move or verb speed the
+declarations fix, and not in what a press of a rule's input leaves behind in rest, moving or air states, at least
+as far as these rules and readers can show. Contact situations with no press (direction 1), and rules the
+frontier did not write, stay unexamined.
+
+Spend for the whole pass, stopped runs included: about $5.04 (clean $3.33, held-out $1.71), within the $8 approved.
