@@ -115,6 +115,7 @@ from .trace_sink import TraceSink
 DecisionSource = Callable[[ChoiceSet, Observation | None], Any]
 
 _HELP_KINDS = (ChoiceKind.escalate, ChoiceKind.delegate)
+_COMMITTED_TEMPLATES = ("hop", "sweep")  # options that run to their end once started
 _EXECUTABLE_KINDS = (ChoiceKind.action, ChoiceKind.skill)
 _NO_SOURCE: Any = object()
 _STOP_REASONS = ("user", "reset", "scene_change", "disconnect", "error", "finish")
@@ -261,6 +262,7 @@ class TurnLoop:
         instructions: str = INSTRUCTIONS,
         keep_help_across_restart: bool = False,
         decide_during_options: bool = False,
+        on_settled: Callable[["TurnReport"], None] | None = None,
     ) -> None:
         if continuous_input and clock_mode is not ClockMode.realtime:
             raise ValueError("continuous input requires a realtime clock")
@@ -281,6 +283,10 @@ class TurnLoop:
         # The same for a plain action or skill: it runs in the background, re-picking it keeps it going, and any
         # other non-help choice stops it (the bridge cancels the run and reports it) before that choice runs.
         self._running_move: _RunningMove | None = None
+        # Background work that ended before a turn is collected at that turn's start and handed to this hook
+        # with the turn's observation, before S1 is asked, so its measured result is stated in the very
+        # question that follows it. The turn's report still carries it, marked `settled_before_decision`.
+        self._on_settled = on_settled
         self._continuous_choices = frozenset(continuous_choices)
         self._continuous_labels = continuous_labels
         self._active = None
@@ -415,11 +421,18 @@ class TurnLoop:
         scripted = decide is not _NO_SOURCE
         if not scripted and self._s1 is None:
             raise ValueError("no decision source: give the loop an S1 port or pass a scripted source")
-        if self._running_option is not None and not self._running_option.task.done():
-            # A hop is committed from run-up to landing, so the next reading and question wait for it to land.
-            landed = getattr(self._option_port, "until_landed", None)
-            if landed is not None:
-                await landed()
+        running = self._running_option
+        if running is not None and not running.task.done() and running.choice.template in _COMMITTED_TEMPLATES:
+            # A committed option (a hop, run-up to landing; a sweep) runs to its own end before the next reading
+            # and question, so S1 is never asked mid-way and its next choice binds to a fresh observation.
+            await asyncio.wait({running.task})
+        early_option: tuple[Choice, dict[str, Any], int | None] | None = None
+        early_move: tuple[Choice, Executed] | None = None
+        early_turn = len(self._turns)
+        if self._running_option is not None and self._running_option.task.done():
+            early_option = await self._settle_option(early_turn, "")  # it ended by itself: nothing is interrupted
+        if self._running_move is not None and self._running_move.task.done():
+            early_move = await self._settle_move(stop=False)
         if self._continuous:
             now = time.perf_counter()
             if self._last_started is not None:
@@ -450,6 +463,11 @@ class TurnLoop:
             self._observation_entries[observation.seq] = observed
         boundary = self._memory.observe(self._memory_previous, observation, turn=turn, trace_seq=observed)
         self._memory_previous = observation
+        if (early_option is not None or early_move is not None) and self._on_settled is not None and not scripted:
+            self._on_settled(TurnReport(
+                record=None, observation=observation, selected=None, problem=None, failure=None, help_event=None,
+                finished_option=(early_option[0], early_option[1]) if early_option is not None else None,
+                finished_move=early_move, option_running=True))
         if boundary and self._pending is not None:
             self._cancel_pending(self._pending, "observation_boundary", turn=turn)
         elif ready is not None and pending is self._pending:
@@ -534,7 +552,7 @@ class TurnLoop:
                 payload["game_view_sha256"] = view.sha256
                 payload["game_view_status"] = view.status
             running = self._running_option or self._running_move
-            if running is not None:  # only a run with a running option or move grows the context
+            if running is not None and not running.task.done():  # only work still running grows the context
                 payload["running_option"] = {
                     "choice_id": running.choice.id,
                     "started_turn": running.turn,
@@ -613,8 +631,8 @@ class TurnLoop:
         restart_refs: list[int | None] = []
         option_refs: list[int | None] = []
         measured_option: dict[str, Any] | None = None  # an option turn's measured outcome, for the report
-        finished_option: tuple[Choice, dict[str, Any], int | None] | None = None  # a background option collected
-        finished_move: tuple[Choice, Executed] | None = None  # a background action or skill collected
+        finished_option: tuple[Choice, dict[str, Any], int | None] | None = early_option  # a background option collected
+        finished_move: tuple[Choice, Executed] | None = early_move  # a background action or skill collected
         option_running = False  # this turn started, or kept going, a background option
 
         if not parsed.valid or parsed.decision is None:
@@ -644,7 +662,7 @@ class TurnLoop:
                     outcome, executed_id = TurnOutcome.executed, selected.option_id  # kept going
                     option_running = True
                 else:
-                    finished_option = await self._settle_option(turn, "another option was chosen")
+                    finished_option = await self._settle_option(turn, "another option was chosen") or finished_option
                     if self._continuous:
                         await self._release_active("user")
                     task = asyncio.create_task(self._option_port.run(selected))
@@ -681,8 +699,8 @@ class TurnLoop:
                 if running is None or running.task.done() or running.choice.id != selected.id:
                     if running is not None:
                         finished_move = await self._settle_move(stop=False)
-                    task = asyncio.create_task(self._send_background(
-                        selected, observation, decided, turn, observed, raw_choice, help_event))
+                    task = await self._dispatch_background(
+                        selected, observation, decided, turn, observed, raw_choice, help_event)
                     self._running_move = _RunningMove(choice=selected, task=task, turn=turn,
                                                       started=time.perf_counter())
                 # Started or kept going: whether the bridge accepted it is read when it is collected.
@@ -770,6 +788,8 @@ class TurnLoop:
             finished_option=(finished_option[0], finished_option[1]) if finished_option is not None else None,
             finished_move=finished_move,
             option_running=option_running,
+            settled_before_decision=(early_option is not None or early_move is not None) and self._on_settled is not None
+                                    and not scripted,
         )
         self._reports.append(report)
         if operation is not None and operation.status is OperationStatus.ready:
@@ -835,12 +855,50 @@ class TurnLoop:
                                               running.decided, running.cell)
         return selected, body, entry
 
-    async def _send_background(self, choice: Choice, observation: Observation, decided: int | None, turn: int,
-                               observed: int | None, raw_choice: str | None,
-                               help_event: str | None) -> tuple[Executed, int | None, int | None]:
-        """Send a background move bound to the observation S1 chose it from; a stale rejection stands, as in `_send`."""
-        return await self._send(choice, observation, "choice", decided, turn, observed, raw_choice, choice.id,
-                                help_event)
+    async def _dispatch_background(self, choice: Choice, observation: Observation, decided: int | None, turn: int,
+                                   observed: int | None, raw_choice: str | None,
+                                   help_event: str | None) -> "asyncio.Task[tuple[Executed, int | None, int | None]]":
+        """Send a background move now, bound to the observation S1 chose it from; finish it in a task.
+
+        The input is dispatched inside this turn (`start_act`, acknowledged at apply), so it reaches the bridge
+        while the observation is as fresh as the decision; only the wait for its end and its measured effect
+        run in the background. A stale rejection stands, as in `_send`.
+        """
+        request = self._executor.request_for(choice, based_on_seq=observation.seq)
+        if self._continuous:
+            await self._release_active("user")
+        if self._effects is not None:
+            await self._effects.before_turn(turn)  # the effect's baseline, before the input
+        try:
+            first = await self._client.start_act(**request)
+        except BaseException:
+            self._emit(TraceKind.execution, {"purpose": "choice", "request": request, "records": []},
+                       TraceAuthor.bridge, turn, [decided])
+            raise
+
+        async def finish() -> tuple[Executed, int | None, int | None]:
+            records = first
+            if records[-1].status not in TERMINAL_STATUSES:
+                records = await self._client.collect_act(request["action_id"])
+            execution = Execution(request=request, records=tuple(records))
+            entry = self._emit(TraceKind.execution,
+                               {"purpose": "choice", "request": request,
+                                "records": [record.model_dump(mode="json") for record in execution.records]},
+                               TraceAuthor.bridge, turn, [decided])
+            effect = measured = None
+            if not execution.rejected and self._effects is not None:
+                effect = await self._effects.measure(choice, execution)
+                if effect is not None:
+                    measured = self._emit(
+                        TraceKind.effect,
+                        {"choice_id": choice.id, "action": request["action"],
+                         "expected": _json_ready(effect.expected), "observed": _json_ready(effect.observed)},
+                        TraceAuthor.core, turn, [entry],
+                    )
+                    self._note_effect(choice, effect, turn, [seq for seq in (entry, measured) if seq is not None])
+            return Executed(purpose="choice", choice=choice, execution=execution, effect=effect), entry, measured
+
+        return asyncio.create_task(finish())
 
     async def _settle_move(self, *, stop: bool) -> tuple[Choice, Executed] | None:
         """Collect the background action or skill; with `stop`, release it first, verified, if it still runs.

@@ -5,17 +5,24 @@ model. Making the same engine a choice S1 can take mid-session is #127.
 
 **`plan`** reads a finished session's trace. It takes a finding (the latest candidate, unless one is named)
 and its `repro_check`, the predicate a replay must show. Then it lists the inputs that reached the game before
-the finding's last cited evidence entry: every execution, in trace order, whose terminal record completed. An
-input sent after that entry cannot have caused what it shows, and replaying it could undo it. For each input
+the finding's last cited evidence entry, in the order the bridge started them:
+- every execution whose terminal record completed;
+- every plain action that was stopped early (cancelled, release verified), replayed with a lease of the time it
+  measurably held;
+- every input an option sent (its `request` receipts), replayed with a lease of the time it measurably held: until
+  the option's next input superseded it, or until the option's release.
+An input sent after that entry cannot have caused what it shows, and replaying it could undo it. For each input
 it keeps the action, its params, its lease, and its start time relative to the first input, as the bridge
 measured it. Inputs that were rejected or failed sent nothing in the session, so they are listed as skipped,
-never replayed. When the evidence is an observation, the plan also keeps its time relative to the first input.
+never replayed. So are a stopped skill (a lease cannot cut a sequence short) and an option input whose request
+was not recorded. When the evidence is an observation, the plan also keeps its time relative to the first input.
 
 **`run`** executes the plan inside a PlayMode host that serves the manifest's catalog and reloads the scene on
 request. Each attempt:
 1. requests a numbered scene reload, the calibrated reset;
 2. reconnects and installs the manifest's readers, then waits briefly;
-3. reads the baseline;
+3. reads the baseline, and states which readers the reset did not restore to the values the recorded session
+   began with (a measurement only: it changes no attempt's result, validity or k of n);
 4. replays every input at its recorded offset, once, never retried or replaced;
 5. reads the readers after each input, then through a settle window that also covers the evidence's time.
 
@@ -27,6 +34,21 @@ baseline:
 - **not reproduced:** later readings were scored and none satisfied it;
 - **unknown:** no later reading could be scored.
 
+An input-conditioned check (a reader check with `after_action`) is scored on the readings taken while each replayed
+execution of that action is held and right after it ends; `changed` and `unchanged` compare with the reading taken
+right before it. What an input changes only while it is held (a blend, a stance) is gone by the reading after it. It
+shows an input that has none of its effect, which leaves the readers in a state the reset already puts them in:
+- **reproduced:** every scored execution's reading satisfied the check;
+- **not reproduced:** at least one did not;
+- **unknown:** no execution's reading could be scored.
+With `within_region`, only the executions made inside that reach region are scored: the body's position is read
+right before each execution of the action and compared with the region's bounds, and one made outside it, or whose
+position could not be read, is counted but not scored. The region comes from the manifest, else from the
+`situation-regions.json` the session saved beside its trace.
+
+A session the loop restarted is replayed from its last restart before the evidence: each attempt starts from a
+reload, as that restart did, so the inputs of earlier lives are not run into this one.
+
 An effect check (`effect.<action>`, #154) is the net displacement of one execution of an action, in world units.
 It shows an action that stops having its effect, which leaves the readers at rest and so can never pass the
 baseline rule. The plan names the calibrated displacement (`build_choices(...).expected`) and marks the scored
@@ -36,6 +58,15 @@ snapshots, as the live probe does. It is scored on the scored execution's measur
 - **reproduced:** the scored execution's measured displacement satisfies the check;
 - **not reproduced:** it was measured and does not;
 - **unknown:** it was not measured (an unknown position is unknown, never zero).
+
+**`compare`** reads the same plan replayed on the seeded build and on a control build (the unseeded base) and
+says whether the replay shows something specific to the seeded build:
+- **specific:** reproduced on the seeded build (k >= 1) and not on the control (k = 0 of n >= 1);
+- **not specific:** the control reproduces it too, so it is the game's normal behaviour or a rule, not a defect
+  of the seeded build, and the finding is not moved to reproduced;
+- **not reproduced:** k = 0 on the seeded build;
+- **inconclusive:** either side scored no attempt.
+A seeded replay's own k of n never moves a finding by itself once a control was run; the comparison does.
 
 An attempt in which an input was rejected or failed diverged from the session. It is invalid: kept with its
 reason, and never counted in n.
@@ -134,32 +165,100 @@ def evidence_turn(entries: Sequence[Mapping[str, Any]], evidence: Sequence[int])
     return max(turns)
 
 
-def recorded_inputs(entries: Sequence[Mapping[str, Any]], before_seq: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """The inputs that executed before entry `before_seq`, with offsets from the first; and the skipped ones by status."""
+def recorded_inputs(entries: Sequence[Mapping[str, Any]], before_seq: int,
+                    actions: frozenset[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """The inputs that executed before entry `before_seq`, in start order with offsets from the first; and the
+    skipped ones by status. `actions` names the declared single-hold actions, the only inputs a lease can cut
+    short; with None, no stopped input is replayed."""
     inputs: list[dict[str, Any]] = []
     skipped: Counter[str] = Counter()
     for entry in entries:
-        if entry.get("kind") != "execution" or not isinstance(entry.get("turn"), int) or entry["trace_seq"] >= before_seq:
+        if not isinstance(entry.get("turn"), int) or entry["trace_seq"] >= before_seq:
+            continue
+        if entry.get("kind") == "option":
+            option_inputs(entry, inputs, skipped)
+            continue
+        if entry.get("kind") != "execution":
             continue
         body = entry["body"]
         records = body.get("records") or []
         terminal = records[-1] if records else None
         status = terminal.get("status") if isinstance(terminal, dict) else None
         start = _number(terminal.get("input_start_wall_s")) if isinstance(terminal, dict) else None
-        if status != "completed" or start is None or terminal.get("release_verified") is not True:
+        request = body["request"]
+        applied = _number(terminal.get("applied_duration_s")) if isinstance(terminal, dict) else None
+        lease = request.get("lease_s")
+        verified = isinstance(terminal, dict) and terminal.get("release_verified") is True
+        if status == "cancelled" and verified and start is not None and applied is not None:
+            if actions is None or request["action"] not in actions:
+                skipped["cancelled_skill"] += 1
+                continue
+            lease = applied  # stopped early: it held this long, and a lease of that length holds it as long
+        elif status != "completed" or start is None or not verified:
             skipped[str(status or "unrecorded")] += 1
             continue
-        request = body["request"]
         inputs.append({"turn": entry["turn"], "trace_seq": entry["trace_seq"], "purpose": body.get("purpose"),
                        "action": request["action"], "choice_id": request.get("choice_id"),
-                       "params": request.get("params") or {}, "lease_s": request.get("lease_s"),
-                       "recorded_start_wall_s": start,
-                       "recorded_applied_s": _number(terminal.get("applied_duration_s"))})
+                       "params": request.get("params") or {}, "lease_s": lease,
+                       "recorded_start_wall_s": start, "recorded_applied_s": applied})
+    inputs.sort(key=lambda item: item["recorded_start_wall_s"])
     if inputs:
         first = inputs[0]["recorded_start_wall_s"]
         for item in inputs:
             item["offset_s"] = round(item["recorded_start_wall_s"] - first, 6)
     return inputs, dict(skipped)
+
+
+def option_inputs(entry: Mapping[str, Any], inputs: list[dict[str, Any]], skipped: Counter[str]) -> None:
+    """Append the inputs one option entry sent, each with the lease of the time it measurably held.
+
+    An option holds one input at a time: each new input supersedes the last, and the release ends the final one.
+    So an input held until the next one's measured start, or, for the last, for the duration its release reported.
+    A last input whose release the receipts never recorded (the option ended with it still running) is held until
+    the option's measured end: its outcome's duration from the first input's start.
+    """
+    body = entry["body"]
+    receipts = [r for r in body.get("receipts") or () if isinstance(r, Mapping)]
+    requests = {r.get("action_id"): r for r in receipts if r.get("type") == "request"}
+    last: dict[str, Mapping[str, Any]] = {}
+    order: list[str] = []
+    for record in receipts:
+        if record.get("type") != "execution" or not isinstance(record.get("action_id"), str):
+            continue
+        if record["action_id"] not in last:
+            order.append(record["action_id"])
+        last[record["action_id"]] = record
+    lasted = _number((body.get("outcome") or {}).get("duration_s"))
+    started = []
+    for action_id in order:
+        if last[action_id].get("status") == "rejected":
+            skipped["rejected"] += 1
+        else:
+            started.append((action_id, _number(last[action_id].get("input_start_wall_s"))))
+    for index, (action_id, start) in enumerate(started):
+        record, request = last[action_id], requests.get(action_id)
+        if request is None or not isinstance(request.get("action"), str):
+            skipped["option_unrecorded"] += 1
+            continue
+        if start is None:
+            skipped["unrecorded"] += 1
+            continue
+        following = next((s for _, s in started[index + 1:] if s is not None), None)
+        if following is not None:
+            held = following - start
+        elif record.get("release_verified") is True:
+            held = _number(record.get("applied_duration_s"))
+        elif record.get("status") == "running" and lasted is not None and started[0][1] is not None:
+            held = started[0][1] + lasted - start
+        else:
+            held = None
+        if held is None or held <= 0:
+            skipped["option_unmeasured"] += 1
+            continue
+        inputs.append({"turn": entry["turn"], "trace_seq": entry["trace_seq"], "purpose": "option",
+                       "action": request["action"], "choice_id": body.get("option_id"), "params": {},
+                       "lease_s": round(held, 6), "recorded_start_wall_s": start,
+                       "recorded_applied_s": round(held, 6)})
 
 
 def evidence_offset(entries: Sequence[Mapping[str, Any]], evidence_seq: int, first_start_wall_s: float) -> float | None:
@@ -215,6 +314,27 @@ def effect_plan(manifest: PreflightManifest, action: str, inputs: list[dict[str,
             "scored_turn": scored["turn"], "scored_trace_seq": scored["trace_seq"]}
 
 
+def session_start_readers(entries: Sequence[Mapping[str, Any]], readers: Sequence[Any]) -> dict[str, Any]:
+    """The reader values the recorded session began with: from the first observation that carries one of them.
+
+    A replay shows what its reset did not restore by comparing its first reading with these. Only the manifest's
+    reader aliases are kept, and an alias the observation does not carry is left out, never set to None: an
+    unread value is not a value, so nothing is compared against it.
+    """
+    aliases = [reader.alias for reader in readers]
+    for entry in entries:
+        body = entry.get("body")
+        if entry.get("kind") != "observation" or not isinstance(body, Mapping):
+            continue
+        public = body.get("public")
+        if not isinstance(public, Mapping):
+            continue
+        found = {alias: public[alias] for alias in aliases if public.get(alias) is not None}
+        if found:
+            return found
+    return {}
+
+
 def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None = None,
                finding_record: Mapping[str, Any] | None = None,
                repro_check: Mapping[str, Any] | None = None, attempts: int = ATTEMPTS, settle_s: float = SETTLE_S,
@@ -252,10 +372,29 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         raise ValueError(f"repro_check field {check.field!r} is not one of the manifest's readers")
     through = evidence_turn(entries, finding.evidence_seq)
     last_evidence = max(finding.evidence_seq)
-    inputs, skipped = recorded_inputs(entries, last_evidence)
+    inputs, skipped = recorded_inputs(entries, last_evidence, frozenset(item.name for item in manifest.actions))
+    restarted = [e["trace_seq"] for e in entries if e.get("kind") == "restart" and e["trace_seq"] < last_evidence]
+    if restarted:
+        # Each attempt starts from a reload, as the restart did: earlier lives' inputs are not this life's.
+        dropped = [item for item in inputs if item["trace_seq"] < restarted[-1]]
+        inputs = [item for item in inputs if item["trace_seq"] > restarted[-1]]
+        if dropped:
+            skipped["before_last_restart"] = len(dropped)
+        if inputs:
+            first = inputs[0]["recorded_start_wall_s"]
+            for item in inputs:
+                item["offset_s"] = round(item["recorded_start_wall_s"] - first, 6)
     if not inputs:
         raise ValueError("no input completed before the finding's evidence; there is nothing to replay")
+    region = _region(manifest, trace_path, check.within_region) if check.within_region is not None else None
     effect = effect_plan(manifest, action, inputs) if action is not None else None
+    if check.after_action is not None:
+        conditioned = [item for item in inputs if item["action"] == check.after_action]
+        if not conditioned:
+            raise ValueError(f"no input that completed before the finding's evidence is an execution of "
+                             f"{check.after_action!r}, so the input-conditioned check has nothing to score")
+        for item in conditioned:
+            item["scored"] = True
     for name, value in (("attempts", attempts), ("settle_s", settle_s), ("start_settle_s", start_settle_s),
                         ("sample_interval_s", sample_interval_s)):
         if _number(value) is None or value <= 0:
@@ -271,8 +410,9 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         "manifest_sha256": _sha(manifest_bytes),
         "finding_id": finding.finding_id, "finding_trace_seq": chosen["trace_seq"],
         "finding": finding.model_dump(mode="json"),
-        "repro_check": check.model_dump(mode="json"), "repro_check_source": check_source,
+        "repro_check": check.model_dump(mode="json"), "repro_check_source": check_source, "region": region,
         "repro_check_kind": "number" if effect is not None else kinds[alias], "effect": effect,
+        "session_start_readers": session_start_readers(entries, manifest.readers),
         "evidence_seq": finding.evidence_seq, "evidence_turn": through, "evidence_offset_s": seen_s,
         "inputs": inputs, "skipped_inputs": skipped,
         "attempts": attempts, "settle_s": settle_s, "start_settle_s": start_settle_s,
@@ -280,6 +420,29 @@ def build_plan(trace_path: Path, manifest_path: Path, *, finding_id: str | None 
         "host_budget_s": round(attempts * (RELOAD_ALLOWANCE_S + CONNECT_ALLOWANCE_S + replay_s
                                            + PER_INPUT_ALLOWANCE_S * len(inputs)) + 60.0, 1),
     }
+
+
+def _region(manifest: PreflightManifest, trace_path: Path, region_id: str) -> dict[str, Any]:
+    """A reach region's bounds by id: the manifest's, else the situation regions the session saved by its trace."""
+    regions = [r.model_dump(mode="json") for r in manifest.reach_regions]
+    saved = trace_path.parent / "situation-regions.json"
+    source = "manifest"
+    if region_id not in {r["region_id"] for r in regions} and saved.is_file():
+        regions = json.loads(saved.read_text(encoding="utf-8")).get("regions") or []
+        source = "situation-regions.json"
+    found = next((r for r in regions if r.get("region_id") == region_id), None)
+    if found is None:
+        raise ValueError(f"within_region {region_id!r} is neither a manifest reach region nor a saved situation region")
+    bounds = found["bounds"]
+    return {"region_id": region_id, "min": [float(v) for v in bounds["min"]], "max": [float(v) for v in bounds["max"]],
+            "source": source}
+
+
+def inside_region(region: Mapping[str, Any], position: Any) -> bool | None:
+    """Whether a position lies within a region's bounds (inclusive), or None when it is unread."""
+    if not isinstance(position, (list, tuple)) or len(position) != len(region["min"]):
+        return None
+    return all(lo <= float(v) <= hi for v, lo, hi in zip(position, region["min"], region["max"]))
 
 
 # --- run -----------------------------------------------------------------------------------------
@@ -317,6 +480,34 @@ async def request_reload(directory: Path, number: int, timeout_s: float) -> dict
         raise ValueError(f"the host did not report scene reload {number} as completed")
     return {key: done.get(key) for key in ("number", "scene_path", "requested_at_utc", "completed_at_utc",
                                            "game_time_s", "real_time_s", "frame")}
+
+
+def _rounded(value: Any) -> Any:
+    """A reader value with its floats rounded to 3 decimals, through a mapping or a list as well as a scalar."""
+    number = _number(value)
+    if number is not None:
+        return round(number, 3)
+    if isinstance(value, Mapping):
+        return {key: _rounded(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_rounded(item) for item in value]
+    return value
+
+
+def reset_check(plan: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Which readers the reset did not put back to the values the recorded session started with.
+
+    A measurement only: it changes no attempt's result, its validity or its place in k of n. Only aliases present
+    on both sides are compared, and floats are compared rounded to 3 decimals. A plan made before the session's
+    start readers were kept has nothing to compare with, so it states nothing.
+    """
+    start = plan.get("session_start_readers")
+    if start is None:
+        return None
+    differs = {alias: {"session_start": value, "after_reset": values[alias]}
+               for alias, value in start.items()
+               if alias in values and _rounded(value) != _rounded(values[alias])}
+    return {"compared": sum(alias in values for alias in start), "differs": differs}
 
 
 def _reading(sample: Any, alias: str, check: ReproCheck, kind: Any, baseline: Any, label: str,
@@ -389,7 +580,7 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
     alias = check.field.removeprefix("public.")
     attempt: dict[str, Any] = {"number": number, "valid": False, "result": None, "reason": None, "reload": None,
                                "baseline": None, "baseline_satisfied": None, "inputs": [], "readings": [],
-                               "effect": None, "error": None, "stop": None}
+                               "effect": None, "error": None, "stop": None, "reset_check": None}
     client = None
     readers = snapshot = baseline = None
     loop = asyncio.get_running_loop()
@@ -408,11 +599,17 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
                 "allowance": effect.get("allowance"), "unit": effect.get("unit") or UNIT,
                 "holds_for_expected": score(check, "number", effect["expected_displacement"], None),
                 "measured": None, "measurements": []}
+        region = plan.get("region")
+        region_snapshot = snapshot_for(client) if region is not None and snapshot_for is not None else None
+        if region is not None and region_snapshot is None:
+            raise ValueError("a within_region check needs a position snapshot source")
         await asyncio.sleep(plan["start_settle_s"])
         if readers is not None:
             first = await readers.read()
-            baseline = (getattr(first, "values", {}) or {}).get(alias)
+            values = getattr(first, "values", {}) or {}
+            baseline = values.get(alias)
             attempt["baseline"] = baseline
+            attempt["reset_check"] = reset_check(plan, values)
             attempt["baseline_satisfied"] = score(check, kind, baseline, baseline) if baseline is not None else None
         started = loop.time()
         for item in plan["inputs"]:
@@ -423,12 +620,28 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
             # so it adds nothing to that observation's age.
             measures = effect is not None and item["action"] == effect["action"]
             before = await read_snapshot(snapshot) if measures else None
+            conditioned = check.after_action is not None and item["action"] == check.after_action
+            where = None
+            if conditioned and region is not None:
+                position = (await read_snapshot(region_snapshot))[0] if region_snapshot is not None else None
+                at = position.get("position") if isinstance(position, Mapping) else None
+                where = inside_region(region, at)
+                attempt.setdefault("region_presses", []).append({"turn": item["turn"], "inside": where,
+                                                                 "position": at})
+                conditioned = where is True   # one made outside the region, or unread, is not scored
+            prior = await readers.read() if conditioned and readers is not None else None
             observation = await client.observe_once()
             sent_s = loop.time() - started
             action_id = f"reproduce-{uuid.uuid4().hex}"
-            records = await client.act(action_id=action_id, choice_id=item.get("choice_id") or item["action"],
-                                       action=item["action"], params=item.get("params") or None,
-                                       based_on_seq=observation.seq, max_age_s=MAX_AGE_S, lease_s=item.get("lease_s"))
+            request = dict(action_id=action_id, choice_id=item.get("choice_id") or item["action"],
+                           action=item["action"], params=item.get("params") or None,
+                           based_on_seq=observation.seq, max_age_s=MAX_AGE_S, lease_s=item.get("lease_s"))
+            if conditioned and readers is not None:
+                prior_value = (getattr(prior, "values", {}) or {}).get(alias)
+                records = await _act_reading_while_held(client, request, readers, alias, check, kind, prior_value,
+                                                        item, attempt, started, plan["sample_interval_s"])
+            else:
+                records = await client.act(**request)
             terminal = records[-1]
             status = getattr(terminal.status, "value", terminal.status)
             row = {"turn": item["turn"], "action": item["action"], "recorded_offset_s": item["offset_s"],
@@ -446,11 +659,21 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
                     _measurement(item, terminal, before, await read_snapshot(snapshot), check))
             if readers is not None:
                 sample = await readers.read()
-                attempt["readings"].append(_reading(sample, alias, check, kind, baseline, f"after turn {item['turn']}",
-                                                    loop.time() - started))
+                reference = ((getattr(prior, "values", {}) or {}).get(alias) if conditioned else baseline)
+                reading = _reading(sample, alias, check, kind, reference, f"after turn {item['turn']}",
+                                   loop.time() - started)
+                if conditioned:
+                    reading["after_action"] = item["action"]
+                    reading["before_value"] = reference
+                    if reference is None and check.op in (Comparator.changed, Comparator.unchanged):
+                        reading["satisfied"] = None  # nothing measured before it to compare with
+                attempt["readings"].append(reading)
         else:
             if effect is not None:
                 _score_effect(attempt)  # a displacement is measured at its input; there is no settle window to read
+                return attempt
+            if check.after_action is not None:
+                _score_conditioned(attempt)  # scored at each execution of the action; no settle window applies
                 return attempt
             settle_until = loop.time() + plan["settle_s"]
             seen_s = _number(plan.get("evidence_offset_s"))
@@ -493,6 +716,58 @@ async def run_attempt(plan: Mapping[str, Any], number: int, reload: Callable[[in
     return attempt
 
 
+async def _act_reading_while_held(client: Any, request: Mapping[str, Any], readers: Any, alias: str, check: ReproCheck,
+                                  kind: Any, prior_value: Any, item: Mapping[str, Any], attempt: dict[str, Any],
+                                  started: float, interval_s: float) -> list[Any]:
+    """Start the input, read the readers until its terminal record arrives, and return its records.
+
+    `start_act` releases the connection while the input runs, so the readers can be read during the hold. Each
+    reading is scored like the one after the input, against the reading right before it.
+    """
+    loop = asyncio.get_running_loop()
+    records = await client.start_act(**request)
+    if _status(records[-1]) in _TERMINAL:
+        return records
+    collecting = asyncio.ensure_future(client.collect_act(request["action_id"]))
+    while not collecting.done():
+        sample = await readers.read()
+        reading = _reading(sample, alias, check, kind, prior_value, f"while turn {item['turn']} held",
+                           loop.time() - started)
+        reading.update(after_action=item["action"], before_value=prior_value, while_held=True)
+        if prior_value is None and check.op in (Comparator.changed, Comparator.unchanged):
+            reading["satisfied"] = None
+        attempt["readings"].append(reading)
+        await asyncio.wait({collecting}, timeout=interval_s)
+    return collecting.result()
+
+
+_TERMINAL = frozenset({"completed", "failed", "cancelled", "timed_out", "rejected"})
+
+
+def _status(record: Any) -> Any:
+    status = getattr(record, "status", None)
+    return getattr(status, "value", status)
+
+
+def _score_conditioned(attempt: dict[str, Any]) -> None:
+    """Reproduced when every scored execution's reading satisfied the check; any that did not is a miss."""
+    outcomes = [reading["satisfied"] for reading in attempt["readings"] if "after_action" in reading]
+    if not outcomes and attempt.get("region_presses") is not None:
+        attempt.update(valid=True, result="unknown",
+                       reason="no execution of the action was made inside the check's region")
+        return
+    if any(outcome is False for outcome in outcomes):
+        attempt.update(valid=True, result="not_reproduced",
+                       reason="a reading during or right after an execution of the action did not satisfy the "
+                              "repro_check")
+    elif outcomes and all(outcome is True for outcome in outcomes):
+        attempt.update(valid=True, result="reproduced",
+                       reason="every reading during and right after an execution of the action satisfied the "
+                              "repro_check")
+    else:
+        attempt.update(valid=True, result="unknown", reason="no reading during or after an execution could be scored")
+
+
 READER_BASIS = ("k counts valid attempts where the repro_check did not hold after the reset and a later "
                 "reading satisfied it; n counts valid attempts that scored the baseline as not holding and "
                 "at least one later reading. Unknown attempts (including a check that already held after "
@@ -512,12 +787,21 @@ def summarize(plan: Mapping[str, Any], attempts: Sequence[Mapping[str, Any]]) ->
     deviations = [abs(row["deviation_s"]) for a in attempts for row in a["inputs"]]
     return {"planned": plan["attempts"], "attempted": len(attempts), "valid": len(valid), "k": k, "n": n,
             "unknown": unknown,
-            "basis": EFFECT_BASIS if plan.get("effect") is not None else READER_BASIS,
+            "reset_differs": sorted({alias for a in attempts
+                                     for alias in ((a.get("reset_check") or {}).get("differs") or {})}),
+            "basis": (EFFECT_BASIS if plan.get("effect") is not None
+                      else CONDITIONED_BASIS if (plan.get("repro_check") or {}).get("after_action") is not None
+                      else READER_BASIS),
             "invalid": [{"number": a["number"], "reason": a["reason"]} for a in attempts if not a["valid"]],
             "input_timing": {"max_abs_deviation_s": round(max(deviations), 3) if deviations else None,
                              "inputs_replayed": len(deviations)}}
 
 
+CONDITIONED_BASIS = ("k counts valid attempts where every reading while an execution of the check's action was "
+                     "held and right after it satisfied it (changed and unchanged against the reading right before "
+                     "it); n counts valid "
+                     "attempts that scored at least one such reading. Unknown attempts (no such reading could be "
+                     "scored) and invalid (diverged or failed) attempts are in neither")
 OVERRIDE_REASON = "an operator check overrode the finding's own, so the finding's state is unchanged"
 UNSCORED_REASON = "no attempt was scored, so the finding's state is unchanged"
 
@@ -570,6 +854,45 @@ async def measure(plan: Mapping[str, Any], reload: Callable[[int], Awaitable[dic
             "finding_update": update, "finding_update_reason": update_reason, "finished_at_utc": _utcnow()}
 
 
+# --- control comparison --------------------------------------------------------------------------
+
+
+SPECIFIC = "specific"
+NOT_SPECIFIC = "not_specific"
+NOT_REPRODUCED = "not_reproduced"
+INCONCLUSIVE = "inconclusive"
+
+
+def compare_with_control(seeded: Mapping[str, Any], control: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether a replay reproduces on the seeded build and not on the control; and the finding's next state.
+
+    Both reports must come from the same plan, or they replayed different things and are not compared.
+    """
+    if seeded.get("plan_sha256") != control.get("plan_sha256") or seeded.get("plan_sha256") is None:
+        raise ValueError("the seeded and control replays were made from different plans")
+    s, c = seeded["summary"], control["summary"]
+    if s["n"] < 1 or c["n"] < 1:
+        verdict, reason = INCONCLUSIVE, "a side scored no attempt"
+    elif s["k"] == 0:
+        verdict, reason = NOT_REPRODUCED, "the seeded build did not reproduce it"
+    elif c["k"] >= 1:
+        verdict, reason = NOT_SPECIFIC, ("the control build reproduces it too: the game's normal behaviour or a rule, "
+                                         "not a defect of the seeded build")
+    else:
+        verdict, reason = SPECIFIC, "reproduced on the seeded build and not on the control"
+    update = seeded.get("finding_update")
+    if update is not None and verdict != SPECIFIC:
+        update = dict(update)
+        update["state"] = FindingState.repro_attempted.value if verdict != INCONCLUSIVE else update.get("state")
+        update = Finding.model_validate(update).model_dump(mode="json")
+    return {"schema_version": SCHEMA_VERSION, "kind": "replay_control_comparison", "model_calls": 0,
+            "finding_id": seeded.get("finding_id"), "repro_check": seeded.get("repro_check"),
+            "plan_sha256": seeded.get("plan_sha256"), "verdict": verdict, "reason": reason,
+            "seeded": {"k": s["k"], "n": s["n"], "unknown": s["unknown"], "status": seeded.get("status")},
+            "control": {"k": c["k"], "n": c["n"], "unknown": c["unknown"], "status": control.get("status")},
+            "finding_update": update, "finished_at_utc": _utcnow()}
+
+
 # --- command line --------------------------------------------------------------------------------
 
 
@@ -591,11 +914,29 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     for name in ("project", "plan", "manifest", "output", "handshake-dir"):
         runner.add_argument(f"--{name}", type=Path, required=True)
     runner.add_argument("--reload-timeout", type=float, default=RELOAD_TIMEOUT_S)
+    comparer = sub.add_parser("compare", help="compare a seeded replay with the same plan on a control build")
+    for name in ("seeded", "control", "output"):
+        comparer.add_argument(f"--{name}", type=Path, required=True)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
+    if args.command == "compare":
+        try:
+            seeded = json.loads((args.seeded / "reproduce.json").read_text(encoding="utf-8"))
+            control = json.loads((args.control / "reproduce.json").read_text(encoding="utf-8"))
+            result = compare_with_control(seeded, control)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"reproduce compare: {exc}", file=sys.stderr)
+            return 1
+        if args.output.exists():
+            print("reproduce compare: the output must be new", file=sys.stderr)
+            return 1
+        args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        print(f"compare: {result['verdict']} (seeded k={result['seeded']['k']} n={result['seeded']['n']}, "
+              f"control k={result['control']['k']} n={result['control']['n']})")
+        return 0
     if args.command == "plan":
         try:
             check = json.loads(args.repro_check.read_text(encoding="utf-8")) if args.repro_check else None

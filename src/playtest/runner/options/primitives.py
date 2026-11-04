@@ -153,6 +153,9 @@ class Direction:
     step: float | None               # measured displacement of one short hold, along `unit`
     trials: int
     alternatives: tuple[tuple[str, str | None], ...] = ()   # other (action, control) pairs, same direction
+    # "world": `unit` is a world vector. "body": `unit` is (right, 0, forward) in the entity's own measured
+    # basis, because the measured motion turns with the entity; an option resolves it at its start.
+    basis: str = "world"
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,9 @@ class Primitives:
     """Everything the option layer may offer, measured once per run from the calibration record."""
 
     directions: tuple[Direction, ...] = ()
+    # Moves whose measured direction turns with the entity, measured in its own basis (`Direction.basis`
+    # "body"). Kept apart from `directions`, which every world-frame lookup reads, so a world game sees none.
+    body_directions: tuple[Direction, ...] = ()
     rise: Primitive | None = None
     rise_duration_s: float | None = None    # measured airtime: hold time whose rise returns to zero
     rise_peak: float | None = None          # measured peak rise: the largest +y displacement sampled
@@ -262,9 +268,10 @@ class Primitives:
         """A hop needs a measured rise time, a measured move direction and a declared chord."""
         if self.rise is None or self.rise_duration_s is None or self.rise_peak is None:
             return False
-        if not self.directions:
+        moves = (*self.directions, *self.body_directions)
+        if not moves:
             return False
-        return any(self.chorded_move(item) is not None for item in self.directions)
+        return any(self.chorded_move(item) is not None for item in moves)
 
     # --- chords --------------------------------------------------------------------------
 
@@ -278,7 +285,7 @@ class Primitives:
         if not catalog:
             return self
         move_controls: dict[str, str] = {}
-        for item in self.directions:
+        for item in (*self.directions, *self.body_directions):
             if item.control is not None:
                 move_controls.setdefault(item.control, item.action)
             for action, control in item.alternatives:
@@ -549,6 +556,38 @@ def _direction(primitive: Primitive, notes: list[str],
                      trials=primitive.trials)
 
 
+BODY_LABELS = {(2, 1): "forward", (2, -1): "back", (0, 1): "right", (0, -1): "left"}
+
+
+def _body_direction(primitive: Primitive, samples: Sequence[_Sample]) -> Direction | None:
+    """The move measured in the entity's own basis: each trial's motion on its recorded right and forward.
+
+    The unit is (right, 0, forward); its label names the dominant body axis. `None` when no trial recorded the
+    basis or the motion in it has no horizontal part.
+    """
+    rates, shortest = [], None
+    for sample in samples:
+        if sample.right is None or sample.forward is None or sample.applied_s <= 0:
+            continue
+        local = (_dot(sample.delta, sample.right), 0.0, _dot(sample.delta, sample.forward))
+        rates.append(_scale(local, 1.0 / sample.applied_s))
+        if shortest is None or (sample.hold_s, sample.applied_s) < (shortest[0].hold_s, shortest[0].applied_s):
+            shortest = (sample, local)
+    vector = _median_vec(rates)
+    if vector is None:
+        return None
+    length = _norm(vector)
+    if length <= 0:
+        return None
+    unit = _scale(vector, 1.0 / length)
+    index = 2 if abs(unit[2]) >= abs(unit[0]) else 0
+    label = BODY_LABELS[(index, 1 if unit[index] > 0 else -1)]
+    step = _dot(shortest[1], unit) if shortest is not None else None
+    spread = _median([_norm(_sub(rate, vector)) for rate in rates])
+    return Direction(label=label, action=primitive.action, control=primitive.control, unit=unit,
+                     speed=length, spread=spread, step=step, trials=len(rates), basis="body")
+
+
 def _pair_spread(vectors: Sequence[Sequence[float]]) -> float:
     """The largest angle between any two of these horizontal directions, in degrees."""
     directions = []
@@ -703,6 +742,7 @@ def primitives_from_calibration(calibration: Mapping[str, Any], offered_actions:
 
     moves: list[Primitive] = []
     rises: list[tuple[Primitive, Sequence[_Sample]]] = []
+    body_directions: dict[str, Direction] = {}
     for primitive in classified:
         if primitive.kind == KIND_MOVE:
             samples = _samples(trials, primitive.control or "")
@@ -710,11 +750,22 @@ def primitives_from_calibration(calibration: Mapping[str, Any], offered_actions:
             if rotates:
                 yaws = sorted({round(sample.yaw_deg, 3) for sample in samples
                                if sample.yaw_deg is not None})
-                unsupported.append(
+                body = _body_direction(primitive, samples)
+                if body is None:
+                    unsupported.append(
+                        f"{primitive.action}: its measured direction turns with the entity basis "
+                        f"({spread_deg:.1f} deg across trials at yaw {yaws}) and has no measured motion in "
+                        "that basis, so it is not offered as a direction"
+                    )
+                    continue
+                notes.append(
                     f"{primitive.action}: its measured direction turns with the entity basis "
-                    f"({spread_deg:.1f} deg across trials at yaw {yaws}); basis-relative directions "
-                    "are not supported yet, so it is not offered as a direction"
+                    f"({spread_deg:.1f} deg across trials at yaw {yaws}); offered as {body.label} in the "
+                    f"entity's own basis at {body.speed:.3f} u/s"
                 )
+                existing = body_directions.get(body.label)
+                if existing is None or body.speed > existing.speed:
+                    body_directions[body.label] = body
                 continue
             horizontal = (primitive.vector[0], 0.0, primitive.vector[2])
             length = _norm(horizontal)
@@ -787,6 +838,7 @@ def primitives_from_calibration(calibration: Mapping[str, Any], offered_actions:
 
     primitives = Primitives(
         directions=tuple(directions[label] for label in sorted(directions)),
+        body_directions=tuple(body_directions[label] for label in sorted(body_directions)),
         rise=rise,
         rise_duration_s=rise_duration,
         rise_peak=rise_peak,
@@ -876,6 +928,59 @@ def option_specs(primitives: Primitives) -> list[OptionSpec]:
                             f"rise {_text(primitives.air_flight_s, 2)} s, "
                             f"peak {_text(primitives.air_rise_peak, 2)}"),
                 ))
+
+    if primitives.can_hop:
+        by_label = {d.label: d for d in primitives.body_directions}
+        back_of = {"forward": "back", "back": "forward", "left": "right", "right": "left"}
+        for direction in primitives.body_directions:
+            # A hop measured in the entity's own basis: the chord that presses its move with the rise, and the
+            # run-up on the opposite body move. Resolved to a world direction when the option starts.
+            chorded = primitives.chorded_move(direction)
+            back = by_label.get(back_of[direction.label])
+            if chorded is None or back is None:
+                continue
+            move_action, chord = chorded
+            run_up = primitives.run_up(direction)
+            body = {"direction": list(direction.unit), "basis": "body", "label": direction.label,
+                    "action": move_action, "rise_action": primitives.rise.action if primitives.rise else None,
+                    "chord": chord, "run_up": run_up, "run_up_action": back.action,
+                    "launch_distance": primitives.launch_distance(direction),
+                    "speed": direction.speed, "step": direction.step}
+            specs.append(OptionSpec(
+                option_id=f"hop:{direction.label}", template="hop",
+                params={**body, "flight_s": primitives.rise_duration_s, "rise_peak": primitives.rise_peak,
+                        **({"air_s": primitives.rest_flight_s, "air_peak": primitives.rest_rise_peak}
+                           if primitives.rest_flight_s is not None and primitives.rest_rise_peak is not None
+                           else {})},
+                intent=(f"hop {direction.label}: run-up {_text(run_up, 2)}, "
+                        f"rise {_text(primitives.rise_duration_s, 2)} s, peak {_text(primitives.rise_peak, 2)}"),
+            ))
+            if primitives.air_rise_peak is not None and primitives.air_press_s and primitives.air_flight_s:
+                specs.append(OptionSpec(
+                    option_id=f"hop2:{direction.label}", template="hop",
+                    params={**body, "flight_s": primitives.air_flight_s, "rise_peak": primitives.air_rise_peak,
+                            "air_press_s": primitives.air_press_s, "air_s": primitives.air_flight_s,
+                            "air_peak": primitives.air_rise_peak},
+                    intent=(f"hop \u00d72 {direction.label}: run-up {_text(run_up, 2)}, "
+                            f"rise {_text(primitives.air_flight_s, 2)} s, peak {_text(primitives.air_rise_peak, 2)}"),
+                ))
+
+    for direction in primitives.body_directions:
+        # A move measured in the entity's own basis: resolved to a world direction when the option starts.
+        specs.append(OptionSpec(
+            option_id=f"traverse:{direction.label}",
+            template="traverse",
+            params={
+                "direction": list(direction.unit),
+                "basis": "body",
+                "label": direction.label,
+                "distance": None,
+                "action": direction.action,
+                "speed": direction.speed,
+                "step": direction.step,
+            },
+            intent=(f"traverse {direction.label}: {direction.speed:.2f} u/s, step {_text(direction.step, 2)}"),
+        ))
 
     for direction in primitives.directions:
         back = primitives.opposite(direction.unit)

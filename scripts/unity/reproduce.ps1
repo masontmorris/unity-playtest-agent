@@ -9,6 +9,8 @@ param(
     [string]$FindingPath,
     [int]$Attempts = 5,
     [double]$SettleSeconds = 3.0,
+    [string]$CatalogPath,
+    [string]$ScenePath,
     [string]$UnityPath
 )
 
@@ -19,7 +21,9 @@ param(
 # and refuses to start while the game is open in an Editor. This script restores every environment variable it
 # sets and never writes to the game project. Everything lands in the new output directory:
 #   plan.json        the inputs to replay, the check, the attempts (made from the trace; no call)
-#   catalog.json     the manifest's exported catalog the host serves, pinned by SHA-256
+#   catalog.json     the catalog the host serves, pinned by SHA-256: -CatalogPath, else the session's own
+#                    catalog.json beside the trace (it holds the declarations the session generated, such as
+#                    point moves), else the manifest's exported catalog
 #   reproduce.json   the report: each attempt, k of n, the finding's next state
 #   handshake/       the numbered reload requests and completions
 #   provenance.json  the game's git HEAD and status before and after the run
@@ -55,8 +59,18 @@ try {
     & $python @planArgs
     if ($LASTEXITCODE -ne 0) { throw 'Could not make the replay plan; see above.' }
     $catalog = Join-Path $output 'catalog.json'
-    & $python -m playtest.preflight.catalog --manifest $manifest --output $catalog
-    if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($catalog)) { throw 'Could not export the manifest catalog.' }
+    $sessionCatalog = if ($CatalogPath) { [IO.Path]::GetFullPath($CatalogPath) }
+                      else { Join-Path ([IO.Path]::GetDirectoryName($trace)) 'catalog.json' }
+    if ($CatalogPath -and -not [IO.File]::Exists($sessionCatalog)) { throw "Missing catalog: $sessionCatalog" }
+    if ([IO.File]::Exists($sessionCatalog)) {
+        # The catalog the session served: a replayed input names the declaration the session sent.
+        Copy-Item -LiteralPath $sessionCatalog -Destination $catalog
+        $catalogSource = $sessionCatalog
+    } else {
+        & $python -m playtest.preflight.catalog --manifest $manifest --output $catalog
+        if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($catalog)) { throw 'Could not export the manifest catalog.' }
+        $catalogSource = 'exported from the manifest'
+    }
 }
 finally { Pop-Location }
 $catalogSha = (Get-FileHash -LiteralPath $catalog -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -71,12 +85,15 @@ function Get-GitState([string]$Path) {
     return [ordered]@{ captured_utc = (Get-Date).ToUniversalTime().ToString('o'); head = $head; status_porcelain = $status; error = $problem }
 }
 $provenance = [ordered]@{ schema_version = 1; trace = $trace; manifest = $manifest; catalog_sha256 = $catalogSha
+                          catalog_source = $catalogSource
                           harness = Get-GitState $repoRoot; game_before = Get-GitState $project; game_after = $null; run_exit_code = $null }
 $names = @('UPA_REPLAY_PLAN', 'UPA_REPLAY_OUTPUT', 'UPA_REPLAY_PYTHON', 'UPA_REPLAY_HANDSHAKE_DIR', 'UPA_REPLAY_MANIFEST',
-           'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256')
+           'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_SCENE_PATH')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
+    # The scene the session played (`-ScenePath`, as run-session.ps1 takes it); the host reloads it each attempt.
+    $env:UPA_SCENE_PATH = if ($ScenePath) { $ScenePath } else { $null }
     $env:UPA_REPLAY_PLAN = $plan
     $env:UPA_REPLAY_OUTPUT = $report
     $env:UPA_REPLAY_PYTHON = $python

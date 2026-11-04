@@ -236,9 +236,14 @@ def evidence(entries_by_seq: Mapping[int, Mapping[str, Any]], finding: Mapping[s
 def load_reproductions(directories: Sequence[Path]) -> list[dict[str, Any]]:
     out = []
     for directory in directories:
-        report, plan = _read_json(directory / "reproduce.json"), _read_json(directory / "plan.json")
+        comparison = _read_json(directory / "comparison.json") if (directory / "comparison.json").is_file() else None
+        # A replay made with a control (`reproduce-with-control.ps1`): the seeded replay is the record, and the
+        # comparison with the control decides whether it moves the finding.
+        source = directory / "seeded" if comparison is not None else directory
+        report, plan = _read_json(source / "reproduce.json"), _read_json(source / "plan.json")
         problem = None if isinstance(report, dict) and isinstance(plan, dict) else "reproduce.json or plan.json is missing"
-        out.append({"path": _display(directory), "report": report or {}, "plan": plan or {}, "problem": problem})
+        out.append({"path": _display(directory), "report": report or {}, "plan": plan or {}, "problem": problem,
+                    "comparison": comparison if isinstance(comparison, dict) else None})
     return out
 
 
@@ -254,6 +259,16 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
     update = None if overridden else report.get("finding_update")
     update_reason = (None if update is not None else OVERRIDE_REASON if overridden
                      else report.get("finding_update_reason") or UNSCORED_REASON)
+    comparison = record.get("comparison")
+    if comparison is not None and not overridden:
+        if comparison.get("verdict") == "specific":
+            update = comparison.get("finding_update") or update
+        else:
+            update = None
+            control = comparison.get("control") or {}
+            update_reason = (f"the control replay gave {comparison.get('verdict')} "
+                             f"({control.get('k')} of {control.get('n')} on the control build): "
+                             f"{comparison.get('reason')}")
     attempts = []
     for attempt in report.get("attempts") or []:
         deviations = [abs(row["deviation_s"]) for row in attempt.get("inputs") or [] if row.get("deviation_s") is not None]
@@ -265,11 +280,18 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
                          "readings": len(attempt.get("readings") or []),
                          "inputs_replayed": len(attempt.get("inputs") or []),
                          "max_abs_deviation_s": round(max(deviations), 3) if deviations else None})
+    checks = [a["reset_check"] for a in report.get("attempts") or [] if a.get("reset_check") is not None]
     return {"path": record["path"], "finished_at_utc": report.get("finished_at_utc"), "status": report.get("status"),
             "check": report.get("repro_check", plan.get("repro_check")),
             "check_source": report.get("repro_check_source", plan.get("repro_check_source")),
             "check_kind": plan.get("repro_check_kind"), "effect": report.get("effect", plan.get("effect")),
             "reset": report.get("reset"),
+            # What the reset did not restore, unioned over the attempts that compared any reader; None when no
+            # attempt measured it, as a plan made before the session's start readers were kept does not.
+            "reset_check": (None if not checks else
+                            {"compared": max(int(check.get("compared") or 0) for check in checks),
+                             "differs": sorted({alias for check in checks
+                                                for alias in (check.get("differs") or {})})}),
             "clock_mode": report.get("clock_mode"), "inputs": len(plan.get("inputs") or []),
             "skipped_inputs": plan.get("skipped_inputs"), "evidence_turn": plan.get("evidence_turn"),
             "planned": summary.get("planned"), "attempted": summary.get("attempted"), "valid": summary.get("valid"),
@@ -278,6 +300,7 @@ def replay(record: Mapping[str, Any]) -> dict[str, Any]:
             "basis": summary.get("basis"), "attempts": attempts,
             "changes_state": update is not None, "state_after": (update or {}).get("state"),
             "finding_update_reason": update_reason,
+            "control": (comparison or {}).get("control"), "verdict": (comparison or {}).get("verdict"),
             "model_calls": report.get("model_calls")}
 
 
@@ -397,7 +420,8 @@ def _check(check: Mapping[str, Any] | None) -> str:
         return "none"
     value = "" if check.get("value") is None else " " + json.dumps(check["value"])
     tolerance = f" (tolerance {check['tolerance']})" if check.get("tolerance") is not None else ""
-    return f"`{check.get('field')} {check.get('op')}{value}`{tolerance}".replace("|", "\\|")
+    after = f", right after each `{check['after_action']}`" if check.get("after_action") is not None else ""
+    return f"`{check.get('field')} {check.get('op')}{value}`{after}{tolerance}".replace("|", "\\|")
 
 
 def _displacement(value: Any, effect: Mapping[str, Any]) -> str:
@@ -417,6 +441,19 @@ def _usd_text(value: float | None) -> str:
     return "unknown" if value is None else f"${value:.4f}"
 
 
+def _guard_markdown(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Each guard asymmetry with how many fresh sessions showed it on the seeded build and on the control."""
+    lines = ["## Measured guard asymmetries", "",
+             "Before play, in fresh sessions, each verb was pressed while each of two measured opposite directions "
+             "was held, against the direction alone. An asymmetry is an effect seen with one and not the other; it "
+             "is specific when the control (unseeded) build never shows it.", "",
+             "| Asymmetry | Seeded | Control | Verdict |", "|---|---|---|---|"]
+    for row in sorted(rows, key=lambda r: (r.get("verdict") != "specific", r.get("verb"), r.get("key"))):
+        lines.append(f"| {_cell(row.get('line'))} | {row.get('k')} of {row.get('n')} | "
+                     f"{row.get('control_k')} of {row.get('control_n')} | {row.get('verdict')} |")
+    return lines + [""]
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     run, cost = report["run"], report["cost"]
     commit = (run.get("game_commit") or "unknown")[:7]
@@ -434,6 +471,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines += ["No findings were recorded in this run.", ""]
     for finding in report["findings"]:
         lines += _finding_markdown(finding)
+    if report.get("guard_asymmetries"):
+        lines += _guard_markdown(report["guard_asymmetries"])
     if report["proposed_not_recorded"]:
         lines += ["## Proposed but not recorded", ""]
         lines += [f"- {p['finding_id']} (request turn {p['request_turn']}): {p['reason']}"
@@ -446,6 +485,17 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines += _run_markdown(run, report.get("session_video"))
     lines += _cost_markdown(cost)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _reset_markdown(reset: Mapping[str, Any] | None) -> list[str]:
+    """What a replay's reset did not restore, measured; nothing when no attempt compared a reader."""
+    if not reset or not reset["compared"]:
+        return []
+    if reset["differs"]:
+        restored = max(0, reset["compared"] - len(reset["differs"]))
+        return [f"Reset restored {restored} of {reset['compared']} compared readers; not restored: "
+                f"{', '.join(reset['differs'])}"]
+    return [f"Reset restored all {reset['compared']} compared readers"]
 
 
 def _finding_markdown(f: Mapping[str, Any]) -> list[str]:
@@ -473,7 +523,12 @@ def _finding_markdown(f: Mapping[str, Any]) -> list[str]:
         calibrated = r.get("effect")
         lines += [f"Replay `{r['path']}`, {source} {_check(r['check'])}: {r['status']}, {r['k']} of {r['n']} "
                   f"reproduced, {r['unknown']} unknown, {len(r['invalid'] or [])} invalid; reset {r['reset']}, "
-                  f"{r['inputs']} inputs. {effect}", ""]
+                  f"{r['inputs']} inputs. {effect}"]
+        lines += _reset_markdown(r.get("reset_check")) + [""]
+        if r.get("verdict") is not None:
+            control = r.get("control") or {}
+            lines += [f"Control replay of the same plan on the unseeded build: {control.get('k')} of "
+                      f"{control.get('n')} reproduced. Verdict: **{r['verdict']}**.", ""]
         if calibrated:
             lines += [f"The check is the net displacement of one execution of `{calibrated.get('action')}`. "
                       f"Calibration measured {_displacement(calibrated.get('expected_displacement'), calibrated)} "
@@ -564,6 +619,8 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--trace", type=Path, default=None, help="default: <run>/trace.jsonl")
     parser.add_argument("--reproduce", type=Path, action="append", default=[], help="a reproduce output folder")
     parser.add_argument("--finding", action="append", default=None, help="report only this finding_id")
+    parser.add_argument("--guards", type=Path, default=None,
+                        help="a guard comparison (python -m playtest.runner.guards compare) to report beside the findings")
     parser.add_argument("--output", type=Path, required=True, help="a new folder for report.json and report.md")
     return parser.parse_args(argv)
 
@@ -576,6 +633,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = build_report(args.run, trace_path=args.trace, reproduce_dirs=args.reproduce,
                               finding_ids=args.finding)
+        if args.guards is not None:
+            report["guard_asymmetries"] = json.loads(args.guards.read_text(encoding="utf-8"))["comparisons"]
     except (OSError, ValueError, KeyError) as exc:
         print(f"playtest-report: {exc}", file=sys.stderr)
         return 1

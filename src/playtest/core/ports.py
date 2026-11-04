@@ -221,6 +221,9 @@ class TurnReport:
     finished_option: tuple[Choice, Mapping[str, Any]] | None = None
     finished_move: tuple[Choice, "Executed"] | None = None  # a background action or skill, and what it did
     option_running: bool = False
+    # The finished option or move above was collected at this turn's start and already handed to the loop's
+    # `on_settled` hook, before S1 was asked; a harness that filed it there does not file it again.
+    settled_before_decision: bool = False
 
     @property
     def provider_failed(self) -> bool:

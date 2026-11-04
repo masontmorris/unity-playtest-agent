@@ -54,11 +54,13 @@ def _finding(seq: int, evidence: list[int], check: dict[str, Any] | None, state:
     return {"trace_seq": seq, "kind": "finding", "turn": None, "body": body}
 
 
-def _trace(tmp_path: Path, *, check: dict[str, Any] | None = None, extra: list[dict[str, Any]] = ()) -> Path:
+def _trace(tmp_path: Path, *, check: dict[str, Any] | None = None, extra: list[dict[str, Any]] = (),
+           start: dict[str, Any] | None = None) -> Path:
+    """A session whose first observation carries `start` under `public`, when given."""
     check = check if check is not None else {"field": "public.speed", "op": ">=", "value": 9, "tolerance": None}
     entries = [
         {"trace_seq": 0, "kind": "run", "turn": None, "body": {"run_id": "r1", "game_commit": "abc"}},
-        {"trace_seq": 1, "kind": "observation", "turn": 0, "body": {}},
+        {"trace_seq": 1, "kind": "observation", "turn": 0, "body": {"public": dict(start)} if start else {}},
         _execution(2, 0, "move", "completed", 1000.0),
         {"trace_seq": 3, "kind": "observation", "turn": 1, "body": {}},
         _execution(4, 1, "move", "rejected", None),                 # sent nothing in the session: skipped
@@ -100,6 +102,40 @@ def test_the_plan_refuses_what_it_cannot_replay_or_score(tmp_path):
     assert plan["repro_check"]["op"] == "changed" and plan["repro_check_source"] == "operator"
 
 
+def test_the_plan_keeps_the_reader_values_the_session_began_with(tmp_path):
+    plan = reproduce.build_plan(_trace(tmp_path / "start", start={"speed": 1.0, "not_a_reader": 4.0}),
+                                _manifest(tmp_path / "start"))
+    assert plan["session_start_readers"] == {"speed": 1.0}      # the manifest's reader aliases only
+    blind = reproduce.build_plan(_trace(tmp_path / "blind"), _manifest(tmp_path / "blind"))
+    assert blind["session_start_readers"] == {}                 # no observation carried a reader: nothing compared
+
+
+def test_an_attempt_states_the_readers_the_reset_did_not_restore_and_leaves_its_result_alone(tmp_path):
+    plan = _plan(tmp_path, start={"speed": 1.0})
+    restored = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([1.0, 2.0, 3.0]))
+    assert restored["reset_check"] == {"compared": 1, "differs": {}}
+    assert (restored["valid"], restored["result"]) == (True, "not_reproduced")
+    # 2.0004 and 1.0 are different float noise, not different readings: the comparison rounds to 3 decimals.
+    near = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([1.0004, 2.0, 3.0]))
+    assert near["reset_check"] == {"compared": 1, "differs": {}}
+    drifted = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([2.5, 2.0, 3.0]))
+    assert drifted["reset_check"] == {"compared": 1,
+                                      "differs": {"speed": {"session_start": 1.0, "after_reset": 2.5}}}
+    assert (drifted["valid"], drifted["result"]) == (True, "not_reproduced")   # a measurement only
+    assert reproduce.summarize(plan, [restored])["reset_differs"] == []
+    assert reproduce.summarize(plan, [restored, drifted])["reset_differs"] == ["speed"]
+
+
+def test_a_reader_missing_on_either_side_is_not_compared_and_an_old_plan_states_nothing(tmp_path):
+    plan = _plan(tmp_path, start={"speed": 1.0})
+    plan["session_start_readers"]["unread"] = 2.0     # the reading does not carry it
+    attempt = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([1.0, 2.0, 3.0]))
+    assert attempt["reset_check"] == {"compared": 1, "differs": {}}
+    plan.pop("session_start_readers")                 # a plan made before the session's start was kept
+    old = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([2.5, 2.0, 3.0]))
+    assert old["reset_check"] is None
+
+
 def _no_check(tmp_path: Path) -> Path:
     path = _trace(tmp_path)
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -126,6 +162,19 @@ class FakeClient:
                                 release_verified=True if status == "completed" else None,
                                 applied_duration_s=kwargs.get("lease_s") if status == "completed" else None)]
 
+    async def start_act(self, **kwargs):
+        """Like act, but an input held for `hold_s` comes back running and ends when collected."""
+        records = await self.act(**kwargs)
+        if getattr(self, "hold_s", 0) and records[-1].status.value == "completed":
+            self.pending = records
+            return [SimpleNamespace(status=SimpleNamespace(value="running"), reject_reason=None,
+                                    release_verified=None, applied_duration_s=None)]
+        return records
+
+    async def collect_act(self, action_id):
+        await asyncio.sleep(self.hold_s)
+        return self.pending
+
     async def aclose(self):
         self.closed = True
         return None
@@ -143,8 +192,8 @@ class FakeReaders:
         return SimpleNamespace(values={"speed": value}, errors={}, game_s=1.0, problem=None)
 
 
-def _plan(tmp_path: Path, attempts: int = 1) -> dict[str, Any]:
-    plan = reproduce.build_plan(_trace(tmp_path), _manifest(tmp_path), attempts=attempts)
+def _plan(tmp_path: Path, attempts: int = 1, **kwargs: Any) -> dict[str, Any]:
+    plan = reproduce.build_plan(_trace(tmp_path, **kwargs), _manifest(tmp_path), attempts=attempts)
     plan.update(start_settle_s=0.0, settle_s=0.02, sample_interval_s=0.01)
     for item in plan["inputs"]:
         item["offset_s"] = item["offset_s"] / 100   # keep the test fast; offsets are still honoured in order
@@ -655,3 +704,137 @@ def test_the_plan_command_writes_the_effect_plan_and_says_what_it_scores(tmp_pat
     assert reproduce.main(["plan", "--trace", str(trace), "--manifest", str(manifest), "--repro-check", str(check),
                            "--output", str(refused)]) == 1
     assert "no calibrated expected displacement" in capsys.readouterr().err and not refused.exists()
+
+
+def _option(seq: int, turn: int, holds: list[tuple], *, recorded: bool = True) -> dict[str, Any]:
+    """An option entry: each hold is (n, action, start, final status, applied); superseded holds stay running."""
+    receipts: list[dict[str, Any]] = []
+    for n, action, start, status, applied in holds:
+        action_id = f"hop+x.{n}"
+        if recorded:
+            receipts.append({"type": "request", "action_id": action_id, "action": action, "lease_s": 3.0})
+        receipts.append({"type": "execution", "action_id": action_id, "status": "running",
+                         "input_start_wall_s": start, "applied_duration_s": None, "release_verified": None})
+        if status != "running":
+            receipts.append({"type": "execution", "action_id": action_id, "status": status,
+                             "input_start_wall_s": start, "applied_duration_s": applied,
+                             "release_verified": True if status == "cancelled" else None})
+    receipts.append({"type": "stopped", "released": [], "release_verified": True})
+    return {"trace_seq": seq, "kind": "option", "turn": turn,
+            "body": {"option_id": "hop+x", "template": "hop", "params": {}, "outcome": {}, "receipts": receipts}}
+
+
+def test_an_options_inputs_replay_in_start_order_each_held_as_long_as_it_measurably_was():
+    from playtest.runner.reproduce import recorded_inputs
+    entries = [
+        _execution(3, 0, "walk", "completed", 100.0),
+        _option(5, 1, [(1, "move_left", 101.0, "running", None), (2, "jump_right", 101.6, "cancelled", 0.9)]),
+        _execution(7, 2, "walk", "completed", 103.0),
+    ]
+    inputs, skipped = recorded_inputs(entries, 99)
+    assert [(i["action"], i["purpose"], i["offset_s"], i["lease_s"]) for i in inputs] == [
+        ("walk", "choice", 0.0, 0.4), ("move_left", "option", 1.0, 0.6), ("jump_right", "option", 1.6, 0.9),
+        ("walk", "choice", 3.0, 0.4)]
+    assert skipped == {}
+
+    # A trace written before options recorded their requests: its inputs are named as skipped, never guessed.
+    inputs, skipped = recorded_inputs([_option(5, 1, [(1, "move_left", 101.0, "cancelled", 0.5)], recorded=False)], 99)
+    assert inputs == [] and skipped == {"option_unrecorded": 1}
+
+
+def test_a_stopped_action_replays_for_the_time_it_held_and_a_stopped_sequence_is_skipped():
+    from playtest.runner.reproduce import recorded_inputs
+    stopped = _execution(3, 0, "walk", "cancelled", 100.0)
+    stopped["body"]["records"][0].update(applied_duration_s=0.25, release_verified=True)
+    sequence = _execution(5, 1, "move.strip5", "cancelled", 101.0)
+    sequence["body"]["records"][0].update(applied_duration_s=0.3, release_verified=True)
+    inputs, skipped = recorded_inputs([stopped, sequence], 99, frozenset({"walk"}))
+    assert [(i["action"], i["lease_s"]) for i in inputs] == [("walk", 0.25)]
+    assert skipped == {"cancelled_skill": 1}
+
+
+def _conditioned_plan(tmp_path: Path, check: dict[str, Any]) -> dict[str, Any]:
+    plan = reproduce.build_plan(_trace(tmp_path, check=check), _manifest(tmp_path), attempts=1)
+    plan.update(start_settle_s=0.0, settle_s=0.02, sample_interval_s=0.01)
+    for item in plan["inputs"]:
+        item["offset_s"] = item["offset_s"] / 100
+    return plan
+
+
+def test_an_input_conditioned_check_scores_the_reading_right_after_each_execution_of_its_action(tmp_path):
+    # "speed stays unchanged after move": a state the reset already leaves, which the baseline rule cannot show.
+    check = {"field": "public.speed", "op": "unchanged", "value": None, "after_action": "move"}
+    plan = _conditioned_plan(tmp_path, check)
+    assert plan["repro_check"]["after_action"] == "move"
+    assert [item.get("scored", False) for item in plan["inputs"]] == [True, True]
+
+    # Reads: baseline, then before and after each move. Both moves left speed as it was: reproduced.
+    attempt = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([0.0, 0.0, 0.0, 0.0, 0.0]))
+    assert attempt["valid"] and attempt["result"] == "reproduced"
+    assert [r["before_value"] for r in attempt["readings"] if "after_action" in r] == [0.0, 0.0]
+
+    # One move changed it, as on a correct build: not reproduced, whatever the other one did.
+    attempt = _run(plan, FakeClient(["completed", "completed"]), FakeReaders([0.0, 0.0, 0.0, 0.0, 5.0]))
+    assert attempt["valid"] and attempt["result"] == "not_reproduced"
+    assert reproduce.summarize(plan, [attempt])["basis"] == reproduce.CONDITIONED_BASIS
+
+
+def test_an_input_conditioned_check_is_refused_when_its_action_never_ran_before_the_evidence(tmp_path):
+    check = {"field": "public.speed", "op": "unchanged", "value": None, "after_action": "jump"}
+    with pytest.raises(ValueError, match="input-conditioned check has nothing to score"):
+        reproduce.build_plan(_trace(tmp_path, check=check), _manifest(tmp_path))
+
+
+def test_an_unset_input_condition_is_left_out_of_the_check_as_written():
+    from playtest.contracts.investigation import ReproCheck
+    assert "after_action" not in ReproCheck(field="public.speed", op=">=", value=9).model_dump(mode="json")
+
+
+def test_an_input_conditioned_check_also_reads_while_the_input_is_held(tmp_path):
+    # A blend that rises only while the input is held and is back to rest after it: the reading after the input
+    # alone would call it unchanged. The reading taken during the hold shows the effect, so it is not reproduced.
+    check = {"field": "public.speed", "op": "unchanged", "value": None, "after_action": "move"}
+    plan = _conditioned_plan(tmp_path, check)
+    plan["sample_interval_s"] = 0.5
+    client = FakeClient(["completed", "completed"])
+    client.hold_s = 0.05
+    # baseline; move 1: before, while held, after; move 2: before, while held, after
+    attempt = _run(plan, client, FakeReaders([0.0, 0.0, 3.0, 0.0, 0.0, 3.0, 0.0]))
+    held = [r for r in attempt["readings"] if r.get("while_held")]
+    assert [r["value"] for r in held] == [3.0, 3.0] and attempt["result"] == "not_reproduced"
+    # The same input that changes nothing even while held reproduces.
+    client = FakeClient(["completed", "completed"])
+    client.hold_s = 0.05
+    attempt = _run(plan, client, FakeReaders([0.0] * 7))
+    assert attempt["result"] == "reproduced"
+
+
+def _report(k, n, plan="p1", update=None):
+    return {"plan_sha256": plan, "finding_id": "f-7", "status": "measured",
+            "summary": {"k": k, "n": n, "unknown": 0}, "finding_update": update}
+
+
+def test_a_control_replay_decides_whether_a_reproduction_is_specific_to_the_seeded_build():
+    finding = {"finding_id": "f-7", "state": "reproduced", "title": "t", "expected": "e",
+               "expected_source": "interpretation", "actual": "a", "evidence_seq": [3],
+               "repro": {"attempts": 5, "reproduced": 5, "clock_mode": "realtime", "reset": "scene_reload",
+                         "tolerance": "t"}}
+    specific = reproduce.compare_with_control(_report(5, 5, update=finding), _report(0, 5))
+    assert specific["verdict"] == "specific" and specific["finding_update"]["state"] == "reproduced"
+    rule = reproduce.compare_with_control(_report(5, 5, update=finding), _report(5, 5))
+    assert rule["verdict"] == "not_specific" and rule["finding_update"]["state"] == "repro_attempted"
+    assert reproduce.compare_with_control(_report(0, 5), _report(0, 5))["verdict"] == "not_reproduced"
+    assert reproduce.compare_with_control(_report(3, 5), _report(0, 0))["verdict"] == "inconclusive"
+    with pytest.raises(ValueError, match="different plans"):
+        reproduce.compare_with_control(_report(5, 5), _report(0, 5, plan="p2"))
+
+
+def test_an_options_last_input_left_running_is_held_until_the_options_measured_end():
+    from playtest.runner.reproduce import recorded_inputs
+    sweep = _option(5, 1, [(1, "move_left", 101.0, "running", None), (2, "move_right", 101.6, "running", None)])
+    sweep["body"]["outcome"] = {"duration_s": 2.5}
+    inputs, skipped = recorded_inputs([sweep], 99)
+    assert [(i["action"], i["lease_s"]) for i in inputs] == [("move_left", 0.6), ("move_right", 1.9)]
+    assert skipped == {}
+    sweep["body"]["outcome"] = {}   # no measured end: the last input is still left out, never guessed
+    assert recorded_inputs([sweep], 99)[1] == {"option_unmeasured": 1}

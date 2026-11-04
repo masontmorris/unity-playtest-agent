@@ -476,3 +476,136 @@ def test_untried_labels_say_when_nothing_tried_here_got_on():
     assert hop(compact_menu(**built)).endswith("3 others tried here, none got on")
     memory.record(outcome("traverse+x", "succeeded"))                                  # onward: not a dead end
     assert "none got on" not in hop(compact_menu(**built))
+
+
+def test_a_body_relative_traverse_is_named_by_its_body_axis():
+    forward = option("traverse:forward", "traverse",
+                     {"direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward", "speed": 5.0, "step": 0.4},
+                     "traverse forward: 5.00 u/s, step 0.40")
+    label = option_label(forward, OutcomeMemory(cell=CELL), "scene-a", (0.0, 0.0, 0.0))
+    assert label.startswith("traverse forward") and "+z" not in label
+
+
+def test_a_tilted_3d_floor_states_where_it_rises_and_marks_the_choice_that_faces_it():
+    from playtest.runner.menu import uphill_bearing
+    probe = {"basis": {"plane": "3d", "forward": [0.5, 0.0, 0.866]},
+             "under": {"hit": True, "normal": [0.0, 0.91, -0.41]}}
+    assert round(uphill_bearing(probe)) == -30                        # rises toward +z: 30 degrees left
+    assert uphill_bearing({**probe, "under": {"hit": True, "normal": [0.0, 1.0, 0.0]}}) is None
+    assert uphill_bearing({**probe, "basis": {"plane": "2d", "forward": [1.0, 0.0, 0.0]}}) is None
+    strips = ChoiceSet(set_version=3, built_from_seq=4, choices=[
+        Choice(id="move.strip3", kind=ChoiceKind.skill, skill="move_strip3", source=ChoiceSource.manifest,
+               label="go toward view strip 3 of 9 (strips counted left to right across the image): "
+                     "turn left 28.0° (measured inputs total 29.1°), then step forward 1.0 units"),
+        Choice(id="move.strip5", kind=ChoiceKind.skill, skill="move_strip5", source=ChoiceSource.manifest,
+               label="go toward view strip 5 of 9 (straight ahead): step forward 1.0 units")])
+    payload = compact_menu(objective="o", observation=observation(probe=probe), choices=strips,
+                           memory=OutcomeMemory(cell=CELL))
+    labels = {row["id"]: row["label"] for row in payload["choices"]}
+    assert labels["move.strip3"].endswith("floor rises this way")
+    assert "floor rises" not in labels["move.strip5"]
+    assert "floor rises 30° left of facing" in payload["progress"]
+
+
+def test_an_uphill_no_turn_faces_marks_the_nearest_turn_with_what_is_left():
+    import math as _math
+    from playtest.runner.menu import uphill_bearing
+    left = _math.radians(58.0)  # the floor rises 58 degrees left of facing +z
+    probe = {"basis": {"plane": "3d", "forward": [0.0, 0.0, 1.0]},
+             "under": {"hit": True, "normal": [0.4 * _math.sin(left), 0.92, -0.4 * _math.cos(left)]}}
+    assert round(uphill_bearing(probe)) == -58
+    offered = ChoiceSet(set_version=3, built_from_seq=4, choices=[
+        Choice(id="move.strip1", kind=ChoiceKind.skill, skill="move_strip1", source=ChoiceSource.manifest,
+               label="go toward view strip 1 of 9 (strips counted left to right across the image): "
+                     "turn left 37.1° (measured inputs total 36.3°), then step forward 2.0 units"),
+        Choice(id="look_left", kind=ChoiceKind.action, action="look_left", source=ChoiceSource.manifest,
+               label="coarse look left: request a 0.1-second hold; calibrated net displacement 0.000 world units "
+                     "(sample variance 0.000000, n=2); calibrated view turn yaw -30.000 degrees, pitch 0.000 degrees"),
+        Choice(id="point.search_left", kind=ChoiceKind.skill, skill="search_left", source=ChoiceSource.manifest,
+               label="large turn: turn left 144.3° (measured inputs total 144.3°)")])
+    payload = compact_menu(objective="o", observation=observation(probe=probe), choices=offered,
+                           memory=OutcomeMemory(cell=CELL))
+    labels = {row["id"]: row["label"] for row in payload["choices"]}
+    assert labels["move.strip1"].endswith("floor rises 22° left of where this faces")
+    assert "floor rises" not in labels["look_left"] and "floor rises" not in labels["point.search_left"]
+
+    # A calibrated in-place view turn counts as a turn: alone, it is the nearest one.
+    alone = ChoiceSet(set_version=3, built_from_seq=4, choices=[offered.choices[1], offered.choices[2]])
+    payload = compact_menu(objective="o", observation=observation(probe=probe), choices=alone,
+                           memory=OutcomeMemory(cell=CELL))
+    labels = {row["id"]: row["label"] for row in payload["choices"]}
+    assert labels["look_left"].endswith("floor rises 28° left of where this faces")
+
+
+def test_a_floor_ahead_below_the_measured_jump_peak_is_stated_on_the_forward_choices():
+    from playtest.runner.menu import forward_drop
+
+    def probe(deltas, plane="3d"):
+        return {"basis": {"plane": plane, "forward": [0.0, 0.0, 1.0]},
+                "under": {"hit": True, "delta_y": 0.0, "normal": [0.0, 1.0, 0.0]},
+                "samples": [{"forward": ahead, "lateral": side, "hit": True, "delta_y": delta}
+                            for ahead, delta in deltas for side in (-0.35, 0.0, 0.35)]}
+
+    top = probe([(0.6, -5.41), (1.2, -5.41), (1.8, -5.41)])
+    assert forward_drop(top, 3.95) == (0.6, 5.41)
+    assert forward_drop(probe([(0.6, 0.5), (1.2, 1.1), (1.8, -4.25)]), 3.95) == (1.8, 4.25)
+    assert forward_drop(probe([(0.6, -0.25), (1.2, -0.5)]), 3.95) is None      # a step down: jumpable back
+    assert forward_drop(top, None) is None                                      # no measured jump to compare
+    assert forward_drop(probe([(0.6, -5.41)], plane="2d"), 3.95) is None         # a 2D probe states nothing
+
+    offered = ChoiceSet(set_version=3, built_from_seq=4, choices=[
+        Choice(id="move.strip5", kind=ChoiceKind.skill, skill="move_strip5", source=ChoiceSource.manifest,
+               label="go toward view strip 5 of 9 (straight ahead): step forward 2.0 units"),
+        Choice(id="move.strip3", kind=ChoiceKind.skill, skill="move_strip3", source=ChoiceSource.manifest,
+               label="go toward view strip 3 of 9 (strips counted left to right across the image): "
+                     "turn left 20.7° (measured inputs total 20.8°), then step forward 2.0 units"),
+        option("hop2:forward", "hop", {"direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward",
+                                       "run_up": 4.5, "flight_s": 1.5, "rise_peak": 1.94, "air_peak": 3.95},
+               "hop ×2 forward: run-up 4.5, rise 1.52 s, peak 3.95")])
+    payload = compact_menu(objective="o", observation=observation(probe=top), choices=offered,
+                           memory=OutcomeMemory(cell=CELL))
+    labels = {row["id"]: row["label"] for row in payload["choices"]}
+    stated = "floor drops 5.4 at 0.6 ahead"
+    assert labels["move.strip5"].endswith(stated) and labels["hop2:forward"].endswith(stated)
+    assert "floor drops" not in labels["move.strip3"]
+    assert stated in payload["progress"]
+
+
+def test_no_floor_found_ahead_is_stated_on_the_forward_choice_and_finish_states_no_height():
+    from playtest.runner.menu import forward_drop
+    edge = {"basis": {"plane": "3d", "forward": [0.0, 0.0, 1.0]},
+            "under": {"hit": True, "delta_y": -0.08, "normal": [0.0, 1.0, 0.0]},
+            "samples": [{"forward": ahead, "lateral": side, "hit": False}
+                        for ahead in (0.6, 1.2, 1.8) for side in (-0.35, 0.0, 0.35)]}
+    assert forward_drop(edge, None) == (0.6, None)
+    part = {**edge, "samples": [{"forward": 0.6, "lateral": 0.0, "hit": True, "delta_y": 0.0},
+                                {"forward": 0.6, "lateral": 0.35, "hit": False}]}
+    assert forward_drop(part, 3.95) is None                    # part of the width still has floor
+    offered = ChoiceSet(set_version=3, built_from_seq=4, choices=[
+        Choice(id="move.strip5", kind=ChoiceKind.skill, skill="move_strip5", source=ChoiceSource.manifest,
+               label="go toward view strip 5 of 9 (straight ahead): step forward 2.0 units"),
+        Choice(id="finish", kind=ChoiceKind.finish, label="Finish", source=ChoiceSource.manifest)])
+    payload = compact_menu(objective="o", observation=observation(position=(9.5, 7.29, 5.9), probe=edge),
+                           choices=offered, memory=OutcomeMemory(cell=CELL),
+                           positions=[(3.6, 0.08, -16.2), (9.4, 6.68, 4.0)])
+    labels = {row["id"]: row["label"] for row in payload["choices"]}
+    assert labels["move.strip5"].endswith("no floor found 0.6 ahead")
+    # A highest point reached reads as completion to a label matcher, whatever the objective: never stated.
+    assert "height" not in labels["finish"] and "highest" not in labels["finish"]
+    assert "floor edge 0.6 ahead" in payload["progress"] and "no floor found" not in payload["progress"]
+
+
+
+def test_a_forward_path_measured_ending_is_not_marked_as_rising():
+    top_step = {"basis": {"plane": "3d", "forward": [0.0, 0.0, 1.0]},
+                "under": {"hit": True, "delta_y": -0.1, "normal": [0.0, 0.91, -0.41]},   # rises straight ahead
+                "samples": [{"forward": 0.6, "lateral": side, "hit": True, "delta_y": 0.3} for side in (-0.35, 0.0, 0.35)]
+                + [{"forward": 1.8, "lateral": side, "hit": False} for side in (-0.35, 0.0, 0.35)]}
+    offered = ChoiceSet(set_version=3, built_from_seq=4, choices=[
+        Choice(id="move.strip5", kind=ChoiceKind.skill, skill="move_strip5", source=ChoiceSource.manifest,
+               label="go toward view strip 5 of 9 (straight ahead): step forward 2.0 units")])
+    payload = compact_menu(objective="o", observation=observation(probe=top_step), choices=offered,
+                           memory=OutcomeMemory(cell=CELL))
+    label = payload["choices"][0]["label"]
+    assert label.endswith("no floor found 1.8 ahead") and "floor rises this way" not in label
+    assert "floor rises 0° " in payload["progress"]                   # the slope itself is still stated

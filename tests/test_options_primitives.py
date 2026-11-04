@@ -145,8 +145,8 @@ def test_a_direction_that_disagrees_across_a_basis_is_stated_not_labelled():
     assert [item.label for item in primitives.directions] == ["+x"]
 
     # The same control measured at two entity yaws, moving along the entity's own right axis each time:
-    # world-relative that is two different directions, in the basis it is one. It must be stated, not
-    # offered as a world direction.
+    # world-relative that is two different directions, in the basis it is one. It is never offered as a
+    # world direction; it is offered in the entity's own basis.
     record = calibration()
     for index, trial in enumerate(t for t in record["trials"] if t["control"] == "right"):
         hold = trial["requested_hold_s"]
@@ -162,7 +162,10 @@ def test_a_direction_that_disagrees_across_a_basis_is_stated_not_labelled():
         trial["after"]["position"] = delta
     primitives = primitives_from_calibration(record, ["move_right"], catalog=catalog())
     assert primitives.directions == ()
-    assert any("basis" in note for note in primitives.unsupported)
+    (body,) = primitives.body_directions
+    assert body.basis == "body" and body.label == "right" and body.action == "move_right"
+    assert abs(body.speed - 4.0) < 1e-6 and abs(body.unit[0] - 1.0) < 1e-6
+    assert any("entity's own basis" in note for note in primitives.notes)
 
 
 def test_real_record_smoke(capsys):

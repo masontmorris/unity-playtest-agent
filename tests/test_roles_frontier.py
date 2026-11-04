@@ -430,9 +430,9 @@ def test_the_schema_offers_an_effect_check_to_a_finding_and_never_to_a_directive
     assert set(defs["fields"]["enum"]) <= set(defs["check_fields"]["enum"])       # every reader is still a check field
     assert not any(name.startswith("effect.") for name in defs["fields"]["enum"])   # a setpoint's enum stays readers only
     payload = full_answer().model_dump(mode="json")
-    payload["candidate_finding"]["repro_check"] = effect_check()
+    payload["candidate_finding"]["repro_check"] = effect_check() | {"after_action": None, "within_region": None}
     jsonschema.Draft202012Validator(schema).validate(payload)
-    payload["candidate_finding"]["repro_check"] = effect_check(action="use")        # no calibrated displacement
+    payload["candidate_finding"]["repro_check"] = effect_check(action="use") | {"after_action": None, "within_region": None}  # no displacement
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(schema).validate(payload)
     payload = full_answer().model_dump(mode="json")
@@ -853,3 +853,41 @@ def test_the_prompt_asks_for_an_expectation_of_play_that_calibration_cannot_sett
     assert "- expectation of play:" in frontier.SYSTEM
     assert "never from calibration" in frontier.SYSTEM
     assert "what_one_would_expect" in frontier.HypothesisOut.model_fields
+
+
+def test_a_findings_check_may_wait_for_an_action_so_a_control_with_none_of_its_effect_can_show(manifest, refs):
+    # A control that has none of its effect leaves its reader where the reset left it: scored from the reset,
+    # unchanged always holds. Conditioned on the action, it is scored right after each execution of it.
+    after = setpoint("public.item_held", Comparator.unchanged, None) | {"after_action": "use"}
+    a = answer(candidate_finding=finding(repro=after))
+    assert frontier.review(a, manifest, refs).clean
+    record = frontier.to_finding(a.candidate_finding, finding_id="f-1")
+    assert (record.repro_check.op, record.repro_check.after_action) == (Comparator.unchanged, "use")
+    skill = setpoint("public.item_held", Comparator.unchanged, None) | {"after_action": "reset"}
+    review = frontier.review(answer(candidate_finding=finding(repro=skill)), manifest, refs)
+    assert any("after_action 'reset' is not a manifest action" in p.reason for p in review.problems)
+
+
+def test_an_effect_check_takes_no_after_action(effect_manifest, refs):
+    check = effect_check() | {"after_action": "move"}
+    review = frontier.review(answer(candidate_finding=finding(repro=check)), effect_manifest, refs)
+    assert any("already names its action" in p.reason for p in review.problems)
+    assert frontier.ReproCheckOut.model_fields["after_action"].default is None   # older answers still decode
+
+
+def test_a_findings_check_may_score_only_the_executions_made_inside_a_progress_region(manifest, refs):
+    # Talking does nothing far from anyone by design: only the presses made next to the NPC can show it broken.
+    region = frontier.ProgressRegion(region_id="situation_1", label="Wraith", purpose="talk", frame="world",
+                                     scene="Level1", minimum=(0.0, 0.0, 0.0), maximum=(1.0, 1.0, 1.0),
+                                     pose="probe_anchor", author="agent", source="start", verification="unverified")
+    placed = replace(manifest, progress={"situation_1": region})
+    check = setpoint("public.item_held", Comparator.unchanged, None) | {"after_action": "use",
+                                                                        "within_region": "situation_1"}
+    a = answer(candidate_finding=finding(repro=check))
+    assert frontier.review(a, placed, refs).clean
+    assert frontier.to_finding(a.candidate_finding, finding_id="f-1").repro_check.within_region == "situation_1"
+    review = frontier.review(a, manifest, refs)    # no such region in the packet
+    assert any("is not a progress region" in p.reason for p in review.problems)
+    alone = setpoint("public.item_held", Comparator.unchanged, None) | {"within_region": "situation_1"}
+    review = frontier.review(answer(candidate_finding=finding(repro=alone)), placed, refs)
+    assert any("name the action" in p.reason for p in review.problems)

@@ -56,7 +56,8 @@ def test_option_labels_and_placement(monkeypatch):
         def observe(self, observation): pass
         def suffix(self, scene, position, option_id): return str(position)
         def settled_points(self, scene): return [[1, 2, 3]]
-    p = SimpleNamespace(classified=[SimpleNamespace(action='walk', kind='move')])
+    p = SimpleNamespace(classified=[SimpleNamespace(action='walk', kind='move')],
+                        directions=[SimpleNamespace(action='walk', alternatives=())], can_hop=False, rise=None)
     choices = [Choice(id='walk', kind='action', action='walk', label='Walk', source='manifest'),
                Choice(id='use', kind='action', action='use', label='Use', source='manifest')]
     a = SimpleNamespace(scene='scene', public={'controlled': {'position': [0, 0, 0]}})
@@ -195,6 +196,75 @@ def test_a_while_pending_input_stops_the_background_option_before_it_runs():
             assert port.interrupted == ['S1 chose c1']
             assert r.loop.reports[-1].finished_option[1]['terminated_by'] == 'interrupted'
             assert r.loop.turns[-1].executed_action == 'c1'
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)
+
+
+def test_a_move_no_option_replaces_stays_offered(monkeypatch):
+    """A move whose direction turns with the body has no option, so its plain action stays on the menu."""
+    from playtest.runner.options import primitives
+    monkeypatch.setattr(primitives, 'option_specs', lambda _: [])
+    class Memory:
+        def observe(self, observation): pass
+        def suffix(self, scene, position, option_id): return 'here: untried'
+        def place_summary(self, scene, position): return {}
+    p = SimpleNamespace(classified=[SimpleNamespace(action='walk', kind='move'),
+                                    SimpleNamespace(action='forward', kind='move')],
+                        directions=[SimpleNamespace(action='walk', alternatives=())], can_hop=False, rise=None)
+    choices = [Choice(id='walk', kind='action', action='walk', label='Walk', source='manifest'),
+               Choice(id='forward', kind='action', action='forward', label='Forward', source='manifest')]
+    seen = SimpleNamespace(scene='scene', public={'controlled': {'position': [0, 0, 0]}})
+    assert [c.id for c in options_choices(choices, p, Memory(), seen)] == ['forward']
+
+
+def hop():
+    return Choice(id='hop+x', kind='option', label='Hop', option_id='hop+x', template='hop',
+                  params={'direction': [1, 0, 0]}, source='manifest')
+
+
+def test_a_committed_hop_runs_to_its_end_before_the_next_question():
+    """The next turn waits for a running hop to finish, so S1 is not asked mid-hop and nothing interrupts it."""
+    async def main():
+        port = InterruptiblePort()
+        r = await rig('hop+x', 'c1', 'f', choices=[*base_choices(), hop()], option_port=port,
+                      decide_during_options=True)
+        try:
+            await r.loop.run_turn()                       # the hop starts in the background
+            asyncio.get_running_loop().call_later(0.05, port.release.set)
+            await r.loop.run_turn()                       # waits for the hop, then S1 chooses c1
+            assert port.interrupted == []                 # it ended by itself
+            assert r.loop.reports[-1].finished_option[1]['terminated_by'] == 'succeeded'
+            assert len(r.s1.contexts) == 2 and 'running_option' not in r.s1.contexts[1]
+        finally:
+            await r.loop.stop('finish')
+            await r.close()
+    run(main)
+
+
+def test_background_work_that_ended_is_filed_before_the_next_question():
+    """A hop that ended (here: fell) is handed to the settle hook before S1 is asked, so the question states it."""
+    async def main():
+        port = InterruptiblePort()
+        settled: list = []
+        r = await rig('hop+x', lambda context: (settled and 'c1') or 'f', 'f',
+                      choices=[*base_choices(), hop()], option_port=port, decide_during_options=True,
+                      on_settled=settled.append)
+        try:
+            await r.loop.run_turn()                       # the hop starts in the background
+            asyncio.get_running_loop().call_later(0.05, port.release.set)
+            second = await r.loop.run_turn()              # waits, files the hop, then asks: S1 already sees it
+            assert second.effective_choice == 'c1'
+            (early,) = settled
+            assert early.record is None and early.selected is None and early.option_running
+            assert early.finished_option[0].id == 'hop+x' and early.finished_option[1]['terminated_by'] == 'succeeded'
+            report = r.loop.reports[-1]
+            assert report.settled_before_decision and report.finished_option[0].id == 'hop+x'
+            await asyncio.wait({r.loop._running_move.task})  # c1 ends before the next turn starts
+            await r.loop.run_turn()                       # so finish's turn collects c1 before its question too
+            assert [s.finished_move[0].id for s in settled[1:]] == ['c1']
+            assert r.loop.reports[-1].settled_before_decision
         finally:
             await r.loop.stop('finish')
             await r.close()

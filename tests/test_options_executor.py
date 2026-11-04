@@ -654,3 +654,49 @@ def test_a_sweep_is_committed_so_an_interrupt_lets_its_presses_finish():
     outcome = asyncio.run(main())
     assert outcome.terminated_by == "blocked"
     assert [row["action"] for row in outcome.measured["tried"]] == ["rise_up", "move_left"]
+
+
+def test_a_body_relative_traverse_resolves_its_world_direction_from_the_measured_yaw():
+    """Forward in the entity's basis, facing yaw 90: the world direction is +x, measured, and the move holds."""
+    world, primitives, spec = build("traverse+x", FakeWorld(step_x=None))
+    body = OptionSpec(option_id="traverse:forward", template="traverse",
+                      params={**spec.params, "direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward",
+                              "distance": 1.0},
+                      intent="traverse forward")
+    original = world.observe_once
+
+    async def facing_plus_x():
+        return (await original()).model_copy(update={"view": {"yaw_deg": 90.0, "pitch_deg": 0.0}})
+
+    world.observe_once = facing_plus_x  # type: ignore[method-assign]
+    outcome = run_spec(world, primitives, body)
+    assert outcome.terminated_by == "succeeded"
+    assert [round(v, 6) for v in outcome.measured["world_direction"]] == [1.0, 0.0, 0.0]
+    assert outcome.params == dict(body.params)                 # the spec's params, unchanged
+
+
+def test_a_body_relative_traverse_with_no_measured_facing_is_rejected():
+    world, primitives, spec = build("traverse+x", FakeWorld(step_x=None))
+    body = OptionSpec(option_id="traverse:forward", template="traverse",
+                      params={**spec.params, "direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward"},
+                      intent="traverse forward")
+    outcome = run_spec(world, primitives, body)
+    assert outcome.terminated_by == "rejected" and "facing is unmeasured" in str(outcome.receipts)
+
+
+def test_a_body_relative_hop_resolves_its_direction_from_the_measured_yaw_and_clears_the_step():
+    """Forward in the entity's basis at yaw 90 is world +x: the same hop as hop+x, measured the same way."""
+    world, primitives, spec = build("hop+x")
+    body = OptionSpec(option_id="hop:forward", template="hop",
+                      params={**spec.params, "direction": [0.0, 0.0, 1.0], "basis": "body", "label": "forward",
+                              "run_up_action": "move_left"},
+                      intent="hop forward")
+    original = world.observe_once
+
+    async def facing_plus_x():
+        return (await original()).model_copy(update={"view": {"yaw_deg": 90.0, "pitch_deg": 0.0}})
+
+    world.observe_once = facing_plus_x  # type: ignore[method-assign]
+    outcome = run_spec(world, primitives, body)
+    assert outcome.terminated_by == "succeeded", outcome.receipts
+    assert [round(v, 6) for v in outcome.measured["world_direction"]] == [1.0, 0.0, 0.0]

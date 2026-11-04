@@ -86,6 +86,12 @@ param(
     [switch]$TurnSizes,
     [switch]$PointTurns,
     [switch]$PointMoves,
+    [switch]$MeasureGuards,
+    [switch]$GuardsOnly,
+    [switch]$PressReadings,
+    [string]$SituationsPath,
+    [ValidateSet('muse-spark-1.3', 'muse-wonder-1.0')][string]$FrontierModel = 'muse-spark-1.3',
+    [string]$ExpectationsPath,
     [ValidateRange(1, 16384)][int]$CaptureWidth = 640,
     [ValidateRange(1, 16384)][int]$CaptureHeight = 480,
     [ValidateSet('full', 'dup-state-ref/1')][string]$S1Layout = 'full',
@@ -94,6 +100,7 @@ param(
     [ValidateSet('full', 'compact-menu')][string]$S1Context = 'full',
     [ValidateSet('policy/1', 'direct/1', 'policy/2', 'policy/3')][string]$S1Instructions = 'policy/1',
     [ValidateSet('plain', 'conditional')][string]$FinishLabel = 'plain',
+    [switch]$NoFinish,
     [switch]$S1ContinuousInput,
     [switch]$Options,
     [switch]$Placement,
@@ -118,6 +125,7 @@ foreach ($required in @($entity, $calibration, $manifestFile, $approval)) {
     if (-not [IO.File]::Exists($required)) { throw "Missing input file: $required" }
 }
 if ($MaxCalls -lt 1) { throw '-MaxCalls must be at least 1: no paid call starts without a call cap.' }
+if ($GuardsOnly -and -not $MeasureGuards) { throw '-GuardsOnly measures the guard table: it needs -MeasureGuards.' }
 if ($WallLimitSeconds -lt 30 -or $WallLimitSeconds -gt 1500) { throw '-WallLimitSeconds must be between 30 and 1500.' }
 if ($MaxAgeSeconds -le 0) { throw '-MaxAgeSeconds must be positive.' }
 if ($MaxProviderFailures -lt 1) { throw '-MaxProviderFailures must be at least 1.' }
@@ -179,6 +187,8 @@ try {
     $catalogArgs = @()
     if ($TurnSizes) { $catalogArgs += @('--turn-sizes', '--calibration', $calibration) }
     if ($PointMoves) { $catalogArgs += @('--point-moves', '--calibration', $calibration, '--capture-width', $CaptureWidth, '--capture-height', $CaptureHeight) }
+    # Each verb chorded with a measured direction, so the runner can measure it while the body moves.
+    if ($MeasureGuards) { $catalogArgs += @('--guard-chords', '--calibration', $calibration) }
     if ($PointTurns) { $catalogArgs += @('--point-turns', '--calibration', $calibration, '--capture-width', $CaptureWidth, '--capture-height', $CaptureHeight) }
     & $python -m playtest.preflight.catalog --manifest $manifestFile --output $catalogFile @catalogArgs
 }
@@ -207,7 +217,9 @@ if (-not $ScenePath) {
 $controlDirectory = Join-Path $output 'control'
 New-Item -ItemType Directory -Path $controlDirectory | Out-Null
 $runId = [guid]::NewGuid().ToString('D')
-$hostDeadlineUtc = [DateTime]::UtcNow.AddSeconds($WallLimitSeconds + 180)
+# Guards are measured before play, inside the host's lifetime: their time is added so the wall limit stays play time.
+$guardAllowanceS = if ($MeasureGuards) { 300 } else { 0 }
+$hostDeadlineUtc = [DateTime]::UtcNow.AddSeconds($WallLimitSeconds + 180 + $guardAllowanceS)
 $sessionConfig = [ordered]@{
     version        = 1
     run_id         = $runId
@@ -222,9 +234,9 @@ $names = @('UPA_SCENE_PATH', 'UPA_BENCH_OUTPUT', 'UPA_BENCH_PYTHON', 'UPA_BENCH_
            'UPA_BENCH_TIMEOUT_S', 'UPA_RUN_MANIFEST', 'UPA_RUN_APPROVAL', 'UPA_RUN_MAX_CALLS', 'UPA_RUN_WALL_LIMIT_S',
            'UPA_RUN_MAX_AGE_S', 'UPA_RUN_MAX_PROVIDER_FAILURES', 'UPA_RUN_TOKENS_PER_MINUTE', 'UPA_RUN_OBJECTIVE_FILE', 'UPA_RUN_DISCOVERY',
            'UPA_RUN_MANIFEST_ORIGIN', 'UPA_SESSION_CATALOG', 'UPA_SESSION_CATALOG_SHA256', 'UPA_RUN_S1_ARM', 'UPA_RUN_FRONTIER',
-           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
+           'UPA_RUN_MAX_FRONTIER_CALLS', 'UPA_RUN_S1_GAME_VIEW', 'UPA_RUN_FRONTIER_CLIP_S', 'UPA_RUN_S1_LAYOUT', 'UPA_RUN_COVERAGE_FACTS', 'UPA_RUN_PATTERN_FACTS', 'UPA_RUN_TRAVEL_FACTS', 'UPA_RUN_TURN_SIZES', 'UPA_RUN_POINT_TURNS', 'UPA_RUN_POINT_MOVES', 'UPA_RUN_MEASURE_GUARDS', 'UPA_RUN_GUARDS_ONLY', 'UPA_RUN_PRESS_READINGS', 'UPA_RUN_SITUATIONS', 'UPA_RUN_FRONTIER_MODEL', 'UPA_RUN_EXPECTATIONS', 'UPA_RUN_CAPTURE_WIDTH', 'UPA_RUN_CAPTURE_HEIGHT',
            'UPA_RUN_S1_COMPACT_STATE', 'UPA_RUN_S1_PENDING_QUESTION', 'UPA_RUN_S1_INSTRUCTIONS', 'UPA_RUN_S1_CONTEXT',
-           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
+           'UPA_RUN_FINISH_LABEL', 'UPA_RUN_NO_FINISH', 'UPA_RUN_PACING_BURST', 'UPA_RUN_PACING_ANCHOR', 'UPA_RUN_CONTINUOUS_INPUT',
            'UPA_RUN_OPTIONS', 'UPA_RUN_CONTINGENT', 'UPA_RUN_PLACEMENT', 'UPA_CONTROLLED_ENTITY')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
@@ -257,6 +269,7 @@ try {
     $env:UPA_RUN_S1_CONTEXT = $S1Context
     $env:UPA_RUN_S1_INSTRUCTIONS = $S1Instructions
     $env:UPA_RUN_FINISH_LABEL = $FinishLabel
+    $env:UPA_RUN_NO_FINISH = if ($NoFinish) { '1' } else { '' }
     $env:UPA_RUN_CONTINUOUS_INPUT = if ($S1ContinuousInput) { '1' } else { '' }
     $env:UPA_RUN_OPTIONS = if ($Options) { '1' } else { '' }
     $env:UPA_RUN_CONTINGENT = if ($Contingent) { '1' } else { '' }
@@ -266,6 +279,12 @@ try {
     $env:UPA_RUN_PACING_BURST = $PacingBurst.ToString($invariant)
     $env:UPA_RUN_PACING_ANCHOR = $PacingAnchor
     $env:UPA_RUN_POINT_MOVES = if ($PointMoves) { '1' } else { '' }
+    $env:UPA_RUN_MEASURE_GUARDS = if ($MeasureGuards) { '1' } else { '' }
+    $env:UPA_RUN_GUARDS_ONLY = if ($GuardsOnly) { '1' } else { '' }
+    $env:UPA_RUN_PRESS_READINGS = if ($PressReadings) { '1' } else { '' }
+    $env:UPA_RUN_SITUATIONS = if ($SituationsPath) { [IO.Path]::GetFullPath($SituationsPath) } else { '' }
+    $env:UPA_RUN_FRONTIER_MODEL = $FrontierModel
+    $env:UPA_RUN_EXPECTATIONS = if ($ExpectationsPath) { [IO.Path]::GetFullPath($ExpectationsPath) } else { '' }
     $env:UPA_RUN_POINT_TURNS = if ($PointTurns) { '1' } else { '' }
     $env:UPA_RUN_CAPTURE_WIDTH = [string]$CaptureWidth
     $env:UPA_RUN_CAPTURE_HEIGHT = [string]$CaptureHeight

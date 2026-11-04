@@ -210,6 +210,33 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_MEASURE_AIR_RISE", switch, False),
                         help="before play, measure the rise pressed again at its apex and offer a hop that does so "
                              "when it rose higher (needs --options; also UPA_RUN_MEASURE_AIR_RISE)")
+    parser.add_argument("--measure-guards", action="store_true",
+                        default=_env("UPA_RUN_MEASURE_GUARDS", switch, False),
+                        help="before play, measure each verb at rest, while moving and in the air against a baseline "
+                             "of each, and save the table as guards.json (the host must serve the guard chords: "
+                             "playtest-export-catalog --guard-chords; also UPA_RUN_MEASURE_GUARDS)")
+    parser.add_argument("--frontier-model", choices=tuple(frontier_provider.PRICES),
+                        default=_env("UPA_RUN_FRONTIER_MODEL", str, frontier_provider.DEFAULT_MODEL),
+                        help="the frontier model: its requests, approval arm, ledger, cost and run record (also "
+                             "UPA_RUN_FRONTIER_MODEL)")
+    parser.add_argument("--situations", type=Path, default=_env("UPA_RUN_SITUATIONS", Path, None),
+                        help="an expectations.json whose situations name a scene object: at the start each object is "
+                             "placed from one transforms reading and becomes a reach region S1 sees the distance to, "
+                             "and every press records where each object was (also UPA_RUN_SITUATIONS)")
+    parser.add_argument("--press-readings", action="store_true",
+                        default=_env("UPA_RUN_PRESS_READINGS", switch, False),
+                        help="read every reader just before and just after each input too, into its effect record: "
+                             "what a press leaves behind, read at the press rather than at S1's pace (also "
+                             "UPA_RUN_PRESS_READINGS)")
+    parser.add_argument("--guards-only", action="store_true",
+                        default=_env("UPA_RUN_GUARDS_ONLY", switch, False),
+                        help="with --measure-guards: measure the guard table (and score --expectations against it), "
+                             "save it, and end before play, with no S1 call: one fresh-start reproduction of the "
+                             "table (also UPA_RUN_GUARDS_ONLY)")
+    parser.add_argument("--expectations", type=Path, default=_env("UPA_RUN_EXPECTATIONS", Path, None),
+                        help="an expectations.json from `python -m playtest.runner.expectations predict`: with "
+                             "--measure-guards, each prediction this session's guard table does not meet is stated to "
+                             "S1 and the frontier as a measured fact (also UPA_RUN_EXPECTATIONS)")
     parser.add_argument("--decide-during-options", action="store_true",
                         default=_env("UPA_RUN_DECIDE_DURING_OPTIONS", switch, False),
                         help="run options, actions and skills in the background so S1 decides again at once: picking "
@@ -247,6 +274,9 @@ def _parser() -> argparse.ArgumentParser:
                         choices=sorted(FINISH_LABELS),
                         help="how the finish choice is labelled: plain ('Finish', default) or conditional (states "
                              "that it ends the session and when to choose it; also UPA_RUN_FINISH_LABEL)")
+    parser.add_argument("--no-finish", action="store_true", default=_env("UPA_RUN_NO_FINISH", switch, False),
+                        help="leave the finish choice off the menu, so the run ends at its wall limit or by the "
+                             "loop's own rules (also UPA_RUN_NO_FINISH)")
     parser.add_argument("--objective", default=None)
     parser.add_argument("--objective-file", type=Path, default=_env("UPA_RUN_OBJECTIVE_FILE", Path, None))
     return parser
@@ -354,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     project, output = args.project.resolve(), args.output.resolve()
     if args.approval is None:
         parser.error("--approval (or UPA_RUN_APPROVAL) is required: no paid call starts without one")
+    frontier_provider.use_model(args.frontier_model)  # before any approval, ledger or call reads the model
+    if args.guards_only and not args.measure_guards:
+        parser.error("--guards-only measures the guard table: it needs --measure-guards")
     if args.max_calls is None or args.max_calls < 1:
         parser.error("--max-calls (or UPA_RUN_MAX_CALLS) is required and must be at least 1")
     if args.frontier and args.max_frontier_calls < 1:
@@ -442,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         built = build_choices(manifest, restart_play_mode=session_host is not None
                               and session_host.advertises_restart,
                               finish_label=FINISH_LABELS[args.finish_label],
+                              offer_finish=not args.no_finish,
                               turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
                               capture_size=(args.capture_width, args.capture_height),
                               help_kinds=FrontierHelp.supported_kinds if args.frontier else frozenset(),
@@ -449,7 +483,9 @@ def main(argv: list[str] | None = None) -> int:
         host = verify_host_catalog(manifest, args.catalog, args.catalog_sha256,
                                    turn_sizes=args.turn_sizes, point_turns=args.point_turns, point_moves=args.point_moves,
                                    capture_size=(args.capture_width, args.capture_height),
-                                   calibration=calibration if args.turn_sizes or args.point_turns or args.point_moves else None)  # before any call or contact with the bridge
+                                   calibration=calibration if (args.turn_sizes or args.point_turns or args.point_moves
+                                                               or args.measure_guards) else None,
+                                   guard_chords=args.measure_guards)  # before any call or contact with the bridge
         if session_host is not None:
             # The host must serve the very catalog this run verified, or its scene is a different session.
             if (Path(session_host.config.catalog_path).resolve() != args.catalog.resolve()
@@ -500,6 +536,14 @@ def main(argv: list[str] | None = None) -> int:
             plan["decide_during_options"] = True
         if args.measure_air_rise:
             plan["measure_air_rise"] = True
+        if args.measure_guards:
+            plan["measure_guards"] = True
+        if args.guards_only:
+            plan["guards_only"] = True
+        if args.press_readings:
+            plan["press_readings"] = True
+        if args.situations is not None:
+            plan["situations"] = str(args.situations)
         if args.contingent:
             plan["contingent"] = True
         if args.placement:
@@ -510,6 +554,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["pacing_anchor"] = "send"
         if args.finish_label != "plain":
             plan["finish_label"] = args.finish_label
+        if args.no_finish:
+            plan["no_finish"] = True
         plan["coverage_facts"] = args.coverage_facts
         if args.point_moves:
             plan["point_moves"] = True
@@ -632,9 +678,28 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             if not steps:
                 raise ValueError("options require a measured short movement step for outcome memory")
             memory = OutcomeMemory(cell=min(steps))
-        snapshot = make_snapshot(client, manifest.entity_id)
-        await snapshot()  # before any paid call: the manifest's entity must be in the running game
+        situations: list[dict[str, Any]] = []
+        if args.situations is not None:
+            situations = [s for s in (json.loads(args.situations.read_text(encoding="utf-8")).get("situations") or ())
+                          if s.get("target_object")]
+        targets = list(dict.fromkeys(s["target_object"] for s in situations))
+        # The region id each situation's object is named by, numbered as `situation_regions` numbers them.
+        places = {s["target_object"]: (s.get("region_id") or f"situation_{n}", float(s["within"]))
+                  for n, s in enumerate(situations, 1)}
+        snapshot = make_snapshot(client, manifest.entity_id, targets)
+        first = await snapshot()  # before any paid call: the manifest's entity must be in the running game
         scene = (await client.observe_once()).scene
+        if situations:
+            from playtest.contracts.manifest import ReachRegion
+            from .expectations import situation_regions
+
+            # Each situation's object, where the session starts, as a region of the agent's own declaring: S1 reads
+            # the distance to it as a fact and the frontier may set it as a directive's setpoint.
+            regions = situation_regions(situations, first.get("targets") or {}, scene=scene)
+            replay._save(run_dir / "situation-regions.json", {"situations": situations, "regions": regions,
+                                                              "positions": first.get("targets")})
+            manifest = manifest.model_copy(update={"reach_regions": [
+                *manifest.reach_regions, *(ReachRegion.model_validate(r) for r in regions)]})
         if primitives is not None and args.measure_air_rise:
             from .options.air_rise import measure_air_rise, with_air_rise
 
@@ -661,6 +726,70 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         readers = FieldReaders(client, manifest.readers) if manifest.readers else None
         if readers is not None:
             await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
+        if args.measure_guards:
+            from playtest.preflight.catalog import export
+            from .guards import PREFIX, measure_guards
+            from .options.primitives import primitives_from_calibration
+
+            # Each verb at rest, while moving and in the air, before any paid call, from the catalog this run verified
+            # the host serves. A measurement for the review and the frontier; it adds, removes or ranks no choice.
+            served = export(manifest, turn_sizes=args.turn_sizes, point_turns=args.point_turns,
+                            point_moves=args.point_moves, capture_size=(args.capture_width, args.capture_height),
+                            calibration=calibration, guard_chords=True).actions
+            guard_primitives = primitives_from_calibration(
+                calibration or {}, [n for n, d in served.items() if d.inputs and not n.startswith(PREFIX)],
+                catalog={n: d for n, d in served.items() if not n.startswith(PREFIX)})
+            guards = await measure_guards(client, readers, served, guard_primitives)
+            if getattr(guard_primitives, "rise", None) is not None:
+                from .options.air_rise import measure_air_rise
+
+                # The rise is no verb (its controls are the rise's), so the table never presses it in the air: the
+                # same probe the options layer uses does, a rise and then the rise pressed again at its apex.
+                air = await measure_air_rise(client, guard_primitives)
+                guards["rise_air"] = air.to_json() if air is not None else None
+            replay._save(run_dir / "guards.json", guards)
+        guard_lines: list[str] = []
+        expectation_lines: list[str] = []
+        if args.measure_guards:
+            from playtest.contracts.loop import Choice, ChoiceSource
+            from .guards import plan_guards, unlocking_chords
+
+            # The chords that measurably do what their verb alone does not join the menu, labelled with what they
+            # did: a dash that needs a direction is then a choice S1 can make. Nothing else is added or removed.
+            labels = {c.action: c.label for c in built.choices if c.kind is ChoiceKind.action and c.action}
+            taken = {c.id for c in built.choices}
+            for chord, label in unlocking_chords(guards, plan_guards(served, guard_primitives)["chords"], labels):
+                if chord.name in taken:
+                    continue
+                built.choices.append(Choice(id=chord.name, kind=ChoiceKind.action, action=chord.name, label=label,
+                                            params={}, source=ChoiceSource.manifest))
+                built.leases[chord.name] = chord.definition.default_lease_s
+                built.expected.setdefault(chord.name, None)
+            from .guards import asymmetries, asymmetry_line, own_keys, summary_lines
+            guard_lines = summary_lines(guards) + [
+                "asymmetry (a symmetry candidate): " + asymmetry_line(item)
+                for item in asymmetries(guards, own=own_keys(manifest))]
+            if args.expectations is not None:
+                from .expectations import unmet_in_session
+
+                # What the build's declarations say a verb does, written before any measurement, that this
+                # session's guard table did not show: facts for S1 and the frontier. Nothing is decided here.
+                unmet = unmet_in_session(json.loads(args.expectations.read_text(encoding="utf-8")), guards)
+                replay._save(run_dir / "expectations-unmet.json", {"expectations": str(args.expectations),
+                                                                    "unmet": unmet})
+                expectation_lines = [row["line"] for row in unmet]
+                guard_lines += ["expected from the declarations, not measured: " + line for line in expectation_lines]
+        if args.guards_only:
+            # One fresh start measured, and nothing played: no trace, no S1 call. The table and the expectations
+            # it did not meet are the run's whole record, beside its plan.
+            return {"version": 1, "status": "complete", "ending": "guards_only", "error": None, "turns": 0,
+                    "guards": "guards.json",
+                    "expectations_unmet": len(expectation_lines) if args.expectations is not None else None,
+                    "s1": {"provider": None, "model": None, "calls": 0, "call_cap": args.max_calls},
+                    "frontier": {"enabled": False, "calls": 0},
+                    "manifest": {"sha256": manifest_sha, "catalog_sha256": catalog_sha,
+                                 "entity_id": manifest.entity_id, "origin": args.manifest_origin},
+                    "trace": None}
         watch = ReaderWatch({reader.alias: reader.kind for reader in manifest.readers}, manifest.invariants)
         # Detectors are opt-in: without them the loop reports to the readers' watch itself, so a trace is
         # unchanged. With them, the same watch plus the detectors is one watch, numbered in one sequence.
@@ -704,20 +833,40 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             facts = PatternFacts(facts, [reader.alias for reader in manifest.readers])
         if args.travel_facts:
             facts = TravelFacts(facts)
+        if expectation_lines:
+            from .expectations import ExpectationFacts
+            facts = ExpectationFacts(facts, expectation_lines)
+        live_rules = None
+        rules_path = args.situations or args.expectations
+        if args.frontier and rules_path is not None and args.catalog is not None:
+            from .expectations import catalog_controls, live_rule_lines
+
+            # The session's own pre-registered action rules and situations, scored on its trace at each request:
+            # what score-play would say so far, shown to the frontier as a measurement.
+            rules_doc = json.loads(rules_path.read_text(encoding="utf-8"))
+            if rules_doc.get("action_rules") or rules_doc.get("situations"):
+                served_controls = catalog_controls(json.loads(args.catalog.read_text(encoding="utf-8")))
+                live_guards = guards if args.measure_guards else None
+
+                def live_rules(rows: list[dict[str, Any]]) -> list[str]:
+                    return live_rule_lines(rules_doc, rows, served_controls, live_guards)
         help_port = (FrontierHelp(project=project, status=status, manifest=manifest, directory=run_dir,
                                   approval=approval, sink=writer, tracker=tracker,
                                   started_utc=dt.datetime.now(dt.timezone.utc), calibration=calibration,
                                   effects=action_effects(built.expected), generation=generation,
                                   session=getattr(client, "session", None), progress=progress_probe,
-                                  clip_window_s=args.frontier_clip_s, declared=declared,
-                                  advice=args.frontier_advice)
+                                  clip_window_s=args.frontier_clip_s, declared=declared, guards=guard_lines,
+                                  advice=args.frontier_advice, places=places,
+                                  max_calls=args.max_frontier_calls,  # the cap the record states, not the arm's
+                                  rules=live_rules)
                      if args.frontier else None)
         closing: tuple[str, str | None] = ("inconclusive", None)
         try:
             result = await run_session(
                 client, built, s1=s1, objective=objective, view=view,
                 probe=DisplacementProbe(snapshot, built.expected,
-                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id)),
+                                        snapshot_for=lambda new: make_snapshot(new, manifest.entity_id, targets),
+                                        readers=readers if args.press_readings else None),
                 readers=readers, watch=watch, sink=writer, max_age_s=args.max_age_s, wall_limit_s=args.wall_limit_s,
                 max_provider_failures=args.max_provider_failures, budget=budget, help=help_port,
                 facts=facts, s1_call_cap=args.max_calls, restart=restart, generation=generation,

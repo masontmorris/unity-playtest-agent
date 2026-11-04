@@ -35,13 +35,23 @@ from playtest.roles import frontier, strict
 
 from .packet import Packet
 
-MODEL = "muse-spark-1.3"
 URL = "https://api.meta.ai/v1/chat/completions"
 
-# USD per million tokens. A cached prompt token replaces the normal prompt rate; it is not added.
-PRICE_INPUT_PER_MTOK = 1.25
-PRICE_CACHED_INPUT_PER_MTOK = 0.15
-PRICE_OUTPUT_PER_MTOK = 4.25
+# USD per million tokens (input, cached input, output), from the Meta Model API's pricing page. A cached prompt
+# token replaces the normal prompt rate; it is not added.
+PRICES = {"muse-spark-1.3": (1.25, 0.15, 4.25), "muse-wonder-1.0": (4.00, 0.20, 20.00)}
+DEFAULT_MODEL = "muse-spark-1.3"
+MODEL = DEFAULT_MODEL  # the frontier model of this process; `use_model` sets it before any call
+PRICE_INPUT_PER_MTOK, PRICE_CACHED_INPUT_PER_MTOK, PRICE_OUTPUT_PER_MTOK = PRICES[DEFAULT_MODEL]
+
+
+def use_model(model: str) -> None:
+    """Make `model` the frontier model of this process: its requests, ledger arm, cost and run record."""
+    global MODEL, PRICE_INPUT_PER_MTOK, PRICE_CACHED_INPUT_PER_MTOK, PRICE_OUTPUT_PER_MTOK
+    if model not in PRICES:
+        raise ValueError(f"unknown frontier model {model!r}; known: {', '.join(PRICES)}")
+    MODEL = model
+    PRICE_INPUT_PER_MTOK, PRICE_CACHED_INPUT_PER_MTOK, PRICE_OUTPUT_PER_MTOK = PRICES[model]
 
 _TIMEOUT_S = 60
 # A provider error body is read for its structured fields only, and its message is cut here: a body
@@ -238,7 +248,7 @@ def reported_error(data: Any) -> dict[str, Any] | None:
     return structured_error(data)
 
 
-def send_meta(body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
+def send_meta(body: dict[str, Any], *, timeout_s: float = _TIMEOUT_S) -> tuple[int | None, dict[str, Any] | None, float, str | None]:
     """POST once to Muse. Returns status, decoded object, latency and a non-secret problem.
 
     The credential comes from `META_API_KEY` and is never returned, logged or included in a
@@ -258,7 +268,7 @@ def send_meta(body: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None, 
     )
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as exc:
         latency = (time.monotonic() - started) * 1000.0

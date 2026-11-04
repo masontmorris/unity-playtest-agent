@@ -9,9 +9,19 @@ code.
 Every readable field is offered unless the provider's enum limits force a choice. Those limits
 are the ones the schema renderer enforces (`strict.MUSE_LIMITS`): a field id is one enum value,
 so a scene with a heavy UI or framework footprint can exceed them. When it does, the offer is
-filled in tiers -- the project's own assemblies first, then fields calibration measured changing,
-then the rest -- and every field left out is listed in `unoffered_fields` with its reason and
-tier. A packet that fits the limits is unchanged: no budget key and no extra field keys appear.
+filled in tiers, strongest evidence first:
+
+1. fields declared by the project's own assemblies;
+1b. the text of what the project's own fields reference: a string field of a component, or of any
+    component on a game object, that such a field holds a live reference to in the scene. Calibration
+    cannot trigger a rare event, so the text a script writes about one is otherwise never measured;
+2. fields calibration measured changing;
+2b. the authored numbers and flags of that same referenced set, up to a percentage of the field enum;
+3. the rest.
+
+Every field left out is listed in `unoffered_fields` with its reason and tier. A packet that fits the
+limits is unchanged but for one thing: an offered field that more than one live component carries names
+how many do (`instances`), so a reader bound to it is known to read one of several.
 
 The offer bounds what the model may choose, not what it is shown. A project whose discovery is far
 larger than the enum limits can still build a packet no single call can read, so the same rule is
@@ -159,10 +169,28 @@ def field_offered(row: dict[str, Any]) -> bool:
 # A field id is one enum value in the stage-4 schema, so the provider's enum limits bound how many
 # readable fields one packet can offer. These are the tiers the offer is filled from, in order.
 TIER_PROJECT = "tier_1_project_assembly"
+TIER_REFERENCED_TEXT = "tier_1b_script_referenced_text"
 TIER_MEASURED = "tier_2_measured_change"
+TIER_REFERENCED_VALUE = "tier_2b_script_referenced_value"
 TIER_REST = "tier_3_other"
-OFFER_TIERS = (TIER_PROJECT, TIER_MEASURED, TIER_REST)
+# The two referenced tiers carry a letter, not a new number, so the tier names a saved sidecar or ledger
+# already holds keep their meaning; the names still sort in the order the offer is filled.
+OFFER_TIERS = (TIER_PROJECT, TIER_REFERENCED_TEXT, TIER_MEASURED, TIER_REFERENCED_VALUE, TIER_REST)
 OFFER_BUDGET_REASON = "offer budget"
+# What a field of the project's own holds a reference to. Discovery records the target in the field's
+# `value`: `kind` "component" with a `component_id`, or "scene_object" with an `object_id`. An asset, an
+# unresolved or a destroyed target names nothing in the scene, so it references nothing here.
+REFERENCE_VALUE_KIND = "object_reference"
+REFERENCED_COMPONENT = "component"
+REFERENCED_OBJECT = "scene_object"
+# What counts as text, and as an authored value, is the Editor's own serialization of the field: a string,
+# or a number or flag that Unity serializes (the component's authored model, not its caches and dirty flags).
+TEXT_FIELD_TYPE = "System.String"
+SCALAR_VALUE_KINDS = ("integer", "number", "boolean")
+# An authored scalar repeats on every referenced component (one text component carries dozens), unlike the
+# one string that is its content. So the scalars may take at most this percentage of the field enum; the
+# rest stay in the last tier. The text takes no such limit: the references themselves bound it.
+REFERENCED_VALUE_PERCENT = 25
 # A project's own script sources are its Assets/ tree and the embedded or local packages in its own
 # checkout. Registry and built-in packages, and the engine, are not the project's sources, and the
 # IL scan never selects them as containing authored scripts.
@@ -202,6 +230,14 @@ UNRECORDED = "unrecorded"
 OBJECT_SECTIONS = {"components": "object_id", "bindings": "source_object_id"}
 SIDECAR_KIND = "preflight_sidecar"
 SIDECAR_VERSION = 1
+# An offered field carried by more than one live component says how many. The count rides on the offered
+# entry, not on the discovery row: that row is the Editor's own descriptor, which a manifest keeps verbatim
+# and a later inspection is compared against, while the offered entry is already the selection's own record.
+INSTANCE_KEY = "instances"
+INSTANCES_NOTE = (
+    "instances appears on an offered field only when more than one live component in the discovered scenes "
+    "carries that exact field declaration, and it is how many do. A reader bound to such an id reads one of "
+    "those components; the others are separate fields with their own ids, offered or not.")
 
 
 def estimated_prompt_tokens(chars: int) -> int:
@@ -343,6 +379,63 @@ def measured_change(measurement: Any) -> bool:
                for scope in ("idle", "input"))
 
 
+def script_references(fields: dict[str, dict[str, Any]],
+                      project: frozenset[str]) -> tuple[frozenset[str], frozenset[str]]:
+    """The scene components and game objects that a field declared by the project's own assemblies references.
+
+    A script that holds a live reference to a component or an object drives it, and what it shows is state
+    the game keeps. `fields` is every discovered field row by Editor id. Only a present reference to a
+    target in the scene counts (`REFERENCED_COMPONENT` or `REFERENCED_OBJECT`), and only when the field
+    that holds it is declared by an assembly evidenced as the project's: with none evidenced there is
+    nothing to say the project's scripts hold anything. No name is read, only the ids discovery recorded.
+    """
+    components: set[str] = set()
+    objects: set[str] = set()
+    for row in fields.values():
+        assembly, value = row.get("declaring_assembly"), row.get("value")
+        if (not isinstance(assembly, str) or assembly not in project
+                or row.get("value_kind") != REFERENCE_VALUE_KIND or not isinstance(value, dict)):
+            continue
+        kind = value.get("kind")
+        if kind == REFERENCED_COMPONENT and isinstance(value.get("component_id"), str):
+            components.add(value["component_id"])
+        elif kind == REFERENCED_OBJECT and isinstance(value.get("object_id"), str):
+            objects.add(value["object_id"])
+    return frozenset(components), frozenset(objects)
+
+
+def script_referenced(row: dict[str, Any], components: frozenset[str], objects: frozenset[str]) -> bool:
+    """Whether a field sits on a component, or on an object, that the project's own fields reference."""
+    component, owner = row.get("component_id"), row.get("object_id")
+    return ((isinstance(component, str) and component in components)
+            or (isinstance(owner, str) and owner in objects))
+
+
+def text_field(row: dict[str, Any]) -> bool:
+    """A string field. A string that was null during discovery has no value kind, so its type says so."""
+    return row.get("value_kind") == "string" or row.get("field_type") == TEXT_FIELD_TYPE
+
+
+def authored_value_field(row: dict[str, Any]) -> bool:
+    """A number or flag that Unity serializes: the component's authored model, not a cache or dirty flag."""
+    return row.get("serialized") is True and row.get("value_kind") in SCALAR_VALUE_KINDS
+
+
+def declaration_instances(fields: dict[str, dict[str, Any]]) -> dict[str, int]:
+    """How many live components carry each field declaration, by the declaration id discovery recorded.
+
+    One row exists per component per field, so rows sharing a declaration are the instances of the
+    component type that declares it, counting the components that inherit it. A row with no declaration
+    id is not counted: nothing says which other rows it repeats.
+    """
+    carriers: dict[str, set[str]] = {}
+    for ident, row in fields.items():
+        declaration, component = row.get("declaration_id"), row.get("component_id")
+        if isinstance(declaration, str) and declaration:
+            carriers.setdefault(declaration, set()).add(component if isinstance(component, str) else ident)
+    return {declaration: len(ids) for declaration, ids in carriers.items()}
+
+
 def field_token_budget(control_types: Any, limits: strict.Limits) -> tuple[int, int]:
     """How many field tokens the field enum may carry, and how many enum values other enums take.
 
@@ -375,30 +468,56 @@ def offer_fields(*, fields: dict[str, dict[str, Any]], bindings: dict[str, str],
     """Offer every readable field, or fill the provider's budget in tiers when they do not fit.
 
     `bindings` is every readable field token to its Editor id, in discovery order. A field is in
-    tier 1 when its declaring assembly is evidenced as built from the project's own script sources,
-    in tier 2 when calibration measured it changing, and in tier 3 otherwise. Tiers are taken in
+    tier 1 when its declaring assembly is evidenced as built from the project's own script sources.
+    Failing that, it is in tier 1b when it is a string on a component, or on an object, that a field
+    of the project's own references in the scene; in tier 2 when calibration measured it changing; in
+    tier 2b when it is a serialized number or flag on that same referenced set, as far as a percentage
+    of the field enum allows (`REFERENCED_VALUE_PERCENT`); and in tier 3 otherwise. Tiers are taken in
     order and, within a tier, in discovery order. When nothing has to be left out the bindings and
     the packet are exactly what they were before the budget existed.
+
+    The two referenced tiers are structural: they read which ids a project field points at and the
+    value kind of the target's own fields, never a name. Text outranks calibration's measurement
+    because a rare event leaves nothing to measure; an authored number ranks below it because an
+    observed change is the stronger evidence.
     """
     limits = strict.MUSE_LIMITS if limits is None else limits
     project, provenance, roots, complete = project_assemblies(discovery, inventory, caps, scan_caps)
     established = bool(project) and complete
+    cap, reserved = field_token_budget(control_types, limits)
+    components, objects = script_references(fields, project)
+    on_referenced = ("on a component, or on an object, that a field declared by an assembly compiled from the "
+                     "project's own script sources references in the scene")
     bases = {
         TIER_PROJECT: f"declared by an assembly compiled from the project's own script sources under {roots}",
+        TIER_REFERENCED_TEXT: f"a string field {on_referenced}",
         TIER_MEASURED: "calibration measured this field changing over idle time or under held input",
+        TIER_REFERENCED_VALUE: f"a serialized number or flag {on_referenced}; no measured change",
         TIER_REST: ("declared outside the project's assemblies; no measured change" if established
                     else "the declaring assembly's build provenance is unknown; no measured change"),
     }
     tiers: dict[str, str] = {}
     for token, ident in bindings.items():
-        assembly = fields[ident].get("declaring_assembly")
+        row = fields[ident]
+        assembly = row.get("declaring_assembly")
+        referenced = script_referenced(row, components, objects)
         if isinstance(assembly, str) and assembly in project:
             tiers[token] = TIER_PROJECT
+        elif referenced and text_field(row):
+            tiers[token] = TIER_REFERENCED_TEXT
         elif measured_change(evidence.get(ident)):
             tiers[token] = TIER_MEASURED
+        elif referenced and authored_value_field(row):
+            tiers[token] = TIER_REFERENCED_VALUE
         else:
             tiers[token] = TIER_REST
-    cap, reserved = field_token_budget(control_types, limits)
+    # Authored scalars repeat on every referenced component, so only the first share of the enum is theirs
+    # (in discovery order); the others are the rest, no better than any other field nothing measured.
+    value_cap = cap * REFERENCED_VALUE_PERCENT // 100
+    over_cap = 0
+    for token in [token for token in bindings if tiers[token] == TIER_REFERENCED_VALUE][value_cap:]:
+        tiers[token] = TIER_REST
+        over_cap += 1
     offered: list[str] = []
     chars = 0
     cut: str | None = None
@@ -443,6 +562,8 @@ def offer_fields(*, fields: dict[str, dict[str, Any]], bindings: dict[str, str],
         "cut_tier": tiers[cut],
         "cut_field_id": bindings[cut],
         "tiers": counts,
+        "script_references": {"components": len(components), "objects": len(objects),
+                              "authored_value_cap": value_cap, "authored_values_over_cap": over_cap},
         "project_assemblies": sorted(project),
         "provenance": provenance,
         "assembly_scan_complete": complete,
@@ -642,6 +763,9 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
     Only keys with at least one valid calibration trial are offered; excluded bindings and
     their coverage are included as facts. Every readable field is offered unless the provider's
     enum limits force a tiered choice, which then names each field it left out and why.
+    An offered field that more than one live component carries is marked with how many do, on
+    its offered entry only: the discovery row stays the Editor's own descriptor, and a manifest
+    keeps that row verbatim as its reader's descriptor.
     Freshness is passed through as measured, including unknowns. A screenshot is not available
     from these records and is explicitly marked null.
 
@@ -717,6 +841,14 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
         evidence_basis="the per field freshness classification calibration recorded",
         control_types={key: summaries[key].get("control_type") or "Button" for key in offered})
     bindings = plan.bindings
+    # An offered field that several live components carry is one of them: say how many, so a reader bound
+    # to it is not taken for the only one. Counted over every discovered row, readable or not.
+    instances = declaration_instances(indexed_fields)
+    carried: dict[str, int] = {}
+    for token, ident in bindings.items():
+        declaration = indexed_fields[ident].get("declaration_id")
+        if isinstance(declaration, str) and instances.get(declaration, 1) > 1:
+            carried[token] = instances[declaration]
     field_types: dict[str, str] = {}
     for token, ident in bindings.items():
         row = indexed_fields[ident]
@@ -760,11 +892,13 @@ def build(inventory: InspectResult, discovery: InspectResult, calibration: Calib
         "discovery_caps": {k: v.model_dump(mode="json") for k, v in discovery.caps.items()},
         "offered_fields": [{"id": token, "source_field_id": ident, "field_type": field_types[token],
                             "same_scene_as_entity": indexed_fields[ident].get("scene_id") == calibration.entity.get("scene_id")
-                            if isinstance(indexed_fields[ident].get("scene_id"), str) else None}
+                            if isinstance(indexed_fields[ident].get("scene_id"), str) else None,
+                            **({INSTANCE_KEY: carried[token]} if token in carried else {})}
                            for token, ident in bindings.items()],
         "unoffered_fields": unoffered,
         "field_id_note": ("Select only offered_fields[].id as field_id. source_field_id is its exact "
                           "Editor descriptor id for provenance, not a selectable id."),
+        **({"instances_note": INSTANCES_NOTE} if carried else {}),
         **({"offer_budget": plan.summary, "offer_note": (
             "Every readable field is offered unless the provider's field id limit forced a choice. "
             "unoffered_fields with reason 'offer budget' names each readable field left out, its tier and "

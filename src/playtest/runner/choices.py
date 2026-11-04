@@ -72,12 +72,15 @@ FINISH_LABELS = {
 }
 
 
-def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"]) -> list[Choice]:
+def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_LABELS["plain"],
+                 offer_finish: bool = True) -> list[Choice]:
     """The choices every game has, plus an explicit host restart only when this host advertises it.
 
     Wait names the game seconds the loop waits (build bible 5.3); the rest keep the live smoke's wording.
     The restart choice is a primary choice selected by S1 alone: it is never a `while_pending` input and
     no detector, score or timer selects it.
+    `offer_finish` False leaves the finish choice off the menu, for a run that ends at its wall limit or by the
+    loop's own rules; every other choice keeps its wording, its params and its order.
     """
     choices = [
         Choice(id="wait", kind=ChoiceKind.wait, label=f"Wait {WAIT_GAME_S:g} s with no input",
@@ -92,7 +95,8 @@ def core_choices(*, restart_play_mode: bool = False, finish_label: str = FINISH_
             id=RESTART_ID, kind=ChoiceKind.restart_play_mode,
             label="Restart Play Mode: stop the play session and start it again from the beginning",
             source=ChoiceSource.core))
-    choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
+    if offer_finish:
+        choices.append(Choice(id="finish", kind=ChoiceKind.finish, label=finish_label, source=ChoiceSource.core))
     return choices
 
 
@@ -106,8 +110,14 @@ def options_choices(choices: list[Choice], primitives: Any, memory: Any, observa
     scene = observation.scene
     controlled = observation.public.get("controlled") or {}
     position = controlled.get("position") if isinstance(controlled, dict) else None
-    movement = {p.action for p in primitives.classified if p.kind in ("move", "rise")}
-    retained = [c for c in choices if not (c.kind is ChoiceKind.action and c.action in movement)]
+    # Only the movement an option replaces leaves the menu: the actions measured as an option's direction, and the
+    # rise when a hop offers it. A move with no option (one whose direction turns with the body, say) stays offered.
+    replaced = {d.action for d in (*primitives.directions, *getattr(primitives, "body_directions", ()))}
+    replaced |= {action for d in primitives.directions for action, _control in d.alternatives}
+    if primitives.can_hop and primitives.rise is not None:
+        replaced.add(primitives.rise.action)
+    replaced &= {p.action for p in primitives.classified if p.kind in ("move", "rise")}
+    retained = [c for c in choices if not (c.kind is ChoiceKind.action and c.action in replaced)]
     specs = list(option_specs(primitives))
     if placement:
         points = list(memory.settled_points(scene))
@@ -160,18 +170,21 @@ def sweep_spec(choices: list[Choice], memory: Any, scene: Any, position: Any) ->
 
 
 def build_choices(manifest: PreflightManifest, *, restart_play_mode: bool = False,
-                  finish_label: str = FINISH_LABELS["plain"], turn_sizes: bool = False,
+                  finish_label: str = FINISH_LABELS["plain"], offer_finish: bool = True, turn_sizes: bool = False,
                   point_turns: bool = False, point_moves: bool = False, capture_size=(640, 480),
                   calibration: dict | None = None, help_kinds: frozenset[str] | None = None) -> ManifestChoices:
     """The manifest's supported declarations then the core choices.
 
     `restart_play_mode` is set only when the configured host advertises the operation for this run; the
     default leaves every choice, its order and its wording exactly as before.
+    `offer_finish` False drops the finish choice from the menu and changes nothing else.
     `help_kinds` names the configured help handlers, independently of gameplay and remaining budget.
     None preserves the full menu for callers that provide their own helper or resolve help externally.
     """
-    all_core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label)
-    reserved = {choice.id for choice in all_core} | {RESTART_ID}
+    all_core = core_choices(restart_play_mode=restart_play_mode, finish_label=finish_label,
+                            offer_finish=offer_finish)
+    # `finish` stays reserved when it is not offered: a declaration of that id is still the core choice's name.
+    reserved = {choice.id for choice in all_core} | {RESTART_ID, "finish"}
     if help_kinds is not None and help_kinds - {"escalate", "delegate"}:
         raise ValueError("help_kinds must contain only configured escalate or delegate handlers")
     unavailable = [c for c in all_core if c.kind in (ChoiceKind.escalate, ChoiceKind.delegate)
@@ -369,11 +382,33 @@ def _input_text(item: InputBinding) -> str:
     return f"{name} ({values})"
 
 
+from playtest.preflight.verify import MEASUREMENT_TOLERANCE
+
+TIMING_FALL = 0.1  # a displacement that falls by more than this share at a longer hold comes back down (a rise)
+
+
+def _timing_sensitive(action: ManifestAction) -> bool:
+    """Whether calibration measured this control's net displacement falling as the hold lengthened.
+
+    A body that comes back down (a rise) is displaced by whatever it is read at: one net displacement depends on
+    when the reading after it lands, so it cannot be compared with the calibrated one, however tight the
+    calibration's spread. Measured from the calibration's own holds; no name is read.
+    """
+    holds = sorted((h for h in (action.calibrations[0].holds if action.calibrations else ())
+                    if h.mean_magnitude is not None), key=lambda h: h.requested_hold_s)
+    highest = 0.0
+    for h in holds:
+        if highest - h.mean_magnitude > max(TIMING_FALL * highest, MEASUREMENT_TOLERANCE):
+            return True  # a fall bigger than the measurement can blur, not noise around a body that hardly moved
+        highest = max(highest, h.mean_magnitude)
+    return False
+
+
 def _expected(action: ManifestAction, hold: float, measured: HoldMeasurement | None) -> dict[str, Any] | None:
     """The calibrated effect for exactly this declaration, or None when calibration measured none."""
     if measured is None or measured.mean_magnitude is None:
         return None
-    return {
+    out = {
         "source": "calibration",
         "control": action.inputs[0].control_id,
         "requested_hold_s": hold,
@@ -383,6 +418,9 @@ def _expected(action: ManifestAction, hold: float, measured: HoldMeasurement | N
         "effective_in_all_repeats": measured.effective_in_all_repeats,
         "unit": UNIT,
     }
+    if _timing_sensitive(action):
+        out["timing_sensitive"] = True
+    return out
 
 
 def _precondition(check: ManifestCheck) -> str:

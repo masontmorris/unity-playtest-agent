@@ -21,6 +21,17 @@ from typing import Any
 from playtest.contracts.manifest import ManifestCheck, ManifestInvariant
 from playtest.roles.checks import CHANGE, ValueKind, evaluate
 
+# A reading is outside a declared bound only by more than this share of it (at least this much): a value stepped once
+# a frame stops up to one step past its limit, and a slow frame makes that step large (a lifetime bounded at 5 was
+# read stopped at 5.0635, 1.3% over).
+BOUND_SLACK = 0.02
+
+
+def bound_slack(bound: float) -> float:
+    """How far past a declared bound a reading may sit and still be at it: a value the game steps once a frame
+    (a timer counting up to the limit it stops at) is read up to one step beyond that limit."""
+    return BOUND_SLACK * max(abs(bound), 1.0)
+
 
 def is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
@@ -93,8 +104,8 @@ def _range(rule: ManifestInvariant, now: Mapping[str, Any], before: Mapping[str,
         return InvariantResult(None, f"{name} is not a numeric field", readings)
     if not is_number(value):
         return InvariantResult(None, f"{name} has no measured value", readings)
-    below = rule.min is not None and value < rule.min
-    above = rule.max is not None and value > rule.max
+    below = rule.min is not None and value < rule.min - bound_slack(rule.min)
+    above = rule.max is not None and value > rule.max + bound_slack(rule.max)
     if below or above:
         return _unless(rule, InvariantResult(False, f"{name} is {value:.6g}, "
                                                     f"{'below the minimum' if below else 'above the maximum'} "

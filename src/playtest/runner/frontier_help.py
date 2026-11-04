@@ -7,7 +7,7 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from playtest.bench import call_budget
 from playtest.bench.record import digest
@@ -44,6 +44,8 @@ def action_effects(expected: Mapping[str, Mapping[str, Any] | None]) -> dict[str
         shown = effect.get("net_displacement") if effect else None
         if isinstance(shown, bool) or not isinstance(shown, (int, float)) or not math.isfinite(shown):
             continue
+        if effect.get("timing_sensitive"):
+            continue  # its net displacement depends on when it is read: no replay could score it fairly
         bounds = allowance(effect)
         out[name] = frontier.Effect(expected=float(shown), allowance=bounds[1] if bounds is not None else None,
                                     unit=str(effect.get("unit") or UNIT))
@@ -109,6 +111,93 @@ def declared_progress(regions: Any) -> dict[str, frontier.ProgressRegion]:
             maximum=tuple(float(value) for value in region.bounds.max), pose=region.pose,
             author=region.author, source=region.source, verification=region.verification)
     return out
+
+
+PRESS_READINGS_SHOWN = 12   # the most recent presses whose press-anchored readings the frontier is shown
+
+
+def _changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, list[Any]]:
+    out = {}
+    for key, value in after.items():
+        old = before.get(key)
+        same = (old == value or (isinstance(old, (int, float)) and isinstance(value, (int, float))
+                                 and not isinstance(old, bool) and abs(old - value) <= 1e-3))
+        if key in before and not same and not isinstance(value, (dict, list)):
+            out[key] = [old, value]
+    return out
+
+
+def _where(observed: Mapping[str, Any], places: Mapping[str, tuple[str, float]]) -> tuple[str, bool]:
+    """The body's distance at the press to each situation's object, read at that press (nothing when unread), and
+    whether it was inside any of them."""
+    import math
+
+    body, targets = observed.get("from_position"), observed.get("targets_before") or {}
+    parts, inside = [], False
+    for target, (region_id, within) in places.items():
+        placed = targets.get(target) if isinstance(targets, Mapping) else None
+        if not isinstance(placed, Mapping):
+            continue
+        if placed.get("active") is False:
+            parts.append(f"{region_id} object inactive")
+            continue
+        at = placed.get("position")
+        if isinstance(body, (list, tuple)) and isinstance(at, (list, tuple)) and len(body) == len(at):
+            distance = math.dist(body, at)
+            inside = inside or distance <= within
+            parts.append(f"{region_id} distance {distance:.2f} ({'inside' if distance <= within else 'outside'} "
+                         f"{within:g})")
+    return (f" [{'; '.join(parts)}]" if parts else ""), inside
+
+
+def press_reading_lines(sink: Any, limit: int = PRESS_READINGS_SHOWN,
+                        places: Mapping[str, tuple[str, float]] | None = None) -> list[str]:
+    """For the latest presses, what every reader read just before and just after each (`--press-readings`).
+
+    The loop's observations come at S1's pace, so a reader a press resets and that then counts back up (a cooldown
+    timer) can read higher at every observation: without these, a reset reads as never happening. Only changes are
+    stated, each as before -> after; a press with none says so. Nothing with no press readings is shown.
+
+    With `places` (each situation's object id -> its region id and distance), each press also says how far the body
+    was from each object at that press: whether a press was made in a situation is then a measured fact, not one
+    the frontier must infer from the progress facts S1's observations happened to fall on. A press made inside a
+    situation stays shown (up to `limit` of them) after it is older than the latest `limit` presses.
+    """
+    of_kind = getattr(sink, "of_kind", None)
+    if of_kind is not None:
+        entries = of_kind("effect")
+    else:
+        entries = [e for e in read_trace(sink.path)
+                   if (e.get("kind") if isinstance(e, Mapping) else getattr(e, "kind", None)) == "effect"]
+    lines: list[tuple[str, bool]] = []
+    for entry in entries:
+        body = entry.get("body") if isinstance(entry, Mapping) else getattr(entry, "body", None)
+        if hasattr(body, "model_dump"):
+            body = body.model_dump(mode="json")
+        body = body if isinstance(body, Mapping) else {}
+        observed = body.get("observed") or {}
+        before, after = observed.get("readers_before"), observed.get("readers_after")
+        if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+            continue
+        changes = _changed(before.get("values") or {}, after.get("values") or {})
+        what = ", ".join(f"{k} {v[0]} -> {v[1]}" for k, v in sorted(changes.items())) or "no reader changed"
+        where, inside = _where(observed, places or {})
+        lines.append((f"{body.get('choice_id') or body.get('action')}{where}: {what}", inside))
+    latest = lines[-limit:]
+    earlier = [line for line, inside in lines[:-limit] if inside][-limit:] if len(lines) > limit else []
+    return earlier + [line for line, _ in latest]
+
+
+def trace_rows(sink: Any, kinds: Sequence[str] = ("observation", "effect", "execution", "option")) -> list[dict]:
+    """The sink's entries of these kinds as plain dicts, in trace order."""
+    of_kind = getattr(sink, "of_kind", None)
+    if of_kind is not None:
+        rows = [e for kind in kinds for e in of_kind(kind)]
+    else:
+        rows = [e for e in read_trace(sink.path)
+                if (e.get("kind") if isinstance(e, Mapping) else getattr(e, "kind", None)) in kinds]
+    rows = [e.model_dump(mode="json") if hasattr(e, "model_dump") else dict(e) for e in rows]
+    return sorted(rows, key=lambda e: e.get("trace_seq") or 0)
 
 
 def recorded_suspicions(sink: Any) -> list[dict[str, Any]]:
@@ -357,6 +446,15 @@ class FrontierHelp:
     # Delegation is a distinct bounded-task operation, not an alias for escalation.
     supported_kinds = frozenset({"escalate"})
 
+    def _live_rules(self) -> list[str]:
+        """The pre-registered rules scored on the trace so far; a scoring that fails says nothing, never stops a call."""
+        if self.rules is None:
+            return []
+        try:
+            return list(self.rules(trace_rows(self.sink)))
+        except Exception:  # noqa: BLE001 - a fact the run cannot compute is left out, not guessed
+            return []
+
     def __init__(self, *, project: Path, status: Any, manifest: Any, directory: Path,
                  approval: Mapping[str, Any], sink: Any, tracker: DirectiveTracker,
                  started_utc: dt.datetime, send: Callable[..., Any] = provider.send_meta,
@@ -366,12 +464,20 @@ class FrontierHelp:
                  generation: str | None = None, session: str | None = None,
                  clip_window_s: float = media.WINDOW_S,
                  progress: ProgressProbe | None = None, declared: Mapping[str, Any] | None = None,
-                 advice: bool = False) -> None:
+                 advice: bool = False, guards: Sequence[str] = (),
+                 places: Mapping[str, tuple[str, float]] | None = None,
+                 rules: Callable[[list[dict[str, Any]]], list[str]] | None = None) -> None:
         # A sink that cannot be read back is refused now, before any paid call, not at the first request.
         if not hasattr(sink, "of_kind") and not hasattr(sink, "path"):
             raise ValueError("the trace sink must list its entries (of_kind) or name its file (path), so the "
                              "frontier can be shown the suspicions recorded so far")
         self.declared = declared
+        # One line per verb from the guard table measured before play (`playtest.runner.guards`), or none.
+        self.guards = tuple(guards)
+        # Each situation's object id -> (its region id, its distance): every press shown says how far it was made.
+        self.places = dict(places or {})
+        # The pre-registered rules scored on the trace so far (`expectations.live_rule_lines`), or none.
+        self.rules = rules
         self.project, self.status, self.manifest = project, status, manifest
         self.directory, self.sink, self.tracker = directory, sink, tracker
         self.started_utc, self.send, self.capture = started_utc, send, capture
@@ -488,6 +594,25 @@ class FrontierHelp:
                                        since_utc=self.started_utc, until_utc=now, output_dir=folder,
                                        generation=self.generation, window_s=self.clip_window_s)
         fact_rows = [{"text": text, "seqs": [seq]} for text in context.get("facts", []) if isinstance(text, str)]
+        pressed = press_reading_lines(self.sink, places=self.places)
+        if pressed:
+            fact_rows.append({"text": "Read just before and just after each of the latest presses, oldest first (the "
+                                      "observations come at S1's pace and can miss a change a press makes and the game "
+                                      "then undoes, such as a cooldown reset that counts back up); only the readers "
+                                      "that changed are named, so every other reader read the same before and after"
+                                      + ("; a press's brackets give its measured distance to each situation's object, "
+                                         "and earlier presses made inside a situation are kept" if self.places else "")
+                                      + ": " + "; ".join(pressed),
+                              "seqs": [seq]})
+        scored = self._live_rules()
+        if scored:
+            fact_rows.append({"text": "Written before play from the build's declarations, and scored by code on this "
+                                      "session's presses so far, as after the session (a measurement of each rule, "
+                                      "not a judgement of the game; held means it did what the rule says): "
+                                      + "; ".join(scored), "seqs": [seq]})
+        fact_rows += [{"text": "Measured before play on this build, not in this trace (each verb pressed at rest, "
+                               "while a direction was held and in the air, against each state without it): " + line,
+                       "seqs": [seq]} for line in self.guards]
         ids = [f"hyp-{request.turn}-{i}" for i in range(frontier.MAX_HYPOTHESES)]
         old_hypotheses = [row for row in self.hypotheses.values() if row.get("status") == "open"]
         current = (Directive.model_validate(self.tracker.active["directive"])

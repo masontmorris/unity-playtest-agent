@@ -64,7 +64,7 @@ def endpoint(arm: str) -> tuple[str | None, dict[str, str]]:
 
 def provider_of(arm: str) -> str:
     """The provider an arm bills through: the key a balance check and an approval cap are counted against."""
-    if arm in {"muse-spark-1.3", "meta-muse-spark-s1"}:
+    if arm in {"muse-spark-1.3", "muse-wonder-1.0", "meta-muse-spark-s1"}:
         return "meta"
     if arm in MODAL_ARMS:
         return "modal"

@@ -139,6 +139,28 @@ def _position(value: Any) -> tuple[float, float, float] | None:
     return (parts[0], parts[1], parts[2])  # type: ignore[index]
 
 
+def _body_to_world(unit: Sequence[float], observation: Any) -> tuple[float, float, float] | None:
+    """A (right, 0, forward) unit in the entity's basis as a world unit, from the observation's measured yaw.
+
+    The yaw convention is the calibration record's: forward = (sin yaw, 0, cos yaw), right = (cos yaw, 0,
+    -sin yaw). `None` when the observation carries no yaw.
+    """
+    view = getattr(observation, "view", None)
+    yaw = getattr(view, "yaw_deg", None) if view is not None else None
+    if isinstance(view, Mapping):
+        yaw = view.get("yaw_deg")
+    yaw = _finite(yaw)
+    if yaw is None:
+        return None
+    radians = math.radians(yaw)
+    forward = (math.sin(radians), 0.0, math.cos(radians))
+    right = (math.cos(radians), 0.0, -math.sin(radians))
+    x = right[0] * unit[0] + forward[0] * unit[2]
+    z = right[2] * unit[0] + forward[2] * unit[2]
+    length = math.hypot(x, z)
+    return None if length <= 0 else (x / length, 0.0, z / length)
+
+
 def _pose(observation: Any) -> tuple[float, float, float] | None:
     """The controlled entity's measured position in an observation, or None."""
     controlled = _controlled(observation) if observation is not None else None
@@ -788,6 +810,8 @@ class OptionExecutor:
         for attempt in (0, 1):
             run.acts += 1
             action_id = f"{run.spec.option_id}.{run.acts}"
+            # What was asked for, beside what the bridge answered: a replay needs the action, not only its receipts.
+            run.receipts.append({"type": "request", "action_id": action_id, "action": action, "lease_s": lease_s})
             try:
                 records = await self._client.start_act(
                     action_id=action_id,
@@ -964,6 +988,16 @@ class OptionExecutor:
         if position is None:
             return
         assert run.start_position is not None
+        if params.get("basis") == "body":
+            # Measured in the entity's own basis: resolved once against its facing now. One held move does
+            # not turn the entity, so the world direction holds for the whole traverse.
+            world = _body_to_world(unit, self._last_obs)
+            if world is None:
+                run.end("rejected", "the entity's facing is unmeasured, so a body-relative direction has no "
+                                    "world direction")
+                return
+            unit = world
+            run.measured["world_direction"] = list(world)
         progress = _Progress(unit, run.start_position, BLOCK_WINDOW_S)
         if not await self._hold(run, str(action), self._observation(), lease_s=bound):
             return
@@ -1000,6 +1034,17 @@ class OptionExecutor:
         if unit is None:
             run.end("rejected", "the option carries no measured direction")
             return
+        if params.get("basis") == "body":
+            # Measured in the entity's own basis: resolved once against its facing now, as a traverse is.
+            if await self._tick(run) is None:
+                return
+            world = _body_to_world(unit, self._last_obs)
+            if world is None:
+                run.end("rejected", "the entity's facing is unmeasured, so a body-relative direction has no "
+                                    "world direction")
+                return
+            unit = world
+            run.measured["world_direction"] = list(world)
         direction = self._primitives.aligned(unit)
         move_action = params.get("action") or (direction.action if direction else None)
         if not move_action:
