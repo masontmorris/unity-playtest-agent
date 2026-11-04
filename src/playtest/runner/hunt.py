@@ -94,6 +94,32 @@ def project_ref(project: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def unity_projects() -> list[str] | None:
+    """The project paths of every running Unity process, normalised; None when they cannot be listed."""
+    query = ("Get-CimInstance Win32_Process -Filter \"Name='Unity.exe'\" | ForEach-Object { $_.CommandLine }")
+    result = subprocess.run(["pwsh", "-NoProfile", "-Command", query], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return [_norm(line) for line in result.stdout.splitlines() if line.strip()]
+
+
+def _norm(text: str) -> str:
+    return text.replace("\\", "/").lower()
+
+
+def clear_stale_lock(project: Path, say) -> None:
+    """A Unity lock file no running Unity process holds is left by a host that was stopped: removed, and said so.
+    One that a running process may hold, or when processes cannot be listed, is left alone."""
+    lock = project / "Temp" / "UnityLockfile"
+    if not lock.is_file():
+        return
+    running = unity_projects()
+    if running is None or any(_norm(str(project)) in line for line in running):
+        return
+    lock.unlink()
+    say(f"removed a stale Unity lock no running process held: {lock}")
+
+
 def credentials() -> dict[str, str]:
     from dotenv import dotenv_values
 
@@ -138,6 +164,7 @@ def guards_step(config: Mapping[str, Any], out: Path, env: Mapping[str, str], sa
     if folder.exists():
         raise HuntError(f"{folder} exists without guards.json; move it aside to measure again")
     say("guards: one guards-only session (no model call)")
+    clear_stale_lock(Path(config["project"]), say)
     code = _run(_pwsh("run-session.ps1", *_base(config, folder), "-MaxCalls", "1", "-WallLimitSeconds", "180",
                       "-Objective", "measure the guard table", "-MeasureGuards", "-GuardsOnly", "-NoFinish",
                       "-ManifestOrigin", f"hunt guards on {config['ref']}"), out / "guards.log", env)
@@ -187,6 +214,7 @@ def session_step(config: Mapping[str, Any], out: Path, number: int, objective: P
     if folder.exists():
         raise HuntError(f"{folder} exists without run.json; move it aside to play it again")
     say(f"session {number}: live, up to {config['wall_limit_s']} s")
+    clear_stale_lock(Path(config["project"]), say)
     child = {**env, **SESSION_ENV, "UPA_RUN_MEMORY_DIR": str(out / "memory")}
     code = _run(_pwsh("run-session.ps1", *_base(config, folder), "-MaxCalls", str(config["max_calls"]),
                       "-WallLimitSeconds", str(config["wall_limit_s"]), "-MaxAgeSeconds", str(config["max_age_s"]),
@@ -226,6 +254,7 @@ def replay_step(config: Mapping[str, Any], out: Path, session: Path, finding: Ma
         if folder.exists():
             raise HuntError(f"{folder} exists without reproduce.json; move it aside to replay again")
         say(f"replay: {finding['finding_id']} from {session.name}, {config['attempts']} attempts (no model call)")
+        clear_stale_lock(Path(config["project"]), say)
         args = ["-ProjectPath", config["project"], "-TracePath", str(session / "trace.jsonl"),
                 "-ManifestPath", config["manifest"], "-OutputDirectory", str(folder),
                 "-FindingId", finding["finding_id"], "-Attempts", str(config["attempts"])]

@@ -122,3 +122,20 @@ def test_a_finding_with_no_replay_check_is_reported_as_not_replayable(tmp_path, 
     result = hunt.hunt(_config(tmp_path), tmp_path / "out", say=lambda text: None)
     assert result["findings"][0]["replay"] == {"status": "no repro_check"}
     assert not any("reproduce.ps1" in " ".join(map(str, c)) for c in steps.calls)
+
+
+def test_a_lock_no_running_unity_holds_is_removed_and_one_that_may_be_held_is_left(tmp_path, monkeypatch):
+    project = tmp_path / "Game Project"
+    (project / "Temp").mkdir(parents=True)
+    lock = project / "Temp" / "UnityLockfile"
+    said = []
+    lock.write_text("", encoding="utf-8")
+    monkeypatch.setattr(hunt, "unity_projects", lambda: [hunt._norm(f'unity.exe -projectpath "{project}" -batchmode')])
+    hunt.clear_stale_lock(project, said.append)
+    assert lock.is_file() and said == []
+    monkeypatch.setattr(hunt, "unity_projects", lambda: None)   # cannot tell: left alone
+    hunt.clear_stale_lock(project, said.append)
+    assert lock.is_file()
+    monkeypatch.setattr(hunt, "unity_projects", lambda: [hunt._norm("unity.exe -projectPath C:/Other")])
+    hunt.clear_stale_lock(project, said.append)
+    assert not lock.is_file() and said and "stale Unity lock" in said[0]
