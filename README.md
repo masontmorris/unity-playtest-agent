@@ -8,15 +8,40 @@ Built for the [Meta Global AI Developer Hackathon](https://cerebralvalley.ai/e/m
 
 ## Status
 
-Day 2. The bridge transport exists; nothing plays a game yet. This section will say what works, and what doesn't, as it changes.
+Submitted on 4 November 2026. It plays two third-party Unity games end to end and finds some seeded bugs, but not most of them yet.
 
-What exists so far:
-- **Contracts** (`src/playtest/contracts/`): typed models for the bridge protocol, choices, decisions, turn records, directives, findings and run records. JSON Schema is exported to `schemas/`, with shared fixtures in `fixtures/contracts/`.
-- **Bridge v0** (`bridge/`, Unity package): a generic loopback JSONL transport with `upa/1` protocol checks, token auth, a one-Editor project lock, `hello`/`status`, a 20 Hz observation stream, bounded actions with atomic freshness checks and input leases, stop/clock control with verified input release, and offscreen JPEG capture with a startup self-test. It loads by reference in the clean FPSKit fork.
-- **IL write scan** (`tools/ilscan/`, .NET 10): reads a project's compiled script assemblies for inspection only and records which methods store which fields. Preflight merges the result into discovery. It needs no Unity.
-- **S1 decision parsing**: rejects an invalid answer and never repairs it.
-- **Adherence checker**: fails a run if anything other than S1's choice reached the game.
-- **CI**: tests, a name-blind lint over the core, a generic-bridge lint, the IL scan tool's .NET tests, and a gitleaks secret scan.
+**What works.** One command, `playtest-hunt --config <game>.json`, runs the whole loop with no human in it:
+- **Preflight** reads the game's scripts and input bindings, then measures what each control does.
+- **Expectations** are written down before play: what each press should change, and the sizes the game's own authored values fix.
+- **Live sessions**: S1 plays and decides when to ask the frontier for help. The frontier files findings, each with a check it can test.
+- **Replays**: every finding is replayed from a reset k of n times, with no model in the loop.
+- **Report**: a report with the evidence, the replay results and the cost.
+
+A local dashboard (below) starts a hunt from a prompt and follows it live.
+
+**Results.** Each hunt is three 10-minute sessions and costs about $0.50–2.30.
+
+| Build | Seeded bugs | Found and reproduced |
+|---|---|---|
+| FPSKit, held out (never tuned on) | 3 | 1: aim toggle does nothing, reproduced 5 of 5 in both held-out hunts |
+| DragonBlaze, held out | 2 | 0 |
+| FPSKit, development set (tuned on) | 4 | 2: both reproduced 5 of 5, and one also checked 0 of 5 on the unseeded build |
+
+The held-out builds were scored blind: a separate scorer read their answer keys and returned only ids and counts, and no tuning used them. The records are in [`docs/probes/2026-11-04-final-tuning-hunts.md`](docs/probes/2026-11-04-final-tuning-hunts.md), [`docs/probes/2026-11-04-heldout-hunts.md`](docs/probes/2026-11-04-heldout-hunts.md) and [`docs/probes/2026-10-31-night-play-and-find.md`](docs/probes/2026-10-31-night-play-and-find.md).
+
+The agent also found a real defect in DragonBlaze's base game: dialogue never opens, because its controller registers on a canvas the scene saves inactive. It reproduces 5 of 5 on the clean build.
+
+**Honest limitations.**
+- **Most seeded bugs are still missed** (1 of 5 held out). A bug is found only when a press's measured effect can be compared with a stated expectation. Bugs that need a long route, a precise spot or a judgment about feel are mostly out of reach.
+- **False findings remain.** On the clean FPSKit build, the frontier still files "interact at the dispenser changes no timer", and those replays mostly come back unknown.
+- **It plays through the same inputs a player has, but it sees more than a player does.** Every action is a keyboard, mouse or gamepad event in Unity's Input System, and nothing teleports or edits the game during play. Alongside the screen, though, it reads the game's internal values (health, flags, cooldowns) to measure what each press did. It can also restart the level.
+- **Editor only, and Windows-tested.** It drives the Unity Editor in batch mode, one Editor per project. The game runs uncapped at about 1,700 fps there, which shows up as weapon jitter in FPSKit (#249).
+- **It needs the game's source.** Preflight reads the C# scripts and compiled assemblies, so it can't test a shipped build.
+
+**New vs. prior vs. third-party.**
+- Everything in this repo was written during the hackathon (26 October – 4 November), except the items listed in [`PRIOR_WORK.md`](PRIOR_WORK.md).
+- The test games are third-party projects. Their code, assets and seeded forks live in separate repos, not here.
+- The models are called through their providers' APIs: S1 is Liquid `d1-ultra` by default, and the frontier is Meta Muse Spark.
 
 The roadmap is tracked in [issues](https://github.com/masontmorris/unity-playtest-agent/issues), with one milestone per hackathon day.
 
@@ -50,7 +75,7 @@ The dashboard reads what runs write. It has no endpoint that chooses, pauses, st
 
 - **Unity bridge** (C# package): streams game state and frames out of the Editor and applies bounded, verified inputs. It has five commands: `hello`, `observe`, `act`, `stop` and `clock`.
 - **Preflight**: reads the game's scripts, input bindings and live state, measures what each control actually does, and writes a manifest of readers and actions. A model chooses from what code discovered; it never writes code.
-- **S1**: a fast decision model picks every action, and also decides when to ask for help. Candidates are Baseten mammoth-1 and Liquid's decision models. The harness supplies facts and valid choices. It never picks for S1.
+- **S1**: a fast decision model picks every action, and also decides when to ask for help. The default is Liquid `d1-ultra`; Baseten mammoth-1 (also on our own Modal server) is an option. The harness supplies facts and valid choices. It never picks for S1.
 - **Frontier** (Meta Muse Spark): when S1 escalates, it reviews a short clip and the investigation record. It returns a directive with a checkable success condition, revised choices and hypotheses.
 - **Findings**: suspicions become candidate findings. Each is reproduced from a reset k of n times and exported as a report with steps, clips, cost and remaining uncertainty.
 
@@ -58,7 +83,7 @@ Stack: Python 3.11+ (asyncio) core, C# Unity 6 bridge, artifact files under `run
 
 ## Test games
 
-The agent is tested on third-party open-source Unity games. Their code is not part of this repository. Bugs are seeded into separate forks, and the answer key is kept where the agent cannot read it.
+The agent is tested on two third-party open-source Unity games, FPSKit and DragonBlaze. Their code is not part of this repository. Bugs are seeded into separate forks, and the answer key is kept where the agent cannot read it.
 
 ## License
 
