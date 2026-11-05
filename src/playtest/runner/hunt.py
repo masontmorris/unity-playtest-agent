@@ -10,7 +10,7 @@ S1 decides when to escalate, the frontier decides what to file, and code only me
    what each press must make happen, including situations near scene objects (`--part actions`), and the sizes
    the declared values fix for the body's motion (`--part magnitudes`).
 3. **objective**: code turns the action rules into a test plan (`expectations test-plan`), followed by the
-   standing playtest objective.
+   standing playtest objective. A developer's prompt, when the config gives one, is quoted first, word for word.
 4. **sessions**: N live sessions with S1 and the frontier, each with the guard table measured first, press
    readings, the situations placed, the expectations as facts, and one press-test option per input the action
    rules press (S1 may take it or leave it). They run one after another (one Editor per
@@ -23,7 +23,7 @@ S1 decides when to escalate, the frontier decides what to file, and code only me
 
 The config is a JSON object: project, ref (the branch the project must be on), entity, calibration, manifest,
 discovery, approval, and optionally scene, max_age_s, point_moves, wall_limit_s, max_calls, max_frontier_calls,
-frontier_model, sessions, attempts. Relative paths are relative to the repository. Credentials are read from the
+frontier_model, sessions, attempts, prompt (what the developer asked this playtest to look at). Relative paths are relative to the repository. Credentials are read from the
 repository's `.env` by name and passed to the child processes only; they are never printed or written.
 """
 
@@ -58,7 +58,9 @@ SESSION_FLAGS = ("-RecordFrames", "-S1GameView", "-CoverageFacts", "-PatternFact
                  "-FinishLabel", "conditional", "-S1ContinuousInput", "-Options", "-S1Context", "compact-menu",
                  "-Contingent", "-PacingBurst", "0.5", "-MeasureGuards", "-PressReadings", "-NoFinish")
 DEFAULTS = {"scene": None, "max_age_s": 1.0, "point_moves": False, "wall_limit_s": 600, "max_calls": 600,
-            "max_frontier_calls": 12, "frontier_model": "muse-spark-1.3", "sessions": 3, "attempts": 5}
+            "max_frontier_calls": 12, "frontier_model": "muse-spark-1.3", "sessions": 3, "attempts": 5,
+            "prompt": None}
+PROMPT_LIMIT = 2000
 REQUIRED = ("project", "ref", "entity", "calibration", "manifest", "discovery", "approval")
 
 
@@ -75,6 +77,10 @@ def load_config(path: Path) -> dict[str, Any]:
     if unknown:
         raise HuntError(f"the config has unknown keys {', '.join(unknown)}")
     config = {**DEFAULTS, **raw}
+    prompt = config["prompt"]
+    if prompt is not None and (not isinstance(prompt, str) or len(prompt) > PROMPT_LIMIT):
+        raise HuntError(f"prompt must be text of at most {PROMPT_LIMIT} characters")
+    config["prompt"] = prompt.strip() or None if isinstance(prompt, str) else None
     for key in ("entity", "calibration", "manifest", "discovery", "approval"):
         resolved = _path(config[key])
         if not resolved.is_file():
@@ -209,7 +215,7 @@ def session_expectations(every: Path, magnitudes: Path, out: Path) -> Path:
     return path
 
 
-def objective_step(actions: Path, out: Path) -> Path:
+def objective_step(actions: Path, out: Path, prompt: str | None = None) -> Path:
     path = out / "objective.txt"
     if path.is_file():
         return path
@@ -220,6 +226,9 @@ def objective_step(actions: Path, out: Path) -> Path:
     if plan.endswith("Then keep exploring."):
         plan = plan[: -len("Then keep exploring.")]
     text = (plan + PLAYTEST) if plan else PLAYTEST.removeprefix("Then playtest the rest of the session as usual: ")
+    if prompt:
+        text = (f'The developer asked this playtest to look at: "{prompt}". Give that priority throughout the '
+                f"session. {text}")
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
     return path
 
@@ -376,7 +385,7 @@ def hunt(config: Mapping[str, Any], out: Path, say=print) -> dict[str, Any]:
     actions = predict_step(config, out, guards, "actions", env, say)
     magnitudes = predict_step(config, out, guards, "magnitudes", env, say)
     stated = session_expectations(every, magnitudes, out)
-    objective = objective_step(actions, out)
+    objective = objective_step(actions, out, config.get("prompt"))
     sessions = [s for n in range(1, int(config["sessions"]) + 1)
                 if (s := session_step(config, out, n, objective, stated, actions, env, say)) is not None]
     filed = []

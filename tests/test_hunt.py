@@ -171,3 +171,16 @@ def test_a_lock_no_running_unity_holds_is_removed_and_one_that_may_be_held_is_le
     monkeypatch.setattr(hunt, "unity_projects", lambda: [hunt._norm("unity.exe -projectPath C:/Other")])
     hunt.clear_stale_lock(project, said.append)
     assert not lock.is_file() and said and "stale Unity lock" in said[0]
+
+
+def test_a_prompt_is_quoted_first_in_the_objective_and_an_overlong_one_is_refused(tmp_path, steps):
+    config = _config(tmp_path, prompt="  check the doors open  ")
+    assert config["prompt"] == "check the doors open"
+    hunt.hunt(config, tmp_path / "out", say=lambda text: None)
+    objective = (tmp_path / "out" / "objective.txt").read_text(encoding="utf-8")
+    assert objective.startswith('The developer asked this playtest to look at: "check the doors open".')
+    assert "Try each of these on purpose" in objective
+    with pytest.raises(hunt.HuntError, match="prompt"):
+        _config(tmp_path, prompt="x" * (hunt.PROMPT_LIMIT + 1))
+    assert _config(tmp_path, prompt="   ")["prompt"] is None
+

@@ -31,6 +31,21 @@ uvx pre-commit install       # local secret scan on commit
 dotnet test tools/ilscan/tests/Playtest.IlScan.Tests   # .NET 10 SDK; no Unity
 ```
 
+### Dashboard
+
+```sh
+uv sync --extra probe
+uv run playtest-dashboard --runs runs      # then open http://127.0.0.1:8765/
+```
+
+A local page for the demo, served on loopback only, with no extra dependencies:
+
+- **New playtest**: type what to test, pick a game (or name it in the prompt), choose Quick, Standard or Thorough, tick the approval and start. The prompt is quoted first in every session's objective, so S1 and the frontier both read it. The amount you approve is every call the settings allow at the per-call bounds measured from the game's past ledgers. The launch writes it as its own approval file (as `playtest-approval` builds one), so there is no approval file to renew by hand. Before starting, the page lists what Start will do first: switch the game project to the config's branch, and point its bridge package at this checkout. It refuses while a Unity Editor has the project open, and only one hunt runs at a time. Run the dashboard from the checkout whose `.env` holds the credentials.
+- **Live** follows a hunt's steps and its current session: the game view (the bridge's ~10 Hz frames), every S1 decision with its outcome and latency, suspicions as they are raised, and frontier help, directives and findings. Raw, effective and executed choices that differ are flagged.
+- **Findings** lists what was filed, each with its replay result (k of n), expected and actual, the repro check, and a button that opens the session recording at the cited moment (approximate) or the clip the frontier was shown.
+
+The dashboard reads what runs write. It has no endpoint that chooses, pauses, steers or stops play, or asks for help.
+
 ## How it works
 
 - **Unity bridge** (C# package): streams game state and frames out of the Editor and applies bounded, verified inputs. It has five commands: `hello`, `observe`, `act`, `stop` and `clock`.
@@ -39,7 +54,7 @@ dotnet test tools/ilscan/tests/Playtest.IlScan.Tests   # .NET 10 SDK; no Unity
 - **Frontier** (Meta Muse Spark): when S1 escalates, it reviews a short clip and the investigation record. It returns a directive with a checkable success condition, revised choices and hypotheses.
 - **Findings**: suspicions become candidate findings. Each is reproduced from a reset k of n times and exported as a report with steps, clips, cost and remaining uncertainty.
 
-Planned stack: Python 3.11+ (asyncio) core, C# Unity 6 bridge, SQLite plus artifact files, and a small FastAPI live view.
+Stack: Python 3.11+ (asyncio) core, C# Unity 6 bridge, artifact files under `runs/`, and a local web dashboard.
 
 ## Test games
 
