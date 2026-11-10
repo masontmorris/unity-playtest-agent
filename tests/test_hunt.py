@@ -66,7 +66,7 @@ def steps(monkeypatch):
     fake = Steps()
     monkeypatch.setattr(hunt, "_run", fake)
     monkeypatch.setattr(hunt, "project_ref", lambda project: "eval/x/all")
-    monkeypatch.setattr(hunt, "credentials", lambda: {"META_API_KEY": "k"})
+    monkeypatch.setattr(hunt, "credentials", lambda arm: {"META_API_KEY": "k"})
     scored = []
     monkeypatch.setattr(hunt, "scores_step", lambda *a: scored.append(a) or {
         "guards": {"scored": []}, "play": {"scored": []},
