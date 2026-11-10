@@ -69,3 +69,17 @@ What the sessions show, beyond the predeclared reading:
 
 - **Meta Standard:** $1.46 in all, $0.73 per arm.
 - **Modal:** the `d1-2b-s1` endpoint billed $1.99 through the 08:00 hour. The last two hours were not yet reported when this was written.
+
+## Extension: three more sessions per arm (planned 10 November 2026, before any extension session)
+
+The first six sessions were inconclusive by the reading above. This extension adds three sessions per arm and reads all twelve together. It was planned after the first six results were seen. Those results are already known, so the combined reading is a planned second look and not a fresh test. Its error rate is somewhat higher than its stated α, and the extension's own three sessions per arm are also read alone.
+
+- **Arms, settings and inputs:** unchanged. The same configs (`sessions` raised to 4, 5, then 6), the same frozen hunt inputs, the same Modal endpoint (`d1-2b-s1`, unchanged since the first six), and FPSKit at `bridge-v0`. Each arm's session memory carries on from its first three sessions, as it would have with `sessions: 6` from the start.
+- **Code:** this PR's branch, `feat/modal-d1-wait-result`. Its S1 path and endpoint are the as-run code.
+- **Order:** treatment 4, control 4, control 5, treatment 5, treatment 6, control 6. This mirrors the first order with the arms swapped.
+- **Primary, combined:** the one-sided exact Mann-Whitney test on the twelve sessions' `wait` shares, with treatment lower as the alternative. **Breaks the lock** if U ≤ 7 (p ≤ 0.047). **Does not** if the treatment median is not lower. Otherwise **inconclusive**.
+- **Extension alone:** the first plan's rule applied to sessions 4 to 6. Complete separation means it breaks the lock; overlap with a treatment median that is not lower means it does not; anything else is inconclusive.
+- **Secondary:** sessions with a run of at least 50 consecutive `wait` choices, per arm, out of six. Candidate findings and replays are reported, and no claim about finding bugs is made.
+- **Attrition:** as before. A session killed by tooling before S1's first decision is set aside and played again. Any other session without `run.json` is `unknown`.
+- **Cost:** the same per-session envelope. Meta Standard costs at most $0.57 a session and $3.40 for six, with about $1.50 expected from the first six. The Modal A10 costs about $1.32 an hour, about $2.60 over two hours. The approval file still applies; its estimates are valid until 11 November, 21:44 UTC.
+- **Data:** as before. Everything stays in this repository's ignored `runs/` and nothing goes to decision-lab.
