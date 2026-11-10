@@ -46,6 +46,11 @@ namespace Playtest.Bridge.Protocol
             "input_system", "legacy",
         };
 
+        public static readonly IReadOnlyList<string> Engines = new[]
+        {
+            "unity", "three",
+        };
+
         public static readonly IReadOnlyList<string> CaptureSelfTestValues = new[]
         {
             "passed", "failed", "unknown",
@@ -298,9 +303,38 @@ namespace Playtest.Bridge.Protocol
                     return false;
                 }
 
-                if (!HasString(obj, "unity_version") || status.UnityVersion == null)
+                JToken engine = obj["engine"];
+                if (engine != null && engine.Type != JTokenType.Null
+                    && (engine.Type != JTokenType.String || !Contains(Engines, status.Engine)))
+                {
+                    error = Invalid($"unknown engine '{engine}'");
+                    return false;
+                }
+
+                JToken engineVersion = obj["engine_version"];
+                if (engineVersion != null && engineVersion.Type != JTokenType.Null && engineVersion.Type != JTokenType.String)
+                {
+                    error = Invalid("engine_version must be a string or null");
+                    return false;
+                }
+
+                bool inUnity = status.Engine == null || status.Engine == "unity";
+                JToken unityVersion = obj["unity_version"];
+                if (unityVersion == null)
                 {
                     error = Invalid("unity_version is required");
+                    return false;
+                }
+
+                if (inUnity && (unityVersion.Type != JTokenType.String || status.UnityVersion == null))
+                {
+                    error = Invalid("a Unity bridge reports unity_version");
+                    return false;
+                }
+
+                if (!inUnity && unityVersion.Type != JTokenType.Null)
+                {
+                    error = Invalid("unity_version is null outside Unity");
                     return false;
                 }
 

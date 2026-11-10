@@ -43,7 +43,7 @@ def build_run_record(*, game_project: str | Path, status: Status | None, scene: 
     return RunRecord(
         run_id=str(uuid.uuid4()), game_project=project.name or UNKNOWN, game_commit=commit,
         game_worktree=worktree, game_modified_paths=modified_paths,
-        unity_version=status.unity_version if status is not None else UNKNOWN,
+        unity_version=status.unity_version if status is not None and status.unity_version is not None else UNKNOWN,
         scene=scene if scene is not None else UNKNOWN,
         manifest_fingerprint=manifest_fingerprint if manifest_fingerprint is not None else UNKNOWN,
         clock_mode=clock_mode, input_mode=input_mode if input_mode is not None else UNKNOWN,

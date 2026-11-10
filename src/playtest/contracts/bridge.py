@@ -39,16 +39,35 @@ class LockState(Strict):
     port: int | None = None
 
 
+class Engine(str, Enum):
+    unity = "unity"
+    three = "three"
+
+
 class Status(Envelope):
     type: Literal["status"] = "status"
     bridge_version: str
-    unity_version: str
+    engine: Engine | None = Field(
+        None, description="The engine the bridge runs in; null from a Unity bridge that predates the field")
+    engine_version: str | None = Field(
+        None, description="The engine's own version string, as the engine reports it; null when unmeasured")
+    unity_version: str | None = Field(
+        description="Unity's version; null exactly when the engine is not Unity")
     project: str
     input_backends: list[InputBackend]
     clock_control: bool
     capture: bool
     capture_self_test: Literal["passed", "failed", "unknown"]
     lock: LockState
+
+    @model_validator(mode="after")
+    def _unity_version_matches_engine(self) -> "Status":
+        in_unity = self.engine in (None, Engine.unity)
+        if in_unity and self.unity_version is None:
+            raise ValueError("a Unity bridge reports unity_version")
+        if not in_unity and self.unity_version is not None:
+            raise ValueError("unity_version is null outside Unity")
+        return self
 
 
 # --- observe --------------------------------------------------------------------

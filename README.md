@@ -88,7 +88,9 @@ The agent is tested on two third-party open-source Unity games, FPSKit and Drago
 ## License
 
 The Unity bridge package in [`bridge/`](bridge/) is licensed under the
-[Apache License 2.0](bridge/LICENSE). The rest of this repository, including
+[Apache License 2.0](bridge/LICENSE). The three.js bridge package in
+[`bridge-three/`](bridge-three/) is licensed under [MIT](bridge-three/LICENSE-MIT) or
+[Apache-2.0](bridge-three/LICENSE-APACHE), at your option. The rest of this repository, including
 `tools/ilscan`, is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).
 Other engine bridges will be licensed individually, case by case.
 

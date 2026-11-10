@@ -1,0 +1,23 @@
+{
+  "name": "@playtest/bridge-three",
+  "version": "0.1.0",
+  "description": "Playtest bridge for three.js games: upa/1 over a loopback relay",
+  "license": "MIT OR Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./relay": "./relay/relay.mjs"
+  },
+  "bin": {
+    "playtest-three-relay": "relay/relay.mjs"
+  },
+  "files": ["src", "relay", "LICENSE-MIT", "LICENSE-APACHE", "README.md"],
+  "scripts": {
+    "relay": "node relay/relay.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

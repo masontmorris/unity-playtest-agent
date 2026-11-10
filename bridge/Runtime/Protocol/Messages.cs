@@ -42,7 +42,8 @@ namespace Playtest.Bridge.Protocol
         [JsonProperty("bridge_version", Order = 10)]
         public string BridgeVersion { get; set; }
 
-        [JsonProperty("unity_version", Order = 11)]
+        /// <summary>Always written: the key is required, and null outside Unity.</summary>
+        [JsonProperty("unity_version", Order = 11, NullValueHandling = NullValueHandling.Include)]
         public string UnityVersion { get; set; }
 
         [JsonProperty("project", Order = 12)]
@@ -62,6 +63,13 @@ namespace Playtest.Bridge.Protocol
 
         [JsonProperty("lock", Order = 17)]
         public LockState Lock { get; set; } = new LockState();
+
+        /// <summary>The engine the bridge runs in; null (omitted) from a Unity bridge that predates the field.</summary>
+        [JsonProperty("engine", Order = 18)]
+        public string Engine { get; set; }
+
+        [JsonProperty("engine_version", Order = 19)]
+        public string EngineVersion { get; set; }
     }
 
     /// <summary>Bridge -> core error. <see cref="InReplyTo"/> echoes the request seq when known.</summary>
