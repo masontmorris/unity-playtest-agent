@@ -93,3 +93,33 @@ export function inspectTransforms({ sceneId, scene, clock, realTimeS, runtimeErr
     errors,
   };
 }
+
+/**
+ * The `fields` inspection: no game fields yet (they come with a preflight), and the delivered input
+ * state, in the shape the Unity bridge's fields collector uses. `inputState` is the surface's
+ * `state()`, or null when the page has no input surface.
+ */
+export function inspectFields({ clock, realTimeS, inputState }) {
+  const wallS = Date.now() / 1000;
+  const state = inputState === null
+    ? { active: false, devices: null, real_time_s: realTimeS, wall_s: wallS, update_type: null,
+        error: "no input surface is attached" }
+    : { active: true, devices: inputState, real_time_s: realTimeS, wall_s: wallS, update_type: "dynamic", error: null };
+  return {
+    data: {
+      time_unit: "seconds",
+      frame: clock.frame,
+      real_time_s: realTimeS,
+      game_time_s: clock.gameS,
+      sample_wall_s: wallS,
+      input_state: state,
+      game_objects: [],
+      fields: [],
+    },
+    caps: {
+      game_objects: { limit: LIMIT, observed: 0, returned: 0, truncated: false },
+      fields: { limit: LIMIT, observed: 0, returned: 0, truncated: false },
+    },
+    errors: [],
+  };
+}

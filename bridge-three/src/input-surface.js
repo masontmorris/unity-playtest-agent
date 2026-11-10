@@ -44,6 +44,7 @@ export class DomInputSurface {
   #navigator;
   #captureTarget;
   #lastDelta = null;
+  #deltaFrame = null;
   #padTimestamp = Date.now() - (globalThis.performance?.timeOrigin ?? Date.now());
 
   constructor({ clock, target = globalThis, windowTarget = target.window ?? target, documentTarget = target.document ?? windowTarget, keyboardTarget = documentTarget, pointerTarget = documentTarget, canvas = null } = {}) {
@@ -62,8 +63,9 @@ export class DomInputSurface {
       windowTarget?.addEventListener?.("keydown", down, true);
       windowTarget?.addEventListener?.("keyup", up, true);
     }
-    pointerTarget?.addEventListener?.("pointermove", e => { this.#lastDelta = { x: e.movementX, y: e.movementY }; }, true);
-    pointerTarget?.addEventListener?.("mousemove", e => { this.#lastDelta = { x: e.movementX, y: e.movementY }; }, true);
+    const moved = e => { this.#lastDelta = { x: e.movementX, y: e.movementY }; this.#deltaFrame = clock.frame; };
+    pointerTarget?.addEventListener?.("pointermove", moved, true);
+    pointerTarget?.addEventListener?.("mousemove", moved, true);
     this.#captureTarget?.addEventListener?.("pointerdown", e => { const control = Object.keys(BUTTON_CODE).find(name => BUTTON_CODE[name] === e.button); if (control) this.#mouse.add(control); }, true);
     this.#captureTarget?.addEventListener?.("pointerup", e => { const control = Object.keys(BUTTON_CODE).find(name => BUTTON_CODE[name] === e.button); if (control) this.#mouse.delete(control); }, true);
     this.#navigator = target.navigator ?? globalThis.navigator;
@@ -133,6 +135,28 @@ export class DomInputSurface {
     if (input.control === "rightStick") return this.#axes[2] === 0 && this.#axes[3] === 0;
     if (input.control === "dpad") return [12, 13, 14, 15].every(i => !this.#buttons[i].pressed);
     return !this.#gamepadValues(input.control).some(i => this.#buttons[i]?.value > 0);
+  }
+
+  /**
+   * The delivered device state, in the Unity bridge's input-state shape: each device's pressed controls
+   * and its vector and axis values. A mouse delta reads as moving only until the game frame after it
+   * was delivered has run; after that it has been consumed and reads as zero.
+   */
+  state() {
+    const delta = this.#lastDelta !== null && this.#deltaFrame !== null && this.#clock.frame <= this.#deltaFrame + 1
+      ? [this.#lastDelta.x, this.#lastDelta.y] : [0, 0];
+    const pressed = Object.keys(BUTTON_INDEX).filter(name => this.#buttons[BUTTON_INDEX[name]].pressed
+      && name !== "leftTrigger" && name !== "rightTrigger");
+    const dpad = [(this.#buttons[15].pressed ? 1 : 0) - (this.#buttons[14].pressed ? 1 : 0),
+      (this.#buttons[12].pressed ? 1 : 0) - (this.#buttons[13].pressed ? 1 : 0)];
+    return {
+      Keyboard: { pressed: [...this.#keys].sort(), values: {} },
+      Mouse: { pressed: [...this.#mouse].sort(), values: { delta } },
+      Gamepad: { pressed, values: {
+        leftStick: [this.#axes[0], -this.#axes[1] + 0], rightStick: [this.#axes[2], -this.#axes[3] + 0],
+        leftTrigger: this.#buttons[6].value, rightTrigger: this.#buttons[7].value, dpad,
+      } },
+    };
   }
 
   releasedNames() { return [...this.#keys].map(x => `key:${x.toLowerCase()}`).concat([...this.#mouse].map(x => `mouse:${x.toLowerCase()}`), [...this.#gamepadHeld].map(x => `gamepad:${x.toLowerCase()}`)); }

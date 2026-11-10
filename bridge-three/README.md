@@ -95,7 +95,7 @@ so a game that times itself with them is not paused.
 | `act` | Runs the exact catalog action or skill. Holds, waits, leases and skill deadlines use wall time, so pausing the virtual clock does not keep an input held |
 | `clock` | pause, resume, step, set_scale |
 | `stop` | Releases every held DOM input and reports whether the delivered state is neutral |
-| `inspect` | `transforms` only: every object in the attached scene with its world position and basis, and the runtime error monitor. Other stages are refused with `internal` |
+| `inspect` | `transforms`: every object in the attached scene with its world position and basis, and the runtime error monitor. `fields`: no game fields yet (they come with a preflight), and the delivered input state per device, which the input probe reads to confirm a neutral release. Other stages are refused with `internal` |
 | `place` | Refused with `invalid` |
 
 ## Coordinates
