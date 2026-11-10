@@ -43,3 +43,29 @@ Six sessions, one at a time, in the order control 1, treatment 1, treatment 2, c
 ## Data
 
 Every session's frames, requests and traces are Unity-derived and stay in this repository's ignored `runs/`. Unity's Terms of Service §17.2(dd) bar using them for machine-learning training, validation or development without authorization. This trial tests a harness setting inside the forked test projects. Its data is not used to train, validate or develop a model, and does not go to decision-lab.
+
+## Results
+
+Run on 10 November 2026, 05:07 to 09:48, in the planned order. A seventh attempt, the first try at treatment session 1, was killed by the runner's two-hour job limit during setup, before S1's first decision. It is attrition from the trial's own tooling, set aside as `treatment/session-01.killed-0758`, and the session was played again. Each session ran 600 s of play on the Modal A10 with d1's fused attention.
+
+| Session | Decisions | `wait` | Longest run of `wait` | Distinct choices | Candidate findings (replayed k/n) |
+|---|---|---|---|---|---|
+| control 1 | 276 | 189 (68%) | 180 | 12 | `f-38` look_down never changes pitch (0/5); `f-57` jump often has no effect on jump_count (3/5) |
+| control 2 | 321 | 64 (20%) | 2 | 15 | `f-56` jump often does not increase jump_count (0/5) |
+| control 3 | 214 | 143 (67%) | 104 | 11 | none |
+| treatment 1 | 155 | 56 (36%) | 10 | 15 | none |
+| treatment 2 | 131 | 2 (2%) | 1 | 14 | none |
+| treatment 3 | 146 | 18 (12%) | 2 | 11 | none |
+
+**Predeclared reading: inconclusive.** Every treatment session is below the control median (67%), and the treatment median is 12%. But the ranges overlap: control 2 (20%) waited less than treatment 1 (36%). So neither "breaks the lock" (complete separation) nor "does not" (overlap and no lower median) applies.
+
+What the sessions show, beyond the predeclared reading:
+
+- **No treatment session locked.** Two of the three control sessions held `wait` for 104 and 180 decisions in a row; the longest treatment run was 10. Control 2 did not lock either, so a control session can also stay out of the lock.
+- **The treatment arm found nothing.** The control arm raised three candidates, and one, `f-57`, replayed 3 of 5. Fewer waits did not turn into findings in these six sessions. Movement is not progress, and nothing here shows the change helps a hunt find bugs.
+- Treatment sessions made fewer decisions (131 to 155 against 214 to 321), as expected when more of them start inputs that take game time instead of waiting.
+
+## Cost
+
+- **Meta Standard:** $1.46 in all, $0.73 per arm.
+- **Modal:** the `d1-2b-s1` endpoint billed $1.99 through the 08:00 hour. The last two hours were not yet reported when this was written.
