@@ -11,7 +11,8 @@
     "InputBackend": {
       "enum": [
         "input_system",
-        "legacy"
+        "legacy",
+        "dom"
       ],
       "title": "InputBackend",
       "type": "string"

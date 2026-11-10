@@ -43,7 +43,7 @@ namespace Playtest.Bridge.Protocol
     {
         public static readonly IReadOnlyList<string> InputBackends = new[]
         {
-            "input_system", "legacy",
+            "input_system", "legacy", "dom",
         };
 
         public static readonly IReadOnlyList<string> Engines = new[]
