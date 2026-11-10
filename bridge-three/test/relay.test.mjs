@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { lockPath } from "../relay/relay.mjs";
+import { framesPath, lockPath, startRelay } from "../relay/relay.mjs";
 import { startSimPage } from "../support/sim-page.mjs";
 
 async function until(condition, timeoutMs = 2000) {
@@ -88,6 +88,29 @@ test("a core reaches the page through the lock, a second core is busy, and the l
     rmSync(project, { recursive: true, force: true });
   }
   assert.equal(existsSync(lockPath(project)), false);
+});
+
+test("the relay writes complete frames into the window and refuses anything else", async () => {
+  const project = mkdtempSync(join(tmpdir(), "bridge-three-"));
+  const relay = await startRelay({ project });
+  const page = new WebSocket(relay.pageUrl);
+  const replies = [];
+  page.addEventListener("message", (event) => replies.push(JSON.parse(event.data)));
+  await new Promise((resolve) => page.addEventListener("open", resolve));
+  await until(() => replies.some((m) => m.relay === "endpoint"));
+  const jpeg = Buffer.from([0xff, 0xd8, 0x00, 0xff, 0xd9]).toString("base64");
+  page.send(JSON.stringify({ relay: "frame", name: "f-000001.jpg", jpeg_base64: jpeg }));
+  page.send(JSON.stringify({ relay: "frame", name: "f-000002.jpg", jpeg_base64: Buffer.from("png?").toString("base64") }));
+  page.send(JSON.stringify({ relay: "frame", name: "../escape.jpg", jpeg_base64: jpeg }));
+  await until(() => replies.filter((m) => m.relay === "frame_written").length === 3);
+  const [ok, notJpeg, badName] = replies.filter((m) => m.relay === "frame_written");
+  assert.equal(ok.path, join(framesPath(project), "f-000001.jpg"));
+  assert.equal(readFileSync(ok.path).length, 5);
+  assert.match(notJpeg.error, /complete JPEG/);
+  assert.match(badName.error, /f-NNNNNN/);
+  page.close();
+  await relay.close();
+  rmSync(project, { recursive: true, force: true });
 });
 
 test("a page without the key is refused", async () => {

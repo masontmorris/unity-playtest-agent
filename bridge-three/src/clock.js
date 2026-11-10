@@ -18,6 +18,7 @@ export class VirtualClock {
   #lastRealMs = null;
   #queue = new Map();
   #nextId = 1;
+  #afterFrame = [];
   #onError;
 
   constructor({ mode = "realtime", stepFrameS = 1 / 60, onError = (error) => console.error(error) } = {}) {
@@ -46,6 +47,12 @@ export class VirtualClock {
 
   cancelAnimationFrame(id) {
     this.#queue.delete(id);
+  }
+
+  /** Run `hook` after every game frame's callbacks, in the same task. Returns a function that removes it. */
+  afterFrame(hook) {
+    this.#afterFrame.push(hook);
+    return () => { this.#afterFrame = this.#afterFrame.filter((item) => item !== hook); };
   }
 
   /**
@@ -91,6 +98,13 @@ export class VirtualClock {
     for (const callback of callbacks.values()) {
       try {
         callback(this.#gameMs);
+      } catch (error) {
+        this.#onError(error);
+      }
+    }
+    for (const hook of this.#afterFrame) {
+      try {
+        hook(this.#frame);
       } catch (error) {
         this.#onError(error);
       }

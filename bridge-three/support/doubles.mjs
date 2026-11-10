@@ -1,4 +1,17 @@
-// Test doubles: a camera whose world matrix points along a given forward vector.
+// Test doubles: three.js objects reduced to the parts the bridge reads, and hand-driven timers.
+
+/** A stand-in for a three.js object: a world matrix from a position and a yaw about +Y, plus children. */
+export function objectAt({ name = "", position = [0, 0, 0], yawRad = 0, visible = true, isCamera = false, children = [] } = {}) {
+  const c = Math.cos(yawRad);
+  const s = Math.sin(yawRad);
+  const elements = [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, position[0], position[1], position[2], 1];
+  return { name, visible, isCamera, matrixWorld: { elements }, children };
+}
+
+/** A stand-in for a three.js scene. */
+export function sceneOf(children) {
+  return { visible: true, children, updates: 0, updateMatrixWorld() { this.updates += 1; } };
+}
 
 /** A stand-in for a three.js camera: only `matrixWorld.elements` is read. */
 export function cameraFacing(forward) {

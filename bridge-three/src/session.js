@@ -1,10 +1,12 @@
 // One bridge session with the playtest core, independent of transport.
 //
 // The relay (or, later, a native host) hands this class lines from the core and carries its replies
-// back. It answers hello/status, observe, clock and stop. `act`, `place` and `inspect` are recognised
-// and refused, because this bridge applies no input and has no inspection source yet. Unmeasured
-// facts are null, never zero or success.
+// back. It answers hello/status, observe (with frames when capture passed its self-test), clock,
+// stop and the `transforms` inspection. `act` and `place` are recognised and refused, because this
+// bridge applies no input yet; the other inspection stages have no source. Unmeasured facts are null,
+// never zero or success.
 
+import { inspectTransforms } from "./inspect.js";
 import { errorMessage, envelope, ProtocolError, readRequest } from "./protocol.js";
 import { viewAngles } from "./view.js";
 
@@ -19,22 +21,30 @@ export class BridgeSession {
   #send;
   #end;
   #timers;
+  #capture;
+  #errors;
+  #realNow;
 
   #endpoint = null;
   #session = null;
   #seq = 0;
   #stream = null;
+  #withFrame = false;
 
   /**
    * @param {object} options
    * @param {import("./clock.js").VirtualClock} options.clock
-   * @param {() => {sceneId: string, camera: object} | null} options.view The attached scene, or null
+   * @param {() => {sceneId: string, scene: object, camera: object} | null} options.view The attached scene, or null
    * @param {string} options.project
    * @param {string | null} [options.engineVersion] three.js REVISION, or null when not supplied
    * @param {(message: object) => void} options.send Deliver one message to the core
    * @param {() => void} options.end Close the core's connection
+   * @param {() => import("./capture.js").FrameCapture | null} [options.capture] The capture, or null with no canvas
+   * @param {import("./errors.js").ErrorMonitor | null} [options.errors] Null when runtime errors are not watched
+   * @param {() => number | null} [options.realNow] Real seconds since the bridge started, or null when unknown
    */
-  constructor({ clock, view, project, engineVersion = null, send, end,
+  constructor({ clock, view, project, engineVersion = null, send, end, capture = () => null, errors = null,
+                realNow = () => null,
                 timers = { setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval } }) {
     this.#clock = clock;
     this.#view = view;
@@ -43,6 +53,9 @@ export class BridgeSession {
     this.#send = send;
     this.#end = end;
     this.#timers = timers;
+    this.#capture = capture;
+    this.#errors = errors;
+    this.#realNow = realNow;
   }
 
   /** The transport's endpoint facts: the token the core must present, and the lock owner. */
@@ -104,7 +117,7 @@ export class BridgeSession {
         }
         return;
       case "inspect":
-        this.#fail("internal", "no inspection source is attached", body.seq, false);
+        this.#inspect(body);
         return;
       default:
         this.#fail("invalid", `${type} is not supported by this bridge yet`, body.seq, false);
@@ -112,6 +125,11 @@ export class BridgeSession {
   }
 
   #observe(body) {
+    if (body.with_frame === true && this.#capture()?.selfTest !== "passed") {
+      this.#fail("invalid", "with_frame is not available: capture has no canvas or did not pass its self-test", body.seq, false);
+      return;
+    }
+    this.#withFrame = body.with_frame === true;
     if (body.mode === "once") {
       this.#send(this.#observation());
     } else if (body.mode === "subscribe") {
@@ -121,6 +139,23 @@ export class BridgeSession {
     } else {
       this.#stopStream();
     }
+  }
+
+  #inspect(body) {
+    const attached = this.#view();
+    if (body.stage !== "transforms") {
+      this.#fail("internal", `no ${body.stage} inspection source is attached`, body.seq, false);
+      return;
+    }
+    if (attached === null || attached.scene == null) {
+      this.#fail("internal", "no scene is attached", body.seq, false);
+      return;
+    }
+    const reading = inspectTransforms({
+      sceneId: attached.sceneId, scene: attached.scene, clock: this.#clock, realTimeS: this.#realNow(),
+      runtimeErrors: this.#errors?.snapshot() ?? null,
+    });
+    this.#send({ ...this.#envelope(), type: "inspection", stage: body.stage, in_reply_to: body.seq, ...reading });
   }
 
   #applyClock(body) {
@@ -159,8 +194,8 @@ export class BridgeSession {
       project: this.#project,
       input_backends: [],
       clock_control: true,
-      capture: false,
-      capture_self_test: "unknown",
+      capture: this.#capture() !== null,
+      capture_self_test: this.#capture()?.selfTest ?? "unknown",
       lock: { held: true, owner_pid: endpoint?.pid ?? null, port: endpoint?.port ?? null },
     };
   }
@@ -183,7 +218,7 @@ export class BridgeSession {
       frame: clock.frame,
       public: {},
       ui: null,
-      frame_ref: null,
+      frame_ref: this.#withFrame ? this.#capture()?.latestFrameRef ?? null : null,
       view,
       reader_errors: readerErrors,
     };

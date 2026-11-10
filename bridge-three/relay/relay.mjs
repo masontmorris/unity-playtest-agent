@@ -10,12 +10,14 @@
 //   relay -> page  {"relay": "endpoint", token, pid, port, project}  once the core listener is up
 //   relay -> page  {"relay": "open"} / {"relay": "close"}            a core connection began or ended
 //   page -> relay  {"relay": "end"}                                  close the core connection
+//   page -> relay  {"relay": "frame", name, jpeg_base64}             write one captured frame
+//   relay -> page  {"relay": "frame_written", name, path | error}    the frame's file, once complete
 //
 // Usage: node relay/relay.mjs --project <game project dir> [--ws-port N]
 // It prints one JSON line with the page URL parameter, then runs until interrupted.
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -26,9 +28,38 @@ import { acceptWebSocket } from "./websocket.mjs";
 export const PROTOCOL = "upa/1";
 const HOST = "127.0.0.1";
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
+const FRAME_NAME = /^f-\d{6,}\.jpg$/;
+// The Unity bridge's rolling window: 120 frames, 12 s at 10 Hz.
+const FRAME_WINDOW = 120;
 
 export function lockPath(project) {
   return join(project, "Temp", "playtest-bridge.lock");
+}
+
+export function framesPath(project) {
+  return join(project, "Temp", "playtest-bridge-frames");
+}
+
+function clearFrames(directory) {
+  rmSync(directory, { recursive: true, force: true });
+  mkdirSync(directory, { recursive: true });
+}
+
+/** Write one frame atomically and trim the window. Returns its path, or throws why it was not written. */
+function writeFrame(directory, name, jpegBase64) {
+  if (typeof name !== "string" || !FRAME_NAME.test(name)) throw new Error("frame name must look like f-NNNNNN.jpg");
+  if (typeof jpegBase64 !== "string") throw new Error("frame data is missing");
+  const bytes = Buffer.from(jpegBase64, "base64");
+  const complete = bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8
+    && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+  if (!complete) throw new Error("frame data is not a complete JPEG");
+  const path = join(directory, name);
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, bytes);
+  renameSync(temporary, path);
+  const frames = readdirSync(directory).filter((file) => FRAME_NAME.test(file)).sort();
+  for (const old of frames.slice(0, Math.max(0, frames.length - FRAME_WINDOW))) rmSync(join(directory, old), { force: true });
+  return path;
 }
 
 function writeLock(project, body) {
@@ -105,6 +136,7 @@ export async function startRelay({ project, wsPort = 0, log = () => {} }) {
 
   const attachPage = async (connection) => {
     page = connection;
+    clearFrames(framesPath(projectDir));
     tcp = createTcpServer(serveCore);
     await new Promise((done) => tcp.listen(0, HOST, done));
     const port = tcp.address().port;
@@ -139,6 +171,13 @@ export async function startRelay({ project, wsPort = 0, log = () => {} }) {
         }
         if (body !== null && typeof body === "object" && "relay" in body) {
           if (body.relay === "end") endCore();
+          else if (body.relay === "frame") {
+            try {
+              toPage({ relay: "frame_written", name: body.name, path: writeFrame(framesPath(projectDir), body.name, body.jpeg_base64) });
+            } catch (error) {
+              toPage({ relay: "frame_written", name: body.name, error: error.message });
+            }
+          }
           return;
         }
         core?.write(text + "\n");
