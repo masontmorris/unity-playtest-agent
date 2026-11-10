@@ -13,14 +13,16 @@ const REQUESTS = {
   observe: { mode: "string", with_frame: "boolean?", rate_hz: "number?" },
   clock: { op: "string", step_game_s: "number?", time_scale: "number?" },
   stop: { reason: "string" },
+  inspect: { stage: "string" },
 };
 
 const OBSERVE_MODES = ["subscribe", "once", "unsubscribe"];
 const CLOCK_OPS = ["pause", "resume", "step", "set_scale"];
 const STOP_REASONS = ["user", "reset", "scene_change", "disconnect", "error", "finish", "release"];
+const INSPECT_STAGES = ["inventory", "discovery", "transforms", "fields"];
 
 // Verbs this bridge recognises but does not serve yet.
-export const UNSUPPORTED = Object.freeze(["act", "place", "inspect"]);
+export const UNSUPPORTED = Object.freeze(["act", "place"]);
 
 export class ProtocolError extends Error {
   constructor(code, message, inReplyTo = null) {
@@ -94,6 +96,8 @@ export function readRequest(line) {
     require(body.time_scale == null || body.time_scale >= 0, "time_scale must be >= 0", seq);
   } else if (type === "stop") {
     require(STOP_REASONS.includes(body.reason), `unknown stop reason ${body.reason}`, seq);
+  } else if (type === "inspect") {
+    require(INSPECT_STAGES.includes(body.stage), `unknown inspect stage ${body.stage}`, seq);
   }
   return { type, body };
 }

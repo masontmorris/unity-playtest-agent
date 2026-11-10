@@ -34,7 +34,7 @@ import { installBridge } from "@playtest/bridge-three";
 
 const bridge = installBridge({ engineVersion: THREE.REVISION });
 // ... build the scene and camera ...
-bridge?.attach({ sceneId: "level-1", scene, camera });
+bridge?.attach({ sceneId: "level-1", scene, camera, canvas: renderer.domElement });
 renderer.setAnimationLoop(render);
 ```
 
@@ -58,19 +58,42 @@ game time exactly, in frames of `stepFrameS` (1/60 s by default). `clockMode: "s
 only when the core steps the clock. `setTimeout`, `setInterval` and `Date.now()` are not virtualised,
 so a game that times itself with them is not paused.
 
-## What v0 serves
+## What it serves
 
 | Verb | Status |
 |---|---|
-| `hello` / `status` | `engine: "three"`, `unity_version: null`, no input backends, no capture |
-| `observe` | Scene id, frame, game time, clock state, camera yaw and pitch. `public` is empty until preflight readers exist |
+| `hello` / `status` | `engine: "three"`, `unity_version: null`; `capture` once a canvas is attached, with its self-test result |
+| `observe` | Scene id, frame, game time, clock state, camera yaw and pitch, and with `with_frame` the newest written frame. `public` is empty until preflight readers exist |
 | `clock` | pause, resume, step, set_scale |
 | `stop` | Releases nothing, because this bridge applies no input yet |
-| `act`, `place` | Refused with `invalid` |
-| `inspect` | Refused with `internal`: there is no inspection source yet |
+| `inspect` | `transforms` only: every object in the attached scene with its world position and basis, and the runtime error monitor. Other stages are refused with `internal` |
+| `act`, `place` | Refused with `invalid` (`act` is #256) |
 
-Yaw and pitch follow the protocol's `ViewAngles` convention. A heading of 0 faces world −Z, a
-positive yaw turns right toward +X, and a positive pitch looks down.
+## Coordinates
+
+Every world position and direction the bridge reports is in the protocol's frame: x right, y up and
+z negated from three.js. That frame is left-handed, like the Unity bridge's, so the core's yaw formula
+`atan2(forward.x, forward.z)` turns positive to the right. An object's forward is its local +Z
+(three.js's `lookAt` convention) and its right is local −X. A camera looks down its local −Z, with
+local +X to its right. The camera's `ViewAngles` follow the same convention: a heading of 0 faces
+three.js −Z, a positive yaw turns right toward +X, and a positive pitch looks down. Positions are in
+`three_world_unit`, which is whatever one unit means in the game.
+
+## Frames
+
+With a canvas attached, the page grabs a frame right after a game frame's callbacks, in the same
+task, so the canvas still holds what the game drew. It grabs at most 10 a second, scales them to
+640 px wide, and sends each as a JPEG to the relay. The relay writes it atomically to
+`<project>/Temp/playtest-bridge-frames/f-NNNNNN.jpg`, keeps the newest 120 as the Unity bridge does,
+and reports the path back. `frame_ref` names only a frame the relay confirmed written. The capture
+self-test passes once the first frame is written and its pixels read back as something other than
+fully transparent, which is what an unreadable canvas gives.
+
+## Runtime errors
+
+The page's uncaught errors, unhandled rejections, `console.error` calls and errors thrown by frame
+callbacks are counted the way the Unity bridge counts error logs, and reported with each
+`transforms` inspection as `runtime_errors`.
 
 ## Tests
 
@@ -79,5 +102,6 @@ cd bridge-three && node --test     # unit tests and the relay end to end
 uv run pytest tests/test_bridge_three.py   # the production Python client against this bridge
 ```
 
-Both use `support/sim-page.mjs`: the real relay and page connector, with a timer-driven clock and a
-camera stand-in. They need Node 22 or later, and no browser or GPU.
+Both use `support/sim-page.mjs`: the real relay and page connector, with a timer-driven clock, a
+small scene of object stand-ins and a grabber that yields a fixed tiny JPEG. They need Node 22 or
+later, and no browser or GPU.

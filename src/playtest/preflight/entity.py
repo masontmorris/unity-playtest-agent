@@ -270,6 +270,11 @@ def resolve_viewpoints(analysis: dict[str, Any], discovery: dict[str, Any],
             "viewpoint_matches": matches}
 
 
+# One world unit of the engine that took the reading: the Unity bridge's, or the three.js bridge's, which reports
+# positions in the same left-handed frame.
+WORLD_UNITS = frozenset({"unity_world_unit", "three_world_unit"})
+
+
 def _complete(snapshot: Any, stage: str) -> dict[str, Any]:
     if snapshot.stage != stage or snapshot.errors:
         raise ValueError(f"{stage} inspection has errors or the wrong stage")
@@ -281,7 +286,7 @@ def _complete(snapshot: Any, stage: str) -> dict[str, Any]:
             raise ValueError(f"{stage} inspection has incomplete {name} coverage")
     if stage == "transforms":
         data = snapshot.data
-        if (data.get("position_space") != "world" or data.get("position_unit") != "unity_world_unit"
+        if (data.get("position_space") != "world" or data.get("position_unit") not in WORLD_UNITS
                 or data.get("position_order") != ["x", "y", "z"] or data.get("time_unit") != "seconds"):
             raise ValueError("transform coordinates or units are unknown")
         frame = data.get("frame")

@@ -1,8 +1,9 @@
 """The production client against the three.js bridge, end to end.
 
-Node runs the real relay and the real page connector with a simulated page (a timer-driven clock and
-a camera double), so this needs no browser and no GPU. The client finds the bridge through the
-project lock exactly as it finds the Unity bridge.
+Node runs the real relay and the real page connector with a simulated page (a timer-driven clock, a
+small scene of object doubles and a grabber that yields a fixed tiny JPEG), so this needs no browser
+and no GPU. The client finds the bridge through the project lock exactly as it finds the Unity
+bridge, and the runner's own readers consume its transforms and frames.
 """
 
 from __future__ import annotations
@@ -12,12 +13,15 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from playtest.contracts.bridge import Engine
 from playtest.core.bridge_client import BridgeClient
+from playtest.preflight.calibrate import _entity_snapshot
+from playtest.runner.game_view import BridgeView
 
 SIM_PAGE = Path(__file__).resolve().parents[1] / "bridge-three" / "support" / "sim-page.mjs"
 
@@ -59,7 +63,7 @@ def test_client_drives_the_three_bridge(sim_page):
             status = client.status
             assert status.engine is Engine.three
             assert status.unity_version is None
-            assert status.input_backends == [] and status.capture is False
+            assert status.input_backends == []
 
             first = await client.observe_once()
             assert first.scene == "sim" and first.playing
@@ -85,6 +89,39 @@ def test_client_drives_the_three_bridge(sim_page):
 
             stopped = await client.stop()
             assert stopped is not None and stopped.released == [] and stopped.release_verified
+        finally:
+            await client.aclose()
+
+    asyncio.run(main())
+
+
+def test_runner_readers_consume_three_transforms_and_frames(sim_page):
+    async def main():
+        started = datetime.now(timezone.utc) - timedelta(seconds=1)
+        client = await BridgeClient.connect_from_project(sim_page)
+        try:
+            reading = _entity_snapshot(await client.inspect("transforms"), "scene:sim::0")
+            assert reading["position"] == [1, 0.5, -2]
+            assert reading["basis_state"] == "present"
+            assert reading["yaw_deg"] == pytest.approx(180)
+            assert reading["runtime_errors"]["active"] is True and reading["runtime_errors"]["observed"] == 0
+
+            status = None
+            for _ in range(50):
+                status = await client.clock("resume")
+                if status.capture_self_test != "unknown":
+                    break
+                await asyncio.sleep(0.05)
+            assert status.capture is True and status.capture_self_test == "passed"
+
+            observation = await client.observe_once(with_frame=True)
+            frame = Path(observation.frame_ref)
+            assert frame.parent == sim_page / "Temp" / "playtest-bridge-frames"
+            assert frame.read_bytes().startswith(bytes([0xFF, 0xD8]))
+
+            sample = BridgeView(sim_page, status, started_utc=started).sample(observation)
+            assert sample.status == "sent", sample.statement
+            assert "32x16" in sample.statement
         finally:
             await client.aclose()
 
