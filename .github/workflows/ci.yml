@@ -20,6 +20,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
       - run: uv sync --locked
       - name: Tests (contracts, adherence, decisions, name-blind lint)
         run: uv run pytest
@@ -27,6 +30,17 @@ jobs:
         run: |
           uv run playtest-export-schemas
           git diff --exit-code schemas/
+
+  bridge-three:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: three.js bridge tests (no browser, no GPU)
+        working-directory: bridge-three
+        run: node --test
 
   ilscan:
     runs-on: ubuntu-latest

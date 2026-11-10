@@ -1,0 +1,22 @@
+{
+  "protocol": "upa/1",
+  "session": "s-1",
+  "seq": 1842,
+  "game_s": 61.25,
+  "wall_utc": "2026-10-26T18:00:00Z",
+  "type": "status",
+  "bridge_version": "0.1.0",
+  "unity_version": null,
+  "project": "example-three",
+  "input_backends": [],
+  "clock_control": true,
+  "capture": false,
+  "capture_self_test": "unknown",
+  "lock": {
+    "held": true,
+    "owner_pid": 4242,
+    "port": 47011
+  },
+  "engine": "three",
+  "engine_version": "176"
+}

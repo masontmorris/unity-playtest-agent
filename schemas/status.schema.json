@@ -1,5 +1,13 @@
 {
   "$defs": {
+    "Engine": {
+      "enum": [
+        "unity",
+        "three"
+      ],
+      "title": "Engine",
+      "type": "string"
+    },
     "InputBackend": {
       "enum": [
         "input_system",
@@ -72,6 +80,31 @@
       "title": "Clock Control",
       "type": "boolean"
     },
+    "engine": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Engine"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The engine the bridge runs in; null from a Unity bridge that predates the field"
+    },
+    "engine_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The engine's own version string, as the engine reports it; null when unmeasured",
+      "title": "Engine Version"
+    },
     "game_s": {
       "anyOf": [
         {
@@ -123,8 +156,16 @@
       "type": "string"
     },
     "unity_version": {
-      "title": "Unity Version",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Unity's version; null exactly when the engine is not Unity",
+      "title": "Unity Version"
     },
     "wall_utc": {
       "format": "date-time",
