@@ -83,3 +83,40 @@ The first six sessions were inconclusive by the reading above. This extension ad
 - **Attrition:** as before. A session killed by tooling before S1's first decision is set aside and played again. Any other session without `run.json` is `unknown`.
 - **Cost:** the same per-session envelope. Meta Standard costs at most $0.57 a session and $3.40 for six, with about $1.50 expected from the first six. The Modal A10 costs about $1.32 an hour, about $2.60 over two hours. The approval file still applies; its estimates are valid until 11 November, 21:44 UTC.
 - **Data:** as before. Everything stays in this repository's ignored `runs/` and nothing goes to decision-lab.
+
+## Extension results
+
+The extension ran on 10 November 2026, 11:21 to 13:04, in the planned order, from this branch at `8fd999c`. All six sessions recorded `run.json`, with no attrition. The 3js builds paused their GPU work for the window.
+
+| Session | Decisions | `wait` | Longest run of `wait` | Distinct choices | Candidate findings |
+|---|---|---|---|---|---|
+| treatment 4 | 271 | 263 (97%) | 263 | 7 | none |
+| control 4 | 228 | 106 (46%) | 101 | 11 | none |
+| control 5 | 279 | 112 (40%) | 93 | 14 | none |
+| treatment 5 | 276 | 81 (29%) | 24 | 11 | none |
+| treatment 6 | 197 | 53 (27%) | 1 | 14 | none |
+| control 6 | 195 | 153 (78%) | 135 | 10 | none |
+
+**Combined reading, twelve sessions: inconclusive.**
+
+| Arm | `wait` shares | Median |
+|---|---|---|
+| Control | 20, 40, 46, 67, 68, 78% | 57% |
+| Treatment | 2, 12, 27, 29, 36, 97% | 28% |
+
+The one-sided exact Mann-Whitney test gives U = 9 (p = 0.090), above the U ≤ 7 bar. Because the treatment median is lower, "does not" doesn't apply either.
+
+**Extension alone: inconclusive.** Treatment 4 (97%) is above every control session, so the ranges overlap. The treatment median (29%) is below the control median (46%).
+
+**Secondary, runs of at least 50 `wait` choices:** 5 of 6 control sessions against 1 of 6 treatment sessions. This was not the primary metric, so it is reported and not claimed.
+
+What the extension shows:
+
+- **A treatment session can lock.** Treatment 4 chose `wait` on 263 decisions in a row, from turn 8 to the end. Its `recent` rows read `{"id": "wait", "result": "unmeasured", "s": null}` and no help was pending, so the setting had applied. The distribution was nearly flat over about 60 choices, with `wait` around 0.07 to 0.08.
+- **Writing `unmeasured` makes locks rarer, not impossible.** In decision-lab's synthetic experiment 2h, which used generic frames and no Unity data, the result word stopped mattering at 12 and 60 choices. At 60 choices d1-2B answered `wait` on 97% of generic frames before any row repeated. The live menu has about 60 choices.
+- **No extension session raised a candidate finding.** Across all twelve sessions, only control 1's `f-57` replayed (3 of 5).
+
+## Extension cost
+
+- **Meta Standard:** $1.39 for the six extension sessions. Over all twelve sessions the arms recorded $1.44 (control) and $1.41 (treatment).
+- **Modal:** the `d1-2b-s1` endpoint billed $2.19 from 16:00 to 18:00 UTC, which covers the extension and was reported through the 18:00 hour.
