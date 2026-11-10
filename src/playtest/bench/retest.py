@@ -205,10 +205,10 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
     validate_approval(approval, [arm])
     entries, repeated = schedule_for(corpus, seed)
     limit = approval["arms"][arm]
-    bound = replay._decimal(limit["per_call_max_usd"], "per-call bound")
+    bound = replay.arm_money(arm, limit["per_call_max_usd"], "per-call bound")
     if len(entries) > approval["max_calls"] or len(entries) > limit["max_calls"] \
-            or bound * len(entries) > replay._decimal(approval["max_cost_usd"], "overall limit") \
-            or bound * len(entries) > replay._decimal(limit["max_cost_usd"], "arm limit"):
+            or bound * len(entries) > replay.overall_cap(approval) \
+            or bound * len(entries) > replay.arm_money(arm, limit["max_cost_usd"], "arm limit"):
         raise ValueError("the approved call or cost envelope is smaller than the schedule")
     design = Path(__file__).resolve().parents[3] / "docs" / "design" / "s1-bench.md"
     plan = {"version": 1, "protocol": "shuffled-retest", "arm": arm, "corpus_sha256": corpus_sha,
@@ -249,8 +249,8 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
             raise ValueError(f"{arm} pricing validity expired during the run; stopped before another call")
         total_bound = sum((Decimal(str(row["reserved_usd"])) for row in rows), Decimal(0))
         if len(rows) >= approval["max_calls"] or len(rows) >= limit["max_calls"] \
-                or total_bound + bound > replay._decimal(approval["max_cost_usd"], "overall limit") \
-                or total_bound + bound > replay._decimal(limit["max_cost_usd"], "arm limit"):
+                or total_bound + bound > replay.overall_cap(approval) \
+                or total_bound + bound > replay.arm_money(arm, limit["max_cost_usd"], "arm limit"):
             raise ValueError("the approved call or cost envelope would be exceeded")
         row = {"slot": slot, "phase": phase, "arm": arm, "frame_id": frame["id"], "repeat": repeat,
                "schedule_index": index, "payload_sha256": frame["payload_sha256"], "request_sha256": request_sha,

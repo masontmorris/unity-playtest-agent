@@ -18,7 +18,10 @@ IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1
                    "liquid-d1-ultra": "images", "meta-muse-spark-s1": "meta",
                    # Our Modal server takes the Liquid transport and rewrites it for Flide exactly as the
                    # 2 November image-correctness check verified (scripts/modal/mammoth_flide.py).
-                   "mammoth-1-modal": "images"}
+                   "mammoth-1-modal": "images",
+                   # The local shim decodes each data URL into the picture d1-2B's `system_one` takes as media
+                   # (scripts/s1/d1_local_server.py). Exercised against a stand-in model only, not yet the real one.
+                   "d1-2b-local": "images"}
 IMAGE_TOKENS = {"messages": 1000, "images": 1400, "meta": 1400}  # fallback estimate
 
 

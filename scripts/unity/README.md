@@ -500,7 +500,7 @@ powershell -ExecutionPolicy Bypass -File scripts/unity/run-session.ps1 `
 The call cap and the approval file are required: no paid call starts without them, and every call
 reserves its row in `<OutputDirectory>/calls` before it is sent. S1 runs on `-S1Arm`, by default
 `liquid-d1-ultra` (#100). Its credentials are checked by name only: `LIQUID_API_KEY` and `LIQUID_D1.1_URL` for the
-Liquid arms, and `BASETEN_API_KEY` for `mammoth-1` and `elephant-1`. The output directory must be new and outside the game, and the game must be wired to this
+Liquid arms, `BASETEN_API_KEY` for `mammoth-1` and `elephant-1`, and `D1_LOCAL_TOKEN` and `D1_LOCAL_URL` for `d1-2b-local` (the free loopback shim, `scripts/s1/d1_local_server.py`; its approval bounds are 0). The output directory must be new and outside the game, and the game must be wired to this
 checkout. The summary is `run.json` and the trace is `trace.jsonl` beside it; both stay local. The run
 ends when S1 chooses `finish`, the wall limit passes (default 600 s, at most 1500), or three
 consecutive S1 calls give no usable answer (`-MaxProviderFailures`); it then stops and verifies that
