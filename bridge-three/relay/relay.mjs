@@ -16,8 +16,8 @@
 // Usage: node relay/relay.mjs --project <game project dir> [--ws-port N]
 // It prints one JSON line with the page URL parameter, then runs until interrupted.
 
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -81,8 +81,17 @@ function busyLine() {
  * Start the relay. Resolves to `{ pageUrl, wsPort, close() }`. `pageUrl` is the WebSocket URL the
  * page connects to, including the per-run page key.
  */
-export async function startRelay({ project, wsPort = 0, log = () => {} }) {
+export async function startRelay({ project, wsPort = 0, catalogPath = null, catalog = null, log = () => {} }) {
   const projectDir = resolve(project);
+  let pinnedCatalog = catalog;
+  let catalogSha256 = null;
+  if (catalogPath) {
+    const bytes = readFileSync(resolve(catalogPath));
+    pinnedCatalog = JSON.parse(bytes.toString("utf8"));
+    catalogSha256 = createHash("sha256").update(bytes).digest("hex");
+  } else if (catalog !== null) {
+    catalogSha256 = createHash("sha256").update(JSON.stringify(catalog)).digest("hex");
+  }
   const pageKey = randomBytes(18).toString("base64url");
   let page = null;
   let core = null;
@@ -142,7 +151,8 @@ export async function startRelay({ project, wsPort = 0, log = () => {} }) {
     const port = tcp.address().port;
     const token = randomBytes(24).toString("base64url");
     writeLock(projectDir, { protocol: PROTOCOL, pid: process.pid, port, token, started_utc: new Date().toISOString() });
-    toPage({ relay: "endpoint", token, pid: process.pid, port, project: basename(projectDir) });
+    toPage({ relay: "endpoint", token, pid: process.pid, port, project: basename(projectDir),
+      ...(pinnedCatalog === null ? {} : { catalog: pinnedCatalog, catalog_sha256: catalogSha256 }) });
     log(`page attached; core listener on ${HOST}:${port}`);
   };
 
@@ -209,6 +219,7 @@ function parseArguments(argv) {
   const options = {};
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--project") options.project = argv[++i];
+    else if (argv[i] === "--catalog") options.catalogPath = argv[++i];
     else if (argv[i] === "--ws-port") options.wsPort = Number(argv[++i]);
     else throw new Error(`unknown argument ${argv[i]}`);
   }

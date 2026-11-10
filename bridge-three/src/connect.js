@@ -11,7 +11,8 @@ import { BridgeSession } from "./session.js";
  * starts once it returns one. `realNow` is real milliseconds, never the page's virtualised clock.
  */
 export function connectPage({ url, clock, view, engineVersion = null, WebSocketImpl = globalThis.WebSocket, timers,
-                              grabber = () => null, errors = null, realNow = () => Date.now() }) {
+                              grabber = () => null, errors = null, realNow = () => Date.now(),
+                              target = globalThis, inputTargets = {} }) {
   const socket = new WebSocketImpl(url);
   const send = (message) => {
     if (socket.readyState === 1) socket.send(JSON.stringify(message));
@@ -27,8 +28,9 @@ export function connectPage({ url, clock, view, engineVersion = null, WebSocketI
     if (socket.readyState === 1) capture.afterFrame();
   });
   let session = null;
-  const create = (project) => new BridgeSession({
-    clock, view, project, engineVersion, send, end: () => send({ relay: "end" }), timers,
+  const create = (relay) => new BridgeSession({
+    clock, view, project: relay.project, catalog: relay.catalog ?? null, catalogSha256: relay.catalog_sha256 ?? null,
+    engineVersion, send, end: () => send({ relay: "end" }), timers, inputTargets: { target, ...inputTargets },
     capture: () => capture, errors, realNow: () => (realNow() - started) / 1000,
   });
 
@@ -46,7 +48,7 @@ export function connectPage({ url, clock, view, engineVersion = null, WebSocketI
     if (relay === null) {
       session?.receive(text);
     } else if (relay.relay === "endpoint") {
-      session = create(relay.project);
+      session = create(relay);
       session.advertise(relay);
     } else if (relay.relay === "close") {
       session?.disconnected();

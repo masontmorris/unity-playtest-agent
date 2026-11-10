@@ -139,12 +139,13 @@ test("unknown members are refused rather than ignored", () => {
   assert.match(h.last().message, /unknown member extra/);
 });
 
-test("act and place are refused without closing; inspect has no source", () => {
+test("unknown acts are rejected as data and place stays refused; inspect has no source", () => {
   const h = harness();
   h.session.receive(hello());
-  h.session.receive(line("act", { action: "anything" }));
+  h.session.receive(line("act", { action_id: "x", choice_id: "c", action: "anything", params: {}, based_on_seq: 0, max_age_s: 1, depends_on: [], lease_s: null }));
+  assert.deepEqual([h.last().status, h.last().reject_reason], ["rejected", "unknown_action"]);
+  h.session.receive(line("place", {}));
   assert.equal(h.last().code, "invalid");
-  assert.equal(h.last().in_reply_to, seq);
   h.session.receive(line("inspect", { stage: "inventory" }));
   assert.equal(h.last().code, "internal");
   assert.equal(h.ended, 0);

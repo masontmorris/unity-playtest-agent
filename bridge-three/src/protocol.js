@@ -14,6 +14,7 @@ const REQUESTS = {
   clock: { op: "string", step_game_s: "number?", time_scale: "number?" },
   stop: { reason: "string" },
   inspect: { stage: "string" },
+  act: { action_id: "string", choice_id: "string", action: "string", params: "object", based_on_seq: "number", max_age_s: "number", depends_on: "array", lease_s: "number?" },
 };
 
 const OBSERVE_MODES = ["subscribe", "once", "unsubscribe"];
@@ -22,7 +23,7 @@ const STOP_REASONS = ["user", "reset", "scene_change", "disconnect", "error", "f
 const INSPECT_STAGES = ["inventory", "discovery", "transforms", "fields"];
 
 // Verbs this bridge recognises but does not serve yet.
-export const UNSUPPORTED = Object.freeze(["act", "place"]);
+export const UNSUPPORTED = Object.freeze(["place"]);
 
 export class ProtocolError extends Error {
   constructor(code, message, inReplyTo = null) {
@@ -37,6 +38,8 @@ function typeOk(value, kind) {
   if (value === undefined || value === null) return optional;
   const base = optional ? kind.slice(0, -1) : kind;
   if (base === "number") return typeof value === "number" && Number.isFinite(value);
+  if (base === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (base === "array") return Array.isArray(value);
   return typeof value === base;
 }
 
@@ -98,6 +101,12 @@ export function readRequest(line) {
     require(STOP_REASONS.includes(body.reason), `unknown stop reason ${body.reason}`, seq);
   } else if (type === "inspect") {
     require(INSPECT_STAGES.includes(body.stage), `unknown inspect stage ${body.stage}`, seq);
+  } else if (type === "act") {
+    require(body.action_id.length > 0 && body.action.length > 0, "act ids and action must be non-empty", seq);
+    require(Number.isInteger(body.based_on_seq) && body.based_on_seq >= 0, "based_on_seq must be an integer >= 0", seq);
+    require(body.max_age_s > 0, "max_age_s must be > 0", seq);
+    require(body.lease_s == null || body.lease_s > 0, "lease_s must be > 0", seq);
+    require(body.depends_on.every((item) => typeof item === "string"), "depends_on must contain strings", seq);
   }
   return { type, body };
 }
