@@ -30,7 +30,12 @@ from playtest.core.context import canonical
 # Flide server on Modal (scripts/modal/mammoth_flide.py): its endpoint variable holds the server's base URL,
 # and a Modal proxy token (ID and secret) authenticates it. `d1-2b-local` is the open-weights d1-2B on this PC
 # behind scripts/s1/d1_local_server.py: its endpoint variable holds the shim's loopback base URL and its key
-# variable a bearer token. It bills nothing, so its approval bounds are 0 (see `arm_money`).
+# variable a bearer token. It bills nothing, so its approval bounds are 0 (see `arm_money`). `modal-d1-2b` is
+# the same model on Modal (scripts/modal/d1_2b.py), authenticated by the same workspace proxy token as
+# mammoth-1-modal.
+# `local-d1-2b` is the same model on this machine behind scripts/local/d1_server.py, which empties
+# the CUDA cache around each request and runs d1's unfused attention 1024 queries at a time on a
+# Windows build. It bills nothing. `modal-d1-2b` serves that server's model on Modal.
 ARMS = {
     "mammoth-1": ("decision-models/baseten-mammoth-27b-latest", "BASETEN_API_KEY", None),
     "elephant-1": ("decision-models/baseten-elephant-9b-latest", "BASETEN_API_KEY", None),
@@ -39,9 +44,11 @@ ARMS = {
     "meta-muse-spark-s1": ("muse-spark-1.3", "META_API_KEY", None),
     "mammoth-1-modal": ("mammoth-1", "MODAL_MAMMOTH_TOKEN_ID", "MODAL_MAMMOTH_URL"),
     "d1-2b-local": ("d1-2b", "D1_LOCAL_TOKEN", "D1_LOCAL_URL"),
+    "modal-d1-2b": ("d1-2b", "MODAL_MAMMOTH_TOKEN_ID", "MODAL_D1_2B_URL"),
+    "local-d1-2b": ("d1-2b", "LOCAL_D1_KEY", "LOCAL_D1_URL"),
 }
 BASETEN_URL = "https://inference.baseten.co/v1/systemone"
-MODAL_ARMS = frozenset({"mammoth-1-modal"})
+MODAL_ARMS = frozenset({"mammoth-1-modal", "modal-d1-2b"})
 MODAL_SECRET = "MODAL_MAMMOTH_TOKEN_SECRET"
 LOCAL_ARMS = frozenset({"d1-2b-local"})
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -81,7 +88,7 @@ def provider_of(arm: str) -> str:
         return "meta"
     if arm in MODAL_ARMS:
         return "modal"
-    if arm in LOCAL_ARMS:
+    if arm in LOCAL_ARMS or arm == "local-d1-2b":
         return "local"
     return "liquid" if arm.startswith("liquid-") else "baseten"
 # A send takes the arm and either a body to serialize canonically or the exact request text to post

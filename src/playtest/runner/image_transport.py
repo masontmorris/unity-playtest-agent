@@ -21,7 +21,9 @@ IMAGE_TRANSPORT = {"mammoth-1": "messages", "elephant-1": "messages", "liquid-d1
                    "mammoth-1-modal": "images",
                    # The local shim decodes each data URL into the picture d1-2B's `system_one` takes as media
                    # (scripts/s1/d1_local_server.py). Exercised against a stand-in model only, not yet the real one.
-                   "d1-2b-local": "images"}
+                   "d1-2b-local": "images", "modal-d1-2b": "images",
+                   # The local d1-2B server decodes `images[0]` as the one picture of the state, as Liquid does.
+                   "local-d1-2b": "images"}
 IMAGE_TOKENS = {"messages": 1000, "images": 1400, "meta": 1400}  # fallback estimate
 
 
