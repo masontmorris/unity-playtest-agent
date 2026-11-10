@@ -45,7 +45,8 @@ observation carries one, a changed `session` id.
 report, and it keeps the last six executed choices with the duration each measurably took and the result it
 measurably had — an option's own `terminated_by` and `duration_s`, a plain action's or skill's verdict from
 the same rule the options memory files, the applied hold the bridge reported, and `wait`/`finished` (or the
-turn's own measured outcome) for the choices that send no input. Unknown stays `unmeasured`. Nothing is
+turn's own measured outcome) for the choices that send no input. With `wait_result="unmeasured"` a wait's
+result is `unmeasured` instead, since nothing measured it. Unknown stays `unmeasured`. Nothing is
 ranked, summarised or recommended, and the adapter can be run without ever being told a turn.
 
 `contingent` is opt-in, off by default, and needs the compact menu, whose request asks `if_blocked` and
@@ -228,15 +229,16 @@ def _compact_rules(value: str | Sequence[str] | None) -> tuple[state_codec.Rule,
 
 
 _PLAIN_KINDS = (ChoiceKind.action, ChoiceKind.skill)
+WAIT_RESULTS = ("wait", menu.UNMEASURED)  # what a wait's `recent` row states as its result
 
 
-def _recent_entry(report: Any, primitives: Any = None) -> dict[str, Any] | None:
+def _recent_entry(report: Any, primitives: Any = None, wait_result: str = "wait") -> dict[str, Any] | None:
     """One finished turn as a `recent` entry: the executed choice, its measured duration and measured result.
 
     An option states its own `duration_s` and `terminated_by`. A plain action or skill states the verdict the
     options memory files for it, from the same rule (`playtest.runner.session.choice_outcome`) and the same
-    applied hold. A wait says `wait` and a finish says `finished`, whatever the turn reports for the rest of
-    those kinds. A rejected input ran nothing, so it is `rejected` at the id the turn selected. Anything the
+    applied hold. A wait says `wait_result` (`wait` unless configured `unmeasured`) and a finish says `finished`,
+    whatever the turn reports for the rest of those kinds. A rejected input ran nothing, so it is `rejected` at the id the turn selected. Anything the
     turn did not measure is `None` (duration) or `unmeasured` (result), never zero or a success.
     """
     record, choice = getattr(report, "record", None), getattr(report, "selected", None)
@@ -270,7 +272,7 @@ def _recent_entry(report: Any, primitives: Any = None) -> dict[str, Any] | None:
             entry["goal_outcome"] = None
         return entry
     if kind is ChoiceKind.wait:
-        return _entry(record.effective_choice, None, "wait")
+        return _entry(record.effective_choice, None, wait_result)
     return _entry(record.effective_choice, None, getattr(record.outcome, "value", record.outcome))
 
 
@@ -346,7 +348,11 @@ class SystemOneS1:
         contingent: bool = False,
         requests_dir: Path | str | None = None,
         hold_met_directive: bool = False,
+        wait_result: str = "wait",
     ) -> None:
+        if wait_result not in WAIT_RESULTS:
+            raise ValueError(f"wait_result must be one of {', '.join(WAIT_RESULTS)}")
+        self._wait_result = wait_result
         if pending_question not in ("follow_up", "batched"):
             raise ValueError("unknown pending_question mode")
         if pending_question == "batched" and arm == "meta-muse-spark-s1":
@@ -644,7 +650,7 @@ class SystemOneS1:
                 self._recent = [*self._recent, done][-menu.RECENT_LIMIT:]
         if getattr(report, "option_running", False):
             return  # started or kept going in the background: its measured outcome is filed when collected
-        entry = _recent_entry(report, primitives)
+        entry = _recent_entry(report, primitives, self._wait_result)
         if entry is not None:
             self._recent = [*self._recent, entry][-menu.RECENT_LIMIT:]
 

@@ -144,6 +144,31 @@ def test_recent_carries_the_six_newest_turns_with_what_each_measured(tmp_path: P
     assert "`recent` lists the last choices and what each measurably did." in menu.MENU_INSTRUCTIONS
 
 
+def test_an_unmeasured_wait_result_changes_only_the_wait_rows(tmp_path: Path):
+    def rows(path: Path, **options: Any) -> list[dict[str, Any]]:
+        path.mkdir()
+        port, send = adapter(path, lambda body: (200, {"answers": {
+            "next_action": {"type": "choice", "choice": "c1"}}}, 10.0, None), **options)
+        for report in (action_report(0, "c1", [0.6, 0.0, 0.0]), wait_report(1),
+                       option_report(2, "traverse+x", "blocked", 0.75), wait_report(3), finish_report(4)):
+            port.note_turn(report, PRIMITIVES)
+        decide(port, context())
+        return send.bodies[0]["state"]["recent"]
+
+    default, unmeasured = rows(tmp_path / "default"), rows(tmp_path / "unmeasured", wait_result="unmeasured")
+    assert [row["result"] for row in default] == ["unmeasured", "wait", "blocked", "wait", "finished"]
+    assert [row["result"] for row in unmeasured] == ["unmeasured", "unmeasured", "blocked", "unmeasured", "finished"]
+    for before, after in zip(default, unmeasured):
+        assert {k: v for k, v in before.items() if k != "result"} == {k: v for k, v in after.items() if k != "result"}
+        if before["id"] != "w":
+            assert before == after
+
+
+def test_a_wait_result_outside_the_two_known_values_is_refused(tmp_path: Path):
+    with pytest.raises(ValueError, match="wait_result"):
+        adapter(tmp_path, wait_result="waited")
+
+
 def test_an_option_states_its_own_termination_and_duration(tmp_path: Path):
     port, send = adapter(tmp_path, lambda body: (200, {"answers": {
         "next_action": {"type": "choice", "choice": "c1"}}}, 10.0, None))

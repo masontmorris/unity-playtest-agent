@@ -251,6 +251,10 @@ def _parser() -> argparse.ArgumentParser:
                         default=_env("UPA_RUN_HOLD_MET_DIRECTIVE", switch, False),
                         help="keep a directive whose setpoint was met in S1's context, marked met, until its own "
                              "deadline (opt in; also UPA_RUN_HOLD_MET_DIRECTIVE)")
+    parser.add_argument("--s1-wait-result", choices=("wait", "unmeasured"),
+                        default=_env("UPA_S1_WAIT_RESULT", str, "wait"),
+                        help="the result a wait's row states in the compact menu's `recent`: wait (default) or "
+                             "unmeasured, since nothing measures a wait (also UPA_S1_WAIT_RESULT)")
     parser.add_argument("--keep-help-across-restart", action="store_true",
                         default=_env("UPA_RUN_KEEP_HELP_ACROSS_RESTART", switch, False),
                         help="keep S1's open help request through a restart into the same scene instead of "
@@ -541,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
             plan["frontier_advice"] = True
         if args.hold_met_directive:
             plan["hold_met_directive"] = True
+        if args.s1_wait_result != "wait":
+            plan["s1_wait_result"] = args.s1_wait_result
         if args.decide_during_options:
             plan["decide_during_options"] = True
         if args.press_tests:
@@ -818,7 +824,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                           game_view=args.s1_game_view, layout=args.s1_layout, instructions=instructions,
                           compact_state=args.s1_compact_state, pending_question=args.s1_pending_question,
                           s1_context=args.s1_context, menu_memory=memory, contingent=args.contingent,
-                          requests_dir=run_dir / "requests" / "s1", hold_met_directive=args.hold_met_directive)
+                          requests_dir=run_dir / "requests" / "s1", hold_met_directive=args.hold_met_directive,
+                          wait_result=args.s1_wait_result)
         status = client.status
         view = (BridgeView(project, status, started_utc=started_utc, generation=generation)
                 if args.s1_game_view else None)
