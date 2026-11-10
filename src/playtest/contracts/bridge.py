@@ -25,6 +25,7 @@ from .common import ClockMode, Envelope, Strict
 class InputBackend(str, Enum):
     input_system = "input_system"
     legacy = "legacy"
+    dom = "dom"
 
 
 class Hello(Envelope):
