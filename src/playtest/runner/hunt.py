@@ -62,7 +62,7 @@ SESSION_FLAGS = ("-RecordFrames", "-S1GameView", "-CoverageFacts", "-PatternFact
                  "-Contingent", "-PacingBurst", "0.5", "-MeasureGuards", "-PressReadings", "-NoFinish")
 DEFAULTS = {"scene": None, "max_age_s": 1.0, "point_moves": False, "wall_limit_s": 600, "max_calls": 600,
             "max_frontier_calls": 12, "frontier_model": "muse-spark-1.3", "sessions": 3, "attempts": 5,
-            "prompt": None, "s1_arm": "liquid-d1-ultra"}
+            "prompt": None, "s1_arm": "liquid-d1-ultra", "s1_wait_result": "wait"}
 PROMPT_LIMIT = 2000
 REQUIRED = ("project", "ref", "entity", "calibration", "manifest", "discovery", "approval")
 
@@ -84,6 +84,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if prompt is not None and (not isinstance(prompt, str) or len(prompt) > PROMPT_LIMIT):
         raise HuntError(f"prompt must be text of at most {PROMPT_LIMIT} characters")
     config["prompt"] = prompt.strip() or None if isinstance(prompt, str) else None
+    if config["s1_wait_result"] not in ("wait", "unmeasured"):
+        raise HuntError("s1_wait_result must be wait or unmeasured")
     for key in ("entity", "calibration", "manifest", "discovery", "approval"):
         resolved = _path(config[key])
         if not resolved.is_file():
@@ -255,7 +257,8 @@ def session_step(config: Mapping[str, Any], out: Path, number: int, objective: P
         raise HuntError(f"{folder} exists without run.json; move it aside to play it again")
     say(f"session {number}: live, up to {config['wall_limit_s']} s")
     clear_stale_lock(Path(config["project"]), say)
-    child = {**env, **SESSION_ENV, "UPA_RUN_MEMORY_DIR": str(out / "memory")}
+    child = {**env, **SESSION_ENV, "UPA_RUN_MEMORY_DIR": str(out / "memory"),
+             "UPA_S1_WAIT_RESULT": config.get("s1_wait_result", DEFAULTS["s1_wait_result"])}
     code = _run(_pwsh("run-session.ps1", *_base(config, folder), "-MaxCalls", str(config["max_calls"]),
                       "-WallLimitSeconds", str(config["wall_limit_s"]), "-MaxAgeSeconds", str(config["max_age_s"]),
                       "-TokensPerMinute", "100000000", "-ObjectivePath", str(objective),
