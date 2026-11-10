@@ -23,8 +23,10 @@ S1 decides when to escalate, the frontier decides what to file, and code only me
 
 The config is a JSON object: project, ref (the branch the project must be on), entity, calibration, manifest,
 discovery, approval, and optionally scene, max_age_s, point_moves, wall_limit_s, max_calls, max_frontier_calls,
-frontier_model, sessions, attempts, prompt (what the developer asked this playtest to look at). Relative paths are relative to the repository. Credentials are read from the
-repository's `.env` by name and passed to the child processes only; they are never printed or written.
+frontier_model, sessions, attempts, prompt (what the developer asked this playtest to look at), s1_arm (S1's
+model, one of replay.ARMS; default liquid-d1-ultra). Relative paths are relative to the repository. Credentials
+are read by name from the repository's `.env`, else the environment, and passed to the child processes only;
+they are never printed or written.
 """
 
 from __future__ import annotations
@@ -38,7 +40,8 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[3]
-CREDENTIALS = ("LIQUID_API_KEY", "LIQUID_D1.1_URL", "META_API_KEY")
+FRONTIER_CREDENTIALS = ("META_API_KEY",)
+CREDENTIALS = ("LIQUID_API_KEY", "LIQUID_D1.1_URL", *FRONTIER_CREDENTIALS)  # the default S1 arm's, and the frontier's
 PLAYTEST = (
     "Then playtest the rest of the session as usual: Playtest the level for the whole session using only the offered "
     "choices, and look for behaviour that is wrong. First collect what you can reach near the start. Then try every "
@@ -59,7 +62,7 @@ SESSION_FLAGS = ("-RecordFrames", "-S1GameView", "-CoverageFacts", "-PatternFact
                  "-Contingent", "-PacingBurst", "0.5", "-MeasureGuards", "-PressReadings", "-NoFinish")
 DEFAULTS = {"scene": None, "max_age_s": 1.0, "point_moves": False, "wall_limit_s": 600, "max_calls": 600,
             "max_frontier_calls": 12, "frontier_model": "muse-spark-1.3", "sessions": 3, "attempts": 5,
-            "prompt": None}
+            "prompt": None, "s1_arm": "liquid-d1-ultra", "s1_wait_result": "wait"}
 PROMPT_LIMIT = 2000
 REQUIRED = ("project", "ref", "entity", "calibration", "manifest", "discovery", "approval")
 
@@ -81,6 +84,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if prompt is not None and (not isinstance(prompt, str) or len(prompt) > PROMPT_LIMIT):
         raise HuntError(f"prompt must be text of at most {PROMPT_LIMIT} characters")
     config["prompt"] = prompt.strip() or None if isinstance(prompt, str) else None
+    if config["s1_wait_result"] not in ("wait", "unmeasured"):
+        raise HuntError("s1_wait_result must be wait or unmeasured")
     for key in ("entity", "calibration", "manifest", "discovery", "approval"):
         resolved = _path(config[key])
         if not resolved.is_file():
@@ -128,14 +133,24 @@ def clear_stale_lock(project: Path, say) -> None:
     say(f"removed a stale Unity lock no running process held: {lock}")
 
 
-def credentials() -> dict[str, str]:
-    from dotenv import dotenv_values
+def credentials(s1_arm: str = DEFAULTS["s1_arm"]) -> dict[str, str]:
+    """The frontier's key and the S1 arm's own variables, from the repository's `.env`, else this process's
+    environment (a worktree has no `.env`). By name only: no value is printed."""
+    import os
 
-    values = dotenv_values(REPO / ".env")
-    missing = [name for name in CREDENTIALS if not values.get(name)]
+    from playtest.bench import replay
+
+    values: dict[str, str | None] = {}
+    if (REPO / ".env").is_file():
+        from dotenv import dotenv_values
+
+        values = dotenv_values(REPO / ".env")
+    names = (*FRONTIER_CREDENTIALS, *replay.credential_variables(s1_arm))
+    found = {name: values.get(name) or os.environ.get(name) for name in names}
+    missing = [name for name, value in found.items() if not value]
     if missing:
-        raise HuntError("missing required credential(s) in .env: " + ", ".join(missing))
-    return {name: str(values[name]) for name in CREDENTIALS}
+        raise HuntError("missing required credential(s) in .env or the environment: " + ", ".join(missing))
+    return {name: str(value) for name, value in found.items()}
 
 
 def _run(args: Sequence[str], log: Path, env: Mapping[str, str] | None = None) -> int:
@@ -157,7 +172,7 @@ def _base(config: Mapping[str, Any], output: Path) -> list[str]:
     args = ["-ProjectPath", config["project"], "-EntityPath", config["entity"],
             "-CalibrationPath", config["calibration"], "-ManifestPath", config["manifest"],
             "-ApprovalPath", config["approval"], "-OutputDirectory", str(output),
-            "-DiscoveryPath", config["discovery"]]
+            "-DiscoveryPath", config["discovery"], "-S1Arm", config["s1_arm"]]
     if config.get("scene"):
         args += ["-ScenePath", config["scene"]]
     if config.get("point_moves"):
@@ -242,7 +257,8 @@ def session_step(config: Mapping[str, Any], out: Path, number: int, objective: P
         raise HuntError(f"{folder} exists without run.json; move it aside to play it again")
     say(f"session {number}: live, up to {config['wall_limit_s']} s")
     clear_stale_lock(Path(config["project"]), say)
-    child = {**env, **SESSION_ENV, "UPA_RUN_MEMORY_DIR": str(out / "memory")}
+    child = {**env, **SESSION_ENV, "UPA_RUN_MEMORY_DIR": str(out / "memory"),
+             "UPA_S1_WAIT_RESULT": config.get("s1_wait_result", DEFAULTS["s1_wait_result"])}
     code = _run(_pwsh("run-session.ps1", *_base(config, folder), "-MaxCalls", str(config["max_calls"]),
                       "-WallLimitSeconds", str(config["wall_limit_s"]), "-MaxAgeSeconds", str(config["max_age_s"]),
                       "-TokensPerMinute", "100000000", "-ObjectivePath", str(objective),
@@ -348,7 +364,7 @@ def _cost(folder: Path) -> float:
 def report(config: Mapping[str, Any], out: Path, sessions: Sequence[Path], filed: Sequence[dict[str, Any]],
            scores: Mapping[str, Any]) -> str:
     lines = [f"# Hunt: {config.get('game') or config['project']} at {config['ref']}", ""]
-    lines.append(f"{len(sessions)} live session(s), {config['wall_limit_s']} s each; frontier "
+    lines.append(f"{len(sessions)} live session(s), {config['wall_limit_s']} s each; S1 {config['s1_arm']}; frontier "
                  f"{config['frontier_model']}; replays {config['attempts']} attempts each. Recorded cost "
                  f"${_cost(out):.2f}.")
     lines += ["", "## Findings the frontier filed", ""]
@@ -379,7 +395,7 @@ def hunt(config: Mapping[str, Any], out: Path, say=print) -> dict[str, Any]:
         raise HuntError(f"the project is on {on!r}, not {config['ref']!r}; check out the build under test first")
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.json").write_text(json.dumps(dict(config), indent=2) + "\n", encoding="utf-8", newline="\n")
-    env = credentials()
+    env = credentials(config["s1_arm"])
     guards = guards_step(config, out, env, say)
     every = predict_step(config, out, guards, "all", env, say)
     actions = predict_step(config, out, guards, "actions", env, say)

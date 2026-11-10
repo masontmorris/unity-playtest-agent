@@ -18,7 +18,9 @@ to the keyboard-only catalog the other bench modules use. -S1Arm picks S1's mode
 (default liquid-d1-ultra). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
 arms, LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms, and MODAL_MAMMOTH_TOKEN_ID,
 MODAL_MAMMOTH_TOKEN_SECRET and MODAL_MAMMOTH_URL for mammoth-1-modal (our Flide server on Modal), and
-D1_LOCAL_TOKEN and D1_LOCAL_URL for d1-2b-local (the loopback shim in scripts/s1/d1_local_server.py).
+D1_LOCAL_TOKEN and D1_LOCAL_URL for d1-2b-local (the loopback shim in scripts/s1/d1_local_server.py),
+LOCAL_D1_KEY and LOCAL_D1_URL for local-d1-2b (scripts/local/d1_server.py on this machine), and
+MODAL_MAMMOTH_TOKEN_ID, MODAL_MAMMOTH_TOKEN_SECRET and MODAL_D1_2B_URL for modal-d1-2b (d1-2B on Modal).
 The script checks them by name only and never prints them.
 
 No paid call starts without an approval file and a call cap (-MaxCalls). Every call reserves its row in
@@ -146,6 +148,8 @@ $s1Credentials = @{
     'meta-muse-spark-s1' = @('META_API_KEY')
     'mammoth-1-modal' = @('MODAL_MAMMOTH_TOKEN_ID', 'MODAL_MAMMOTH_URL', 'MODAL_MAMMOTH_TOKEN_SECRET')
     'd1-2b-local' = @('D1_LOCAL_TOKEN', 'D1_LOCAL_URL')
+    'modal-d1-2b' = @('MODAL_MAMMOTH_TOKEN_ID', 'MODAL_D1_2B_URL', 'MODAL_MAMMOTH_TOKEN_SECRET')
+    'local-d1-2b' = @('LOCAL_D1_KEY', 'LOCAL_D1_URL')
 }
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."
@@ -220,7 +224,7 @@ $controlDirectory = Join-Path $output 'control'
 New-Item -ItemType Directory -Path $controlDirectory | Out-Null
 $runId = [guid]::NewGuid().ToString('D')
 # Guards are measured before play, inside the host's lifetime: their time is added so the wall limit stays play time.
-$guardAllowanceS = if ($MeasureGuards) { 300 } else { 0 }
+$guardAllowanceS = if ($MeasureGuards) { 420 } else { 0 }  # measured 5.5-7.0 min (FPSKit, 2026-11-04 and -08)
 $hostDeadlineUtc = [DateTime]::UtcNow.AddSeconds($WallLimitSeconds + 180 + $guardAllowanceS)
 $sessionConfig = [ordered]@{
     version        = 1

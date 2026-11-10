@@ -34,9 +34,11 @@ class Steps:
 
     def __init__(self):
         self.calls: list[list[str]] = []
+        self.envs: list[dict] = []
 
     def __call__(self, args, log, env=None):
         self.calls.append(list(args))
+        self.envs.append(dict(env or {}))
         joined = " ".join(map(str, args))
         out = Path(args[args.index("-OutputDirectory") + 1]) if "-OutputDirectory" in args else None
         if "-GuardsOnly" in args:
@@ -66,7 +68,7 @@ def steps(monkeypatch):
     fake = Steps()
     monkeypatch.setattr(hunt, "_run", fake)
     monkeypatch.setattr(hunt, "project_ref", lambda project: "eval/x/all")
-    monkeypatch.setattr(hunt, "credentials", lambda: {"META_API_KEY": "k"})
+    monkeypatch.setattr(hunt, "credentials", lambda arm: {"META_API_KEY": "k"})
     scored = []
     monkeypatch.setattr(hunt, "scores_step", lambda *a: scored.append(a) or {
         "guards": {"scored": []}, "play": {"scored": []},
@@ -137,6 +139,22 @@ def test_a_hunt_refuses_a_project_on_another_branch_and_a_config_with_unknown_ke
     path.write_text(json.dumps({**json.loads((tmp_path / "config.json").read_text()), "wall": 5}), encoding="utf-8")
     with pytest.raises(hunt.HuntError, match="unknown keys wall"):
         hunt.load_config(path)
+
+
+def test_each_session_states_the_configured_wait_result_and_nothing_else_does(tmp_path, steps):
+    hunt.hunt(_config(tmp_path, s1_wait_result="unmeasured"), tmp_path / "out", say=lambda text: None)
+    sessions = [env for call, env in zip(steps.calls, steps.envs) if "run-session.ps1" in " ".join(map(str, call))
+                and "-GuardsOnly" not in call]
+    assert len(sessions) == 2 and all(env["UPA_S1_WAIT_RESULT"] == "unmeasured" for env in sessions)
+    others = [env for call, env in zip(steps.calls, steps.envs) if "-GuardsOnly" in call or "predict" in call]
+    assert others and not any("UPA_S1_WAIT_RESULT" in env for env in others)
+    assert json.loads((tmp_path / "out" / "config.json").read_text(encoding="utf-8"))["s1_wait_result"] == "unmeasured"
+
+
+def test_a_hunt_states_the_default_wait_result_and_refuses_an_unknown_one(tmp_path):
+    assert _config(tmp_path)["s1_wait_result"] == "wait"
+    with pytest.raises(hunt.HuntError, match="s1_wait_result"):
+        _config(tmp_path, s1_wait_result="waited")
 
 
 def test_a_finding_with_no_replay_check_is_reported_as_not_replayable(tmp_path, steps, monkeypatch):
