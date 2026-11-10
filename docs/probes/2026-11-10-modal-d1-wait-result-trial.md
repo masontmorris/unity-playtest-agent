@@ -46,7 +46,7 @@ Every session's frames, requests and traces are Unity-derived and stay in this r
 
 ## Results
 
-Run on 10 November 2026, 05:07 to 09:48, in the planned order. A seventh attempt, the first try at treatment session 1, was killed by the runner's two-hour job limit during setup, before S1's first decision. It is attrition from the trial's own tooling, set aside as `treatment/session-01.killed-0758`, and the session was played again. Each session ran 600 s of play on the Modal A10 with d1's fused attention.
+Run on 10 November 2026, 05:07 to 09:48, in the planned order, from branch `trial/modal-d1-wait-result-as-run` at `6946678`. That branch was built on `5104cbe`. This PR's branch carries the same changes rebased onto `main` at `b57ec24`, beside the `d1-2b-local` arm main gained meanwhile. The `local-d1-2b` server and the Modal endpoint the trial used are unchanged. A seventh attempt, the first try at treatment session 1, was killed by the runner's two-hour job limit during setup, before S1's first decision. It is attrition from the trial's own tooling, set aside as `treatment/session-01.killed-0758`, and the session was played again. Each session ran 600 s of play on the Modal A10 with d1's fused attention.
 
 | Session | Decisions | `wait` | Longest run of `wait` | Distinct choices | Candidate findings (replayed k/n) |
 |---|---|---|---|---|---|
