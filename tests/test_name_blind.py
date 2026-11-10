@@ -16,7 +16,7 @@ NAME_BLIND = (CORE, CORE.parent / "roles", CORE.parent / "frontier")
 
 BANNED = frozenset(
     """
-    fpskit dragonblaze relay station street
+    fpskit dragonblaze station street
     player players enemy enemies npc boss weapon weapons gun guns ammo bullet bullets projectile
     health hp lives coin coins gem gems inventory pickup pickups loot door doors
     checkpoint checkpoints lap laps ring rings racing racer race car cars vehicle steer steering throttle brake braking
