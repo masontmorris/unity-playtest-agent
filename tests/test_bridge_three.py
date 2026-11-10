@@ -18,12 +18,23 @@ from pathlib import Path
 
 import pytest
 
-from playtest.contracts.bridge import Engine
+from playtest.contracts.action_catalog import ActionDefinition, ActionStep, declaration_requirements, receipt_problems
+from playtest.contracts.bridge import Engine, ExecStatus, InputBackend
 from playtest.core.bridge_client import BridgeClient
 from playtest.preflight.calibrate import _entity_snapshot
 from playtest.runner.game_view import BridgeView
 
 SIM_PAGE = Path(__file__).resolve().parents[1] / "bridge-three" / "support" / "sim-page.mjs"
+CATALOG = {
+    "actions": {
+        "held": {"backend": "input_system", "inputs": [{"device": "Keyboard", "control": "a"}], "default_lease_s": 0.06},
+        "skill": {"backend": "input_system", "max_s": 0.2, "steps": [
+            {"inputs": [{"device": "Keyboard", "control": "b"}], "hold_s": 0.03, "wait_s": 0.04},
+            {"inputs": [{"device": "Keyboard", "control": "c"}], "hold_s": 0.03, "wait_s": 0.02},
+        ]},
+        "pointer": {"backend": "input_system", "inputs": [{"device": "Mouse", "control": "delta", "x": 0.5, "y": -0.25}], "default_lease_s": 0.02},
+    }
+}
 
 
 def _node() -> str:
@@ -37,8 +48,10 @@ def _node() -> str:
 
 @pytest.fixture
 def sim_page(tmp_path):
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(CATALOG), encoding="utf-8")
     process = subprocess.Popen(
-        [_node(), str(SIM_PAGE), "--project", str(tmp_path)],
+        [_node(), str(SIM_PAGE), "--project", str(tmp_path), "--catalog", str(catalog_path)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
     )
     try:
@@ -63,7 +76,7 @@ def test_client_drives_the_three_bridge(sim_page):
             status = client.status
             assert status.engine is Engine.three
             assert status.unity_version is None
-            assert status.input_backends == []
+            assert status.input_backends == [InputBackend.dom]
 
             first = await client.observe_once()
             assert first.scene == "sim" and first.playing
@@ -87,8 +100,29 @@ def test_client_drives_the_three_bridge(sim_page):
             resumed = await client.observe_once()
             assert resumed.game_s > stepped.game_s and not resumed.paused
 
+            cases = [
+                ("held", ActionDefinition(backend="input_system", inputs=[{"device": "Keyboard", "control": "a"}], default_lease_s=0.06)),
+                ("skill", ActionDefinition(backend="input_system", steps=[
+                    ActionStep(inputs=[{"device": "Keyboard", "control": "b"}], hold_s=0.03, wait_s=0.04),
+                    ActionStep(inputs=[{"device": "Keyboard", "control": "c"}], hold_s=0.03, wait_s=0.02),
+                ], max_s=0.2)),
+                ("pointer", ActionDefinition(backend="input_system", inputs=[{"device": "Mouse", "control": "delta", "x": 0.5, "y": -0.25}], default_lease_s=0.02)),
+            ]
+            for index, (name, declaration) in enumerate(cases):
+                based = await client.observe_once()
+                records = await client.act(action_id=f"act-{index}", choice_id="choice", action=name,
+                    based_on_seq=based.seq, max_age_s=2, params={}, depends_on=[])
+                terminal = records[-1]
+                assert terminal.status is ExecStatus.completed
+                assert terminal.validated_against_seq == based.seq
+                assert terminal.release_verified is True
+                problems = receipt_problems(declaration_requirements(declaration), terminal.applied_inputs,
+                    declared=declaration, applied_total_s=terminal.applied_duration_s,
+                    terminal_start_s=terminal.input_start_wall_s, terminal_end_s=terminal.input_end_wall_s)
+                assert problems == []
+
             stopped = await client.stop()
-            assert stopped is not None and stopped.released == [] and stopped.release_verified
+            assert stopped is not None and stopped.release_verified
         finally:
             await client.aclose()
 

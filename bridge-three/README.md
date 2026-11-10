@@ -40,6 +40,9 @@ renderer.setAnimationLoop(render);
 
 `installBridge` does nothing (it returns null) unless the page URL carries `?playtest=<relay url>`.
 Install it before the game starts its loop.
+By default, keyboard events target `document`, pointer movement targets `document`, and pointer
+buttons target the first canvas. Pass `inputTargets` to `installBridge` to set `keyboardTarget`,
+`pointerTarget`, or `canvas` explicitly.
 
 Start the relay with the game's project directory, then open the game with the printed URL as its
 `playtest` parameter:
@@ -49,6 +52,31 @@ node bridge-three/relay/relay.mjs --project path/to/game
 # {"playtest":"ws://127.0.0.1:53817/?key=..."}
 # open http://localhost:5173/?playtest=<that URL, URL-encoded>
 ```
+
+Pass `--catalog path/to/actions.json` to pin the page to an action catalog. The relay reads the JSON,
+computes its SHA-256, and sends both with the endpoint message. The page validates the catalog before
+it accepts actions. A missing catalog has no action names, so an act gets `unknown_action`.
+
+The catalog uses the same `ActionCatalog` shape as the Unity bridge:
+
+```json
+{
+  "actions": {
+    "move_left": {
+      "backend": "input_system",
+      "inputs": [{"device": "Keyboard", "control": "a"}],
+      "default_lease_s": 0.2
+    }
+  }
+}
+```
+
+`backend: "input_system"` selects the shared control vocabulary. This bridge delivers those controls
+as DOM events and a virtual standard gamepad. It does not interpret action names or change declared
+values. Keyboard and mouse release checks read the delivered state recorded by capture-phase event
+listeners. Gamepad release checks read the virtual gamepad state. `release_verified` means that this
+bridge observed its own delivered state return to neutral. It does not prove that the game handled an
+event or produced an effect.
 
 ## The clock
 
@@ -62,12 +90,13 @@ so a game that times itself with them is not paused.
 
 | Verb | Status |
 |---|---|
-| `hello` / `status` | `engine: "three"`, `unity_version: null`; `capture` once a canvas is attached, with its self-test result |
+| `hello` / `status` | `engine: "three"`, `unity_version: null`, the `dom` input backend; `capture` once a canvas is attached, with its self-test result |
 | `observe` | Scene id, frame, game time, clock state, camera yaw and pitch, and with `with_frame` the newest written frame. `public` is empty until preflight readers exist |
+| `act` | Runs the exact catalog action or skill. Holds, waits, leases and skill deadlines use wall time, so pausing the virtual clock does not keep an input held |
 | `clock` | pause, resume, step, set_scale |
-| `stop` | Releases nothing, because this bridge applies no input yet |
+| `stop` | Releases every held DOM input and reports whether the delivered state is neutral |
 | `inspect` | `transforms` only: every object in the attached scene with its world position and basis, and the runtime error monitor. Other stages are refused with `internal` |
-| `act`, `place` | Refused with `invalid` (`act` is #256) |
+| `place` | Refused with `invalid` |
 
 ## Coordinates
 

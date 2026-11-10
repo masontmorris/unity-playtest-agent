@@ -33,6 +33,7 @@ export function installBridge({
   clockMode = "realtime",
   stepFrameS = 1 / 60,
   target = globalThis,
+  inputTargets = {},
 } = {}) {
   const relayUrl = url ?? relayUrlFromLocation(target);
   if (!relayUrl) return null;
@@ -60,6 +61,8 @@ export function installBridge({
     grabber: () => grabber,
     errors,
     realNow,
+    target,
+    inputTargets,
   });
 
   return {

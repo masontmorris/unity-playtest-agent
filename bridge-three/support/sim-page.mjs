@@ -22,9 +22,23 @@ export function fixedGrabber() {
   return { copy: () => ({ visible: true }), encode: async () => TINY_JPEG };
 }
 
-export async function startSimPage({ project, forward = [1, 0, 0], frameMs = 16, capture = true }) {
-  const relay = await startRelay({ project });
+function eventTarget() {
+  const listeners = new Map();
+  return {
+    addEventListener(type, callback) { const entries = listeners.get(type) ?? []; entries.push(callback); listeners.set(type, entries); },
+    dispatchEvent(event) { for (const callback of listeners.get(event.type) ?? []) callback(event); return true; },
+  };
+}
+
+export async function startSimPage({ project, forward = [1, 0, 0], frameMs = 16, capture = true, catalog = null,
+                                     catalogPath = null }) {
+  const relay = await startRelay({ project, catalog, catalogPath });
   const clock = new VirtualClock();
+  const windowTarget = eventTarget();
+  const documentTarget = eventTarget();
+  const canvas = eventTarget();
+  documentTarget.querySelector = () => canvas;
+  const pageTarget = { window: windowTarget, document: documentTarget, navigator: { getGamepads: () => [] } };
   const scene = sceneOf([objectAt({ name: "mover", position: [1, 0.5, 2], children: [objectAt({ name: "part" })] })]);
   const attached = { sceneId: "sim", scene, camera: cameraFacing(forward) };
   const loop = () => clock.requestAnimationFrame(loop);
@@ -34,7 +48,7 @@ export async function startSimPage({ project, forward = [1, 0, 0], frameMs = 16,
   const grabber = capture ? fixedGrabber() : null;
   const page = await connectPage({
     url: relay.pageUrl, clock, view: () => attached, engineVersion: "sim", grabber: () => grabber,
-    errors: new ErrorMonitor(),
+    errors: new ErrorMonitor(), target: pageTarget,
   });
   return {
     clock,
@@ -59,8 +73,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const argv = process.argv.slice(2);
   const at = argv.indexOf("--project");
   const project = at >= 0 ? argv[at + 1] : undefined;
+  const catalogAt = argv.indexOf("--catalog");
+  const catalogPath = catalogAt >= 0 ? argv[catalogAt + 1] : null;
   if (!project) throw new Error("--project <dir> is required");
-  const sim = await startSimPage({ project });
+  const sim = await startSimPage({ project, catalogPath });
   await waitForFile(lockPath(project), 5000);
   console.log(JSON.stringify({ ready: true }));
   const shutdown = async () => {
