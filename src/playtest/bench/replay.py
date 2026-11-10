@@ -28,7 +28,9 @@ from playtest.core.context import canonical
 # Arm: (model, key variable, endpoint variable). Liquid's endpoint is its general decisions endpoint and the
 # request's `model` picks the model, so both Liquid arms share LIQUID_D1.1_URL. `mammoth-1-modal` is our own
 # Flide server on Modal (scripts/modal/mammoth_flide.py): its endpoint variable holds the server's base URL,
-# and a Modal proxy token (ID and secret) authenticates it.
+# and a Modal proxy token (ID and secret) authenticates it. `d1-2b-local` is the open-weights d1-2B on this PC
+# behind scripts/s1/d1_local_server.py: its endpoint variable holds the shim's loopback base URL and its key
+# variable a bearer token. It bills nothing, so its approval bounds are 0 (see `arm_money`).
 ARMS = {
     "mammoth-1": ("decision-models/baseten-mammoth-27b-latest", "BASETEN_API_KEY", None),
     "elephant-1": ("decision-models/baseten-elephant-9b-latest", "BASETEN_API_KEY", None),
@@ -36,10 +38,13 @@ ARMS = {
     "liquid-d1-ultra": ("d1-ultra", "LIQUID_API_KEY", "LIQUID_D1.1_URL"),
     "meta-muse-spark-s1": ("muse-spark-1.3", "META_API_KEY", None),
     "mammoth-1-modal": ("mammoth-1", "MODAL_MAMMOTH_TOKEN_ID", "MODAL_MAMMOTH_URL"),
+    "d1-2b-local": ("d1-2b", "D1_LOCAL_TOKEN", "D1_LOCAL_URL"),
 }
 BASETEN_URL = "https://inference.baseten.co/v1/systemone"
 MODAL_ARMS = frozenset({"mammoth-1-modal"})
 MODAL_SECRET = "MODAL_MAMMOTH_TOKEN_SECRET"
+LOCAL_ARMS = frozenset({"d1-2b-local"})
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def credential_variables(arm: str) -> tuple[str, ...]:
@@ -57,6 +62,14 @@ def endpoint(arm: str) -> tuple[str | None, dict[str, str]]:
         if not key or not secret or not url:
             return None, {}
         return url.rstrip("/") + "/v1/systemone", {"Modal-Key": key, "Modal-Secret": secret}
+    if arm in LOCAL_ARMS:
+        if not key or not url:
+            return None, {}
+        if urllib.parse.urlsplit(url).hostname not in LOOPBACK_HOSTS:
+            # Game state would leave this machine under a provider name that says it never does.
+            raise ValueError(f"{url_env} must name this machine ({', '.join(sorted(LOOPBACK_HOSTS))}): "
+                             f"{arm} is the loopback shim")
+        return url.rstrip("/") + "/v1/systemone", {"Authorization": f"Bearer {key}"}
     if not key or not url:
         return None, {}
     return url, {"Authorization": f"Bearer {key}"}
@@ -68,6 +81,8 @@ def provider_of(arm: str) -> str:
         return "meta"
     if arm in MODAL_ARMS:
         return "modal"
+    if arm in LOCAL_ARMS:
+        return "local"
     return "liquid" if arm.startswith("liquid-") else "baseten"
 # A send takes the arm and either a body to serialize canonically or the exact request text to post
 # verbatim (the adapter renders that text when it sends a declared state order, so the text hashed into
@@ -250,17 +265,41 @@ def send_systemone(arm: str, body: dict[str, Any] | str) -> tuple[int | None, di
     return status, data if isinstance(data, dict) else None, latency, None
 
 
-def _decimal(value: Any, name: str) -> Decimal:
+def _decimal(value: Any, name: str, *, zero_ok: bool = False) -> Decimal:
+    kind = "non-negative" if zero_ok else "positive"
     try:
         result = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite positive number") from exc
-    if not result.is_finite() or result <= 0:
-        raise ValueError(f"{name} must be a finite positive number")
+        raise ValueError(f"{name} must be a finite {kind} number") from exc
+    if not result.is_finite() or result < 0 or (result == 0 and not zero_ok):
+        raise ValueError(f"{name} must be a finite {kind} number")
     return result
 
 
+def arm_money(arm: str, value: Any, name: str) -> Decimal:
+    """A per-call bound or per-arm cap from an approval: positive for a paid arm, exactly zero for a local one.
+
+    A local arm has no price. Its bounds are stated as 0, so a call that reports any cost exceeds its bound
+    and halts the run instead of passing as free.
+    """
+    if arm not in LOCAL_ARMS:
+        return _decimal(value, name)
+    amount = _decimal(value, name, zero_ok=True)
+    if amount != 0:
+        raise ValueError(f"{name} must be 0: {arm} runs on this machine and costs nothing")
+    return amount
+
+
+def overall_cap(approval: dict[str, Any], name: str = "overall limit") -> Decimal:
+    """The approval's overall dollar cap: positive, or zero when every arm it names is local."""
+    arms = approval.get("arms")
+    only_local = isinstance(arms, dict) and bool(arms) and all(arm in LOCAL_ARMS for arm in arms)
+    return _decimal(approval.get("max_cost_usd"), name, zero_ok=only_local)
+
+
 def _price_deadline(limit: dict[str, Any], arm: str) -> dt.datetime:
+    if arm in LOCAL_ARMS:
+        return dt.datetime.max.replace(tzinfo=dt.timezone.utc)  # nothing is priced, so no price can expire
     value = limit.get("price_valid_until_utc")
     if value is None and limit.get("allow_unverified_price") is True:
         if not isinstance(limit.get("estimated_price_basis"), str) or not limit["estimated_price_basis"].strip():
@@ -283,7 +322,7 @@ def validate_approval(approval: dict[str, Any], arms: list[str]) -> None:
         raise ValueError("the user's recorded approval and timestamp are required")
     if not isinstance(approval.get("max_calls"), int) or isinstance(approval["max_calls"], bool) or approval["max_calls"] < 1:
         raise ValueError("approval needs a positive overall call limit")
-    _decimal(approval.get("max_cost_usd"), "overall cost limit")
+    overall_cap(approval, "overall cost limit")
     limits = approval.get("arms")
     if not isinstance(limits, dict):
         raise ValueError("approval needs per-arm limits and verified balances")
@@ -297,8 +336,10 @@ def validate_approval(approval: dict[str, Any], arms: list[str]) -> None:
         if not isinstance(limit, dict) or not isinstance(limit.get("max_calls"), int) or \
                 isinstance(limit.get("max_calls"), bool) or limit["max_calls"] < 1:
             raise ValueError(f"{arm} needs a positive call limit")
-        bound = _decimal(limit.get("per_call_max_usd"), f"{arm} per-call bound")
-        maximum = _decimal(limit.get("max_cost_usd"), f"{arm} cost limit")
+        bound = arm_money(arm, limit.get("per_call_max_usd"), f"{arm} per-call bound")
+        maximum = arm_money(arm, limit.get("max_cost_usd"), f"{arm} cost limit")
+        if arm in LOCAL_ARMS:
+            continue  # the call limit above is its whole envelope: no balance to verify, no price to expire
         balance = None
         if limit.get("verified_balance_usd") is None and not limit.get("balance_checked_at_utc"):
             if not balance_override:
@@ -389,13 +430,13 @@ def run(corpus_path: Path, labels_path: Path, approval_path: Path, directory: Pa
             continue
         if dt.datetime.now(dt.timezone.utc) >= _price_deadline(approval["arms"][arm], arm):
             raise ValueError(f"{arm} pricing validity expired during the run; stopped before another call")
-        bound = _decimal(approval["arms"][arm]["per_call_max_usd"], "per-call bound")
+        bound = arm_money(arm, approval["arms"][arm]["per_call_max_usd"], "per-call bound")
         total_bound = sum((Decimal(str(row["reserved_usd"])) for row in rows), Decimal(0))
         arm_rows = [row for row in rows if row["arm"] == arm]
         arm_bound = sum((Decimal(str(row["reserved_usd"])) for row in arm_rows), Decimal(0))
         if len(rows) >= approval["max_calls"] or len(arm_rows) >= approval["arms"][arm]["max_calls"] or \
-                total_bound + bound > _decimal(approval["max_cost_usd"], "overall limit") or \
-                arm_bound + bound > _decimal(approval["arms"][arm]["max_cost_usd"], "arm limit"):
+                total_bound + bound > overall_cap(approval) or \
+                arm_bound + bound > arm_money(arm, approval["arms"][arm]["max_cost_usd"], "arm limit"):
             raise ValueError("the approved call or cost envelope would be exceeded")
         row = {"slot": slot, "phase": phase, "arm": arm, "frame_id": frame["id"], "repeat": repeat,
                "schedule_index": schedule_index,

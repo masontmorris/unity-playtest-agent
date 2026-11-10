@@ -27,6 +27,10 @@ anything: `--approved-by` is required, and the file records what the user said. 
 balance needs `--unverified-balance-reason`, the reason the user gave, or the runner refuses the
 file it produced.
 
+A local arm (`replay.LOCAL_ARMS`, the open-weights model on this machine) is billed nothing, so it
+has no ledger, no balance and no price: its bounds are 0 and its call count is its whole envelope.
+`--max-cost-usd` may be left out, or be 0, when every arm named is local.
+
     playtest-approval --arm meta-muse-spark-s1=100 --arm muse-spark-1.3=4 \\
         --ledger meta-muse-spark-s1=runs/<game>/live-05 \\
         --ledger muse-spark-1.3=runs/<game>/night/session-01 \\
@@ -55,17 +59,20 @@ PLACES = Decimal("0.000001")
 SHOWN = Decimal("0.000000001")
 BASIS_MEASURED = "measured"
 BASIS_OPERATOR = "operator"
+BASIS_LOCAL = "local"
 DEFAULT_USE_BY_HOURS = 48
 
 
-def _money(value: Any, name: str) -> Decimal:
-    """A finite, positive dollar amount. Zero is refused: a zero bound forbids every paid call."""
+def _money(value: Any, name: str, *, zero_ok: bool = False) -> Decimal:
+    """A finite, positive dollar amount. Zero is refused, since a zero bound forbids every paid call, unless
+    `zero_ok`: the overall cap of an approval that names only local arms."""
+    kind = "non-negative" if zero_ok else "positive"
     try:
         amount = Decimal(str(value))
     except (InvalidOperation, ValueError):
-        raise ValueError(f"{name} must be a finite positive dollar amount") from None
-    if not amount.is_finite() or amount <= 0:
-        raise ValueError(f"{name} must be a finite positive dollar amount")
+        raise ValueError(f"{name} must be a finite {kind} dollar amount") from None
+    if not amount.is_finite() or amount < 0 or (amount == 0 and not zero_ok):
+        raise ValueError(f"{name} must be a finite {kind} dollar amount")
     return amount
 
 
@@ -130,8 +137,14 @@ def _ledgers(values: Sequence[str], arms: Sequence[str]) -> dict[str, tuple[Path
     unknown = sorted(set(scoped) - set(arms))
     if unknown:
         raise ValueError(f"--ledger names arms that --arm does not: {', '.join(unknown)}")
+    local = sorted(set(scoped) & replay.LOCAL_ARMS)
+    if local:
+        raise ValueError(f"{', '.join(local)} runs locally and costs nothing: it has no ledger to measure")
     resolved: dict[str, tuple[Path, ...]] = {}
     for arm in arms:
+        if arm in replay.LOCAL_ARMS:
+            resolved[arm] = ()
+            continue
         if arm in scoped and shared:
             raise ValueError(f"{arm} has both arm-scoped and unscoped --ledger entries; give one or the other")
         entries = tuple(scoped.get(arm, ())) or tuple(shared)
@@ -214,6 +227,17 @@ def _limit(arm: str, calls: int, evidence: dict[str, Any], *, basis: str, bound:
     }
 
 
+def _local_limit(calls: int) -> dict[str, Any]:
+    """A local arm's limit: nothing is billed, so there is no price to estimate and the call count is its envelope."""
+    return {
+        "max_calls": calls,
+        "per_call_max_usd": 0,
+        "max_cost_usd": 0,
+        "evidence": {"basis": BASIS_LOCAL, "calls": calls, "samples": 0, "per_call_max_usd": 0.0,
+                     "expected_cost_usd": 0.0, "worst_case_usd": 0.0},
+    }
+
+
 def build(arms: Sequence[tuple[str, int]], bounds: dict[str, Decimal], ledgers: dict[str, tuple[Path, ...]], *,
           margin: Decimal, min_samples: int, max_cost_usd: Decimal, use_by_utc: dt.datetime,
           approved_by: str, balance_reason: str | None, now: dt.datetime) -> dict[str, Any]:
@@ -243,6 +267,11 @@ def build(arms: Sequence[tuple[str, int]], bounds: dict[str, Decimal], ledgers: 
     for arm, calls in arms:
         if calls < 1:
             raise ValueError(f"{arm} needs at least one call")
+        if arm in replay.LOCAL_ARMS:
+            if arm in bounds:
+                raise ValueError(f"--bound {arm}: a local arm costs nothing, so its bound is 0")
+            limits[arm] = _local_limit(calls)
+            continue
         evidence = _measure(ledgers[arm], arm)
         if arm in bounds:
             basis, bound = BASIS_OPERATOR, bounds[arm]
@@ -313,9 +342,9 @@ def check_runner_accepts(approval: dict[str, Any], calls: dict[str, int]) -> Non
         if now >= replay._price_deadline(approval["arms"][arm], arm):
             raise ValueError(f"{arm} pricing validity has expired; verify the rate again")
         runner_cli._fits(approval, count, 0, arm=arm)
-    total = sum((replay._decimal(approval["arms"][arm]["per_call_max_usd"], "bound") * count
+    total = sum((replay.arm_money(arm, approval["arms"][arm]["per_call_max_usd"], "bound") * count
                  for arm, count in calls.items()), Decimal(0))
-    cap = replay._decimal(approval["max_cost_usd"], "overall limit")
+    cap = replay.overall_cap(approval)
     if total > cap:
         raise ValueError(f"the reserved envelope ${total} exceeds the approved cap ${cap}")
 
@@ -334,6 +363,9 @@ def _report(approval: dict[str, Any]) -> list[str]:
              f"(slack ${summary['slack_usd']})"]
     for arm, entry in approval["arms"].items():
         evidence = entry["evidence"]
+        if evidence["basis"] == BASIS_LOCAL:
+            lines.append(f"  {arm}: local, $0/call x {entry['max_calls']} (the call limit is its whole envelope)")
+            continue
         lines.append(
             f"  {arm}: {evidence['samples']} samples, max ${evidence['observed_max_usd']} "
             f"x {evidence['margin']} -> ${entry['per_call_max_usd']}/call "
@@ -356,7 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--margin", default="1.5", help="bound = largest measured cost x this (default 1.5)")
     parser.add_argument("--min-samples", type=int, default=10,
                         help="measured calls an arm needs before its bound is derived (default 10)")
-    parser.add_argument("--max-cost-usd", required=True, help="the approved overall cost cap")
+    parser.add_argument("--max-cost-usd", help="the approved overall cost cap (required unless every arm is local, "
+                                               "where it is 0)")
     parser.add_argument("--use-by-utc",
                         help=f"when the bound stops being valid (default: {DEFAULT_USE_BY_HOURS} hours from now)")
     parser.add_argument("--unverified-balance-reason",
@@ -372,13 +405,17 @@ def main(argv: list[str] | None = None) -> int:
         bounds = {name: _money(value, f"--bound {name}")
                   for name, value in _pairs(args.bound, "--bound", "NAME=USD")}
         ledgers = _ledgers(args.ledger, named)
+        only_local = all(name in replay.LOCAL_ARMS for name in named)
+        if args.max_cost_usd is None and not only_local:
+            raise ValueError("--max-cost-usd is required: an arm named here is billed")
+        cap = _money(0 if args.max_cost_usd is None else args.max_cost_usd, "--max-cost-usd", zero_ok=only_local)
         now = dt.datetime.now(dt.timezone.utc)
         use_by = (_moment(args.use_by_utc, "--use-by-utc") if args.use_by_utc is not None
                   else now + dt.timedelta(hours=DEFAULT_USE_BY_HOURS))
         if output.exists():
             raise ValueError(f"{output} exists; an approval is written to a new file")
         approval = build(arms, bounds, ledgers, margin=_money(args.margin, "--margin"),
-                         min_samples=args.min_samples, max_cost_usd=_money(args.max_cost_usd, "--max-cost-usd"),
+                         min_samples=args.min_samples, max_cost_usd=cap,
                          use_by_utc=use_by, approved_by=args.approved_by,
                          balance_reason=args.unverified_balance_reason, now=now)
         check_runner_accepts(approval, dict(arms))

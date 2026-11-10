@@ -13,8 +13,8 @@ from collections.abc import Mapping
 
 
 def secret_values(environ: Mapping[str, str] | None = None) -> list[str]:
-    """Values of every `*_API_KEY` and Modal proxy-token variable in the environment, so a trace can be
-    checked for them."""
+    """Values of every `*_API_KEY`, Modal proxy-token and `D1_LOCAL_TOKEN` variable in the environment, so a
+    trace can be checked for them."""
     env = os.environ if environ is None else environ
     return sorted({value for name, value in env.items()
-                   if name.endswith(("_API_KEY", "_TOKEN_ID", "_TOKEN_SECRET")) and len(value) >= 8})
+                   if name.endswith(("_API_KEY", "_TOKEN_ID", "_TOKEN_SECRET", "D1_LOCAL_TOKEN")) and len(value) >= 8})

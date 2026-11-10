@@ -355,7 +355,7 @@ def _detectors(args: argparse.Namespace, calibration: Mapping[str, Any], built: 
 def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0, arm: str = ARM) -> None:
     """The approved envelope must cover the most the run may spend."""
     limit = approval["arms"][arm]
-    bound = replay._decimal(limit["per_call_max_usd"], "per-call bound")
+    bound = replay.arm_money(arm, limit["per_call_max_usd"], "per-call bound")
     total_bound = bound * calls
     if frontier_calls:
         f_limit = approval["arms"][frontier_provider.MODEL]
@@ -365,8 +365,8 @@ def _fits(approval: dict[str, Any], calls: int, frontier_calls: int = 0, arm: st
                 or f_bound * frontier_calls > replay._decimal(f_limit["max_cost_usd"], "frontier arm limit")):
             raise ValueError("the approved frontier call or cost envelope is smaller than its call cap")
     if (calls + frontier_calls > approval["max_calls"] or calls > limit["max_calls"]
-            or total_bound > replay._decimal(approval["max_cost_usd"], "overall limit")
-            or bound * calls > replay._decimal(limit["max_cost_usd"], "arm limit")):
+            or total_bound > replay.overall_cap(approval)
+            or bound * calls > replay.arm_money(arm, limit["max_cost_usd"], "arm limit")):
         raise ValueError("the approved call or cost envelope is smaller than the call cap")
 
 
@@ -443,6 +443,10 @@ def main(argv: list[str] | None = None) -> int:
     for variable in replay.credential_variables(args.s1_arm):
         if not os.environ.get(variable):
             parser.error(f"{variable} is not set in the environment")
+    try:
+        replay.endpoint(args.s1_arm)  # a local arm's URL must name this machine
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.memory_dir is not None:
         if not args.options:
             parser.error("--memory-dir requires --options: it holds the options layer's measured outcomes")
@@ -827,7 +831,8 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                    + ([ModelRef(role="frontier", provider="meta", model=frontier_provider.MODEL)]
                       if args.frontier else []),
             objective=objective,
-            budget=Budget(max_wall_s=args.wall_limit_s, max_usd=float(approval["max_cost_usd"]),
+            # An approval that names only local arms caps spending at zero; the record cannot say 0, so it says none.
+            budget=Budget(max_wall_s=args.wall_limit_s, max_usd=float(approval["max_cost_usd"]) or None,
                           max_frontier_calls=args.max_frontier_calls if args.frontier else 0),
             reset_method="restart_play_mode" if session_host is not None else "none")  # this runner only resets through the host
         writer = TraceWriter(run_dir / TRACE_FILE, record, secrets=secret_values())

@@ -17,7 +17,8 @@ client finds it is not the manifest's export, the run ends before any paid call.
 to the keyboard-only catalog the other bench modules use. -S1Arm picks S1's model, one of replay.ARMS
 (default liquid-d1-ultra). Its credentials must be in this session's environment: BASETEN_API_KEY for the Baseten
 arms, LIQUID_API_KEY and LIQUID_D1.1_URL for the Liquid arms, and MODAL_MAMMOTH_TOKEN_ID,
-MODAL_MAMMOTH_TOKEN_SECRET and MODAL_MAMMOTH_URL for mammoth-1-modal (our Flide server on Modal).
+MODAL_MAMMOTH_TOKEN_SECRET and MODAL_MAMMOTH_URL for mammoth-1-modal (our Flide server on Modal), and
+D1_LOCAL_TOKEN and D1_LOCAL_URL for d1-2b-local (the loopback shim in scripts/s1/d1_local_server.py).
 The script checks them by name only and never prints them.
 
 No paid call starts without an approval file and a call cap (-MaxCalls). Every call reserves its row in
@@ -144,6 +145,7 @@ $s1Credentials = @{
     'liquid-d1.1' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL'); 'liquid-d1-ultra' = @('LIQUID_API_KEY', 'LIQUID_D1.1_URL')
     'meta-muse-spark-s1' = @('META_API_KEY')
     'mammoth-1-modal' = @('MODAL_MAMMOTH_TOKEN_ID', 'MODAL_MAMMOTH_URL', 'MODAL_MAMMOTH_TOKEN_SECRET')
+    'd1-2b-local' = @('D1_LOCAL_TOKEN', 'D1_LOCAL_URL')
 }
 if (-not $s1Credentials.ContainsKey($S1Arm)) {
     throw "Unknown -S1Arm '$S1Arm'; use one of: $((@($s1Credentials.Keys) | Sort-Object) -join ', ')."

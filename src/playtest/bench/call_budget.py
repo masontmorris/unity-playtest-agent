@@ -67,7 +67,7 @@ class Ledger:
         self.arm = arm
         self.concurrent_arms = concurrent_arms
         self.limit = approval["arms"][arm]
-        self.bound = replay._decimal(self.limit["per_call_max_usd"], f"{arm} per-call bound")
+        self.bound = replay.arm_money(arm, self.limit["per_call_max_usd"], f"{arm} per-call bound")
         self.rows: list[dict[str, Any]] = replay._calls(self.call_dir)
 
     def arm_rows(self) -> list[dict[str, Any]]:
@@ -107,8 +107,8 @@ class Ledger:
         arm_total = self._total(arm_rows, f"{self.arm}'s reservations")
         if (len(self.rows) >= self.approval["max_calls"]
                 or len(arm_rows) >= self.limit["max_calls"]
-                or total + self.bound > replay._decimal(self.approval["max_cost_usd"], "overall limit")
-                or arm_total + self.bound > replay._decimal(self.limit["max_cost_usd"], "arm limit")):
+                or total + self.bound > replay.overall_cap(self.approval)
+                or arm_total + self.bound > replay.arm_money(self.arm, self.limit["max_cost_usd"], "arm limit")):
             raise BudgetStop("the approved call or cost envelope would be exceeded")
 
         slot = replay.digest(canonical({"episode": episode, "turn": turn, "request_sha256": request_sha256}))
