@@ -34,6 +34,8 @@ class ObjectiveItem(Strict):
     text: str = Field(min_length=1)
     criterion: Criterion
     count: int | None = Field(None, ge=0)
+    sent: int | None = Field(None, ge=0, description="Presses of the input that reached the game, scored or not; "
+                                                     "null when the source does not count them")
     status: DirectiveOutcome
     evidence_seq: list[int] = Field(default_factory=list)
 
@@ -41,6 +43,8 @@ class ObjectiveItem(Strict):
     def _progress(self) -> "ObjectiveItem":
         if self.count is not None and not isinstance(self.criterion, PressCount):
             raise ValueError("a count requires a press-count criterion")
+        if self.sent is not None and not isinstance(self.criterion, PressCount):
+            raise ValueError("a sent count requires a press-count criterion")
         if self.count is None and isinstance(self.criterion, PressCount) and self.status is not DirectiveOutcome.unknown:
             raise ValueError("an unmeasured press count has unknown status")
         if any(seq < 0 for seq in self.evidence_seq):

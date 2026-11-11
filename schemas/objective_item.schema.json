@@ -203,6 +203,20 @@
       "title": "Item Id",
       "type": "string"
     },
+    "sent": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Presses of the input that reached the game, scored or not; null when the source does not count them",
+      "title": "Sent"
+    },
     "source": {
       "minLength": 1,
       "title": "Source",
