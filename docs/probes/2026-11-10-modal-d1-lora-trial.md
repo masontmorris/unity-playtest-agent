@@ -44,3 +44,34 @@ Six sessions, one at a time: `lora` 1, `base` 1, `base` 2, `lora` 2, `lora` 3, `
 ## Data
 
 Every session's frames, requests and traces are Unity-derived. They stay in this repository's ignored `runs/` and do not go to decision-lab. Unity's Terms of Service §17.2(dd) bar using Unity-derived data for machine-learning training, validation or development without authorization. The user decided on 10 November to run this test. To keep it a test of a finished adapter, its results are reported only, and not used to train, tune or choose between adapters.
+
+## Results
+
+Run on 10 November 2026, 20:09 to 22:28, in the planned order, from branch `feat/modal-d1-lora-arm` at `182cf7d`. All six sessions recorded `run.json`, with no attrition. Every `lora` call record names the merged adapter as its resolved model (`d1-2b@652f920e+lora-8725f7a2-66b8f257`), and every `base` call names unmodified d1-2B. The 3js builds paused their GPU work for the window.
+
+| Session | Decisions | `wait` | Longest run of one choice | Most-chosen non-wait id | `escalate` (help requests) | Candidate findings (replayed k/n) |
+|---|---|---|---|---|---|---|
+| `lora` 1 | 84 | 0 (0%) | 3 (`look_right`) | `test:look_left`, 19% | 0 | none |
+| `base` 1 | 307 | 22 (7%) | 52 (`escalate`) | `escalate`, 86% | 264 | `f-25` look_down produces no pitch change (0/5); `f-63` aim_toggle produces no aiming change (not replayed) |
+| `base` 2 | 153 | 61 (40%) | 33 (`wait`) | `escalate`, 29% | 44 | none |
+| `lora` 2 | 99 | 0 (0%) | 2 | `look_right`, 25% | 0 | none |
+| `lora` 3 | 106 | 0 (0%) | 2 | `look_right`, 22% | 0 | none |
+| `base` 3 | 274 | 123 (45%) | 5 (`escalate`) | `escalate`, 49% | 133 | none |
+
+**Predeclared readings:**
+
+- **The adapter lowers waiting.** Every `lora` session waited less than every `base` session: 0, 0 and 0% against 7, 40 and 45%. Complete separation happens by chance in 1 of 20 orderings.
+- **Against all nine unmodified-d1 sessions with `unmeasured`, it also holds.** Those are this morning's six treatment sessions plus these three `base` sessions. U = 0, p = 0.0045, inside the U ≤ 4 bar. That comparison is secondary, because six of those sessions ran earlier in the day.
+- **It did not swap one lock for another.** No `lora` session had a run of 50 identical non-wait choices; the longest was 3. No non-wait id took more than half of a session's decisions; the most was 25%.
+
+What the sessions show beyond the readings:
+
+- **The adapter never asked for help.** The `lora` sessions chose `escalate` 0 times, opened no help requests and made no frontier calls ($0.00). The `base` sessions escalated 44 to 264 times. In `base` 1 S1 kept escalating while help was pending: 264 escalations in runs of up to 52, while the frontier answered 7 times. The adapter's training frames never offered `escalate`. S1 owns escalation, and an S1 that never asks loses the frontier entirely. This is a cost of the adapter, not a fix.
+- **The adapter's sessions spend most of their time in press tests.** The objective asks for them, at about 10 s each, which is why they make fewer decisions. They still repeat a test past the 4 presses asked before trying others.
+- **No session raised a finding that replayed.** `base` 1's `f-25` replayed 0 of 5. Fewer waits did not become findings, and nothing here shows the adapter helps a hunt find bugs.
+- `base` waited much less than this morning's sessions with the same settings (7 to 45%, against 2 to 97%), and escalated far more. Sessions vary a lot from one to the next.
+
+## Cost
+
+- **Meta Standard:** $0.94 for the `base` arm and $0.00 for `lora`, which made no frontier calls.
+- **Modal:** through the 21:00 hour, `d1-2b-s1` billed $0.93 and `d1-2b-s1-lora` $1.03. The last hour was not yet reported when this was written.
