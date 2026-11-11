@@ -1,0 +1,15 @@
+{
+  "item_id": "plan-2",
+  "source": "hunt_plan",
+  "text": "press input_b",
+  "criterion": {
+    "kind": "press_count",
+    "action": "input_b",
+    "required": 4,
+    "window_s": 1
+  },
+  "count": null,
+  "sent": 6,
+  "status": "unknown",
+  "evidence_seq": []
+}

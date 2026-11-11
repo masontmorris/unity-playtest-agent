@@ -62,8 +62,20 @@ def _press_item(number: int, text: str, rules: Sequence[Mapping[str, Any]], rows
     count = counts[0] if same_count and (measurable or counts[0] > 0) else None
     status = (DirectiveOutcome.met if count is not None and count >= criterion.required else
               DirectiveOutcome.open if count is not None and measurable else DirectiveOutcome.unknown)
+    sent = _sent(action, presses, controls)
+    if not sent:
+        # No press of the input reached the game: that is a count from the bridge's records, not missing
+        # evidence, so the step reads 0 and open rather than unknown (#270).
+        count, status = 0, DirectiveOutcome.open
     return ObjectiveItem(item_id=f"hunt-plan-{number}", source="hunt_plan", text=text, criterion=criterion,
-                         count=count, status=status, evidence_seq=sorted(set(evidence)))
+                         count=count, sent=sent, status=status, evidence_seq=sorted(set(evidence)))
+
+
+def _sent(action: str, presses: Sequence[tuple[float, float, str]], controls: Mapping[str, frozenset]) -> int:
+    """Presses that reached the game and drove the input: the input itself, or any choice holding its controls,
+    including inside a skill or option."""
+    own = controls.get(action)
+    return sum(pressed == action or bool(own and own <= controls.get(pressed, frozenset())) for _, _, pressed in presses)
 
 
 def _directives(rows: Sequence[Mapping[str, Any]], view: DirectiveView | None) -> list[Directive]:
@@ -105,6 +117,8 @@ def objective_line(items: Sequence[ObjectiveItem], game_s: float | None) -> str:
         progress = ""
         if isinstance(item.criterion, PressCount) and item.count is not None:
             progress = f": {item.count} of {item.criterion.required} presses"
+        elif isinstance(item.criterion, PressCount) and item.sent:
+            progress = f": {item.sent} sent, none measurable"
         suffix = f", {item.status.value}" if progress else f": {item.status.value}"
         criterion = item.criterion
         if (isinstance(criterion, Postcondition) and item.status is DirectiveOutcome.open
