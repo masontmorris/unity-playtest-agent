@@ -106,3 +106,35 @@ Everything else is as above: the 2k adapter on `d1-2b-s1-lora`, `s1_wait_result:
 - **Order:** `on` 1, `off` 1, `off` 2, `on` 2, `on` 3, `off` 3, each in its own folder (`runs/hunts-objective-facts-r2/<arm>-<n>/`).
 - **Primary measure, readings and secondary measures:** the same as the first run. The facts **help** if every `on` session meets more plan items than every `off` session. They **do not** if the ranges overlap and the `on` median is not higher. Anything else is `inconclusive`.
 - **Pooled reading, secondary:** a one-sided exact Mann-Whitney test, `on` higher, over the rerun's six sessions only. The first run's sessions are not pooled with them, because their memory and counting differ.
+
+## Rerun results
+
+Run on 11 November 2026, 08:11 to 09:53, in the planned order, from `trial/objective-facts` at `c48693b`. Each session ran in its own folder with empty memory. All six recorded `run.json`, with no attrition. A first launch at 08:10 failed before any session started: a path bug in the trial's runner script, fixed at once. The lease was held for under a minute and no game ran.
+
+| Session (fresh memory) | Plan items met (of 7) | Worst over-press | `jump`: scored / sent | Pickup: scored / sent |
+|---|---|---|---|---|
+| `on`-1 | 5 | 17.8× | – / 5 | – / 5 |
+| `off`-1 | 4 | 16.5× | – / 8 | – / 19 |
+| `off`-2 | 3 | 16.0× | – / 12 | – / 34 |
+| `on`-2 | 3 | 11.8× | – / 6 | – / 12 |
+| `on`-3 | 4 | 12.0× | – / 10 | – / 21 |
+| `off`-3 | 4 | 16.0× | – / 8 | – / 23 |
+
+**Predeclared reading: the facts do not help.** `on` met 5, 3 and 4 (median 4), and `off` met 4, 3 and 4 (median 4). The ranges overlap and the `on` median is not higher. The pooled secondary test agrees: U = 5.5 of 9 for `on` higher, far from significant.
+
+What the rerun shows beyond the reading:
+
+- **With memory reset, the session-by-session climb of the first run is gone.** Scores sit at 3 to 5 in both arms. That climb was memory.
+- **The facts lower over-pressing somewhat.** The worst step averaged 13.9× the 4 asked with facts on, against 16.2× with them off. This is secondary and from three sessions per arm.
+- **Two steps were never met in any session.**
+  - `jump`: S1 never chose `jump` or `test:jump`. Its presses came only inside `running_jump`, and all of those fell between observations (`unobserved_gap`), so none could be scored. In the first run, the one session that chose `test:jump` met the step.
+  - Pickup: no `interact` was scored inside the pickup region.
+
+  Both read `K sent, none measurable, unknown` with the counting fix, which is now true, where they used to be ambiguous. The fact told S1 these steps had not been scored, and S1 did not act on it.
+- **The adapter does not act on objective facts.** Its synthetic training frames had none, so this is the expected result for this S1. The next test of the facts needs an S1 trained, or prompted, to use them.
+- No frontier calls ($0.00 Meta). No candidate findings.
+
+## Rerun cost
+
+- **Meta Standard:** $0.00.
+- **Modal:** the `d1-2b-s1-lora` endpoint, about 1¾ hours of use at about $1 an hour. The billing report had not caught up when this was written.
