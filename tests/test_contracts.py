@@ -24,6 +24,12 @@ def test_every_fixture_dir_is_a_contract():
     assert {p.name for p in FIXTURES.iterdir() if p.is_dir()} <= set(CONTRACTS)
 
 
+def test_unmeasured_objective_count_fixture_fails_for_its_intended_rule():
+    path = FIXTURES / "objective_item" / "invalid-unmeasured-press-open.json"
+    with pytest.raises(ValidationError, match="an unmeasured press count has unknown status"):
+        CONTRACTS["objective_item"].model_validate_json(path.read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize("name", sorted(CONTRACTS))
 def test_every_contract_has_a_valid_fixture(name):
     assert list((FIXTURES / name).glob("valid-*.json")), f"no valid fixture for {name}"

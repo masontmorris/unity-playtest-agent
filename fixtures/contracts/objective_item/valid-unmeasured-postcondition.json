@@ -1,0 +1,9 @@
+{
+  "item_id": "directive-1",
+  "source": "frontier_directive",
+  "text": "Inspect the reading.",
+  "criterion": {"kind": "postcondition", "expected": null},
+  "count": null,
+  "status": "unknown",
+  "evidence_seq": []
+}
