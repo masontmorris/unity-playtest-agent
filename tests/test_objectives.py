@@ -76,9 +76,32 @@ def test_four_counted_presses_remain_met_when_a_later_window_is_incomplete():
 
 
 def test_missing_readings_and_uncheckable_situations_stay_in_the_list():
+    rows = trace([(2.2, "completed", False)], value=False)
     items = objective_items({"action_rules": [rule()], "situations": [rule(action="other", situation="somewhere")]},
-                            trace(value=False), CONTROLS)
-    assert [(item.count, item.status.value) for item in items] == [(None, "unknown"), (None, "unknown")]
+                            rows, CONTROLS)
+    assert [(item.count, item.status.value) for item in items] == [(None, "unknown"), (0, "open")]
+
+
+def test_a_step_whose_input_was_never_sent_reads_zero_and_open_not_unknown():
+    # Nothing to measure an effect with, and nothing pressed: zero presses is still a measured count (#270).
+    items = objective_items({"action_rules": [rule(), rule(action="look_up")]}, trace(value=False), CONTROLS)
+    assert [(item.count, item.status.value) for item in items] == [(0, "open"), (0, "open")]
+    assert "press look_up: 0 of 4 presses, open" in objective_line(items, None)
+
+
+def test_a_rejected_press_alone_still_counts_as_never_sent():
+    items = objective_items({"action_rules": [rule()]}, trace([(2.2, "rejected", False)], value=False), CONTROLS)
+    assert (items[0].count, items[0].status.value) == (0, "open")
+
+
+def test_a_choice_holding_the_inputs_controls_counts_as_sent():
+    controls = {**CONTROLS, "g_move_look_right": frozenset({("pointer", "right"), ("key", "w")})}
+    rows = trace(value=False)
+    rows.append({"trace_seq": 50, "kind": "execution", "body": {"request": {"action": "g_move_look_right"},
+                 "records": [{"status": "completed", "input_start_wall_s": 2.2, "applied_duration_s": 0.1}]}})
+    item = objective_items({"action_rules": [rule()]}, rows, controls)[0]
+    assert (item.count, item.sent, item.status.value) == (None, 1, "unknown")
+    assert "press look_right: 1 sent, none measurable, unknown" in objective_line([item], None)
 
 
 def test_one_plan_step_with_conflicting_scorer_counts_stays_unknown():
