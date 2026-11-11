@@ -82,6 +82,7 @@ param(
     [switch]$RecordFrames,
     [switch]$S1GameView,
     [switch]$CoverageFacts,
+    [switch]$ObjectiveFacts,
     [switch]$PatternFacts,
     [switch]$TravelFacts,
     [switch]$TurnSizes,
@@ -294,6 +295,7 @@ try {
     $env:UPA_RUN_PATTERN_FACTS = if ($PatternFacts) { '1' } else { '' }
     $env:UPA_RUN_TRAVEL_FACTS = if ($TravelFacts) { '1' } else { '' }
     $env:UPA_RUN_COVERAGE_FACTS = if ($CoverageFacts) { '1' } else { '' }
+    $env:UPA_RUN_OBJECTIVE_FACTS = if ($ObjectiveFacts) { '1' } else { '' }
     $env:UPA_RUN_FRONTIER = if ($Frontier) { '1' } else { '' }
     $env:UPA_RUN_MAX_FRONTIER_CALLS = if ($Frontier) { [string]$MaxFrontierCalls } else { '' }
     $env:UPA_RUN_FRONTIER_CLIP_S = if ($FrontierClipSeconds -gt 0) { [string]$FrontierClipSeconds } else { '' }
