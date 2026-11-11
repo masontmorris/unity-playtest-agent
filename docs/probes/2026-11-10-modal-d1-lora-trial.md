@@ -52,7 +52,7 @@ Run on 10 November 2026, 20:09 to 22:28, in the planned order, from branch `feat
 | Session | Decisions | `wait` | Longest run of one choice | Most-chosen non-wait id | `escalate` (help requests) | Candidate findings (replayed k/n) |
 |---|---|---|---|---|---|---|
 | `lora` 1 | 84 | 0 (0%) | 3 (`look_right`) | `test:look_left`, 19% | 0 | none |
-| `base` 1 | 307 | 22 (7%) | 52 (`escalate`) | `escalate`, 86% | 264 | `f-25` look_down produces no pitch change (0/5); `f-63` aim_toggle produces no aiming change (not replayed) |
+| `base` 1 | 307 | 22 (7%) | 52 (`escalate`) | `escalate`, 86% | 264 | `f-25` look_down produces no pitch change (0/5); `f-63` aim_toggle produces no aiming change (0/5) |
 | `base` 2 | 153 | 61 (40%) | 33 (`wait`) | `escalate`, 29% | 44 | none |
 | `lora` 2 | 99 | 0 (0%) | 2 | `look_right`, 25% | 0 | none |
 | `lora` 3 | 106 | 0 (0%) | 2 | `look_right`, 22% | 0 | none |
@@ -68,7 +68,7 @@ What the sessions show beyond the readings:
 
 - **The adapter never asked for help.** The `lora` sessions chose `escalate` 0 times, opened no help requests and made no frontier calls ($0.00). The `base` sessions escalated 44 to 264 times. In `base` 1 S1 kept escalating while help was pending: 264 escalations in runs of up to 52, while the frontier answered 7 times. The adapter's training frames never offered `escalate`. S1 owns escalation, and an S1 that never asks loses the frontier entirely. This is a cost of the adapter, not a fix.
 - **The adapter's sessions spend most of their time in press tests.** The objective asks for them, at about 10 s each, which is why they make fewer decisions. They still repeat a test past the 4 presses asked before trying others.
-- **No session raised a finding that replayed.** `base` 1's `f-25` replayed 0 of 5. Fewer waits did not become findings, and nothing here shows the adapter helps a hunt find bugs.
+- **No session raised a finding that replayed.** `base` 1's two candidates, `f-25` and `f-63`, each replayed 0 of 5. Fewer waits did not become findings, and nothing here shows the adapter helps a hunt find bugs.
 - `base` waited much less than this morning's sessions with the same settings (7 to 45%, against 2 to 97%), and escalated far more. Sessions vary a lot from one to the next.
 
 ## Cost
