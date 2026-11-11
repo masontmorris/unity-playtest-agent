@@ -92,3 +92,17 @@ What the sessions show beyond the reading:
 
 - **Meta Standard:** $0.00 in both arms.
 - **Modal:** the `d1-2b-s1-lora` endpoint billed $1.12 through the 00:00 hour, with the last hour not yet reported when this was written.
+
+## Rerun with the counting fix and fresh memory (planned 11 November 2026, before any rerun session)
+
+The first run was inconclusive, and it had two problems this rerun removes.
+
+- **Session memory:** each arm carried its memory across its three sessions, and both arms improved session by session. In the rerun, every session runs in its own hunt folder with empty memory. Order within an arm no longer adds what earlier sessions learned.
+- **The fact's counting:** before [#271](https://github.com/masontmorris/unity-playtest-agent/pull/271), a step never pressed and a step pressed but not scorable both read `unknown`. In the rerun, the first reads `0 of N presses, open`, and the second reads `K sent, none measurable, unknown`.
+
+Everything else is as above: the 2k adapter on `d1-2b-s1-lora`, `s1_wait_result: unmeasured`, the same frozen inputs, objective, settings and approval, and the only difference between arms is `objective_facts`.
+
+- **Code:** `trial/objective-facts` with #271 merged in, at the commit that adds this section.
+- **Order:** `on` 1, `off` 1, `off` 2, `on` 2, `on` 3, `off` 3, each in its own folder (`runs/hunts-objective-facts-r2/<arm>-<n>/`).
+- **Primary measure, readings and secondary measures:** the same as the first run. The facts **help** if every `on` session meets more plan items than every `off` session. They **do not** if the ranges overlap and the `on` median is not higher. Anything else is `inconclusive`.
+- **Pooled reading, secondary:** a one-sided exact Mann-Whitney test, `on` higher, over the rerun's six sessions only. The first run's sessions are not pooled with them, because their memory and counting differ.
