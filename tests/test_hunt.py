@@ -98,6 +98,29 @@ def test_a_hunt_runs_each_step_in_order_replays_what_was_filed_and_reports_it(tm
     assert steps.calls == []
 
 
+def test_hunt_forwards_the_opt_in_and_reports_recorded_objective_metrics(tmp_path, steps, monkeypatch):
+    original = steps.__call__
+    metrics = {"met": 1, "total": 3, "by_source": {"hunt_plan": {"met": 1, "total": 2},
+                                                     "frontier_directive": {"met": 0, "total": 1}}}
+
+    def with_metrics(args, log, env=None):
+        code = original(args, log, env)
+        if any("run-session.ps1" in str(arg) for arg in args) and "-GuardsOnly" not in args:
+            folder = Path(args[args.index("-OutputDirectory") + 1])
+            (folder / "run.json").write_text(json.dumps({"objectives": metrics}), encoding="utf-8")
+        return code
+
+    monkeypatch.setattr(hunt, "_run", with_metrics)
+    result = hunt.hunt(_config(tmp_path, objective_facts=True), tmp_path / "out", say=lambda text: None)
+    sessions = [call for call in steps.calls if "-SituationsPath" in call]
+    assert sessions and all("-ObjectiveFacts" in call for call in sessions)
+    assert result["objectives"]["session-01"] == metrics
+    text = (tmp_path / "out" / "hunt.md").read_text(encoding="utf-8")
+    assert "session-01: 1 of 3 met (hunt_plan 1 of 2, frontier_directive 0 of 1)" in text
+    with pytest.raises(hunt.HuntError, match="objective_facts must be a boolean"):
+        _config(tmp_path, objective_facts="yes")
+
+
 def test_the_declared_sizes_the_focused_call_wrote_are_stated_in_each_session_beside_the_full_predictions(
         tmp_path, steps, monkeypatch):
     size = {"quantity": "move_speed", "action": "move_right", "state": None, "value": 10.0, "basis": "declared_value",

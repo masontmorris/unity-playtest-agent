@@ -62,7 +62,7 @@ SESSION_FLAGS = ("-RecordFrames", "-S1GameView", "-CoverageFacts", "-PatternFact
                  "-Contingent", "-PacingBurst", "0.5", "-MeasureGuards", "-PressReadings", "-NoFinish")
 DEFAULTS = {"scene": None, "max_age_s": 1.0, "point_moves": False, "wall_limit_s": 600, "max_calls": 600,
             "max_frontier_calls": 12, "frontier_model": "muse-spark-1.3", "sessions": 3, "attempts": 5,
-            "prompt": None, "s1_arm": "liquid-d1-ultra", "s1_wait_result": "wait"}
+            "prompt": None, "s1_arm": "liquid-d1-ultra", "s1_wait_result": "wait", "objective_facts": False}
 PROMPT_LIMIT = 2000
 REQUIRED = ("project", "ref", "entity", "calibration", "manifest", "discovery", "approval")
 
@@ -80,6 +80,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if unknown:
         raise HuntError(f"the config has unknown keys {', '.join(unknown)}")
     config = {**DEFAULTS, **raw}
+    if not isinstance(config["objective_facts"], bool):
+        raise HuntError("objective_facts must be a boolean")
     prompt = config["prompt"]
     if prompt is not None and (not isinstance(prompt, str) or len(prompt) > PROMPT_LIMIT):
         raise HuntError(f"prompt must be text of at most {PROMPT_LIMIT} characters")
@@ -265,6 +267,7 @@ def session_step(config: Mapping[str, Any], out: Path, number: int, objective: P
                       "-Frontier", "-MaxFrontierCalls", str(config["max_frontier_calls"]),
                       "-FrontierModel", config["frontier_model"], "-ExpectationsPath", str(every),
                       "-SituationsPath", str(actions), *SESSION_FLAGS,
+                      *(["-ObjectiveFacts"] if config.get("objective_facts") else []),
                       "-ManifestOrigin", f"hunt session {number} on {config['ref']}"),
                 out / f"session-{number:02d}.log", child)
     if not (folder / "run.json").is_file():
@@ -367,6 +370,16 @@ def report(config: Mapping[str, Any], out: Path, sessions: Sequence[Path], filed
     lines.append(f"{len(sessions)} live session(s), {config['wall_limit_s']} s each; S1 {config['s1_arm']}; frontier "
                  f"{config['frontier_model']}; replays {config['attempts']} attempts each. Recorded cost "
                  f"${_cost(out):.2f}.")
+    lines += ["", "## Objective items", ""]
+    for session in sessions:
+        metrics = json.loads((session / "run.json").read_text(encoding="utf-8")).get("objectives")
+        if metrics is None:
+            lines.append(f"- {session.name}: unknown.")
+            continue
+        sources = ", ".join(f"{source} {counts['met']} of {counts['total']}"
+                            for source, counts in metrics["by_source"].items())
+        lines.append(f"- {session.name}: {metrics['met']} of {metrics['total']} met"
+                     + (f" ({sources})." if sources else "."))
     lines += ["", "## Findings the frontier filed", ""]
     if not filed:
         lines.append("None.")
@@ -417,6 +430,8 @@ def hunt(config: Mapping[str, Any], out: Path, say=print) -> dict[str, Any]:
     (out / "hunt.md").write_text(text, encoding="utf-8", newline="\n")
     result = {"config": dict(config), "sessions": [s.name for s in sessions], "findings": filed,
               "unmet": [row["line"] for row in unmet_rows(scores)],
+              "objectives": {s.name: json.loads((s / "run.json").read_text(encoding="utf-8")).get("objectives")
+                             for s in sessions},
               "cost_usd": round(_cost(out), 4)}
     (out / "hunt.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
     return result

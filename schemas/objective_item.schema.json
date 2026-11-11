@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "Comparator": {
+      "enum": [
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "changed",
+        "unchanged"
+      ],
+      "title": "Comparator",
+      "type": "string"
+    },
+    "DirectiveOutcome": {
+      "enum": [
+        "open",
+        "met",
+        "not_met",
+        "expired",
+        "invalidated",
+        "unknown"
+      ],
+      "title": "DirectiveOutcome",
+      "type": "string"
+    },
+    "Expected": {
+      "additionalProperties": false,
+      "description": "A checkable postcondition over a public observation field.",
+      "properties": {
+        "field": {
+          "description": "Dotted path into the observation, e.g. public.<reader>",
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Comparator"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "field",
+        "op"
+      ],
+      "title": "Expected",
+      "type": "object"
+    },
+    "Postcondition": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_game_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline Game S"
+        },
+        "expected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expected"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "const": "postcondition",
+          "default": "postcondition",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expected"
+      ],
+      "title": "Postcondition",
+      "type": "object"
+    },
+    "PressCount": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "kind": {
+          "const": "press_count",
+          "default": "press_count",
+          "title": "Kind",
+          "type": "string"
+        },
+        "region_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region Id"
+        },
+        "required": {
+          "exclusiveMinimum": 0,
+          "title": "Required",
+          "type": "integer"
+        },
+        "window_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Window S"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Within"
+        }
+      },
+      "required": [
+        "action",
+        "required"
+      ],
+      "title": "PressCount",
+      "type": "object"
+    }
+  },
+  "$id": "upa/objective_item.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Count"
+    },
+    "criterion": {
+      "discriminator": {
+        "mapping": {
+          "postcondition": "#/$defs/Postcondition",
+          "press_count": "#/$defs/PressCount"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PressCount"
+        },
+        {
+          "$ref": "#/$defs/Postcondition"
+        }
+      ],
+      "title": "Criterion"
+    },
+    "evidence_seq": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Evidence Seq",
+      "type": "array"
+    },
+    "item_id": {
+      "minLength": 1,
+      "title": "Item Id",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/DirectiveOutcome"
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "item_id",
+    "source",
+    "text",
+    "criterion",
+    "status"
+  ],
+  "title": "ObjectiveItem",
+  "type": "object"
+}

@@ -61,6 +61,11 @@ def test_the_script_turns_the_frontier_and_the_recorder_on_only_when_asked():
     assert finish < SCRIPT.index("New-Item -ItemType File -Path $recordStop") # and stops only after Unity exits
 
 
+def test_the_script_forwards_the_objective_facts_switch():
+    assert "[switch]$ObjectiveFacts," in SCRIPT
+    assert "$env:UPA_RUN_OBJECTIVE_FACTS = if ($ObjectiveFacts) { '1' } else { '' }" in SCRIPT
+
+
 def test_the_script_exports_a_token_rate_only_when_it_is_given():
     # An unspecified wrapper parameter must not overwrite the runner's selected-arm default with another arm's rate.
     assert "85000" not in SCRIPT                                      # no second default table in PowerShell

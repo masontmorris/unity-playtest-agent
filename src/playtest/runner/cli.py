@@ -163,6 +163,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--coverage-facts", action="store_true", default=_env("UPA_RUN_COVERAGE_FACTS", switch, False),
                         help="state each turn how many inputs each choice has sent this run and which offered "
                              "actions and skills have sent none (also UPA_RUN_COVERAGE_FACTS=1)")
+    parser.add_argument("--objective-facts", action="store_true", default=_env("UPA_RUN_OBJECTIVE_FACTS", switch, False),
+                        help="state measured objective items each turn (also UPA_RUN_OBJECTIVE_FACTS=1)")
     parser.add_argument("--detectors", action="store_true", default=_env("UPA_RUN_DETECTORS", switch, False),
                         help="raise the generic runtime detectors as suspicions over the observations already "
                              "taken (non-finite pose, a fall below the lowest settled floor, an observation "
@@ -574,6 +576,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_finish:
             plan["no_finish"] = True
         plan["coverage_facts"] = args.coverage_facts
+        plan["objective_facts"] = args.objective_facts
         if args.point_moves:
             plan["point_moves"] = True
         if args.point_turns:
@@ -850,6 +853,13 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
         facts = ProgressFacts(tracker, progress_probe) if progress_probe.regions else tracker
         if args.coverage_facts:
             facts = CoverageFacts(facts, [c.id for c in built.choices if c.kind in (ChoiceKind.action, ChoiceKind.skill)])
+        from .expectations import catalog_controls
+        from .objectives import objective_items, objective_summary, with_objective_facts
+
+        rules_path = args.situations or args.expectations
+        objective_rules = json.loads(rules_path.read_text(encoding="utf-8")) if rules_path is not None else {}
+        objective_controls = catalog_controls(json.loads(args.catalog.read_text(encoding="utf-8")))
+        facts = with_objective_facts(facts, args.objective_facts, writer, objective_rules, objective_controls)
         if args.pattern_facts:
             facts = PatternFacts(facts, [reader.alias for reader in manifest.readers])
         if args.travel_facts:
@@ -858,7 +868,6 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             from .expectations import ExpectationFacts
             facts = ExpectationFacts(facts, expectation_lines)
         live_rules = None
-        rules_path = args.situations or args.expectations
         if args.frontier and rules_path is not None and args.catalog is not None:
             from .expectations import catalog_controls, live_rule_lines
 
@@ -957,6 +966,10 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 },
                 "trace": TRACE_FILE,
             }
+            from .frontier_help import trace_rows
+            rows = trace_rows(writer, ("observation", "effect", "execution", "option", "investigation", "context"))
+            summary["objective_facts"] = args.objective_facts
+            summary["objectives"] = objective_summary(objective_items(objective_rules, rows, objective_controls))
             if after_close is not None:
                 summary["scene_after_close"] = after_close
                 if after_close.get("scene") is not None and after_close["scene"] != scene:
