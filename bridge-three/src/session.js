@@ -2,11 +2,11 @@
 //
 // The relay (or, later, a native host) hands this class lines from the core and carries its replies
 // back. It answers hello/status, observe (with frames when capture passed its self-test), act from
-// the pinned catalog, clock, stop and the `transforms` inspection. `place` is recognised and refused,
-// and the other inspection stages have no source. Unmeasured facts are null, never zero or success.
+// the pinned catalog, clock, stop, and the `transforms` and `fields` inspections. `place` is
+// recognised and refused, and the other inspection stages have no source. Unmeasured facts are null, never zero or success.
 
 import { validateCatalog } from "./catalog.js";
-import { inspectTransforms } from "./inspect.js";
+import { inspectFields, inspectTransforms } from "./inspect.js";
 import { DomInputSurface } from "./input-surface.js";
 import { errorMessage, envelope, ProtocolError, readRequest } from "./protocol.js";
 import { viewAngles } from "./view.js";
@@ -157,6 +157,12 @@ export class BridgeSession {
 
   #inspect(body) {
     const attached = this.#view();
+    if (body.stage === "fields") {
+      const reading = inspectFields({ clock: this.#clock, realTimeS: this.#realNow(),
+        inputState: this.#surface.available ? this.#surface.state() : null });
+      this.#send({ ...this.#envelope(), type: "inspection", stage: body.stage, in_reply_to: body.seq, ...reading });
+      return;
+    }
     if (body.stage !== "transforms") {
       this.#fail("internal", `no ${body.stage} inspection source is attached`, body.seq, false);
       return;
