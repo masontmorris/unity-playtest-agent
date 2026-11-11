@@ -36,7 +36,8 @@ REPO_ID = "LiquidAI/d1-2B"
 REVISION = "652f920e544ea37f81e4b0ce89b81d4ed0da90b1"  # the checkpoint every local-d1-2b run so far used
 
 
-def load(revision: str, chunk: int):
+def load(revision: str, chunk: int, prepare=None):
+    """`prepare(model)`, if given, runs on the plain linears before the engine fuses them on first use."""
     model = AutoModel.from_pretrained(REPO_ID, revision=revision, trust_remote_code=True,
                                       dtype=torch.bfloat16).to("cuda")
     if not torch.backends.cuda.is_flash_attention_available():
@@ -44,7 +45,9 @@ def load(revision: str, chunk: int):
             if "LiquidAI" in name and name.endswith(".attention"):
                 module._fused = lambda q: False
                 module.CHUNK = chunk
-    model.engine  # builds the runner (tokenizer, calibration) before the first request
+    if prepare is not None:
+        prepare(model)
+    model.engine  # builds the runner (tokenizer, calibration) and fuses its projections before the first request
     return model
 
 
