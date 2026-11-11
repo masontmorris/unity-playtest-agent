@@ -1,0 +1,9 @@
+{
+  "item_id": "plan-1",
+  "source": "hunt_plan",
+  "text": "press input_a",
+  "criterion": {"kind": "press_count", "action": "input_a", "required": 4, "window_s": 1},
+  "count": 2,
+  "status": "open",
+  "evidence_seq": [4, 8]
+}

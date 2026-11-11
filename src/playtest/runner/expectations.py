@@ -1631,6 +1631,25 @@ def situation_presses(trace_rows: Sequence[Mapping[str, Any]]) -> list[tuple[flo
     return sorted(out, key=lambda item: item[0])
 
 
+def situation_qualified_presses(item: Mapping[str, Any], pressed: Sequence[tuple[float, float, str]],
+                                recorded: Sequence[tuple[float, Mapping[str, Any]]],
+                                served: Mapping[str, frozenset]) -> tuple[list[tuple[float, float, str]], int, int]:
+    mine, skipped_out, unread = [], 0, 0
+    verb = served.get(item["action"])
+    for start, end, action in pressed:
+        if action != item["action"] and not (verb and verb <= served.get(action, frozenset())):
+            continue
+        observed = next((o for t, o in recorded if abs(t - start) <= 1.5 and t <= start + 0.05), None)
+        where = _in_situation(item, observed) if observed is not None else None
+        if where is None:
+            unread += 1
+        elif where:
+            mine.append((start, end, action))
+        else:
+            skipped_out += 1
+    return mine, skipped_out, unread
+
+
 def score_situations(situations: Sequence[Mapping[str, Any]], sessions: Sequence[Sequence[tuple[float, int, dict]]],
                      presses: Sequence[Sequence[tuple[float, float, str]]], controls: Sequence[Mapping[str, frozenset]],
                      effects: Sequence[Sequence[tuple[float, Mapping[str, Any]]]],
@@ -1644,19 +1663,9 @@ def score_situations(situations: Sequence[Mapping[str, Any]], sessions: Sequence
             continue
         kept_presses, skipped_out, unread = [], 0, 0
         for pressed, recorded, served in zip(presses, effects, controls):
-            mine = []
-            verb = served.get(item["action"])
-            for start, end, action in pressed:
-                if action != item["action"] and not (verb and verb <= served.get(action, frozenset())):
-                    continue   # another input's press says nothing about this rule's situation
-                observed = next((o for t, o in recorded if abs(t - start) <= 1.5 and t <= start + 0.05), None)
-                where = _in_situation(item, observed) if observed is not None else None
-                if where is None:
-                    unread += 1
-                elif where:
-                    mine.append((start, end, action))
-                else:
-                    skipped_out += 1
+            mine, outside, missing = situation_qualified_presses(item, pressed, recorded, served)
+            skipped_out += outside
+            unread += missing
             kept_presses.append(mine)
         (row,) = score_action_rules([item], sessions, kept_presses, controls, guards)
         row["situation_not_met"], row["situation_unread"] = skipped_out, unread
@@ -1752,14 +1761,9 @@ def press_test_specs(*expectations: Mapping[str, Any]) -> list[Any]:
     return specs
 
 
-def test_plan(expectations: Mapping[str, Any], *, presses: int = 4, tests: bool = False) -> str:
-    """A session objective that asks for each action rule's press to be made on purpose, in plain words.
-
-    Written by code from the pre-registered rules, never by a model, so it says nothing the rules do not: the input
-    to press, the situation to bring about first when a rule needs one, and, for a reader condition, only that the
-    effect needs it (S1 sees the readers). Each press is to be repeated, apart, so the scorer has several to count.
-    """
-    lines = []
+def plan_steps(expectations: Mapping[str, Any]) -> list[tuple[str, list[Mapping[str, Any]]]]:
+    """The unique stated steps and all pre-registered rules behind each step, in plan order."""
+    steps: dict[str, list[Mapping[str, Any]]] = {}
     rules = [*(expectations.get("action_rules") or ()), *(expectations.get("situations") or ())]
     for rule in rules:
         step = f"press {rule['action']}"
@@ -1770,8 +1774,13 @@ def test_plan(expectations: Mapping[str, Any], *, presses: int = 4, tests: bool 
         if rule.get("condition_observable"):
             step += (f" when {rule['condition_observable']} {rule['condition_op']} "
                      f"{json.dumps(rule['condition_value'])}")
-        lines.append(step)
-    steps = list(dict.fromkeys(lines))
+        steps.setdefault(step, []).append(rule)
+    return list(steps.items())
+
+
+def test_plan(expectations: Mapping[str, Any], *, presses: int = 4, tests: bool = False) -> str:
+    """A session objective asking for each pre-registered step, repeated and spaced apart."""
+    steps = [text for text, _ in plan_steps(expectations)]
     if not steps:
         return ""
     numbered = "; ".join(f"({n}) {step}" for n, step in enumerate(steps, 1))

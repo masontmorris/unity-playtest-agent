@@ -482,6 +482,13 @@ def test_presses_come_from_plain_executions_and_from_inside_options():
     assert controls["attack"] <= controls["attack_air"]           # the chord presses attack too
 
 
+def test_plan_steps_keep_all_rules_behind_one_stated_step():
+    first = attack_rule(condition_observable=None)
+    second = {**first, "then": "other"}
+    steps = expectations.plan_steps({"action_rules": [first, second]})
+    assert steps == [("press attack", [first, second])]
+
+
 def attack_rule(**updates):
     base = {"action": "attack", "condition_observable": "cooldown", "condition_op": "<=", "condition_value": 0,
             "situation": None, "then": "shots", "then_expect": "increases", "then_value": None, "within_s": 1.0,
