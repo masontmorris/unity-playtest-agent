@@ -1,9 +1,11 @@
 """One live smoke trial of S1 playing a three.js game in a real browser.
 
-It starts, in order: the local d1-2B S1 shim, the game's static server, the bridge relay serving every
+It starts, in order: the local d1-2B S1 shim (only for the local arm), the game's static server, the bridge relay serving every
 declared action, and Chrome on the game page with the relay URL. It measures each declaration's
 execution evidence with the input probe, exports the run catalog from the updated manifest (reopening
-the page if that catalog differs from the probe's), and runs `playtest-run` with the `d1-2b-local` arm. It tears everything
+the page if that catalog differs from the probe's), and runs `playtest-run` with the chosen S1 arm: the free local
+`d1-2b-local` by default, or a paid arm such as `liquid-d1-ultra`, whose credentials are read by name from the main
+checkout's `.env` into the child processes only, and whose envelope is stated with `--bound` and `--max-cost-usd`. It tears everything
 down and writes `report.json` beside the run's own records.
 
 The manifest is a smoke stand-in until the three.js bridge has a preflight. It is built from the
@@ -15,6 +17,8 @@ Run it inside the GPU lease, because the model and the page both render on the s
 
     python C:/Users/mason/.gpu/gpu_lease.py run --holder upa-three --purpose "three.js live trial" -- \
         uv run python scripts/three/live_trial.py --game C:/Users/mason/source/repos/three-playtest-sandbox --approved-by "<who asked>"
+
+A paid arm adds its envelope, for example `--s1-arm liquid-d1-ultra --bound 0.002 --max-cost-usd 0.05`.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 from runner_manifest import action, manifest  # noqa: E402  (the shared manifest helpers)
 
+from playtest.bench import replay  # noqa: E402
 from playtest.contracts.action_catalog import ActionCatalog  # noqa: E402
 from playtest.contracts.manifest import PreflightManifest  # noqa: E402
 from playtest.preflight import catalog as catalog_export  # noqa: E402
@@ -47,6 +52,25 @@ from playtest.preflight import manifest as manifest_checks  # noqa: E402
 
 CHROME = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
 DECISION_LAB = Path("C:/Users/mason/decision-lab")
+MAIN_ENV = Path("C:/Users/mason/unity-playtest-agent/.env")
+LOCAL_ARM = "d1-2b-local"
+
+
+def credentials(path: Path, names: tuple[str, ...]) -> dict[str, str]:
+    """Only the named variables from a dotenv file; a missing one is an error, and no value is ever printed."""
+    found: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.removeprefix("export ").split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name in names:
+            found[name] = value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"" else value
+    missing = [name for name in names if not found.get(name)]
+    if missing:
+        raise RuntimeError(f"{path} does not set {', '.join(missing)}")
+    return found
 
 
 def _stamp() -> str:
@@ -172,9 +196,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-age-s", type=float, default=8.0)
     parser.add_argument("--probe-repeats", type=int, default=2)
     parser.add_argument("--no-game-view", action="store_true")
-    parser.add_argument("--approved-by", required=True,
-                        help="who asked for this trial, recorded in the approval file (the arm is local and costs $0)")
+    parser.add_argument("--approved-by", required=True, help="who asked for this trial, recorded in the approval file")
+    parser.add_argument("--s1-arm", default=LOCAL_ARM, help=f"the S1 arm (default {LOCAL_ARM}, free and local)")
+    parser.add_argument("--bound", type=float, default=None,
+                        help="a paid arm's stated per-call bound in USD, which the runner reserves before every call")
+    parser.add_argument("--max-cost-usd", type=float, default=None, help="a paid arm's overall cost cap for this trial")
+    parser.add_argument("--unverified-balance-reason", default=None,
+                        help="what the user said when approving a paid arm without a verified balance")
+    parser.add_argument("--env-file", type=Path, default=MAIN_ENV, help="where a paid arm's credentials are read from")
+    parser.add_argument("--ledger", type=Path, default=None,
+                        help="a prior run folder whose calls/ measured the paid arm's cost (playtest-approval --ledger)")
+    parser.add_argument("--facts", action="store_true",
+                        help="give S1 the runner's measured coverage and travel facts (--coverage-facts --travel-facts)")
     args = parser.parse_args(argv)
+    local = args.s1_arm == LOCAL_ARM
+    if not local and (args.bound is None or args.max_cost_usd is None or args.ledger is None):
+        parser.error("a paid arm needs --bound, --max-cost-usd and --ledger: the trial's envelope is stated before it starts")
 
     game = args.game.resolve()
     spec = json.loads((game / "playtest" / "smoke.json").read_text(encoding="utf-8"))
@@ -186,15 +223,20 @@ def main(argv: list[str] | None = None) -> int:
                               "status": "error", "steps": {}}
     processes: list[Process] = []
     profile = Path(tempfile.mkdtemp(prefix="upa-three-chrome-"))
-    token = secrets.token_urlsafe(24)
-    env = {**os.environ, "UPA_REPO_ROOT": str(REPO), "D1_LOCAL_TOKEN": token}
+    env = {**os.environ, "UPA_REPO_ROOT": str(REPO)}
+    report["s1_arm"] = args.s1_arm
 
     try:
         started = time.monotonic()
-        shim = Process("d1-shim", [str(args.decision_lab / ".venv" / "Scripts" / "python.exe"),
-                                   str(REPO / "scripts" / "s1" / "d1_local_server.py"),
-                                   "--decision-lab", str(args.decision_lab)], logs, env=env)
-        processes.append(shim)
+        shim = None
+        if local:
+            env["D1_LOCAL_TOKEN"] = secrets.token_urlsafe(24)
+            shim = Process("d1-shim", [str(args.decision_lab / ".venv" / "Scripts" / "python.exe"),
+                                       str(REPO / "scripts" / "s1" / "d1_local_server.py"),
+                                       "--decision-lab", str(args.decision_lab)], logs, env=env)
+            processes.append(shim)
+        else:
+            env.update(credentials(args.env_file, replay.credential_variables(args.s1_arm)))
         server = Process("game-server", ["node", str(game / "serve.mjs"), "--bridge", str(REPO / "bridge-three" / "src"),
                                          "--port", str(args.port)], logs, cwd=game)
         processes.append(server)
@@ -239,10 +281,11 @@ def main(argv: list[str] | None = None) -> int:
         renderer = server.json_line("page_log", 60)
         report["renderer"] = json.loads(renderer["page_log"])
 
-        ready = shim.json_line("ready", 600)
-        report["s1_shim"] = {key: ready.get(key) for key in ("kernels", "port")}
+        if shim is not None:
+            ready = shim.json_line("ready", 600)
+            report["s1_shim"] = {key: ready.get(key) for key in ("kernels", "port")}
+            env["D1_LOCAL_URL"] = f"http://127.0.0.1:{ready['port']}"
         report["steps"]["startup_s"] = round(time.monotonic() - started, 2)
-        env["D1_LOCAL_URL"] = f"http://127.0.0.1:{ready['port']}"
 
         plan = {"schema_version": 1, "catalog": str(probe_catalog), "manifest": str(manifest_path),
                 "update_manifest": str(manifest_path), "entity_id": spec["entity_id"],
@@ -273,8 +316,15 @@ def main(argv: list[str] | None = None) -> int:
 
         _write(out / "entity.json", {"entity_id": spec["entity_id"]})
         _write(out / "calibration.json", {"entity_id": spec["entity_id"]})
-        code = _run(["uv", "run", "playtest-approval", "--arm", f"d1-2b-local={args.max_calls}", "--approved-by",
-                     args.approved_by, "--output", str(out / "approval.json")], logs / "approval.log", env, 120)
+        approval = ["uv", "run", "playtest-approval", "--arm", f"{args.s1_arm}={args.max_calls}", "--approved-by",
+                    args.approved_by, "--output", str(out / "approval.json")]
+        if not local:
+            approval += ["--bound", f"{args.s1_arm}={args.bound}", "--max-cost-usd", str(args.max_cost_usd)]
+            if args.ledger is not None:
+                approval += ["--ledger", f"{args.s1_arm}={args.ledger}"]
+            if args.unverified_balance_reason:
+                approval += ["--unverified-balance-reason", args.unverified_balance_reason]
+        code = _run(approval, logs / "approval.log", env, 120)
         if code != 0:
             raise RuntimeError(f"playtest-approval exited with {code}")
         run_dir = out / "run"
@@ -284,11 +334,13 @@ def main(argv: list[str] | None = None) -> int:
                    "--manifest", str(manifest_path), "--manifest-origin",
                    "hand-written smoke declarations with probe-measured evidence; no three.js preflight yet",
                    "--catalog", str(catalog_path), "--catalog-sha256", catalog_sha, "--approval",
-                   str(out / "approval.json"), "--max-calls", str(args.max_calls), "--s1-arm", "d1-2b-local",
+                   str(out / "approval.json"), "--max-calls", str(args.max_calls), "--s1-arm", args.s1_arm,
                    "--no-finish", "--wall-limit-s", str(args.wall_limit_s), "--max-age-s", str(args.max_age_s),
                    "--objective", spec["objective"]]
         if not args.no_game_view:
             command.append("--s1-game-view")
+        if args.facts:
+            command += ["--coverage-facts", "--travel-facts"]
         run_started = time.monotonic()
         code = _run(command, logs / "playtest-run.log", env, args.wall_limit_s + 300)
         report["steps"]["run"] = {"exit": code, "seconds": round(time.monotonic() - run_started, 2)}
