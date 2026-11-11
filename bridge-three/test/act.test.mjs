@@ -162,3 +162,32 @@ test("a paused virtual clock cannot keep an unobserved input held", async () => 
     assert.ok(h.events.some(x => x.type === "keyup"));
   } finally { h.close(); }
 });
+
+test("a pointer placement puts the button's events at that place across the view", async () => {
+  const at = (x, y) => ({ device: "Mouse", control: "position", x, y });
+  const h = setup({ actions: { click: definition([at(0.5, -0.5), { device: "Mouse", control: "leftButton", x: null, y: null }], 0.03) } });
+  h.target.innerWidth = 800; h.target.innerHeight = 600;
+  try {
+    const observation = h.observe(); h.act("click", { based_on_seq: observation });
+    const record = await terminal(h, "click-2");
+    assert.equal(record.status, "completed");
+    const move = h.events.find(e => e.type === "pointermove");
+    const down = h.events.find(e => e.type === "pointerdown");
+    const up = h.events.find(e => e.type === "pointerup");
+    // x 0.5 is three quarters across; y -0.5 is three quarters down (+y is up).
+    for (const e of [move, down, up]) { assert.equal(e.clientX, 600); assert.equal(e.clientY, 450); }
+    assert.ok(h.events.indexOf(move) < h.events.indexOf(down), "the pointer is placed before the button goes down");
+    assert.deepEqual(record.applied_inputs.map(i => [i.control, i.x, i.y, i.release_verified]),
+      [["position", 0.5, -0.5, true], ["leftButton", null, null, true]]);
+    assert.ok(record.applied_inputs.every(i => typeof i.applied_duration_s === "number"));
+  } finally { h.close(); }
+});
+
+test("a pointer placement without both coordinates is refused by the catalog", async () => {
+  const h = setup({ actions: { bad: definition([{ device: "Mouse", control: "position", x: 0.5, y: null }]) } });
+  try {
+    const observation = h.observe(); h.act("bad", { based_on_seq: observation });
+    const record = await terminal(h, "bad-2");
+    assert.equal(record.status, "rejected");
+  } finally { h.close(); }
+});

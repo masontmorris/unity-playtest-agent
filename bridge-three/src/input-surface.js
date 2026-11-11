@@ -44,6 +44,7 @@ export class DomInputSurface {
   #navigator;
   #captureTarget;
   #lastDelta = null;
+  #pointer = null;
   #padTimestamp = Date.now() - (globalThis.performance?.timeOrigin ?? Date.now());
 
   constructor({ clock, target = globalThis, windowTarget = target.window ?? target, documentTarget = target.document ?? windowTarget, keyboardTarget = documentTarget, pointerTarget = documentTarget, canvas = null } = {}) {
@@ -98,11 +99,19 @@ export class DomInputSurface {
       event(this.#document, "pointermove", { movementX: dx, movementY: dy, pointerId: 1, pointerType: "mouse" });
       event(this.#document, "mousemove", { movementX: dx, movementY: dy });
       return { applied_delta_x: this.#lastDelta?.x ?? null, applied_delta_y: this.#lastDelta?.y ?? null };
+    } else if (input.device === "Mouse" && input.control === "position") {
+      const at = this.#clientPoint(input.x, input.y);
+      const previous = this.#pointer;
+      this.#pointer = at;
+      const moved = { movementX: previous ? at.clientX - previous.clientX : 0, movementY: previous ? at.clientY - previous.clientY : 0 };
+      const target = this.#canvas ?? this.#document;
+      event(target, "pointermove", { ...at, ...moved, pointerId: 1, pointerType: "mouse" });
+      event(target, "mousemove", { ...at, ...moved });
     } else if (input.device === "Mouse") {
       const code = BUTTON_CODE[input.control];
       const target = this.#canvas ?? this.#document;
-      event(target, "pointerdown", { button: code, buttons: 1 << code, pointerId: 1, pointerType: "mouse" });
-      event(target, "mousedown", { button: code, buttons: 1 << code });
+      event(target, "pointerdown", { ...this.#pointer, button: code, buttons: 1 << code, pointerId: 1, pointerType: "mouse" });
+      event(target, "mousedown", { ...this.#pointer, button: code, buttons: 1 << code });
     } else {
       this.#applyGamepad(input);
     }
@@ -113,11 +122,13 @@ export class DomInputSurface {
     if (input.device === "Keyboard") {
       const code = KEY_CODES.get(input.control);
       event(this.#keyboard, "keyup", { code, key: keyValue(input.control, code), repeat: false });
+    } else if (input.device === "Mouse" && input.control === "position") {
+      // A placement presses nothing, so there is nothing to release; the pointer stays where it was put.
     } else if (input.device === "Mouse" && input.control !== "delta") {
       const code = BUTTON_CODE[input.control];
       const target = this.#canvas ?? this.#document;
-      event(target, "pointerup", { button: code, buttons: 0, pointerId: 1, pointerType: "mouse" });
-      event(target, "mouseup", { button: code, buttons: 0 });
+      event(target, "pointerup", { ...this.#pointer, button: code, buttons: 0, pointerId: 1, pointerType: "mouse" });
+      event(target, "mouseup", { ...this.#pointer, button: code, buttons: 0 });
     } else if (input.device === "Gamepad") {
       this.#neutralGamepad(input.control);
     }
@@ -128,7 +139,7 @@ export class DomInputSurface {
 
   isReleased(input) {
     if (input.device === "Keyboard") return !this.#keys.has(input.control);
-    if (input.device === "Mouse") return input.control === "delta" || !this.#mouse.has(input.control);
+    if (input.device === "Mouse") return input.control === "delta" || input.control === "position" || !this.#mouse.has(input.control);
     if (input.control === "leftStick") return this.#axes[0] === 0 && this.#axes[1] === 0;
     if (input.control === "rightStick") return this.#axes[2] === 0 && this.#axes[3] === 0;
     if (input.control === "dpad") return [12, 13, 14, 15].every(i => !this.#buttons[i].pressed);
@@ -151,6 +162,14 @@ export class DomInputSurface {
     if (this.#gamepadSent || !this.#navigator) return;
     this.#gamepadSent = true;
     event(this.#window, "gamepadconnected", { gamepad: this.#gamepad() });
+  }
+
+  /** Client coordinates for a placement: x and y in [-1, 1] across the game view, +y up. */
+  #clientPoint(x, y) {
+    const rect = (this.#canvas ?? null)?.getBoundingClientRect?.() ?? { left: 0, top: 0, width: this.#window?.innerWidth ?? 0, height: this.#window?.innerHeight ?? 0 };
+    const clientX = rect.left + (x + 1) / 2 * rect.width;
+    const clientY = rect.top + (1 - y) / 2 * rect.height;
+    return { clientX, clientY, offsetX: clientX - rect.left, offsetY: clientY - rect.top, screenX: clientX, screenY: clientY };
   }
 
   #gamepad() { return { id: "DOM virtual gamepad", index: 0, connected: true, mapping: "standard", axes: [...this.#axes], buttons: this.#buttons.map(b => ({ ...b })), timestamp: this.#padTimestamp, hapticActuators: [], vibrationActuator: null }; }

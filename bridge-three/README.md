@@ -71,7 +71,10 @@ The catalog uses the same `ActionCatalog` shape as the Unity bridge:
 }
 ```
 
-`backend: "input_system"` selects the shared control vocabulary. This bridge delivers those controls
+`backend: "input_system"` selects the shared control vocabulary. `Mouse` `position` places the pointer
+(x and y in [-1, 1] across the canvas, (0, 0) at its centre, +y up) for the input's hold. A click at a place
+is a chord that lists the position before the button, so the button's events carry that place. The Unity
+bridge does not support `position` and rejects it. This bridge delivers those controls
 as DOM events and a virtual standard gamepad. It does not interpret action names or change declared
 values. Keyboard and mouse release checks read the delivered state recorded by capture-phase event
 listeners. Gamepad release checks read the virtual gamepad state. `release_verified` means that this
