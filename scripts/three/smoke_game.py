@@ -33,6 +33,17 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def wait_http(port: int, timeout_s: float) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -122,6 +133,17 @@ def main() -> int:
     args = parser.parse_args()
     node, npx = shutil.which("node"), shutil.which("npx")
     game = args.game.resolve()
+    lock = game / "Temp" / "playtest-bridge.lock"
+    if lock.is_file():
+        # Two sessions on one game share its lock and frames folder, so a client can reach the other's page.
+        try:
+            pid = json.loads(lock.read_text(encoding="utf-8")).get("pid")
+        except (OSError, ValueError):
+            pid = None
+        if pid and _alive(int(pid)):
+            print(f"another bridge (pid {pid}) holds {lock}; run one session per game at a time", file=sys.stderr)
+            return 2
+        lock.unlink(missing_ok=True)
     procs = []
     try:
         relay = subprocess.Popen([node, str(RELAY), "--project", str(game), "--catalog", str(args.catalog.resolve())],
