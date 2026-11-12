@@ -91,12 +91,20 @@ so a game that times itself with them is not paused.
 | Verb | Status |
 |---|---|
 | `hello` / `status` | `engine: "three"`, `unity_version: null`, the `dom` input backend; `capture` once a canvas is attached, with its self-test result |
-| `observe` | Scene id, frame, game time, clock state, camera yaw and pitch, and with `with_frame` the newest written frame. `public` is empty until preflight readers exist |
+| `observe` | Scene id, frame, game time, clock state, camera yaw and pitch, and with `with_frame` the newest written frame. `public` holds the values of the readers the game attached (see below) |
 | `act` | Runs the exact catalog action or skill. Holds, waits, leases and skill deadlines use wall time, so pausing the virtual clock does not keep an input held |
 | `clock` | pause, resume, step, set_scale |
 | `stop` | Releases every held DOM input and reports whether the delivered state is neutral |
 | `inspect` | `transforms` only: every object in the attached scene with its world position and basis, and the runtime error monitor. Other stages are refused with `internal` |
 | `place` | Refused with `invalid` |
+
+## Readers
+
+A game reports its own state by attaching readers: `bridge.attach({ ..., readers: { alias: () => value } })`.
+Each observation calls every reader and puts its value under `public[alias]`. A value is null, a boolean, a
+finite number, a string of at most 200 characters, or up to 16 finite numbers (a position or a vector). A
+reader that throws or returns anything else is reported as `null` with a `reader_errors` entry, never as a
+guessed value. Readers live in the game, so this package still knows no game's names.
 
 ## Coordinates
 
@@ -115,8 +123,14 @@ task, so the canvas still holds what the game drew. It grabs at most 10 a second
 640 px wide, and sends each as a JPEG to the relay. The relay writes it atomically to
 `<project>/Temp/playtest-bridge-frames/f-NNNNNN.jpg`, keeps the newest 120 as the Unity bridge does,
 and reports the path back. `frame_ref` names only a frame the relay confirmed written. The capture
-self-test passes once the first frame is written and its pixels read back as something other than
-fully transparent, which is what an unreadable canvas gives.
+self-test passes once a frame whose pixels read back as something other than fully transparent is written.
+A game can attach before it first draws (while it loads, or when it skips a menu), so blank frames are
+skipped and never written. The self-test fails only after 60 s of nothing but blank frames, which is
+what an unreadable canvas gives.
+
+Capture runs at 10 Hz by default. `installBridge({ captureRateHz })` or `?playtest_capture_hz=` on the page URL
+sets the rate, and 0 turns capture off (the page then reports `capture: false`). Each grab copies and
+encodes the canvas on the page's main thread, so a heavy scene can run better at a lower rate.
 
 ## Runtime errors
 

@@ -15,6 +15,16 @@ export const BRIDGE_VERSION = "0.1.0";
 const DEFAULT_RATE_HZ = 20;
 const wallS = () => Date.now() / 1000;
 
+/** A reader's value as JSON: null, a boolean, a finite number, a string of at most 200 characters, or up to 16
+ * finite numbers (a position or a vector). Anything else is undefined, which the caller reports as an error. */
+function readerValue(value) {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") return value.length <= 200 ? value : undefined;
+  if (Array.isArray(value) && value.length <= 16 && value.every(n => typeof n === "number" && Number.isFinite(n))) return [...value];
+  return undefined;
+}
+
 export class BridgeSession {
   #clock;
   #view;
@@ -220,6 +230,19 @@ export class BridgeSession {
     if (attached === null) readerErrors.push({ reader: "scene", error: "no scene is attached" });
     const view = attached === null ? null : viewAngles(attached.camera);
     if (attached !== null && view === null) readerErrors.push({ reader: "view", error: "the camera has no readable world matrix" });
+    const values = {};
+    for (const [alias, read] of Object.entries(attached?.readers ?? {})) {
+      // A game's reader reports one value; one that throws or returns no JSON value is null plus an error,
+      // never a guessed value.
+      try {
+        const value = readerValue(read());
+        values[alias] = value === undefined ? null : value;
+        if (value === undefined) readerErrors.push({ reader: alias, error: "the reader returned no JSON value" });
+      } catch (error) {
+        values[alias] = null;
+        readerErrors.push({ reader: alias, error: String(error?.message ?? error).slice(0, 200) });
+      }
+    }
     const clock = this.#clock;
     const observation = {
       ...this.#envelope(),
@@ -230,7 +253,7 @@ export class BridgeSession {
       paused: clock.paused,
       time_scale: clock.timeScale,
       frame: clock.frame,
-      public: {},
+      public: values,
       ui: null,
       frame_ref: this.#withFrame ? this.#capture()?.latestFrameRef ?? null : null,
       view,
