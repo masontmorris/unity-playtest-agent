@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from playtest.contracts.bridge import InspectResult
+from playtest.contracts.bridge import InspectResult, Observation
 from playtest.contracts.manifest import ManifestReader
 from playtest.core.bridge_client import BridgeClient
 from playtest.core.ports import ReaderSample
@@ -64,6 +64,38 @@ class Installed:
         return {"resolved": list(self.resolved), "unresolved": list(self.unresolved),
                 "inspection_seq": self.inspection_seq, "game_s": self.game_s,
                 "identity_stage": self.identity_stage}
+
+
+@dataclass(frozen=True)
+class PublishedInstall:
+    resolved: list[str]
+    unresolved: list[dict[str, str]]
+    observation_seq: int
+    game_s: float | None
+
+    def summary(self) -> dict[str, Any]:
+        return {"source": "observe.public", "resolved": self.resolved, "unresolved": self.unresolved,
+                "observation_seq": self.observation_seq, "game_s": self.game_s,
+                "identity_verified": False, "freshness": None,
+                "reason": "publication was checked once; field identity and freshness were not measured"}
+
+
+def published_install(observation: Observation, readers: Sequence[ManifestReader]) -> PublishedInstall:
+    """Check the current published aliases without caching or replacing their values."""
+    errors = {error.reader: error.error for error in observation.reader_errors}
+    resolved = []
+    unresolved = []
+    for reader in readers:
+        alias = reader.alias
+        if alias in errors:
+            unresolved.append({"alias": alias, "reason": errors[alias]})
+        elif alias not in observation.public:
+            raise ValueError(f"manifest reader {alias!r} is absent from the bridge observation")
+        else:
+            resolved.append(alias)
+    if readers and not resolved:
+        raise ValueError("none of the manifest's readers can be read in the live observation")
+    return PublishedInstall(resolved, unresolved, observation.seq, observation.game_s)
 
 
 @dataclass
