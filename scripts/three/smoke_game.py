@@ -77,7 +77,8 @@ async def drive(game: Path, actions: list[str], settle_s: float, out: dict) -> d
         if later is not None:
             out["status"]["capture_after_settle"] = {"capture": later.capture, "capture_self_test": later.capture_self_test}
         out["observe"] = {"scene": first.scene, "playing": first.playing, "game_s": first.game_s,
-                          "frame": first.frame, "view": first.view.model_dump() if first.view else None}
+                          "frame": first.frame, "view": first.view.model_dump() if first.view else None,
+                          "public": first.public, "reader_errors": [e.model_dump() for e in first.reader_errors]}
         acted = {}
         for index, name in enumerate(actions):
             based = await client.observe_once()
@@ -87,7 +88,9 @@ async def drive(game: Path, actions: list[str], settle_s: float, out: dict) -> d
             after = await client.observe_once()
             acted[name] = {"status": terminal.status.value, "release_verified": terminal.release_verified,
                            "yaw_change": None if not (after.view and based.view) else
-                           round(after.view.yaw_deg - based.view.yaw_deg, 2)}
+                           round(after.view.yaw_deg - based.view.yaw_deg, 2),
+                           "readers_changed": {k: [based.public.get(k), v] for k, v in after.public.items()
+                                               if based.public.get(k) != v}}
         out["act"] = acted
         inspection = await client.inspect("transforms")
         body = inspection if isinstance(inspection, dict) else inspection.model_dump()
