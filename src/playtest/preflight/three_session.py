@@ -356,6 +356,14 @@ async def measure(decl: GameDeclarations, entity_action: str, settle_s: float, q
                     or any(record.session != session for record in records)):
                 raise ValueError("entity measurement lacked exact, sequence-bound, release-verified receipts")
             after = await _snapshot(client, journal)
+            # A transforms read of a large scene is slow (Kinema: about 0.5 s for 1,783 objects), so the idle window
+            # outlasts the action and entity.analyze finds them incomparable. Read again until they span alike.
+            idle_span = idle[-1]["real_time_s"] - idle[0]["real_time_s"]
+            for _ in range(entity.IDLE_INTERVALS):
+                if after["real_time_s"] - before["real_time_s"] >= idle_span:
+                    break
+                await asyncio.sleep(entity.IDLE_INTERVAL_S)
+                after = await _snapshot(client, journal)
             if _identity(after) != identities:
                 raise ValueError("object identities changed during entity measurement")
             trials.append({"control": entity_action, "idle": idle, "before": before, "after": after,

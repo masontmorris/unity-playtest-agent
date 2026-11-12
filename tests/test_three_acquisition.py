@@ -2,6 +2,8 @@ import asyncio
 import struct
 from datetime import datetime, timezone
 
+import pytest
+
 from playtest.contracts.bridge import InspectionCap, InspectResult, Observation, StopResult
 from playtest.preflight import three_session
 from playtest.preflight.three import compile_study
@@ -9,7 +11,8 @@ from test_input_probe import receipt, record
 from test_three_preflight import study
 
 
-def test_acquisition_records_observations_and_exact_executions(tmp_path, monkeypatch):
+@pytest.mark.parametrize("inspect_s", [0.1, 0.5])
+def test_acquisition_records_observations_and_exact_executions(tmp_path, monkeypatch, inspect_s):
     source = study(tmp_path)
     capture = tmp_path / "capture.png"
     capture.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 64, 32) + b"frame")
@@ -22,7 +25,7 @@ def test_acquisition_records_observations_and_exact_executions(tmp_path, monkeyp
         async def inspect(self, stage):
             self.stages.append(stage)
             assert stage == "transforms"
-            self.t += 0.1
+            self.t += inspect_s
             return InspectResult(protocol="upa/1", session="s", seq=1, game_s=self.t,
                 wall_utc=datetime.now(timezone.utc), type="inspection", stage=stage, in_reply_to=1,
                 data={"position_space": "world", "position_unit": "three_world_unit",
@@ -69,6 +72,10 @@ def test_acquisition_records_observations_and_exact_executions(tmp_path, monkeyp
     assert all(a["before_observation"]["reader_errors"] == [{"reader": "bad", "error": "failure"}]
                and a["after_observation"]["public"]["unknown"] is None for a in measured.attempts)
     compiled = compile_study(measured)
+    for trial in measured.entity_trials:
+        idle = trial["idle"][-1]["real_time_s"] - trial["idle"][0]["real_time_s"]
+        action = trial["after"]["real_time_s"] - trial["before"]["real_time_s"]
+        assert 0.5 <= idle / action <= 1.0, "a slow transforms read still gives comparable windows"
     assert compiled.manifest.entity_id == "entity"
     assert compiled.manifest.actions[0].execution_supported is True
     assert compiled.manifest.actions[0].hold_effect is True
