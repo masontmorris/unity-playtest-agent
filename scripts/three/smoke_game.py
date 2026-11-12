@@ -123,6 +123,26 @@ async def drive(game: Path, actions: list[str], settle_s: float, out: dict) -> d
     return out
 
 
+def _stop(proc: subprocess.Popen) -> None:
+    """Stop a child and everything it started. The page closes its browser once stdin closes, so it gets a moment."""
+    if proc.stdin:
+        try:
+            proc.stdin.close()
+            proc.wait(timeout=10)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if proc.poll() is None:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+        else:
+            proc.kill()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        print(f"could not stop child process {proc.pid}", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--game", type=Path, required=True)
@@ -132,7 +152,7 @@ def main() -> int:
     parser.add_argument("--settle", type=float, default=5.0)
     parser.add_argument("--capture-hz", type=float, default=None, help="bridge capture rate; 0 turns capture off")
     args = parser.parse_args()
-    node, npx = shutil.which("node"), shutil.which("npx")
+    node = shutil.which("node")
     game = args.game.resolve()
     lock = game / "Temp" / "playtest-bridge.lock"
     if lock.is_file():
@@ -154,8 +174,10 @@ def main() -> int:
         procs.append(relay)
         endpoint = json.loads(relay.stdout.readline())["playtest"]
         port = free_port()
-        dev = subprocess.Popen([npx, "vite", "--port", str(port), "--strictPort", "--host", "127.0.0.1"], cwd=game,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=os.name == "nt")
+        # Vite runs under node directly: through npx and a shell, stopping the shell left the server running.
+        vite = game / "node_modules" / "vite" / "bin" / "vite.js"
+        dev = subprocess.Popen([node, str(vite), "--port", str(port), "--strictPort", "--host", "127.0.0.1"], cwd=game,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         procs.append(dev)
         wait_http(port, 90)
         query = "playtest=" + urllib.parse.quote(endpoint, safe="") + (f"&{args.query}" if args.query else "")
@@ -192,13 +214,7 @@ def main() -> int:
         return 0
     finally:
         for proc in reversed(procs):
-            try:
-                if proc.stdin:
-                    proc.stdin.close()
-                proc.terminate()
-                proc.wait(timeout=10)
-            except Exception:
-                proc.kill()
+            _stop(proc)
         if page_lines:
             print("page output:", "".join(page_lines)[-2000:], file=sys.stderr)
 
