@@ -86,7 +86,7 @@ export function installBridge({
         throw new TypeError("attach readers must map each alias to a function");
       }
       attached = { sceneId, scene, camera, readers };
-      if (canvas !== null && grabber === null && rateHz > 0) grabber = canvasGrabber(canvas, { documentRef: target.document });
+      if (canvas !== null && grabber === null && rateHz > 0) grabber = canvasGrabber(canvas, { WorkerImpl: target.Worker, snapshot: (image, options) => target.createImageBitmap(image, options) });
     },
     detach() {
       attached = null;

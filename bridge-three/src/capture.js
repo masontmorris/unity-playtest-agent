@@ -20,37 +20,41 @@ export const BLANK_GRACE_MS = 60_000;
 const JPEG_QUALITY = 0.8;
 
 /**
- * Grab frames from an HTML canvas: a copy, then a JPEG encode, both synchronous.
+ * Grab frames from an HTML canvas without blocking the page: a snapshot on the main thread, then the
+ * readback and JPEG encode in a dedicated worker.
  *
- * The encode is `toDataURL`, 1.5 to 3 ms for a 640 px frame. Chrome defers the asynchronous encoders
- * (`toBlob`, `OffscreenCanvas.convertToBlob`) until the page is idle, up to about 1 s, and a game page is
- * never idle: on Kinema they took 1.1 to 1.6 s per frame, which held capture under 1 frame per second.
+ * `createImageBitmap` takes the snapshot when it is called, so the frame is the one the game just drew,
+ * and it neither reads pixels back nor waits for the GPU on the main thread. The worker draws it, samples
+ * it for visibility when asked (until the self-test passes), and encodes it with `convertToBlob`.
  *
- * The scratch canvas stays GPU-backed (no `willReadFrequently`), so the scale happens on the GPU and only the
- * 640 px frame is read back. Pixels are sampled for visibility only when asked, which is until the self-test passes.
+ * Measured on Kinema (WebGPU, RTX 3060, 1280x720, 10 Hz, three fresh pages held 5.5 min): the snapshot
+ * costs the main thread 0.1 ms a frame, and a frame reaches the relay 35 to 40 ms after it is grabbed.
+ * The synchronous copy and `toDataURL` this replaced cost 13 to 20 ms a frame in steady play, and while
+ * three.js was still compiling pipelines its GPU readback made single tasks of 19 to 49 s. The
+ * asynchronous encoders are no remedy on the main thread: Chrome defers them until the page is idle,
+ * which a game page never is (1.1 to 1.6 s a frame). A worker is idle between frames, so it encodes at once.
  */
-export function canvasGrabber(source, { width = CAPTURE_WIDTH, documentRef = globalThis.document } = {}) {
-  const scratch = documentRef.createElement("canvas");
-  const context = scratch.getContext("2d");
+export function canvasGrabber(source, {
+  width = CAPTURE_WIDTH,
+  WorkerImpl = globalThis.Worker,
+  snapshot = (image, options) => globalThis.createImageBitmap(image, options),
+} = {}) {
+  const worker = new WorkerImpl(new URL("./capture-worker.js", import.meta.url), { type: "module" });
+  let waiting = null;
+  const settle = (outcome) => {
+    const answer = waiting;
+    waiting = null;
+    answer?.(outcome);
+  };
+  worker.onmessage = ({ data }) => settle(data);
+  worker.onerror = (event) => settle({ error: event.message || "the capture worker failed" });
   return {
-    copy({ checkVisible = true } = {}) {
+    grab({ checkVisible = true } = {}) {
       const height = Math.max(2, Math.round((width * source.height) / Math.max(1, source.width)));
-      scratch.width = width;
-      scratch.height = height;
-      context.drawImage(source, 0, 0, width, height);
-      if (!checkVisible) return { visible: null };
-      const sample = context.getImageData(0, 0, width, height).data;
-      let visible = false;
-      for (let i = 3; i < sample.length; i += 4 * 97) {
-        if (sample[i] !== 0) { visible = true; break; }
-      }
-      return { visible };
-    },
-    async encode() {
-      const url = scratch.toDataURL("image/jpeg", JPEG_QUALITY);
-      // A browser that cannot encode JPEG answers with another type, or "data:," for an empty canvas.
-      if (!url.startsWith("data:image/jpeg;base64,")) throw new Error("the canvas could not be encoded as JPEG");
-      return url.slice("data:image/jpeg;base64,".length);
+      return snapshot(source, { resizeWidth: width, resizeHeight: height }).then((image) => new Promise((resolve, reject) => {
+        waiting = (data) => (data.error ? reject(new Error(data.error)) : resolve({ visible: data.visible, jpeg: data.jpeg }));
+        worker.postMessage({ image, width, height, checkVisible, quality: JPEG_QUALITY }, [image]);
+      }));
     },
   };
 }
@@ -73,7 +77,8 @@ export class FrameCapture {
 
   /**
    * @param {object} options
-   * @param {{copy(options?: {checkVisible?: boolean}): {visible: boolean | null}, encode(): Promise<string>}} options.grabber
+   * @param {{grab(options?: {checkVisible?: boolean}): Promise<{visible: boolean | null, jpeg: string}>}} options.grabber
+   *   Snapshots the canvas when called and resolves once the frame is encoded
    * @param {(message: object) => void} options.send Deliver a relay control message
    * @param {() => number} options.realNow Real milliseconds
    * @param {((name: string, startMs: number, endMs: number) => void) | null} [options.timing] Records how
@@ -91,32 +96,33 @@ export class FrameCapture {
   get latestFrameRef() { return this.#latest; }
   get lastError() { return this.#lastError; }
 
-  /** Call after each game frame. Grabs at most one frame per interval and one encode at a time. */
+  /** Call after each game frame. Grabs at most one frame per interval and one at a time. */
   afterFrame() {
     const now = this.#realNow();
     if (this.#busy || now < this.#next || this.#selfTest === "failed") return;
     this.#next = now + this.#intervalMs;
-    let copied;
-    const copyStart = now;
+    const checkVisible = this.#selfTest === "unknown";
+    let grabbed;
     try {
-      copied = this.#grabber.copy({ checkVisible: this.#selfTest === "unknown" });
+      grabbed = this.#grabber.grab({ checkVisible });
     } catch (error) {
       this.#fail(`frame copy failed: ${error.message}`);
       return;
     }
-    this.#measure(MEASURES.copy, copyStart);
-    if (this.#selfTest === "unknown" && !copied.visible) {
-      // Not drawn yet: skip it, and fail only once the game has stayed blank for the whole grace period.
-      this.#firstGrabMs ??= now;
-      if (now - this.#firstGrabMs >= BLANK_GRACE_MS) this.#fail(`every frame read back fully transparent for ${BLANK_GRACE_MS / 1000} s`);
-      return;
-    }
+    this.#measure(MEASURES.copy, now);
     this.#busy = true;
-    this.#count += 1;
-    const name = `f-${String(this.#count).padStart(6, "0")}.jpg`;
     const encodeStart = this.#realNow();
-    this.#grabber.encode().then((jpeg) => {
+    grabbed.then(({ visible, jpeg }) => {
       this.#measure(MEASURES.encode, encodeStart);
+      if (checkVisible && !visible) {
+        // Not drawn yet: skip it, and fail only once the game has stayed blank for the whole grace period.
+        this.#busy = false;
+        this.#firstGrabMs ??= now;
+        if (now - this.#firstGrabMs >= BLANK_GRACE_MS) this.#fail(`every frame read back fully transparent for ${BLANK_GRACE_MS / 1000} s`);
+        return;
+      }
+      this.#count += 1;
+      const name = `f-${String(this.#count).padStart(6, "0")}.jpg`;
       this.#pending.set(name, true);
       this.#sentAt.set(name, this.#realNow());
       this.#send({ relay: "frame", name, jpeg_base64: jpeg });
