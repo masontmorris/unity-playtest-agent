@@ -253,11 +253,11 @@ def serve(game: Path, catalog: Path, query: str, page_log: Path | None = None) -
             job.close()
 
 
-async def connect(game: Path) -> BridgeClient:
+async def connect(game: Path, *, timeout_s: float = 10.0) -> BridgeClient:
     deadline = time.monotonic() + 120
     while True:
         try:
-            client = await BridgeClient.connect_from_project(game)
+            client = await BridgeClient.connect_from_project(game, timeout_s=timeout_s)
             if client.status.engine is not Engine.three:
                 await client.aclose()
                 raise ValueError("the bridge is not three.js")

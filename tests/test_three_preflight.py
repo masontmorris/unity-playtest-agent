@@ -252,7 +252,7 @@ def test_fresh_page_rejects_changed_identity_and_unread_public(tmp_path, monkeyp
         async def aclose(self):
             self.closed = True
     client = Client("body", {"speed": 1, "unknown": None})
-    async def connect(game):
+    async def connect(game, *, timeout_s):
         return client
     monkeypatch.setattr(three_cli, "connect", connect)
     asyncio.run(three_cli._rebind(tmp_path, source.entity, manifest.readers, 0))
@@ -267,11 +267,12 @@ def test_fresh_page_rejects_changed_identity_and_unread_public(tmp_path, monkeyp
     assert client.closed
 
 
-def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch):
+@pytest.mark.parametrize("delay, succeeds", [(0.25, True), (0.8, False)])
+def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch, delay, succeeds):
     import asyncio
     from fake_game import FakeGame
     from playtest.contracts.bridge import Engine
-    from playtest.core.bridge_client import BridgeClient
+    from playtest.core.bridge_client import BridgeError
     from playtest.preflight import three_cli, three_session
 
     class SlowPage(FakeGame):
@@ -288,10 +289,11 @@ def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch):
             return {"speed": 1, "unknown": None}
 
     async def run():
-        game = SlowPage(token="slow-page", inspect_delay_s=0.25)
+        game = SlowPage(token="slow-page", inspect_delay_s=delay)
         port = await game.start()
 
         async def connect_from_project(cls, project, *, timeout_s=10.0):
+            # Scale the request timeout so the delayed peer exercises both limits without a long test.
             client = cls("127.0.0.1", port, "slow-page", timeout_s=timeout_s / 100)
             await client.connect()
             return client
@@ -299,7 +301,12 @@ def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch):
         monkeypatch.setattr(three_session.BridgeClient, "connect_from_project", classmethod(connect_from_project))
         source = study(tmp_path)
         try:
-            await three_cli._rebind(tmp_path, source.entity, compile_study(source).manifest.readers, 0)
+            rebind = three_cli._rebind(tmp_path, source.entity, compile_study(source).manifest.readers, 0)
+            if succeeds:
+                await rebind
+            else:
+                with pytest.raises(BridgeError, match="timeout"):
+                    await rebind
         finally:
             await game.stop()
 
