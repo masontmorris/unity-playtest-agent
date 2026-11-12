@@ -207,7 +207,7 @@ def test_handoff_serves_pinned_export_and_owned_runner_arguments(tmp_path, monke
     def claim(*args):
         yield
     @contextmanager
-    def serve(game, catalog, query):
+    def serve(game, catalog, query, page_log=None):
         seen["catalog"] = catalog
         yield
     async def rebind(*args):

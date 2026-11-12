@@ -201,7 +201,7 @@ def _free_port() -> int:
 
 
 @contextmanager
-def serve(game: Path, catalog: Path, query: str) -> Iterator[None]:
+def serve(game: Path, catalog: Path, query: str, page_log: Path | None = None) -> Iterator[None]:
     node = shutil.which("node")
     if node is None:
         raise ValueError("node is not installed")
@@ -231,8 +231,15 @@ def serve(game: Path, catalog: Path, query: str) -> Iterator[None]:
         page = start([node, str(PAGE), str(game), f"http://127.0.0.1:{port}/?{page_query}"],
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, errors="replace")
         def drain() -> None:
-            for _ in page.stdout:
-                pass
+            # The page reports its console errors and its health every 5 s; keep them for diagnosis.
+            if page_log is None:
+                for _ in page.stdout:
+                    pass
+                return
+            with page_log.open("a", encoding="utf-8", newline="\n") as stream:
+                for line in page.stdout:
+                    stream.write(f"{time.time():.3f} {line}")
+                    stream.flush()
         threading.Thread(target=drain, daemon=True).start()
         yield
     finally:
@@ -438,7 +445,7 @@ def prepare(decl: GameDeclarations, entity_action: str, output: Path, *, query: 
     directory = output.resolve() / f"attempt-{uuid.uuid4().hex}"
     directory.mkdir(parents=True, exist_ok=False)
     with game_claim(decl.game):
-        with serve(decl.game, decl.catalog_path, query):
+        with serve(decl.game, decl.catalog_path, query, directory / "page.log"):
             study = asyncio.run(measure(decl, entity_action, settle_s, query, directory, entity_id))
     if load_declarations(decl.game, decl.catalog_path).source != decl.source:
         raise ValueError(f"game source changed during acquisition; diagnostics in {directory}")

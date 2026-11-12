@@ -64,7 +64,7 @@ def run_prepared(complete: Path, marker: dict, manifest: PreflightManifest, pass
     game = Path(marker["game"])
     catalog = directory / "catalog.json"
     with game_claim(game):
-        with serve(game, catalog, marker["launch"]["query"]):
+        with serve(game, catalog, marker["launch"]["query"], directory / "rebind-page.log"):
             asyncio.run(_rebind(game, manifest.entity, manifest.readers, marker["launch"]["settle_s"]))
             from playtest.runner import cli as runner_cli
             argv = ["--project", str(game), "--entity", str(directory / "entity.json"),
