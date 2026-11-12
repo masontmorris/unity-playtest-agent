@@ -38,6 +38,7 @@ from typing import Any
 from playtest.bench import call_budget, replay
 from playtest.bench import record as recording
 from playtest.bench.record import digest
+from playtest.contracts.bridge import Engine
 from playtest.contracts.common import ClockMode
 from playtest.contracts.loop import ChoiceKind
 from playtest.frontier import media
@@ -66,7 +67,7 @@ from . import modal_wake
 from .pacing import INITIAL_ESTIMATE, TokenBudget, resolve_tokens_per_minute
 from .probe import DisplacementProbe, make_snapshot
 from .progress import ProgressFacts, ProgressProbe
-from .readers import FieldReaders
+from .readers import FieldReaders, published_install
 from .request_layout import RequestLayout
 from .s1 import ARM, IMAGE_TOKENS, IMAGE_TRANSPORT, SystemOneS1
 from .session import MAX_AGE_S, MAX_PROVIDER_FAILURES, WALL_LIMIT_S, run_session
@@ -739,8 +740,12 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
             memory_facts = {"dir": str(args.memory_dir.resolve()), "file": memory_path.name,
                             "loaded": memory.stats() if present else None, "saved": None, "error": None}
             _plan_memory(run_dir, memory_facts)
-        readers = FieldReaders(client, manifest.readers) if manifest.readers else None
-        if readers is not None:
+        readers = None
+        public_install = None
+        if client.status.engine is Engine.three:
+            public_install = published_install(await client.observe_once(), manifest.readers)
+        elif manifest.readers:
+            readers = FieldReaders(client, manifest.readers)
             await readers.install()  # before any paid call: the manifest's readers must resolve in the running game
         if args.measure_guards:
             from playtest.preflight.catalog import export
@@ -938,10 +943,12 @@ async def _run(project: Path, manifest: PreflightManifest, built: ManifestChoice
                 "manifest": {"sha256": manifest_sha, "catalog_sha256": catalog_sha, "entity_id": manifest.entity_id,
                              "origin": args.manifest_origin,
                              "offered": [c.id for c in built.choices], "not_offered": built.not_offered},
-                "readers": None if readers is None else {
-                    "declared": readers.aliases,
-                    "installed": readers.installed.summary() if readers.installed is not None else None,
-                    **readers.stats.summary()},
+                "readers": ({"declared": [reader.alias for reader in manifest.readers],
+                             "installed": public_install.summary()} if public_install is not None else
+                            None if readers is None else {
+                                "declared": readers.aliases,
+                                "installed": readers.installed.summary() if readers.installed is not None else None,
+                                **readers.stats.summary()}),
                 "suspicions": _suspicions(result.loop.suspicions, reader_watch.min_readings,
                                           reader_watch.drift_readings),
                 "settings": {"max_age_s": args.max_age_s, "wall_limit_s": args.wall_limit_s,

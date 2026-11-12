@@ -12,7 +12,7 @@ import re
 import statistics
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -295,12 +295,13 @@ def negated_view_action(action: dict[str, Any], trials: list[dict[str, Any]]) ->
     return {**action, "x": x, "y": y, "action": action["action"] + "_negated"}
 
 
-def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_action(action: dict[str, Any], trials: list[dict[str, Any]], *,
+                     holds: Sequence[float] | None = None) -> dict[str, Any]:
     """Summarize measured displacements; untested or insufficient values remain null."""
     groups = []
     minimum = None
     observed_minimum = None
-    for hold in HOLD_S:
+    for hold in HOLD_S if holds is None else holds:
         selected = [t for t in trials if t.get("requested_hold_s") == hold and t.get("valid") is True]
         magnitudes = [t["effect_magnitude"] for t in selected]
         vectors = [t["effect_delta"] for t in selected]

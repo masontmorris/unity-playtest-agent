@@ -23,6 +23,7 @@ import os
 import struct
 import sys
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -350,6 +351,13 @@ def _field_values(snapshot: dict[str, Any] | None, readers: list[ProbeReader]) -
     return result
 
 
+def _raw_observation(observation: Any) -> dict[str, Any]:
+    if hasattr(observation, "model_dump"):
+        return observation.model_dump(mode="json")
+    return {key: getattr(observation, key, None) for key in
+            ("seq", "frame", "scene", "game_s", "public", "reader_errors", "frame_ref")}
+
+
 def _public_values(observation: Any, names: list[str]) -> dict[str, Any]:
     public = getattr(observation, "public", None)
     return {name: (public.get(name) if isinstance(public, dict) else None) for name in names}
@@ -520,7 +528,8 @@ async def _read_entity(client: BridgeClient, entity_id: str | None) -> dict[str,
 
 async def measure(client: BridgeClient, plan: ProbePlan, declarations: list[Declaration], *,
                   entity_id: str | None, scene_id: str | None,
-                  readers: list[ProbeReader], media_dir: Path | None = None) -> list[dict[str, Any]]:
+                  readers: list[ProbeReader], media_dir: Path | None = None,
+                  on_reading: Callable[[str, Any], None] | None = None) -> list[dict[str, Any]]:
     """Run every named declaration for its declared repeats; retain every failure.
 
     Execution records are retained immediately after `act` returns. Any later transport
@@ -528,6 +537,10 @@ async def measure(client: BridgeClient, plan: ProbePlan, declarations: list[Decl
     declaration: a release that could not be observed must not be treated as neutral.
     Counts are the attempts actually made; none are inferred.
     """
+    def reading(kind: str, value: Any) -> None:
+        if on_reading is not None:
+            on_reading(kind, value.model_dump(mode="json") if hasattr(value, "model_dump") else value)
+
     results = []
     fatal = None
     plan_names = [item.name for item in plan.actions]
@@ -551,23 +564,28 @@ async def measure(client: BridgeClient, plan: ProbePlan, declarations: list[Decl
                       "declaration": declaration.definition().model_dump(mode="json"),
                       "valid": False, "problems": [], "status": None, "executed": False,
                       "release_verified_terminal": None, "neutral_release": None,
-                      "execution_evidence": None}
+                      "execution_evidence": None, "action_id": None}
             records = None
             terminal = None
             act_requested = False
             try:
                 before_transform = await _read_entity(client, entity_id)
+                reading("before_transform", before_transform)
                 before_fields = await _read_fields(client, scene_id) if (scene_id is not None) else None
                 observation = await client.observe_once(with_frame=True)
+                record["before_observation"] = _raw_observation(observation)
+                reading("before_observation", record["before_observation"])
                 before_public = _public_values(observation, plan.public_fields)
                 act_requested = True
+                record["action_id"] = f"probe-{uuid.uuid4().hex}"
                 records = await client.act(
-                    action_id=f"probe-{uuid.uuid4().hex}", choice_id=f"probe-{declaration.name}",
+                    action_id=record["action_id"], choice_id=f"probe-{declaration.name}",
                     action=declaration.name, params={}, based_on_seq=observation.seq,
                     max_age_s=plan.max_age_s, depends_on=plan.depends_on,
                     lease_s=declaration.lease_s)
                 # Keep the measured execution even if every later read fails.
                 record["execution"] = [item.model_dump(mode="json") for item in records]
+                reading("execution", record["execution"])
                 if not records:
                     raise ValueError("the bridge returned no execution record")
                 terminal = records[-1]
@@ -576,8 +594,11 @@ async def measure(client: BridgeClient, plan: ProbePlan, declarations: list[Decl
                 if plan.settle_s:
                     await asyncio.sleep(plan.settle_s)
                 after_transform = await _read_entity(client, entity_id)
+                reading("after_transform", after_transform)
                 after_fields = await _read_fields(client, scene_id) if (scene_id is not None) else None
                 after_observation = await client.observe_once(with_frame=True)
+                record["after_observation"] = _raw_observation(after_observation)
+                reading("after_observation", record["after_observation"])
             except (BridgeError, ValueError) as exc:
                 record["problems"] = [f"{type(exc).__name__}: {exc}"]
                 record["valid"] = False
