@@ -118,6 +118,10 @@ and reports the path back. `frame_ref` names only a frame the relay confirmed wr
 self-test passes once the first frame is written and its pixels read back as something other than
 fully transparent, which is what an unreadable canvas gives.
 
+Capture runs at 10 Hz by default. `installBridge({ captureRateHz })` or `?playtest_capture_hz=` on the page URL
+sets the rate, and 0 turns capture off (the page then reports `capture: false`). Each grab copies and
+encodes the canvas on the page's main thread, so a heavy scene can run better at a lower rate.
+
 ## Runtime errors
 
 The page's uncaught errors, unhandled rejections, `console.error` calls and errors thrown by frame

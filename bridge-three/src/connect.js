@@ -12,7 +12,7 @@ import { BridgeSession } from "./session.js";
  */
 export function connectPage({ url, clock, view, engineVersion = null, WebSocketImpl = globalThis.WebSocket, timers,
                               grabber = () => null, errors = null, realNow = () => Date.now(),
-                              target = globalThis, inputTargets = {} }) {
+                              target = globalThis, inputTargets = {}, captureRateHz = undefined }) {
   const socket = new WebSocketImpl(url);
   const send = (message) => {
     if (socket.readyState === 1) socket.send(JSON.stringify(message));
@@ -23,7 +23,7 @@ export function connectPage({ url, clock, view, engineVersion = null, WebSocketI
     if (capture === null) {
       const source = grabber();
       if (source === null) return;
-      capture = new FrameCapture({ grabber: source, send, realNow });
+      capture = new FrameCapture({ grabber: source, send, realNow, ...(captureRateHz ? { rateHz: captureRateHz } : {}) });
     }
     if (socket.readyState === 1) capture.afterFrame();
   });

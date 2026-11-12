@@ -12,7 +12,8 @@ const { chromium } = require("playwright");
 // Set PLAYTEST_PAGE_GPU=1 to render on the GPU instead (then hold the lease).
 const gpu = process.env.PLAYTEST_PAGE_GPU === "1";
 const args = gpu ? ["--ignore-gpu-blocklist"] : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-gpu"];
-const browser = await chromium.launch({ headless: true, args });
+// PLAYTEST_PAGE_HEADED=1 opens a visible window, which is certain to render on the GPU.
+const browser = await chromium.launch({ headless: process.env.PLAYTEST_PAGE_HEADED !== "1", args });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 page.on("console", (m) => { if (m.type() === "error") console.log(JSON.stringify({ console_error: m.text().slice(0, 300) })); });
 page.on("pageerror", (e) => console.log(JSON.stringify({ page_error: String(e).slice(0, 300) })));

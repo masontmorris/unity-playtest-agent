@@ -9,7 +9,7 @@
 // Install it before the game starts its loop. It is inert (returns null) unless the page URL carries
 // `?playtest=<relay url>`, which the relay prints when it starts.
 
-import { canvasGrabber } from "./capture.js";
+import { CAPTURE_RATE_HZ, canvasGrabber } from "./capture.js";
 import { installClock, VirtualClock } from "./clock.js";
 import { connectPage } from "./connect.js";
 import { ErrorMonitor, watchPage } from "./errors.js";
@@ -34,9 +34,14 @@ export function installBridge({
   stepFrameS = 1 / 60,
   target = globalThis,
   inputTargets = {},
+  captureRateHz = undefined,
 } = {}) {
   const relayUrl = url ?? relayUrlFromLocation(target);
   if (!relayUrl) return null;
+  // Frames per second to capture: the option, else ?playtest_capture_hz=, else the default. 0 turns capture off.
+  const fromUrl = target.location?.search ? new URLSearchParams(target.location.search).get("playtest_capture_hz") : null;
+  const rateHz = captureRateHz ?? (fromUrl !== null ? Number(fromUrl) : CAPTURE_RATE_HZ);
+  if (!Number.isFinite(rateHz) || rateHz < 0) throw new TypeError("captureRateHz must be a finite number of frames per second, 0 or more");
 
   const realPerformance = target.performance;
   const realNow = realPerformance.now.bind(realPerformance);
@@ -63,6 +68,7 @@ export function installBridge({
     realNow,
     target,
     inputTargets,
+    captureRateHz: rateHz,
   });
 
   return {
@@ -72,7 +78,7 @@ export function installBridge({
     attach({ sceneId, scene, camera, canvas = null }) {
       if (typeof sceneId !== "string" || sceneId.length === 0) throw new TypeError("attach needs a non-empty sceneId");
       attached = { sceneId, scene, camera };
-      if (canvas !== null && grabber === null) grabber = canvasGrabber(canvas, { documentRef: target.document });
+      if (canvas !== null && grabber === null && rateHz > 0) grabber = canvasGrabber(canvas, { documentRef: target.document });
     },
     detach() {
       attached = null;

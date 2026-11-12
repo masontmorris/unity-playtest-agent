@@ -44,7 +44,7 @@ def wait_http(port: int, timeout_s: float) -> None:
     raise SystemExit(f"the dev server did not open port {port}")
 
 
-async def drive(game: Path, actions: list[str], settle_s: float) -> dict:
+async def drive(game: Path, actions: list[str], settle_s: float, out: dict) -> dict:
     deadline = time.monotonic() + 120
     while True:
         try:
@@ -54,12 +54,24 @@ async def drive(game: Path, actions: list[str], settle_s: float) -> dict:
             if time.monotonic() > deadline:
                 raise
             await asyncio.sleep(1)
-    out: dict = {}
     try:
         status = client.status
         out["status"] = {"engine": status.engine.value, "input_backends": [b.value for b in status.input_backends],
                          "capture": status.capture, "capture_self_test": status.capture_self_test}
-        await asyncio.sleep(settle_s)
+        # Wait out the settle, sampling how fast game time and frames advance and how long observe takes,
+        # so a stall (the page blocked) can be told from a slow page.
+        samples = out.setdefault("settle_samples", [])  # kept in `out` as they come, so a failure still shows them
+        settle_end = time.monotonic() + settle_s
+        while time.monotonic() < settle_end:
+            asked = time.monotonic()
+            try:
+                seen = await client.observe_once()
+                samples.append({"t": round(asked, 2), "observe_s": round(time.monotonic() - asked, 2),
+                                "game_s": seen.game_s, "frame": seen.frame})
+            except Exception as exc:  # noqa: BLE001 - recorded, not fatal, while the page loads
+                samples.append({"t": round(asked, 2), "error": str(exc)[:80]})
+            await asyncio.sleep(2)
+        out["settle_samples"] = samples[-8:]  # trimmed once the settle completes
         first = await client.observe_once()
         later = client.status  # the latest status the bridge pushed
         if later is not None:
@@ -103,6 +115,7 @@ def main() -> int:
     parser.add_argument("--query", default="", help="extra URL query, e.g. forceWebGL=1")
     parser.add_argument("--act", nargs="*", default=[])
     parser.add_argument("--settle", type=float, default=5.0)
+    parser.add_argument("--capture-hz", type=float, default=None, help="bridge capture rate; 0 turns capture off")
     args = parser.parse_args()
     node, npx = shutil.which("node"), shutil.which("npx")
     game = args.game.resolve()
@@ -119,12 +132,20 @@ def main() -> int:
         procs.append(dev)
         wait_http(port, 90)
         query = "playtest=" + urllib.parse.quote(endpoint, safe="") + (f"&{args.query}" if args.query else "")
+        if args.capture_hz is not None:
+            query += f"&playtest_capture_hz={args.capture_hz:g}"
         page = subprocess.Popen([node, str(HERE / "open_page.mjs"), str(game), f"http://127.0.0.1:{port}/?{query}"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 encoding="utf-8", errors="replace")
         procs.append(page)
-        summary = asyncio.run(drive(game, args.act, args.settle))
-        print(json.dumps(summary, indent=1, default=str))
+        out: dict = {}
+        try:
+            asyncio.run(drive(game, args.act, args.settle, out))
+        except Exception as exc:  # report what was measured before the failure, then fail
+            out["failed"] = f"{type(exc).__name__}: {exc}"[:300]
+            print(json.dumps(out, indent=1, default=str))
+            return 1
+        print(json.dumps(out, indent=1, default=str))
         return 0
     finally:
         for proc in reversed(procs):
