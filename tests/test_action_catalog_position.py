@@ -34,3 +34,17 @@ def test_a_click_at_a_place_is_a_chord_with_measured_receipts():
     assert any("y is 0.5" in problem for problem in receipt_problems(
         declaration_requirements(click), moved, declared=click, applied_total_s=0.05,
         terminal_start_s=10.0, terminal_end_s=10.05))
+
+
+def test_a_manifest_click_at_a_place_passes_review_and_is_not_a_look_axis():
+    from runner_manifest import action, button, manifest, vector
+
+    from playtest.preflight import manifest as manifest_checks
+    from playtest.roles import preflight
+
+    click = [vector("Mouse", "position", 0.5, -0.5), button("Mouse", "leftButton")]
+    assert manifest_checks.validate(manifest(action("select_centre", click, hold_s=0.08))) == []
+    unheld = manifest_checks.validate(manifest(action("select_centre", click, hold_s=None)))
+    assert any("an input with x and y needs a hold time" in problem for problem in unheld)
+    assert "Position" not in manifest_checks.LOOK_CONTROL_TYPES
+    assert "Position" not in preflight.AXIS_CONTROLS
