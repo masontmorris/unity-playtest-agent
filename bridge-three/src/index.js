@@ -45,6 +45,10 @@ export function installBridge({
 
   const realPerformance = target.performance;
   const realNow = realPerformance.now.bind(realPerformance);
+  // Capture steps appear as User Timing measures on the real timeline (`realNow` is that timeline's clock).
+  const timing = typeof realPerformance.measure === "function"
+    ? (name, start, end) => realPerformance.measure(name, { start, end })
+    : null;
   const errors = new ErrorMonitor();
   const unwatch = watchPage(errors, target);
   const clock = new VirtualClock({
@@ -69,6 +73,7 @@ export function installBridge({
     target,
     inputTargets,
     captureRateHz: rateHz,
+    timing,
   });
 
   return {

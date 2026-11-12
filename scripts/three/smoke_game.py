@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -145,6 +146,7 @@ def main() -> int:
             return 2
         lock.unlink(missing_ok=True)
     procs = []
+    page_lines: list[str] = []
     try:
         relay = subprocess.Popen([node, str(RELAY), "--project", str(game), "--catalog", str(args.catalog.resolve())],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
@@ -164,6 +166,22 @@ def main() -> int:
                                 encoding="utf-8", errors="replace")
         procs.append(page)
         out: dict = {}
+        # The page reports its real frame rate and capture timings every few seconds; keep them as they come,
+        # and keep its other lines (console errors) for the output's tail.
+        health = out.setdefault("page_health", [])
+
+        def read_page() -> None:
+            for line in page.stdout:
+                try:
+                    body = json.loads(line)
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and "page_health" in body:
+                    health.append({"t": round(time.monotonic(), 2), **body["page_health"]})
+                else:
+                    page_lines.append(line)
+
+        threading.Thread(target=read_page, daemon=True).start()
         try:
             asyncio.run(drive(game, args.act, args.settle, out))
         except Exception as exc:  # report what was measured before the failure, then fail
@@ -181,10 +199,8 @@ def main() -> int:
                 proc.wait(timeout=10)
             except Exception:
                 proc.kill()
-        if procs and procs[-1].stdout:
-            tail = procs[-1].stdout.read()[-2000:] if procs[-1].poll() is not None else ""
-            if tail.strip():
-                print("page output:", tail, file=sys.stderr)
+        if page_lines:
+            print("page output:", "".join(page_lines)[-2000:], file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BLANK_GRACE_MS, FrameCapture } from "../src/capture.js";
+import { BLANK_GRACE_MS, FrameCapture, MEASURES } from "../src/capture.js";
 
 function harness({ visible = true, encode = async () => "AAAA" } = {}) {
   let now = 0;
@@ -76,4 +76,33 @@ test("a failed write fails the self-test and keeps the reference unset", async (
   h.capture.written({ name: "f-000001.jpg", error: "disk full" });
   assert.equal(h.capture.selfTest, "failed");
   assert.equal(h.capture.latestFrameRef, null);
+});
+
+test("each grab's copy, encode and write are timed on the real clock", async () => {
+  let now = 0;
+  const timed = [];
+  const capture = new FrameCapture({
+    grabber: { copy: () => { now += 3; return { visible: true }; }, encode: async () => { now += 20; return "AAAA"; } },
+    send: () => { now += 5; },
+    realNow: () => now,
+    timing: (name, start, end) => timed.push([name, end - start]),
+  });
+  capture.afterFrame();
+  await settle();
+  now += 7;
+  capture.written({ name: "f-000001.jpg", path: "/p/f-000001.jpg" });
+  assert.deepEqual(timed, [[MEASURES.copy, 3], [MEASURES.encode, 20], [MEASURES.write, 12]]);
+});
+
+test("a timing hook that throws never stops capture", async () => {
+  const capture = new FrameCapture({
+    grabber: { copy: () => ({ visible: true }), encode: async () => "AAAA" },
+    send: () => {},
+    realNow: () => 0,
+    timing: () => { throw new Error("no User Timing here"); },
+  });
+  capture.afterFrame();
+  await settle();
+  capture.written({ name: "f-000001.jpg", path: "/p/f-000001.jpg" });
+  assert.equal(capture.selfTest, "passed");
 });

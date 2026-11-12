@@ -8,11 +8,12 @@ import { BridgeSession } from "./session.js";
  * socket is open, to `{ close() }`.
  *
  * `grabber` returns the frame grabber for the attached canvas, or null while there is none; capture
- * starts once it returns one. `realNow` is real milliseconds, never the page's virtualised clock.
+ * starts once it returns one. `realNow` is real milliseconds, never the page's virtualised clock; `timing`
+ * records how long each capture step took, in those milliseconds.
  */
 export function connectPage({ url, clock, view, engineVersion = null, WebSocketImpl = globalThis.WebSocket, timers,
                               grabber = () => null, errors = null, realNow = () => Date.now(),
-                              target = globalThis, inputTargets = {}, captureRateHz = undefined }) {
+                              target = globalThis, inputTargets = {}, captureRateHz = undefined, timing = null }) {
   const socket = new WebSocketImpl(url);
   const send = (message) => {
     if (socket.readyState === 1) socket.send(JSON.stringify(message));
@@ -23,7 +24,8 @@ export function connectPage({ url, clock, view, engineVersion = null, WebSocketI
     if (capture === null) {
       const source = grabber();
       if (source === null) return;
-      capture = new FrameCapture({ grabber: source, send, realNow, ...(captureRateHz ? { rateHz: captureRateHz } : {}) });
+      capture = new FrameCapture({ grabber: source, send, realNow, timing,
+                                   ...(captureRateHz ? { rateHz: captureRateHz } : {}) });
     }
     if (socket.readyState === 1) capture.afterFrame();
   });
