@@ -267,6 +267,45 @@ def test_fresh_page_rejects_changed_identity_and_unread_public(tmp_path, monkeyp
     assert client.closed
 
 
+def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch):
+    import asyncio
+    from fake_game import FakeGame
+    from playtest.contracts.bridge import Engine
+    from playtest.core.bridge_client import BridgeClient
+    from playtest.preflight import three_cli, three_session
+
+    class SlowPage(FakeGame):
+        def _status(self, seq, session):
+            return super()._status(seq, session).model_copy(update={"engine": Engine.three, "unity_version": None})
+
+        def _inspection(self, request, seq, session):
+            result = transform_response()
+            return super()._inspection(request, seq, session).model_copy(
+                update={"data": result.data, "caps": result.caps, "errors": result.errors}
+            )
+
+        def _public(self):
+            return {"speed": 1, "unknown": None}
+
+    async def run():
+        game = SlowPage(token="slow-page", inspect_delay_s=0.25)
+        port = await game.start()
+
+        async def connect_from_project(cls, project, *, timeout_s=10.0):
+            client = cls("127.0.0.1", port, "slow-page", timeout_s=timeout_s / 100)
+            await client.connect()
+            return client
+
+        monkeypatch.setattr(three_session.BridgeClient, "connect_from_project", classmethod(connect_from_project))
+        source = study(tmp_path)
+        try:
+            await three_cli._rebind(tmp_path, source.entity, compile_study(source).manifest.readers, 0)
+        finally:
+            await game.stop()
+
+    asyncio.run(run())
+
+
 def test_fatal_probe_stops_remaining_inputs_and_keeps_diagnostics(tmp_path, monkeypatch):
     import asyncio
     from types import SimpleNamespace
