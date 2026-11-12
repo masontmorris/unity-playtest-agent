@@ -25,16 +25,20 @@ const JPEG_QUALITY = 0.8;
  * The encode is `toDataURL`, 1.5 to 3 ms for a 640 px frame. Chrome defers the asynchronous encoders
  * (`toBlob`, `OffscreenCanvas.convertToBlob`) until the page is idle, up to about 1 s, and a game page is
  * never idle: on Kinema they took 1.1 to 1.6 s per frame, which held capture under 1 frame per second.
+ *
+ * The scratch canvas stays GPU-backed (no `willReadFrequently`), so the scale happens on the GPU and only the
+ * 640 px frame is read back. Pixels are sampled for visibility only when asked, which is until the self-test passes.
  */
 export function canvasGrabber(source, { width = CAPTURE_WIDTH, documentRef = globalThis.document } = {}) {
   const scratch = documentRef.createElement("canvas");
-  const context = scratch.getContext("2d", { willReadFrequently: true });
+  const context = scratch.getContext("2d");
   return {
-    copy() {
+    copy({ checkVisible = true } = {}) {
       const height = Math.max(2, Math.round((width * source.height) / Math.max(1, source.width)));
       scratch.width = width;
       scratch.height = height;
       context.drawImage(source, 0, 0, width, height);
+      if (!checkVisible) return { visible: null };
       const sample = context.getImageData(0, 0, width, height).data;
       let visible = false;
       for (let i = 3; i < sample.length; i += 4 * 97) {
@@ -69,7 +73,7 @@ export class FrameCapture {
 
   /**
    * @param {object} options
-   * @param {{copy(): {visible: boolean}, encode(): Promise<string>}} options.grabber
+   * @param {{copy(options?: {checkVisible?: boolean}): {visible: boolean | null}, encode(): Promise<string>}} options.grabber
    * @param {(message: object) => void} options.send Deliver a relay control message
    * @param {() => number} options.realNow Real milliseconds
    * @param {((name: string, startMs: number, endMs: number) => void) | null} [options.timing] Records how
@@ -95,7 +99,7 @@ export class FrameCapture {
     let copied;
     const copyStart = now;
     try {
-      copied = this.#grabber.copy();
+      copied = this.#grabber.copy({ checkVisible: this.#selfTest === "unknown" });
     } catch (error) {
       this.#fail(`frame copy failed: ${error.message}`);
       return;

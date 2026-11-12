@@ -6,13 +6,21 @@ import { BLANK_GRACE_MS, FrameCapture, MEASURES, canvasGrabber } from "../src/ca
 function harness({ visible = true, encode = async () => "AAAA" } = {}) {
   let now = 0;
   const sent = [];
+  const checks = [];
   let copies = 0;
   const capture = new FrameCapture({
-    grabber: { copy: () => { copies += 1; return { visible: typeof visible === "function" ? visible() : visible }; }, encode },
+    grabber: {
+      copy: ({ checkVisible }) => {
+        copies += 1;
+        checks.push(checkVisible);
+        return { visible: checkVisible ? (typeof visible === "function" ? visible() : visible) : null };
+      },
+      encode,
+    },
     send: (message) => sent.push(message),
     realNow: () => now,
   });
-  return { capture, sent, advance(ms) { now += ms; }, get copies() { return copies; } };
+  return { capture, sent, checks, advance(ms) { now += ms; }, get copies() { return copies; } };
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -35,6 +43,7 @@ test("frames are grabbed at most once per interval and referenced only once writ
   h.advance(60);
   h.capture.afterFrame();
   assert.equal(h.copies, 2);
+  assert.deepEqual(h.checks, [true, false], "visibility is checked only until the self-test passes");
 });
 
 test("blank frames before the game draws are skipped, and a later visible frame passes", async () => {
@@ -120,6 +129,8 @@ test("the grabber copies at the capture width and encodes JPEG synchronously", a
   const grabber = canvasGrabber(source, { documentRef: { createElement: () => element } });
   assert.deepEqual(grabber.copy(), { visible: true });
   assert.deepEqual(drawn[0], [source, 0, 0, 640, 360]);
+  assert.deepEqual(grabber.copy({ checkVisible: false }), { visible: null }, "no pixels are read once visibility is settled");
+  assert.equal(drawn.length, 2);
   assert.equal(await grabber.encode(), "AQID");
   assert.deepEqual(requested, [["image/jpeg", 0.8]]);
   answer = "data:image/png;base64,AQID";  // a browser without a JPEG encoder answers PNG
