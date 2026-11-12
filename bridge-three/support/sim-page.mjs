@@ -19,7 +19,7 @@ const TINY_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0
   0xff, 0xd9]).toString("base64");
 
 export function fixedGrabber() {
-  return { copy: () => ({ visible: true }), encode: async () => TINY_JPEG };
+  return { grab: async () => ({ visible: true, jpeg: TINY_JPEG }) };
 }
 
 function eventTarget() {

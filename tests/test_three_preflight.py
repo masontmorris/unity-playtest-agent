@@ -267,7 +267,8 @@ def test_fresh_page_rejects_changed_identity_and_unread_public(tmp_path, monkeyp
     assert client.closed
 
 
-@pytest.mark.parametrize("delay, succeeds", [(0.25, True), (0.8, False)])
+# Scaled by 1/20 below: 0.75 s outlasts the ordinary 10 s limit (0.5 s) but not the gate's 20 s (1 s); 1.5 s outlasts both.
+@pytest.mark.parametrize("delay, succeeds", [(0.75, True), (1.5, False)])
 def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch, delay, succeeds):
     import asyncio
     from fake_game import FakeGame
@@ -294,7 +295,7 @@ def test_fresh_page_waits_for_a_slow_inspection(tmp_path, monkeypatch, delay, su
 
         async def connect_from_project(cls, project, *, timeout_s=10.0):
             # Scale the request timeout so the delayed peer exercises both limits without a long test.
-            client = cls("127.0.0.1", port, "slow-page", timeout_s=timeout_s / 100)
+            client = cls("127.0.0.1", port, "slow-page", timeout_s=timeout_s / 20)
             await client.connect()
             return client
 

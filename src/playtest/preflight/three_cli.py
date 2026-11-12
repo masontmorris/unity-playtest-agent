@@ -43,8 +43,8 @@ def _load_complete(path: Path, *, query: str | None, settle: float | None) -> tu
 
 
 async def _rebind(game: Path, expected: dict, readers: list, settle_s: float) -> None:
-    # A synchronous frame encode can block the page beyond the ordinary bridge timeout.
-    client = await connect(game, timeout_s=60.0)
+    # A fresh page compiles three.js pipelines in single tasks of up to about 11 s, beyond the ordinary bridge timeout.
+    client = await connect(game, timeout_s=20.0)
     try:
         await asyncio.sleep(settle_s)
         data = entity._complete(await client.inspect("transforms"), "transforms")

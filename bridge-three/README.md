@@ -129,8 +129,9 @@ skipped and never written. The self-test fails only after 60 s of nothing but bl
 what an unreadable canvas gives.
 
 Capture runs at 10 Hz by default. `installBridge({ captureRateHz })` or `?playtest_capture_hz=` on the page URL
-sets the rate, and 0 turns capture off (the page then reports `capture: false`). Each grab copies and
-encodes the canvas on the page's main thread, so a heavy scene can run better at a lower rate.
+sets the rate, and 0 turns capture off (the page then reports `capture: false`). Each grab snapshots the
+canvas with `createImageBitmap` (about 0.1 ms on the main thread) and a dedicated worker scales, checks and
+encodes it, so capture neither blocks the page nor waits on the GPU there.
 
 ## Runtime errors
 
