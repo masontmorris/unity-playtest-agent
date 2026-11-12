@@ -208,7 +208,7 @@ ACTION_CASES = [
         "axis_without_hold",
         [action(inputs=[control_input("c2", 0.0, 1.0)], hold_s=None)],
         [],
-        "an axis input needs a hold time",
+        "an input with x and y needs a hold time",
     ),
     (
         "control_twice",
@@ -416,7 +416,7 @@ def test_action_prompt_and_schema_say_inputs_with_x_and_y_need_a_hold(discovery)
     assert "Required when any input takes x and y" in preflight.HOLD_DESCRIPTION
     # The wording matches what review enforces: a null hold on an axis input is rejected.
     a = answer(stage_5=actions_part([action(inputs=[control_input("c2", 0.0, 1.0)], hold_s=None)]))
-    assert any("an axis input needs a hold time" in p for p in preflight.review(a, "actions", discovery))
+    assert any("an input with x and y needs a hold time" in p for p in preflight.review(a, "actions", discovery))
 
 
 def test_retry_turn_lists_each_problem_on_its_own_line():

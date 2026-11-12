@@ -51,6 +51,8 @@ MAX_GAPS = 8
 # Input System expected-control types whose value is an axis, not a press.
 AXIS_CONTROLS = frozenset({"Vector2", "Vector3", "Axis", "Stick", "Dpad", "Delta"})
 ONE_D_CONTROLS = frozenset({"Axis"})
+# A placement takes x and y as a place in view, not an axis value, so it is never a look axis.
+PLACEMENT_CONTROLS = frozenset({"Position"})
 PARTS: dict[str, str] = {"readers": "stage_4", "actions": "stage_5", "progress": "stage_6"}
 # Review rejects a null hold on any axis input (see `_inputs`), so the schema states it too.
 HOLD_DESCRIPTION = ("Seconds to hold. Required when any input takes x and y; null only when every input is a button, "
@@ -374,13 +376,13 @@ def _inputs(where: str, inputs: Sequence[ControlInput], hold_s: float | None, di
         if c.control_id in seen:
             problems.append(f"{at}: control {c.control_id!r} appears twice")
         seen.add(c.control_id)
-        if kind in AXIS_CONTROLS:
+        if kind in AXIS_CONTROLS or kind in PLACEMENT_CONTROLS:
             if c.x is None or c.y is None:
                 problems.append(f"{at}: {c.control_id!r} is a {kind} control and needs x and y")
             elif kind in ONE_D_CONTROLS and c.y != 0:
                 problems.append(f"{at}: {c.control_id!r} is one-dimensional; y must be 0")
             if hold_s is None:
-                problems.append(f"{where}: an axis input needs a hold time")
+                problems.append(f"{where}: an input with x and y needs a hold time")
         elif c.x is not None or c.y is not None:
             problems.append(f"{at}: {c.control_id!r} is a {kind} control; x and y must be null")
     return problems

@@ -4,7 +4,10 @@ One named act is either one held action (1-3 simultaneous device inputs) or one 
 (1-8 ordered hold/wait steps). The device and physical control are explicit; keyboard and
 device buttons carry null x and y, vector controls carry both values in [-1, 1], and a
 one-dimensional axis uses x with y = 0. Mouse delta is one relative impulse per apply:
-x and y are normalized displacement and the runtime applies x * 64, y * 64 pixels.
+x and y are normalized displacement and the runtime applies x * 64, y * 64 pixels. Mouse
+position is an absolute pointer placement held for the input's hold: x and y in [-1, 1] span
+the game view, (0, 0) at its centre, +x right and +y up. A click at a place is a chord that
+lists the position before the button, so the pointer is there when the button goes down.
 
 The catalog is a local declaration contract, not a selection policy. S1 still chooses the
 name; code executes exactly that declaration or rejects it. Unsupported control paths are
@@ -35,6 +38,7 @@ MOUSE_DELTA_PIXEL_BOUND = 64.0
 # Stable canonical control names. Keyboard names are the physical key tokens already used by
 # discovery; mouse and gamepad names are Unity root control names without a device prefix.
 MOUSE_DELTA = "delta"
+MOUSE_POSITION = "position"
 MOUSE_BUTTONS = frozenset({"leftButton", "rightButton", "middleButton"})
 GAMEPAD_VECTORS = frozenset({"leftStick", "rightStick", "dpad"})
 GAMEPAD_ONE_DIMENSIONAL = frozenset({"leftTrigger", "rightTrigger"})
@@ -46,6 +50,7 @@ GAMEPAD_BUTTONS = frozenset({
 
 CONTROL_TYPES: dict[tuple[str, str], str] = {
     ("Mouse", MOUSE_DELTA): "Delta",
+    ("Mouse", MOUSE_POSITION): "Position",
     **{("Mouse", name): "Button" for name in MOUSE_BUTTONS},
     **{("Gamepad", name): "Stick" for name in ("leftStick", "rightStick")},
     ("Gamepad", "dpad"): "Dpad",
@@ -112,7 +117,8 @@ class InputBinding(Strict):
             return self
         if self.device == "Mouse":
             if self.x is None or self.y is None:
-                raise ValueError(f"{self.device} {self.control!r} is a relative vector; x and y are required")
+                what = "an absolute position" if self.control == MOUSE_POSITION else "a relative vector"
+                raise ValueError(f"{self.device} {self.control!r} is {what}; x and y are required")
             return self
         if self.device == "Gamepad" and self.control in GAMEPAD_ONE_DIMENSIONAL:
             if self.x is None or self.y is None:

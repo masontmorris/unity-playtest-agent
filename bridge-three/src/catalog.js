@@ -24,6 +24,7 @@ function validateBinding(binding) {
     if (vector || !KEY_CODES.has(binding.control)) fail(`unknown keyboard control ${binding.control}`);
   } else if (binding.device === "Mouse") {
     if (binding.control === "delta") { if (!vector) fail("mouse delta needs x and y"); }
+    else if (binding.control === "position") { if (!vector) fail("mouse position needs x and y"); }
     else if (!["leftButton", "rightButton", "middleButton"].includes(binding.control) || vector) fail("unsupported mouse control");
   } else if (binding.control === "leftStick" || binding.control === "rightStick" || binding.control === "dpad") {
     if (!vector) fail("gamepad vector needs x and y");

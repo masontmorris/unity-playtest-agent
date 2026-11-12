@@ -32,8 +32,13 @@ Supported root controls are keyboard key tokens, mouse `delta` and its buttons, 
 `leftStick`, `rightStick`, `dpad`, `leftTrigger`, `rightTrigger` and named buttons. Keyboard and
 device buttons require null `x` and `y`. Vector controls require both finite values in [-1, 1];
 the one-dimensional trigger axes use `x` in [0, 1] with `y = 0`, and digital dpad components are
-each -1, 0 or 1. Absolute pointer position, relative scroll
-(until separately tested), touch, VR and remapping are rejected with an explicit reason.
+each -1, 0 or 1. Relative scroll (until separately tested), pixel-space pointers, touch, VR and
+remapping are rejected with an explicit reason.
+
+Mouse `position` (added for the three.js bridge, #275) places the pointer at normalized view
+coordinates: `x` and `y` in [-1, 1], (0, 0) at the centre, +y up. It is held like a button, and a
+click at a place is a chord listing the position before the button. The Unity bridge still rejects
+it by name, so a Unity catalog that declares it fails closed.
 
 Mouse delta is one relative impulse per apply, not a value repeated every update. Its `x` and `y`
 are normalized displacement; the runtime applies `x * 64` and `y * 64` pixels per component. The
