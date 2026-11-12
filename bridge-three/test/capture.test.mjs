@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BLANK_GRACE_MS, FrameCapture, MEASURES } from "../src/capture.js";
+import { BLANK_GRACE_MS, FrameCapture, MEASURES, canvasGrabber } from "../src/capture.js";
 
 function harness({ visible = true, encode = async () => "AAAA" } = {}) {
   let now = 0;
@@ -105,4 +105,36 @@ test("a timing hook that throws never stops capture", async () => {
   await settle();
   capture.written({ name: "f-000001.jpg", path: "/p/f-000001.jpg" });
   assert.equal(capture.selfTest, "passed");
+});
+
+test("the grabber encodes through OffscreenCanvas when the page has one, else through a canvas element", async () => {
+  const drawn = [];
+  const context = {
+    drawImage: (...args) => drawn.push(args),
+    getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4).fill(255) }),
+  };
+  const blob = { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+  const source = { width: 1280, height: 720 };
+
+  const requested = [];
+  class FakeOffscreen {
+    constructor(width, height) { this.width = width; this.height = height; }
+    getContext() { return context; }
+    async convertToBlob(options) { requested.push(options); return blob; }
+  }
+  const offscreen = canvasGrabber(source, { OffscreenCanvasImpl: FakeOffscreen, documentRef: null });
+  assert.deepEqual(offscreen.copy(), { visible: true });
+  assert.deepEqual(drawn[0], [source, 0, 0, 640, 360]);
+  assert.equal(await offscreen.encode(), "AQID");
+  assert.deepEqual(requested, [{ type: "image/jpeg", quality: 0.8 }]);
+
+  const element = { getContext: () => context, toBlob: (done, type) => { requested.push(type); done(blob); } };
+  const fallback = canvasGrabber(source, { OffscreenCanvasImpl: undefined, documentRef: { createElement: () => element } });
+  fallback.copy();
+  assert.equal(await fallback.encode(), "AQID");
+  assert.equal(requested.at(-1), "image/jpeg");
+
+  const failing = canvasGrabber(source, { OffscreenCanvasImpl: undefined,
+    documentRef: { createElement: () => ({ ...element, toBlob: (done) => done(null) }) } });
+  await assert.rejects(failing.encode(), /could not be encoded/);
 });
