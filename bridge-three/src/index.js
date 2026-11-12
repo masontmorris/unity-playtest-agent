@@ -75,9 +75,12 @@ export function installBridge({
     clock,
     ready: connection,
     /** Tell the bridge which scene and camera the game is showing, and the canvas to capture. */
-    attach({ sceneId, scene, camera, canvas = null }) {
+    attach({ sceneId, scene, camera, canvas = null, readers = {} }) {
       if (typeof sceneId !== "string" || sceneId.length === 0) throw new TypeError("attach needs a non-empty sceneId");
-      attached = { sceneId, scene, camera };
+      if (readers === null || typeof readers !== "object" || Object.values(readers).some(read => typeof read !== "function")) {
+        throw new TypeError("attach readers must map each alias to a function");
+      }
+      attached = { sceneId, scene, camera, readers };
       if (canvas !== null && grabber === null && rateHz > 0) grabber = canvasGrabber(canvas, { documentRef: target.document });
     },
     detach() {

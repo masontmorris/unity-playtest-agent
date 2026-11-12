@@ -162,3 +162,26 @@ test("stop releases nothing, verifies it, and ends the session unless it is a re
   h.session.receive(hello());
   assert.equal(h.last().type, "status", "a new core can say hello after the old one stopped");
 });
+
+test("attached readers fill public; a failing or non-JSON reader is null with an error", () => {
+  let coins = 3;
+  const readers = {
+    coins: () => coins,
+    grounded: () => true,
+    position: () => [1.5, 0, -2],
+    broken: () => { throw new Error("player not spawned"); },
+    infinite: () => Infinity,
+    object: () => ({ nested: 1 }),
+  };
+  const h = harness({ attached: { sceneId: "level", camera: cameraFacing([1, 0, 0]), readers } });
+  h.session.receive(hello());
+  h.session.receive(line("observe", { mode: "once", with_frame: false, rate_hz: null }));
+  let observation = h.last();
+  assert.deepEqual(observation.public, { coins: 3, grounded: true, position: [1.5, 0, -2], broken: null, infinite: null, object: null });
+  assert.deepEqual(observation.reader_errors.map((e) => e.reader), ["broken", "infinite", "object"]);
+  assert.match(observation.reader_errors[0].error, /player not spawned/);
+  coins = 4;
+  h.session.receive(line("observe", { mode: "once", with_frame: false, rate_hz: null }));
+  observation = h.last();
+  assert.equal(observation.public.coins, 4);
+});

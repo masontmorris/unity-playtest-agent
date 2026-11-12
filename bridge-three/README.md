@@ -91,12 +91,20 @@ so a game that times itself with them is not paused.
 | Verb | Status |
 |---|---|
 | `hello` / `status` | `engine: "three"`, `unity_version: null`, the `dom` input backend; `capture` once a canvas is attached, with its self-test result |
-| `observe` | Scene id, frame, game time, clock state, camera yaw and pitch, and with `with_frame` the newest written frame. `public` is empty until preflight readers exist |
+| `observe` | Scene id, frame, game time, clock state, camera yaw and pitch, and with `with_frame` the newest written frame. `public` holds the values of the readers the game attached (see below) |
 | `act` | Runs the exact catalog action or skill. Holds, waits, leases and skill deadlines use wall time, so pausing the virtual clock does not keep an input held |
 | `clock` | pause, resume, step, set_scale |
 | `stop` | Releases every held DOM input and reports whether the delivered state is neutral |
 | `inspect` | `transforms` only: every object in the attached scene with its world position and basis, and the runtime error monitor. Other stages are refused with `internal` |
 | `place` | Refused with `invalid` |
+
+## Readers
+
+A game reports its own state by attaching readers: `bridge.attach({ ..., readers: { alias: () => value } })`.
+Each observation calls every reader and puts its value under `public[alias]`. A value is null, a boolean, a
+finite number, a string of at most 200 characters, or up to 16 finite numbers (a position or a vector). A
+reader that throws or returns anything else is reported as `null` with a `reader_errors` entry, never as a
+guessed value. Readers live in the game, so this package still knows no game's names.
 
 ## Coordinates
 
