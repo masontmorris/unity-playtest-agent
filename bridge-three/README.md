@@ -123,8 +123,10 @@ task, so the canvas still holds what the game drew. It grabs at most 10 a second
 640 px wide, and sends each as a JPEG to the relay. The relay writes it atomically to
 `<project>/Temp/playtest-bridge-frames/f-NNNNNN.jpg`, keeps the newest 120 as the Unity bridge does,
 and reports the path back. `frame_ref` names only a frame the relay confirmed written. The capture
-self-test passes once the first frame is written and its pixels read back as something other than
-fully transparent, which is what an unreadable canvas gives.
+self-test passes once a frame whose pixels read back as something other than fully transparent is written.
+A game can attach before it first draws (while it loads, or when it skips a menu), so blank frames are
+skipped and never written. The self-test fails only after 60 s of nothing but blank frames, which is
+what an unreadable canvas gives.
 
 Capture runs at 10 Hz by default. `installBridge({ captureRateHz })` or `?playtest_capture_hz=` on the page URL
 sets the rate, and 0 turns capture off (the page then reports `capture: false`). Each grab copies and

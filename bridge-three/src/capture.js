@@ -9,6 +9,9 @@
 
 export const CAPTURE_WIDTH = 640;
 export const CAPTURE_RATE_HZ = 10;
+// A game can attach before it first draws (while it loads, or when it skips a menu), so blank frames are
+// skipped until one is visible. Only this long of nothing but blank frames fails the self-test.
+export const BLANK_GRACE_MS = 60_000;
 const JPEG_QUALITY = 0.8;
 
 /** Grab frames from an HTML canvas: a synchronous copy, then an asynchronous JPEG encode. */
@@ -52,6 +55,7 @@ export class FrameCapture {
   #busy = false;
   #pending = new Map();
   #selfTest = "unknown";
+  #firstGrabMs = null;
   #latest = null;
   #lastError = null;
 
@@ -85,7 +89,9 @@ export class FrameCapture {
       return;
     }
     if (this.#selfTest === "unknown" && !copied.visible) {
-      this.#fail("the first frame read back fully transparent");
+      // Not drawn yet: skip it, and fail only once the game has stayed blank for the whole grace period.
+      this.#firstGrabMs ??= now;
+      if (now - this.#firstGrabMs >= BLANK_GRACE_MS) this.#fail(`every frame read back fully transparent for ${BLANK_GRACE_MS / 1000} s`);
       return;
     }
     this.#busy = true;
