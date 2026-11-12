@@ -298,7 +298,7 @@ def test_fatal_probe_stops_remaining_inputs_and_keeps_diagnostics(tmp_path, monk
     monkeypatch.setattr(three_session, "connect", connect)
     monkeypatch.setattr(three_session.input_probe, "measure", probe)
     monkeypatch.setattr(three_session, "_quiet", quiet)
-    monkeypatch.setattr(three_session.entity, "analyze", lambda trials: {"status": "identified", "entity_id": "entity"})
+    monkeypatch.setattr(three_session.entity, "analyze", lambda trials: {"status": "identified", "entity_id": "entity", "independent_candidates": ["entity"]})
     monkeypatch.setattr(three_session.input_probe, "frame_record", lambda *a, **k: {"readable": True, "archived": True,
                          "width": 10, "height": 10, "ref": "f.jpg", "bytes": 100, "sha256": "a" * 64})
     with pytest.raises(ValueError, match="terminal release unverified"):

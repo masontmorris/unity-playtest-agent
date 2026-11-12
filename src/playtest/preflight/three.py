@@ -284,6 +284,10 @@ def compile_study(study: ThreeStudy) -> CompiledStudy:
                 "readers and actions come from game declarations", "freshness, reset and clock were not measured",
                 "source and study: " + json.dumps(decl.source, sort_keys=True), "session: " + study.session]
     coverage.extend(f"reader {row['id']} unread: {row['reason']}" for row in unoffered)
+    selection = study.entity.get("selection") or {}
+    if selection.get("by") == "operator":
+        coverage.append("the operator named the entity among these measured responsive roots: "
+                        + ", ".join(selection["independent_candidates"]))
     data = {"schema_version": 2, "packet_sha256": _hash(source), "entity_id": study.entity["id"],
             "entity": study.entity, "inventory_caps": {}, "discovery_caps": {}, "image": study.image,
             "readers": readers, "actions": actions, "skills": skills, "progress": [], "invariants": [],

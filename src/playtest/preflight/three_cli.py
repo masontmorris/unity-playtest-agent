@@ -88,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--game", type=Path)
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--entity-action")
+    parser.add_argument("--entity-id", help="when several roots respond alike, the measured root to use")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--query", default=None)
     parser.add_argument("--settle", type=float, default=None)
@@ -99,15 +100,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("runner arguments require --run")
     try:
         if args.prepared:
-            if args.game or args.catalog or args.entity_action or args.output:
-                parser.error("--prepared replaces game, catalog, entity action and output")
+            if args.game or args.catalog or args.entity_action or args.entity_id or args.output:
+                parser.error("--prepared replaces game, catalog, entity action, entity id and output")
             complete = args.prepared
             marker, manifest = _load_complete(complete, query=args.query, settle=args.settle)
         else:
             if args.game is None or args.entity_action is None or args.output is None:
                 parser.error("--game, --entity-action and --output are required")
             decl = load_declarations(args.game, args.catalog)
-            complete = prepare(decl, args.entity_action, args.output, query=args.query or "", settle_s=60 if args.settle is None else args.settle)
+            complete = prepare(decl, args.entity_action, args.output, query=args.query or "", settle_s=60 if args.settle is None else args.settle,
+                               entity_id=args.entity_id)
             marker = json.loads(complete.read_text(encoding="utf-8"))
             manifest = PreflightManifest.model_validate_json((complete.parent / "manifest.json").read_bytes(), strict=True)
         print(json.dumps({"complete": str(complete.resolve()), "readers": len(manifest.readers),

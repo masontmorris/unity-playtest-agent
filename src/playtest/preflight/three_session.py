@@ -307,7 +307,7 @@ async def _quiet(client: BridgeClient, entity_id: str, journal: Journal) -> tupl
 
 
 async def measure(decl: GameDeclarations, entity_action: str, settle_s: float, query: str,
-                  directory: Path) -> ThreeStudy:
+                  directory: Path, entity_id: str | None = None) -> ThreeStudy:
     journal = Journal(directory / "session.partial.jsonl")
     client = await connect(decl.game)
     session = client.status.session
@@ -371,11 +371,18 @@ async def measure(decl: GameDeclarations, entity_action: str, settle_s: float, q
             await asyncio.sleep(entity.SETTLE_S)
         analysis = entity.analyze(trials)
         journal.append("entity_analysis", analysis)
-        if analysis["status"] != "identified":
-            raise ValueError(f"entity identification is {analysis['status']}: {analysis['independent_candidates']}")
-        ident = analysis["entity_id"]
+        candidates = analysis["independent_candidates"]
+        if analysis["status"] == "identified" and entity_id in (None, analysis["entity_id"]):
+            ident, selection = analysis["entity_id"], {"by": "measurement"}
+        elif analysis["status"] == "ambiguous" and entity_id in candidates:
+            # The operator names one of the measured responsive roots; code never picks among them.
+            ident, selection = entity_id, {"by": "operator", "independent_candidates": candidates}
+        else:
+            raise ValueError(f"entity identification is {analysis['status']}: {candidates}"
+                             + (f"; the operator's entity {entity_id!r} is not among them" if entity_id else ""))
+        journal.append("entity_selection", {"entity_id": ident, **selection})
         rows = entity._objects(trials[-1]["after"])
-        entity_row = {**rows[ident], "name_path": _name_path(rows, ident)}
+        entity_row = {**rows[ident], "name_path": _name_path(rows, ident), "selection": selection}
         for name in decl.catalog.actions:
             definition = input_probe._catalog_declaration(decl.catalog, name)
             for repeat in (1, 2):
@@ -421,7 +428,8 @@ async def measure(decl: GameDeclarations, entity_action: str, settle_s: float, q
     return study
 
 
-def prepare(decl: GameDeclarations, entity_action: str, output: Path, *, query: str = "", settle_s: float = 60) -> Path:
+def prepare(decl: GameDeclarations, entity_action: str, output: Path, *, query: str = "", settle_s: float = 60,
+            entity_id: str | None = None) -> Path:
     definition = decl.catalog.actions.get(entity_action)
     if definition is None or definition.is_skill or len(definition.inputs) != 1:
         raise ValueError("entity action must name one declared single-input action")
@@ -431,7 +439,7 @@ def prepare(decl: GameDeclarations, entity_action: str, output: Path, *, query: 
     directory.mkdir(parents=True, exist_ok=False)
     with game_claim(decl.game):
         with serve(decl.game, decl.catalog_path, query):
-            study = asyncio.run(measure(decl, entity_action, settle_s, query, directory))
+            study = asyncio.run(measure(decl, entity_action, settle_s, query, directory, entity_id))
     if load_declarations(decl.game, decl.catalog_path).source != decl.source:
         raise ValueError(f"game source changed during acquisition; diagnostics in {directory}")
     compiled = compile_study(study)
