@@ -20,18 +20,15 @@ export const BLANK_GRACE_MS = 60_000;
 const JPEG_QUALITY = 0.8;
 
 /**
- * Grab frames from an HTML canvas: a synchronous copy, then an asynchronous JPEG encode.
+ * Grab frames from an HTML canvas: a copy, then a JPEG encode, both synchronous.
  *
- * The copy goes to an OffscreenCanvas where there is one: its `convertToBlob` encodes without waiting for the
- * page to go idle, where `HTMLCanvasElement.toBlob` waited 1.2 to 1.6 s per frame on a busy game page.
+ * The encode is `toDataURL`, 1.5 to 3 ms for a 640 px frame. Chrome defers the asynchronous encoders
+ * (`toBlob`, `OffscreenCanvas.convertToBlob`) until the page is idle, up to about 1 s, and a game page is
+ * never idle: on Kinema they took 1.1 to 1.6 s per frame, which held capture under 1 frame per second.
  */
-export function canvasGrabber(source, { width = CAPTURE_WIDTH, documentRef = globalThis.document,
-                                        OffscreenCanvasImpl = globalThis.OffscreenCanvas } = {}) {
-  const scratch = typeof OffscreenCanvasImpl === "function" ? new OffscreenCanvasImpl(width, 2) : documentRef.createElement("canvas");
+export function canvasGrabber(source, { width = CAPTURE_WIDTH, documentRef = globalThis.document } = {}) {
+  const scratch = documentRef.createElement("canvas");
   const context = scratch.getContext("2d", { willReadFrequently: true });
-  const toBlob = typeof scratch.convertToBlob === "function"
-    ? () => scratch.convertToBlob({ type: "image/jpeg", quality: JPEG_QUALITY })
-    : () => new Promise((resolve) => scratch.toBlob(resolve, "image/jpeg", JPEG_QUALITY));
   return {
     copy() {
       const height = Math.max(2, Math.round((width * source.height) / Math.max(1, source.width)));
@@ -46,12 +43,10 @@ export function canvasGrabber(source, { width = CAPTURE_WIDTH, documentRef = glo
       return { visible };
     },
     async encode() {
-      const blob = await toBlob();
-      if (blob === null) throw new Error("the canvas could not be encoded as JPEG");
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      return globalThis.btoa(binary);
+      const url = scratch.toDataURL("image/jpeg", JPEG_QUALITY);
+      // A browser that cannot encode JPEG answers with another type, or "data:," for an empty canvas.
+      if (!url.startsWith("data:image/jpeg;base64,")) throw new Error("the canvas could not be encoded as JPEG");
+      return url.slice("data:image/jpeg;base64,".length);
     },
   };
 }
